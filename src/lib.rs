@@ -531,7 +531,11 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
         }
     } else {
         let prom = if pt == b'p' && (er == 0 || er == 7) {
-            if promotion != 0 { promotion } else { if st.w { b'Q' } else { b'q' } }
+            if promotion != 0 {
+                if st.w { promotion } else { promotion + 32 }
+            } else {
+                if st.w { b'Q' } else { b'q' }
+            }
         } else { p };
         st.b[er][ec] = prom;
         st.b[sr][sc] = EMPTY;
@@ -905,32 +909,34 @@ impl Searcher {
             let s = tt_score.unwrap();
             match tt_flag.unwrap() {
                 TT_EXACT => return s,
-                TT_ALPHA => if s <= alpha { return s; },
-                TT_BETA  => if s >= beta  { return s; },
+                TT_ALPHA => if s <= alpha { return alpha; },
+                TT_BETA  => if s >= beta  { return beta; },
                 _ => {}
             }
         }
 
         if actual_depth <= 0 {
-            return self.qsearch(st, alpha, beta, if in_check { QS_DEPTH } else { QS_DEPTH }, start, tl, cnt);
+            return self.qsearch(st, alpha, beta, QS_DEPTH, start, tl, cnt);
         }
 
-        if !in_check && !is_pv && actual_depth <= 8 && ply > 0 && has_non_pawn(&st.b, st.w) {
-            let eval_score = self.corrected_eval(st);
+        let eval_score = self.corrected_eval(st);
+
+        if !in_check && !is_pv && actual_depth <= 8 && ply > 0 {
             let margin = 80 + 65 * actual_depth;
             if eval_score - margin >= beta { return eval_score - margin; }
         }
 
         if !in_check && !is_pv && actual_depth <= 3 && ply > 0 {
-            let eval_score = self.corrected_eval(st);
-            let margin = 120 * actual_depth;
-            if eval_score + margin <= alpha { return eval_score + margin; }
+            let margin = 150 * actual_depth;
+            if eval_score + margin <= alpha {
+                let q = self.qsearch(st, alpha - margin, beta - margin, QS_DEPTH, start, tl, cnt);
+                if q + margin <= alpha { return alpha; }
+            }
         }
 
         if !in_check && can_null && !is_pv && ply > 0 && actual_depth >= 3 && has_non_pawn(&st.b, st.w) {
-            let eval_score = self.corrected_eval(st);
             if eval_score >= beta {
-                let r = 3 + actual_depth / 4;
+                let r = 3 + actual_depth / 4 + ((eval_score - beta) / 200).min(3);
                 let ow = st.w; let oe = st.ep;
                 st.w = !st.w; st.ep = None;
                 let null_h = compute_hash(&st.b, st.w, &st.cr, st.ep);
@@ -950,17 +956,15 @@ impl Searcher {
             return if in_check { -MATE + ply as i32 } else { 0 };
         }
 
-        let mut best_move_hint = tt_move;
-        if is_pv && tt_move.is_none() && actual_depth >= 4 {
-            let r_depth = actual_depth / 2;
-            self.negamax(st, r_depth, ply, alpha, beta, can_null, start, tl, cnt);
-            let h2 = compute_hash(&st.b, st.w, &st.cr, st.ep);
-            best_move_hint = self.tt.get(h2).and_then(|e| e.best_move);
-        }
+        let actual_depth = if tt_move.is_none() && actual_depth >= 4 && is_pv {
+            actual_depth - 1
+        } else {
+            actual_depth
+        };
 
         let mut scored: Vec<(i32, [usize; 4])> = moves.into_iter().map(|mv| {
             let mut s = 0i32;
-            if Some(mv) == best_move_hint { s = 10_000_000; }
+            if Some(mv) == tt_move { s = 10_000_000; }
             else {
                 let t = st.b[mv[2]][mv[3]];
                 let is_promo = ptype(st.b[mv[0]][mv[1]]) == b'p' && (mv[2] == 0 || mv[2] == 7);
@@ -981,20 +985,21 @@ impl Searcher {
                     let p_idx = piece_to_idx(ptype(prev_p));
                     if self.counter_move[p_idx][mv[2]*8+mv[3]] == Some(mv) { s += 700_000; }
                     let (fk, tk) = from_to_key(mv[0], mv[1], mv[2], mv[3]);
-                    s += self.history[fk][tk];
+                    s += self.history[fk][tk].clamp(-32768, 32768);
                 }
             }
             (s, mv)
         }).collect();
         scored.sort_unstable_by(|a, b| b.0.cmp(&a.0));
 
-        let lmp_count = if !is_pv && !in_check && actual_depth <= 6 {
-            match actual_depth { 1 => 5, 2 => 8, 3 => 13, 4 => 20, 5 => 28, 6 => 38, _ => 50 }
+        let lmp_count = if !is_pv && !in_check && actual_depth <= 8 {
+            match actual_depth { 1 => 4, 2 => 7, 3 => 11, 4 => 17, 5 => 24, 6 => 33, 7 => 44, 8 => 57, _ => usize::MAX }
         } else { usize::MAX };
 
         let orig_alpha = alpha;
         let mut best_score = -INF;
         let mut best_move = scored.first().map(|&(_, mv)| mv);
+        let mut quiets_tried: Vec<[usize; 4]> = Vec::new();
 
         for (i, &(_, mv)) in scored.iter().enumerate() {
             if start.elapsed().as_secs_f64() > tl { return 0; }
@@ -1006,21 +1011,28 @@ impl Searcher {
                 let mut b2 = st.b;
                 let p2 = b2[mv[0]][mv[1]];
                 b2[mv[2]][mv[3]] = p2; b2[mv[0]][mv[1]] = EMPTY;
+                if ptype(p2) == b'p' && mv[1] != mv[3] && st.b[mv[2]][mv[3]] == EMPTY {
+                    let cap_row = if st.w { mv[2] + 1 } else { mv[2].wrapping_sub(1) };
+                    if cap_row < 8 { b2[cap_row][mv[3]] = EMPTY; }
+                }
                 let (opp_kr, opp_kc) = find_king(&b2, !st.w);
                 is_attacked(&b2, opp_kr, opp_kc, st.w)
             };
 
             if !is_pv && !in_check && is_quiet && i >= lmp_count { break; }
 
-            if !is_pv && !in_check && i > 0 {
+            if !is_pv && !in_check && i > 0 && best_score > -MATE / 2 {
                 if capture {
                     let see_sc = see(&st.b, mv[0], mv[1], mv[2], mv[3]);
-                    if see_sc < -100 * actual_depth { continue; }
-                } else if is_quiet && actual_depth <= 5 && i >= 4 {
-                    let see_sc = see(&st.b, mv[0], mv[1], mv[2], mv[3]);
-                    if see_sc < -50 { continue; }
+                    if see_sc < -80 * actual_depth { continue; }
+                } else if is_quiet {
+                    let (fk, tk) = from_to_key(mv[0], mv[1], mv[2], mv[3]);
+                    let hist = self.history[fk][tk];
+                    if actual_depth <= 5 && hist < -1024 * actual_depth { continue; }
                 }
             }
+
+            let move_ext = if gives_check && !in_check && i == 0 { 1 } else { 0 };
 
             let old = *st;
             apply_move(st, mv[0], mv[1], mv[2], mv[3], 0);
@@ -1028,31 +1040,38 @@ impl Searcher {
             self.rep_stack.push(h_after);
             self.rep_stack_len += 1;
 
+            let new_depth = actual_depth - 1 + move_ext;
+
             let lmr_eligible = i >= 2 && actual_depth >= 3 && is_quiet && !in_check && !gives_check;
             let s = if i == 0 {
-                -self.negamax(st, actual_depth - 1, ply + 1, -beta, -alpha, true, start, tl, cnt)
+                -self.negamax(st, new_depth, ply + 1, -beta, -alpha, true, start, tl, cnt)
             } else if lmr_eligible {
-                let r = (1.0 + (i as f64).ln() * (actual_depth as f64).ln() / 2.0) as i32;
-                let r = r.min(actual_depth - 1).max(1);
-                let s2 = -self.negamax(st, actual_depth - 1 - r, ply + 1, -alpha - 1, -alpha, true, start, tl, cnt);
+                let r = {
+                    let base = (0.5 + (i as f64).ln() * (actual_depth as f64).ln() / 1.8) as i32;
+                    let r = base.min(actual_depth - 1).max(1);
+                    if !is_pv { (r + 1).min(actual_depth - 1) } else { r }
+                };
+                let s2 = -self.negamax(st, new_depth - r, ply + 1, -alpha - 1, -alpha, true, start, tl, cnt);
                 if s2 > alpha {
-                    let s3 = -self.negamax(st, actual_depth - 1, ply + 1, -alpha - 1, -alpha, true, start, tl, cnt);
+                    let s3 = -self.negamax(st, new_depth, ply + 1, -alpha - 1, -alpha, true, start, tl, cnt);
                     if s3 > alpha && is_pv {
-                        -self.negamax(st, actual_depth - 1, ply + 1, -beta, -alpha, true, start, tl, cnt)
+                        -self.negamax(st, new_depth, ply + 1, -beta, -alpha, true, start, tl, cnt)
                     } else { s3 }
                 } else { s2 }
             } else if is_pv {
-                let s2 = -self.negamax(st, actual_depth - 1, ply + 1, -alpha - 1, -alpha, true, start, tl, cnt);
+                let s2 = -self.negamax(st, new_depth, ply + 1, -alpha - 1, -alpha, true, start, tl, cnt);
                 if s2 > alpha && s2 < beta {
-                    -self.negamax(st, actual_depth - 1, ply + 1, -beta, -alpha, true, start, tl, cnt)
+                    -self.negamax(st, new_depth, ply + 1, -beta, -alpha, true, start, tl, cnt)
                 } else { s2 }
             } else {
-                -self.negamax(st, actual_depth - 1, ply + 1, -beta, -alpha, true, start, tl, cnt)
+                -self.negamax(st, new_depth, ply + 1, -beta, -alpha, true, start, tl, cnt)
             };
 
             self.rep_stack.pop();
             self.rep_stack_len -= 1;
             *st = old;
+
+            if is_quiet { quiets_tried.push(mv); }
 
             if s > best_score {
                 best_score = s;
@@ -1066,9 +1085,18 @@ impl Searcher {
                                 self.killers[ply][0] = Some(mv);
                             }
                             let (fk, tk) = from_to_key(mv[0], mv[1], mv[2], mv[3]);
-                            self.history[fk][tk] += actual_depth * actual_depth;
+                            let bonus = (actual_depth * actual_depth).min(512);
+                            self.history[fk][tk] += bonus;
                             if self.history[fk][tk] > 16384 {
                                 for a in 0..64 { for b in 0..64 { self.history[a][b] /= 2; } }
+                            }
+                            for &qmv in &quiets_tried {
+                                if qmv == mv { continue; }
+                                let (qfk, qtk) = from_to_key(qmv[0], qmv[1], qmv[2], qmv[3]);
+                                self.history[qfk][qtk] -= bonus;
+                                if self.history[qfk][qtk] < -16384 {
+                                    for a in 0..64 { for b in 0..64 { self.history[a][b] /= 2; } }
+                                }
                             }
                             let prev_p = old.b[mv[0]][mv[1]];
                             let p_idx = piece_to_idx(ptype(prev_p));
@@ -1212,26 +1240,28 @@ impl Engine {
 
             let mut nd = 0u64;
 
-            let asp_delta = if depth >= 5 { 20 } else { 0 };
-            let (mut alpha, mut beta) = if asp_delta > 0 {
+            let init_delta = if depth >= 5 { 25 } else { INF };
+            let mut asp_delta = init_delta;
+            let (mut alpha, mut beta) = if asp_delta < INF {
                 (prev_score - asp_delta, prev_score + asp_delta)
             } else {
                 (-INF, INF)
             };
 
-            let mut asp_best = moves[0];
+            let mut asp_best = best_move;
             let mut asp_score = -INF;
 
             'asp: loop {
                 let mut sorted_moves = moves.clone();
-                if best_move != moves[0] {
-                    if let Some(pos) = sorted_moves.iter().position(|&m| m == best_move) {
+                if asp_best != moves[0] {
+                    if let Some(pos) = sorted_moves.iter().position(|&m| m == asp_best) {
                         sorted_moves.swap(0, pos);
                     }
                 }
 
                 let mut current_best = sorted_moves[0];
                 let mut current_score = -INF;
+                let mut loop_alpha = alpha;
 
                 for &mv in &sorted_moves {
                     if start.elapsed().as_secs_f64() > time_limit { break; }
@@ -1242,11 +1272,11 @@ impl Engine {
                     self.searcher.rep_stack_len += 1;
 
                     let score = if current_score == -INF {
-                        -self.searcher.negamax(&mut self.st, depth - 1, 0, -beta, -alpha, true, start, time_limit, &mut nd)
+                        -self.searcher.negamax(&mut self.st, depth - 1, 1, -beta, -loop_alpha, true, start, time_limit, &mut nd)
                     } else {
-                        let s = -self.searcher.negamax(&mut self.st, depth - 1, 0, -alpha - 1, -alpha, true, start, time_limit, &mut nd);
-                        if s > alpha {
-                            -self.searcher.negamax(&mut self.st, depth - 1, 0, -beta, -alpha, true, start, time_limit, &mut nd)
+                        let s = -self.searcher.negamax(&mut self.st, depth - 1, 1, -loop_alpha - 1, -loop_alpha, true, start, time_limit, &mut nd);
+                        if s > loop_alpha && s < beta {
+                            -self.searcher.negamax(&mut self.st, depth - 1, 1, -beta, -loop_alpha, true, start, time_limit, &mut nd)
                         } else { s }
                     };
 
@@ -1258,16 +1288,22 @@ impl Engine {
                         current_score = score;
                         current_best = mv;
                     }
-                    if score > alpha { alpha = score; }
-                    if alpha >= beta { break; }
+                    if score > loop_alpha { loop_alpha = score; }
+                    if loop_alpha >= beta { break; }
                 }
 
-                if asp_delta > 0 && current_score <= alpha - asp_delta {
-                    alpha = -INF;
+                if start.elapsed().as_secs_f64() > time_limit { break 'asp; }
+
+                if current_score <= alpha {
+                    asp_delta = asp_delta.saturating_mul(2).min(INF);
+                    alpha = (prev_score - asp_delta).max(-INF);
+                    beta = prev_score + init_delta;
                     continue 'asp;
                 }
-                if asp_delta > 0 && current_score >= beta + asp_delta {
-                    beta = INF;
+                if current_score >= beta {
+                    asp_delta = asp_delta.saturating_mul(2).min(INF);
+                    beta = (prev_score + asp_delta).min(INF);
+                    asp_best = current_best;
                     continue 'asp;
                 }
                 asp_best = current_best;
