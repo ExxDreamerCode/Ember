@@ -1,0 +1,15 @@
+[package]
+name = "chess_rs"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "chess_rs"
+path = "src/main.rs"
+
+[lib]
+name = "chess_rs_lib"
+path = "src/lib.rs"
+
+[dependencies]
+rand = "0.8"
