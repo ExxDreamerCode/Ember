@@ -1,9 +1,33 @@
 use std::io::{self, BufRead};
 use chess_rs_lib::{Engine, ptype};
 
+fn try_load_book(engine: &mut Engine, path: &std::path::Path) -> bool {
+    let display = path.display();
+    if path.exists() {
+        if let Some(path_str) = path.to_str() {
+            if let Err(e) = engine.load_book(path_str) {
+                eprintln!("info string Failed to load book {}: {}", display, e);
+                return false;
+            }
+            return true;
+        }
+    }
+    false
+}
+
 fn main() {
     let stdin = io::stdin();
     let mut engine = Engine::new();
+
+    let mut loaded = false;
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            loaded = try_load_book(&mut engine, &exe_dir.join("book.bin"));
+        }
+    }
+    if !loaded {
+        try_load_book(&mut engine, &std::path::Path::new("book.bin"));
+    }
     
     for line in stdin.lock().lines() {
         let line = match line { Ok(l) => l, Err(_) => break };
@@ -16,13 +40,37 @@ fn main() {
                 println!("id author Rust");
                 println!("option name Hash type spin default 128 min 1 max 4096");
                 println!("option name Threads type spin default 1 min 1 max 1");
+                println!("option name Book type string default <empty>");
                 println!("uciok");
             }
             "isready" => { println!("readyok"); }
             "ucinewgame" => {
+                let book = engine.book.take();
                 engine = Engine::new();
+                engine.book = book;
             }
-            "setoption" => { parse_setoption(&mut engine, &parts); }
+            "setoption" => {
+                if parts.len() >= 3 && parts[1].to_lowercase() == "name" {
+                    if parts[2].to_lowercase() == "book" {
+                        let val_start = if parts.len() >= 5 && parts[3].to_lowercase() == "value" { 4 } else { 3 };
+                        let val = parts[val_start..].join(" ");
+                        if val.is_empty() {
+                            engine.book = None;
+                        } else {
+                            let path = std::path::Path::new(&val);
+                            if !try_load_book(&mut engine, path) {
+                                if let Ok(exe_path) = std::env::current_exe() {
+                                    if let Some(exe_dir) = exe_path.parent() {
+                                        try_load_book(&mut engine, &exe_dir.join(&val));
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        parse_setoption(&mut engine, &parts);
+                    }
+                }
+            }
             "position" => { parse_position(&mut engine, &parts); }
             "go" => { parse_go(&mut engine, &parts); }
             "quit" => break,
@@ -50,7 +98,9 @@ fn parse_setoption(engine: &mut Engine, parts: &[&str]) {
 fn parse_position(engine: &mut Engine, parts: &[&str]) {
     if parts.len() < 2 { return; }
     if parts[1] == "startpos" {
+        let book = engine.book.take();
         *engine = Engine::new();
+        engine.book = book;
         engine.searcher.resize_tt(engine.searcher.tt_mb);
         let mut i = 2;
         if i < parts.len() && parts[i] == "moves" {
