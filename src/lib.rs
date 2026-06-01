@@ -8,6 +8,5 @@ pub mod engine;
 pub mod polyglot_randoms;
 pub mod book;
 
-// Re-exports for main.rs compatibility
 pub use board::ptype;
 pub use engine::Engine;
