@@ -36,8 +36,8 @@ fn main() {
         let parts: Vec<&str> = trimmed.split_whitespace().collect();
         match parts[0] {
             "uci" => {
-                println!("id name RustChess 2.0");
-                println!("id author Rust");
+                println!("id name Ember 0.9.2");
+                println!("id author ExxDreamerCode");
                 println!("option name Hash type spin default 128 min 1 max 4096");
                 println!("option name Threads type spin default 1 min 1 max 1");
                 println!("option name Book type string default <empty>");
