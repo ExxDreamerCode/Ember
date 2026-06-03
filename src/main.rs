@@ -1,5 +1,6 @@
 use std::io::{self, BufRead};
 use chess_rs_lib::{Engine, ptype};
+use chess_rs_lib::board::{piece_on, piece_char};
 
 fn try_load_book(engine: &mut Engine, path: &std::path::Path) -> bool {
     let display = path.display();
@@ -36,7 +37,7 @@ fn main() {
         let parts: Vec<&str> = trimmed.split_whitespace().collect();
         match parts[0] {
             "uci" => {
-                println!("id name Ember 0.9.2");
+                println!("id name Ember 0.9.3");
                 println!("id author ExxDreamerCode");
                 println!("option name Hash type spin default 128 min 1 max 4096");
                 println!("option name Threads type spin default 1 min 1 max 1");
@@ -178,15 +179,20 @@ fn parse_go(engine: &mut Engine, parts: &[&str]) {
     let tl = tl.max(0.05).min(60.0);
 
     let (best_move, _, nodes, elapsed) = engine.find_best_move(tl, depth);
-    let nps = if elapsed > 0.0 { (nodes as f64 / elapsed) as i64 } else { 0 };
+    let _nps = if elapsed > 0.0 { (nodes as f64 / elapsed) as i64 } else { 0 };
 
-    if best_move.len() >= 4 {
+    if best_move.len() >= 4 && best_move != "0000" {
         let b = best_move.as_bytes();
-        let sc = (b[0]-b'a') as usize; let sr = 8-(b[1]-b'0') as usize;
-        let ec = (b[2]-b'a') as usize; let er = 8-(b[3]-b'0') as usize;
-        if sr < 8 && sc < 8 {
-            let piece = engine.st.b[sr][sc];
-            if ptype(piece) == b'p' && (er == 0 || er == 7) && best_move.len() == 4 {
+        let sc = (b[0] - b'a') as usize;
+        let sr = 8 - (b[1] - b'0') as usize;
+        let ec = (b[2] - b'a') as usize;
+        let er = 8 - (b[3] - b'0') as usize;
+        
+        if sr < 8 && sc < 8 && er < 8 && ec < 8 {
+            let piece_idx = piece_on(&engine.st.bb, sr * 8 + sc);
+            let piece_char = piece_char(piece_idx);
+            
+            if piece_char == b'p' && (er == 0 || er == 7) && best_move.len() == 4 {
                 println!("bestmove {}q", best_move);
                 return;
             }

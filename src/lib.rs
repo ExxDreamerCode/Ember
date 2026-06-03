@@ -7,6 +7,7 @@ pub mod search;
 pub mod engine;
 pub mod polyglot_randoms;
 pub mod book;
+pub mod magic;
 
-pub use board::ptype;
+pub use board::piece_type as ptype;
 pub use engine::Engine;

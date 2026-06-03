@@ -1,9 +1,14 @@
-use crate::board::{Board8, EMPTY, is_white, ptype, find_king, can_attack};
+use crate::board::{
+    BoardState, WP, WN, WB, WR, WQ, WK, BP, BN, BB, BR, BQ, BK,
+    all_occ, white_occ, black_occ, is_attacked, KNIGHT_ATTACKS, KING_ATTACKS,
+    bit, sq_r, sq_c, sq,
+};
+use crate::magic::{bishop_attacks, rook_attacks};
 
 const MG_VALUE: [i32; 6] = [82, 337, 365, 477, 1025, 0];
-const EG_VALUE: [i32; 6] = [94, 281, 297, 512, 936, 0];
+const EG_VALUE: [i32; 6] = [94, 281, 297, 512, 936,  0];
 
-const PHASE_INC: [i32; 6] = [0, 1, 1, 2, 4, 0];
+const PHASE_INC:   [i32; 6] = [0, 1, 1, 2, 4, 0];
 const TOTAL_PHASE: i32 = 24;
 
 #[rustfmt::skip]
@@ -17,7 +22,6 @@ const MG_PAWN: [i32; 64] = [
   -35,  -1, -20, -23, -15,  24, 38, -22,
     0,   0,   0,   0,   0,   0,  0,   0,
 ];
-
 #[rustfmt::skip]
 const MG_KNIGHT: [i32; 64] = [
   -167, -89, -34, -49,  61, -97, -15, -107,
@@ -29,7 +33,6 @@ const MG_KNIGHT: [i32; 64] = [
    -29, -53, -12,  -3,  -1,  18, -14,  -19,
   -105, -21, -58, -33, -17, -28, -19,  -23,
 ];
-
 #[rustfmt::skip]
 const MG_BISHOP: [i32; 64] = [
    -29,   4, -82, -37, -25, -42,   7,  -8,
@@ -41,7 +44,6 @@ const MG_BISHOP: [i32; 64] = [
      4,  15,  16,   0,   7,  21,  33,   1,
    -33,  -3, -14, -21, -13, -12, -39, -21,
 ];
-
 #[rustfmt::skip]
 const MG_ROOK: [i32; 64] = [
     32,  42,  32,  51, 63,  9,  31,  43,
@@ -53,7 +55,6 @@ const MG_ROOK: [i32; 64] = [
    -44, -16, -20,  -9, -1, 11,  -6, -71,
    -19, -13,   1,  17, 16,  7, -37, -26,
 ];
-
 #[rustfmt::skip]
 const MG_QUEEN: [i32; 64] = [
    -28,   0,  29,  12,  59,  44,  43,  45,
@@ -65,7 +66,6 @@ const MG_QUEEN: [i32; 64] = [
    -35,  -8,  11,   2,   8,  15,  -3,   1,
     -1, -18,  -9,  10, -15, -25, -31, -50,
 ];
-
 #[rustfmt::skip]
 const MG_KING: [i32; 64] = [
    -65,  23,  16, -15, -56, -34,   2,  13,
@@ -77,7 +77,6 @@ const MG_KING: [i32; 64] = [
      1,   7,  -8, -64, -43, -16,   9,   8,
    -15,  36,  12, -54,   8, -28,  24,  14,
 ];
-
 #[rustfmt::skip]
 const EG_PAWN: [i32; 64] = [
     0,   0,   0,   0,   0,   0,   0,   0,
@@ -89,7 +88,6 @@ const EG_PAWN: [i32; 64] = [
    13,   8,   8, -10,  -6,  -4,  -1,  -2,
     0,   0,   0,   0,   0,   0,   0,   0,
 ];
-
 #[rustfmt::skip]
 const EG_KNIGHT: [i32; 64] = [
    -58, -38, -13, -28, -31, -27, -63, -99,
@@ -101,7 +99,6 @@ const EG_KNIGHT: [i32; 64] = [
    -42, -20, -10,  -5,  -2, -20, -23, -44,
    -29, -51, -23, -15, -22, -18, -50, -64,
 ];
-
 #[rustfmt::skip]
 const EG_BISHOP: [i32; 64] = [
    -14, -21, -11,  -8, -7,  -9, -17, -24,
@@ -113,7 +110,6 @@ const EG_BISHOP: [i32; 64] = [
    -14, -18,  -7,  -1,  4,  -9, -15, -27,
    -23,  -9, -23,  -5, -9, -16,  -5, -17,
 ];
-
 #[rustfmt::skip]
 const EG_ROOK: [i32; 64] = [
     13, 10, 18, 15, 12,  12,   8,   5,
@@ -125,7 +121,6 @@ const EG_ROOK: [i32; 64] = [
     -6, -6,  0,  2, -9,  -9, -11,  -3,
     -9,  2,  3, -1, -5, -13,   4, -20,
 ];
-
 #[rustfmt::skip]
 const EG_QUEEN: [i32; 64] = [
    -9,  22,  22,  27,  27,  19,  10,  20,
@@ -137,7 +132,6 @@ const EG_QUEEN: [i32; 64] = [
   -22, -23, -30, -16, -16, -23, -36, -32,
   -33, -28, -22, -43,  -5, -32, -20, -41,
 ];
-
 #[rustfmt::skip]
 const EG_KING: [i32; 64] = [
   -74, -35, -18, -18, -11,  15,   4, -17,
@@ -151,21 +145,11 @@ const EG_KING: [i32; 64] = [
 ];
 
 const MG_TABLES: [&[i32; 64]; 6] = [
-    &MG_PAWN, &MG_KNIGHT, &MG_BISHOP,
-    &MG_ROOK, &MG_QUEEN, &MG_KING,
+    &MG_PAWN, &MG_KNIGHT, &MG_BISHOP, &MG_ROOK, &MG_QUEEN, &MG_KING,
 ];
 const EG_TABLES: [&[i32; 64]; 6] = [
-    &EG_PAWN, &EG_KNIGHT, &EG_BISHOP,
-    &EG_ROOK, &EG_QUEEN, &EG_KING,
+    &EG_PAWN, &EG_KNIGHT, &EG_BISHOP, &EG_ROOK, &EG_QUEEN, &EG_KING,
 ];
-
-fn pt_index(pt: u8) -> usize {
-    match pt { b'p' => 0, b'n' => 1, b'b' => 2, b'r' => 3, b'q' => 4, b'k' => 5, _ => 0 }
-}
-
-fn flip_sq(sq: usize) -> usize {
-    sq ^ 56
-}
 
 const MOB_KNIGHT: [i32; 9]  = [-20,-15,-5, 0, 5, 10, 15, 18, 20];
 const MOB_BISHOP: [i32; 14] = [-20,-10,-5, 0, 5,  8, 11, 13, 15, 16, 17, 18, 18, 18];
@@ -173,225 +157,199 @@ const MOB_ROOK:   [i32; 15] = [-15,-8, -4, 0, 3,  5,  7,  9, 11, 12, 13, 14, 14,
 const MOB_QUEEN:  [i32; 28] = [-20,-14,-8,-2, 0,  2,  4,  5,  6,  7,  8,  9, 10, 11, 12,
                                  12, 13, 13, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14];
 
-fn count_mobility(b: &Board8, r: usize, c: usize) -> usize {
-    let p = b[r][c];
-    if p == EMPTY { return 0; }
-    let pt = ptype(p);
-    let wturn = is_white(p);
-    let mut mob = 0usize;
-    match pt {
-        b'n' => {
-            for &[dr, dc] in &[[-2i32,-1i32],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]] {
-                let nr = r as i32 + dr;
-                let nc = c as i32 + dc;
-                if nr >= 0 && nr < 8 && nc >= 0 && nc < 8 {
-                    let t = b[nr as usize][nc as usize];
-                    if t == EMPTY || is_white(t) != wturn { mob += 1; }
-                }
-            }
-        }
-        b'b' => {
-            for &[dr, dc] in &[[-1i32,-1i32],[-1,1],[1,-1],[1,1]] {
-                for s in 1..8i32 {
-                    let nr = r as i32 + dr * s;
-                    let nc = c as i32 + dc * s;
-                    if nr < 0 || nr >= 8 || nc < 0 || nc >= 8 { break; }
-                    let t = b[nr as usize][nc as usize];
-                    if t == EMPTY { mob += 1; }
-                    else { if is_white(t) != wturn { mob += 1; } break; }
-                }
-            }
-        }
-        b'r' => {
-            for &[dr, dc] in &[[-1i32,0i32],[1,0],[0,-1],[0,1]] {
-                for s in 1..8i32 {
-                    let nr = r as i32 + dr * s;
-                    let nc = c as i32 + dc * s;
-                    if nr < 0 || nr >= 8 || nc < 0 || nc >= 8 { break; }
-                    let t = b[nr as usize][nc as usize];
-                    if t == EMPTY { mob += 1; }
-                    else { if is_white(t) != wturn { mob += 1; } break; }
-                }
-            }
-        }
-        b'q' => {
-            for &[dr, dc] in &[[-1i32,-1i32],[-1,1],[1,-1],[1,1],[-1,0],[1,0],[0,-1],[0,1]] {
-                for s in 1..8i32 {
-                    let nr = r as i32 + dr * s;
-                    let nc = c as i32 + dc * s;
-                    if nr < 0 || nr >= 8 || nc < 0 || nc >= 8 { break; }
-                    let t = b[nr as usize][nc as usize];
-                    if t == EMPTY { mob += 1; }
-                    else { if is_white(t) != wturn { mob += 1; } break; }
-                }
-            }
-        }
-        _ => {}
+#[inline]
+fn flip_sq(sq: usize) -> usize { sq ^ 56 }
+
+fn count_mobility_bb(bb: &[u64; 12], s: usize, occ: u64, white: bool) -> usize {
+    let own = if white { white_occ(bb) } else { black_occ(bb) };
+    let pi_type = {
+        let b = bit(s);
+        let base = if white { 0usize } else { 6 };
+        let mut t = 6usize;
+        for i in 0..6 { if bb[base+i] & b != 0 { t = i; break; } }
+        t
+    };
+    match pi_type {
+        1 => (KNIGHT_ATTACKS[s] & !own).count_ones() as usize,
+        2 => (bishop_attacks(s, occ) & !own).count_ones() as usize,
+        3 => (rook_attacks(s, occ) & !own).count_ones() as usize,
+        4 => ((bishop_attacks(s, occ) | rook_attacks(s, occ)) & !own).count_ones() as usize,
+        _ => 0,
     }
-    mob
 }
 
-fn eval_pawns(b: &Board8) -> i32 {
+fn eval_pawns(bb: &[u64; 12]) -> i32 {
     let mut score = 0i32;
+    let mut w_file = [0i32; 8];
+    let mut b_file = [0i32; 8];
+    let mut w_rank = [[false; 8]; 8];
+    let mut b_rank = [[false; 8]; 8];
 
-    let mut w_pawns_on_file = [0i32; 8];
-    let mut b_pawns_on_file = [0i32; 8];
-    let mut w_pawn_ranks = [[false; 8]; 8];
-    let mut b_pawn_ranks = [[false; 8]; 8];
-
-    for r in 0..8 {
-        for c in 0..8 {
-            let p = b[r][c];
-            if p == b'P' {
-                w_pawns_on_file[c] += 1;
-                w_pawn_ranks[c][7 - r] = true;
-            } else if p == b'p' {
-                b_pawns_on_file[c] += 1;
-                b_pawn_ranks[c][r] = true;
-            }
-        }
+    let mut wp = bb[WP];
+    while wp != 0 {
+        let s = wp.trailing_zeros() as usize;
+        let r = sq_r(s); let c = sq_c(s);
+        w_file[c] += 1;
+        w_rank[c][7 - r] = true;
+        wp &= wp - 1;
+    }
+    let mut bp = bb[BP];
+    while bp != 0 {
+        let s = bp.trailing_zeros() as usize;
+        let r = sq_r(s); let c = sq_c(s);
+        b_file[c] += 1;
+        b_rank[c][r] = true;
+        bp &= bp - 1;
     }
 
     for c in 0..8 {
-        if w_pawns_on_file[c] > 1 { score -= 15 * (w_pawns_on_file[c] - 1); }
-        if b_pawns_on_file[c] > 1 { score += 15 * (b_pawns_on_file[c] - 1); }
+        if w_file[c] > 1 { score -= 15 * (w_file[c] - 1); }
+        if b_file[c] > 1 { score += 15 * (b_file[c] - 1); }
 
-        let w_neighbors = (if c > 0 { w_pawns_on_file[c-1] } else { 0 }) +
-                          (if c < 7 { w_pawns_on_file[c+1] } else { 0 });
-        let b_neighbors = (if c > 0 { b_pawns_on_file[c-1] } else { 0 }) +
-                          (if c < 7 { b_pawns_on_file[c+1] } else { 0 });
-        if w_pawns_on_file[c] > 0 && w_neighbors == 0 { score -= 20; }
-        if b_pawns_on_file[c] > 0 && b_neighbors == 0 { score += 20; }
+        let wn = (if c>0 {w_file[c-1]} else {0}) + (if c<7 {w_file[c+1]} else {0});
+        let bn = (if c>0 {b_file[c-1]} else {0}) + (if c<7 {b_file[c+1]} else {0});
+        if w_file[c] > 0 && wn == 0 { score -= 20; }
+        if b_file[c] > 0 && bn == 0 { score += 20; }
 
-        if w_pawns_on_file[c] > 0 {
+        if w_file[c] > 0 {
             for rank in 0..8 {
-                if !w_pawn_ranks[c][rank] { continue; }
-                let blocked = (0..rank).any(|r2| {
-                    b_pawn_ranks[c][r2] ||
-                    (c > 0 && b_pawn_ranks[c-1][r2]) ||
-                    (c < 7 && b_pawn_ranks[c+1][r2])
-                });
-                if !blocked {
-                    score += 10 + rank as i32 * rank as i32 * 3;
-                }
+                if !w_rank[c][rank] { continue; }
+                let blocked = (0..rank).any(|r2|
+                    b_rank[c][r2] ||
+                    (c>0 && b_rank[c-1][r2]) ||
+                    (c<7 && b_rank[c+1][r2])
+                );
+                if !blocked { score += 10 + rank as i32 * rank as i32 * 3; }
             }
         }
-        if b_pawns_on_file[c] > 0 {
+        if b_file[c] > 0 {
             for rank in 0..8 {
-                if !b_pawn_ranks[c][rank] { continue; }
-                let blocked = (0..rank).any(|r2| {
-                    w_pawn_ranks[c][r2] ||
-                    (c > 0 && w_pawn_ranks[c-1][r2]) ||
-                    (c < 7 && w_pawn_ranks[c+1][r2])
-                });
-                if !blocked {
-                    score -= 10 + rank as i32 * rank as i32 * 3;
-                }
+                if !b_rank[c][rank] { continue; }
+                let blocked = (0..rank).any(|r2|
+                    w_rank[c][r2] ||
+                    (c>0 && w_rank[c-1][r2]) ||
+                    (c<7 && w_rank[c+1][r2])
+                );
+                if !blocked { score -= 10 + rank as i32 * rank as i32 * 3; }
             }
         }
     }
     score
 }
 
-fn king_safety(b: &Board8, wturn: bool, phase: i32) -> i32 {
+fn king_safety(bb: &[u64; 12], white: bool, phase: i32) -> i32 {
     if phase <= 6 { return 0; }
-    let (kr, kc) = find_king(b, wturn);
-    let opp = !wturn;
+    let kbb = if white { bb[WK] } else { bb[BK] };
+    if kbb == 0 { return 0; }
+    let ks = kbb.trailing_zeros() as usize;
+    let kr = sq_r(ks); let kc = sq_c(ks);
+    let opp = !white;
+
     let mut danger = 0i32;
-    let front_r = if wturn { kr.wrapping_sub(1) } else { kr + 1 };
-    for &(r, c) in &[(kr.wrapping_sub(1), kc.wrapping_sub(1)), (kr.wrapping_sub(1), kc),
-                     (kr.wrapping_sub(1), kc+1), (kr, kc.wrapping_sub(1)),
-                     (kr, kc+1), (kr+1, kc.wrapping_sub(1)), (kr+1, kc), (kr+1, kc+1)] {
-        if r >= 8 || c >= 8 { continue; }
-        for r2 in 0..8 { for c2 in 0..8 {
-            let p = b[r2][c2];
-            if p == EMPTY || is_white(p) != opp { continue; }
-            let pt = ptype(p);
-            if pt == b'k' { continue; }
-            if can_attack(b, r2, c2, r, c) {
-                danger += match pt {
-                    b'q' => 40, b'r' => 20, b'b' | b'n' => 15, b'p' => 8, _ => 0,
-                };
-            }
-        }}
+    let zone = KING_ATTACKS[ks] | bit(ks);
+    let mut z = zone;
+    while z != 0 {
+        let t = z.trailing_zeros() as usize;
+        let occ = all_occ(bb);
+        let (p, n, b, r, q) = if opp {
+            (bb[WP], bb[WN], bb[WB], bb[WR], bb[WQ])
+        } else {
+            (bb[BP], bb[BN], bb[BB], bb[BR], bb[BQ])
+        };
+        let tb = bit(t);
+        let patt = if opp {
+            (tb & !0x0101010101010101u64) << 7 | (tb & !0x8080808080808080u64) << 9
+        } else {
+            (tb & !0x0101010101010101u64) >> 9 | (tb & !0x8080808080808080u64) >> 7
+        };
+        if p & patt  != 0 { danger += 8; }
+        if n & KNIGHT_ATTACKS[t] != 0 { danger += 15; }
+        let ba = bishop_attacks(t, occ);
+        let ra = rook_attacks(t, occ);
+        if b & ba != 0 { danger += 15; }
+        if r & ra != 0 { danger += 20; }
+        if q & (ba|ra) != 0 { danger += 40; }
+        z &= z - 1;
     }
+    let front_r = if white { kr.wrapping_sub(1) } else { kr + 1 };
     if front_r < 8 {
-        for dc in [0usize, 1, 2] {
-            let fc = if dc == 0 { kc } else if dc == 1 { kc.wrapping_sub(1) } else { kc + 1 };
+        for dc in 0usize..3 {
+            let fc = match dc { 0 => kc, 1 => kc.wrapping_sub(1), _ => kc+1 };
             if fc >= 8 { continue; }
-            let shelter_p = if wturn { b'P' } else { b'p' };
-            if b[front_r][fc] != shelter_p { danger += 10; }
+            let _shelter = if white { b'P' } else { b'p' };
+            let shelter_bit = bit(sq(front_r, fc));
+            let has = if white { bb[WP] & shelter_bit != 0 } else { bb[BP] & shelter_bit != 0 };
+            if !has { danger += 10; }
         }
     }
     -(danger * phase / 24).max(0)
 }
 
-pub fn evaluate(b: &Board8) -> i32 {
-    let mut phase = 0i32;
+pub fn evaluate(st: &BoardState) -> i32 {
+    let occ = all_occ(&st.bb);
+    let mut phase    = 0i32;
     let mut mg_score = 0i32;
     let mut eg_score = 0i32;
 
-    for r in 0..8 { for c in 0..8 {
-        let p = b[r][c];
-        if p == EMPTY { continue; }
-        let w = is_white(p);
-        let pt = ptype(p);
-        let pi = pt_index(pt);
-        let sq = r * 8 + c;
-        let table_sq = if w { sq } else { flip_sq(sq) };
+    for pi in 0..12usize {
+        let white = pi < 6;
+        let pt = pi % 6;
+        let sign = if white { 1 } else { -1 };
+        let mut bb = st.bb[pi];
+        while bb != 0 {
+            let s = bb.trailing_zeros() as usize;
+            let table_sq = if white { s } else { flip_sq(s) };
+            mg_score += sign * (MG_VALUE[pt] + MG_TABLES[pt][table_sq]);
+            eg_score += sign * (EG_VALUE[pt] + EG_TABLES[pt][table_sq]);
+            phase    += PHASE_INC[pt];
 
-        mg_score += (MG_VALUE[pi] + MG_TABLES[pi][table_sq]) * if w { 1 } else { -1 };
-        eg_score += (EG_VALUE[pi] + EG_TABLES[pi][table_sq]) * if w { 1 } else { -1 };
-        phase += PHASE_INC[pi];
+            let mob = count_mobility_bb(&st.bb, s, occ, white).min(27);
+            let mob_bonus = match pt {
+                1 => MOB_KNIGHT[mob.min(8)],
+                2 => MOB_BISHOP[mob.min(13)],
+                3 => MOB_ROOK[mob.min(14)],
+                4 => MOB_QUEEN[mob.min(27)],
+                _ => 0,
+            };
+            mg_score += sign * mob_bonus;
+            eg_score += sign * mob_bonus;
 
-        let mob = count_mobility(b, r, c).min(27);
-        let mob_bonus = match pt {
-            b'n' => MOB_KNIGHT[mob.min(8)],
-            b'b' => MOB_BISHOP[mob.min(13)],
-            b'r' => MOB_ROOK[mob.min(14)],
-            b'q' => MOB_QUEEN[mob.min(27)],
-            _ => 0,
-        };
-        mg_score += mob_bonus * if w { 1 } else { -1 };
-        eg_score += mob_bonus * if w { 1 } else { -1 };
-    }}
+            bb &= bb - 1;
+        }
+    }
 
     phase = phase.min(TOTAL_PHASE);
 
-    let mut wb = 0; let mut bb = 0;
-    for r in 0..8 { for c in 0..8 {
-        if b[r][c] == b'B' { wb += 1; }
-        if b[r][c] == b'b' { bb += 1; }
-    }}
-    if wb >= 2 { mg_score += 40; eg_score += 40; }
-    if bb >= 2 { mg_score -= 40; eg_score -= 40; }
+    if st.bb[WB].count_ones() >= 2 { mg_score += 40; eg_score += 40; }
+    if st.bb[BB].count_ones() >= 2 { mg_score -= 40; eg_score -= 40; }
 
-    let pawn_score = eval_pawns(b);
-    mg_score += pawn_score;
-    eg_score += pawn_score;
+    let ps = eval_pawns(&st.bb);
+    mg_score += ps;
+    eg_score += ps;
 
-    mg_score += king_safety(b, true, phase);
-    mg_score -= king_safety(b, false, phase);
+    mg_score += king_safety(&st.bb, true,  phase);
+    mg_score -= king_safety(&st.bb, false, phase);
 
-    for r in 0..8 { for c in 0..8 {
-        let p = b[r][c];
-        if p == EMPTY { continue; }
-        if ptype(p) == b'r' {
-            let w = is_white(p);
-            let (wp, bp) = (0..8).fold((0, 0), |(w, bk), row| {
-                if b[row][c] == b'P' { (w+1, bk) }
-                else if b[row][c] == b'p' { (w, bk+1) }
-                else { (w, bk) }
-            });
-            let own_pawns = if w { wp } else { bp };
-            let opp_pawns = if w { bp } else { wp };
-            let bonus = if own_pawns == 0 && opp_pawns == 0 { 20 }
-                        else if own_pawns == 0 { 10 }
+    for pi in [WR, BR] {
+        let white = pi == WR;
+        let sign  = if white { 1 } else { -1 };
+        let mut rooks = st.bb[pi];
+        while rooks != 0 {
+            let s = rooks.trailing_zeros() as usize;
+            let c = sq_c(s);
+            let file_mask: u64 = 0x0101010101010101u64 << c;
+            let wp = (st.bb[WP] & file_mask).count_ones() as i32;
+            let bp = (st.bb[BP] & file_mask).count_ones() as i32;
+            let own_p = if white { wp } else { bp };
+            let opp_p = if white { bp } else { wp };
+            let bonus = if own_p == 0 && opp_p == 0 { 20 }
+                        else if own_p == 0 { 10 }
                         else { 0 };
-            mg_score += bonus * if w { 1 } else { -1 };
-            eg_score += bonus * if w { 1 } else { -1 };
+            mg_score += sign * bonus;
+            eg_score += sign * bonus;
+            rooks &= rooks - 1;
         }
-    }}
+    }
 
     (mg_score * phase + eg_score * (TOTAL_PHASE - phase)) / TOTAL_PHASE
 }

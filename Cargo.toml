@@ -1,15 +1,21 @@
 [package]
-name = "chess_rs"
+name = "chess-rs-lib"
 version = "0.1.0"
 edition = "2021"
-
+ 
 [[bin]]
-name = "chess_rs"
+name = "ember"
 path = "src/main.rs"
 
 [lib]
 name = "chess_rs_lib"
 path = "src/lib.rs"
-
+ 
 [dependencies]
-rand = "0.8"
+rand = { version = "0.8", features = ["small_rng"] }
+ 
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+ 

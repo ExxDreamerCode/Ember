@@ -1,158 +1,181 @@
-pub const EMPTY: u8 = b'.';
+pub const EMPTY_SQ: u8 = 255;
 pub const MATE: i32 = 100_000;
 pub const INF: i32 = 1_000_000;
 pub const MAX_PLY: usize = 128;
 pub const QS_DEPTH: i32 = 8;
 
-pub type Board8 = [[u8; 8]; 8];
+pub const WP: usize = 0;
+pub const WN: usize = 1;
+pub const WB: usize = 2;
+pub const WR: usize = 3;
+pub const WQ: usize = 4;
+pub const WK: usize = 5;
+pub const BP: usize = 6;
+pub const BN: usize = 7;
+pub const BB: usize = 8;
+pub const BR: usize = 9;
+pub const BQ: usize = 10;
+pub const BK: usize = 11;
+
+#[inline(always)] pub fn sq(r: usize, c: usize) -> usize { r * 8 + c }
+#[inline(always)] pub fn sq_r(s: usize) -> usize { s >> 3 }
+#[inline(always)] pub fn sq_c(s: usize) -> usize { s & 7 }
+#[inline(always)] pub fn bit(s: usize) -> u64 { 1u64 << s }
+
+#[inline(always)]
+pub fn piece_on(bbs: &[u64; 12], s: usize) -> u8 {
+    let b = bit(s);
+    for i in 0..12 { if bbs[i] & b != 0 { return i as u8; } }
+    EMPTY_SQ
+}
+
+#[inline(always)] pub fn is_white_piece(pi: u8) -> bool { pi < 6 }
+#[inline(always)] pub fn piece_type(pi: u8) -> u8 {
+    if pi >= 6 { pi - 6 } else { pi }
+}
+pub fn piece_char(pi: u8) -> u8 {
+    match pi {
+        0 => b'P', 1 => b'N', 2 => b'B', 3 => b'R', 4 => b'Q', 5 => b'K',
+        6 => b'p', 7 => b'n', 8 => b'b', 9 => b'r', 10 => b'q', 11 => b'k',
+        _ => b'.',
+    }
+}
+pub fn piece_from_char(ch: u8) -> u8 {
+    match ch {
+        b'P' => 0, b'N' => 1, b'B' => 2, b'R' => 3, b'Q' => 4, b'K' => 5,
+        b'p' => 6, b'n' => 7, b'b' => 8, b'r' => 9, b'q' => 10, b'k' => 11,
+        _ => EMPTY_SQ,
+    }
+}
+
+#[inline(always)]
+pub fn white_occ(bbs: &[u64; 12]) -> u64 {
+    bbs[0]|bbs[1]|bbs[2]|bbs[3]|bbs[4]|bbs[5]
+}
+#[inline(always)]
+pub fn black_occ(bbs: &[u64; 12]) -> u64 {
+    bbs[6]|bbs[7]|bbs[8]|bbs[9]|bbs[10]|bbs[11]
+}
+#[inline(always)]
+pub fn all_occ(bbs: &[u64; 12]) -> u64 { white_occ(bbs) | black_occ(bbs) }
 
 #[derive(Clone, Copy)]
 pub struct BoardState {
-    pub b: Board8,
+    pub bb: [u64; 12],
     pub w: bool,
     pub cr: [bool; 4],
-    pub ep: Option<(usize, usize)>,
+    pub ep: Option<usize>,
     pub mc: usize,
 }
 
-#[inline(always)] pub fn is_white(p: u8) -> bool { p.is_ascii_uppercase() }
-#[inline(always)] pub fn ptype(p: u8) -> u8 { if p.is_ascii_uppercase() { p + 32 } else { p } }
+impl BoardState {
+    pub fn empty() -> Self {
+        BoardState { bb: [0u64; 12], w: true, cr: [false; 4], ep: None, mc: 0 }
+    }
 
-pub fn find_king(b: &Board8, wturn: bool) -> (usize, usize) {
-    let kc = if wturn { b'K' } else { b'k' };
-    for r in 0..8 { for c in 0..8 { if b[r][c] == kc { return (r, c); } } }
-    (0, 0)
+    #[inline(always)]
+    pub fn piece_at(&self, s: usize) -> u8 { piece_on(&self.bb, s) }
+
+    #[inline(always)]
+    pub fn king_sq(&self, white: bool) -> usize {
+        let k = if white { self.bb[WK] } else { self.bb[BK] };
+        if k == 0 { return 0; }
+        k.trailing_zeros() as usize
+    }
 }
 
 pub fn coord_to_square(r: usize, c: usize) -> String {
     format!("{}{}", (b'a' + c as u8) as char, 8 - r as u8)
 }
+pub fn sq_to_str(s: usize) -> String { coord_to_square(sq_r(s), sq_c(s)) }
 
-pub fn can_attack(b: &Board8, fr: usize, fc: usize, tr: usize, tc: usize) -> bool {
-    let p = b[fr][fc];
-    if p == EMPTY { return false; }
-    let pt = ptype(p);
-    let dr = tr as i32 - fr as i32;
-    let dc = tc as i32 - fc as i32;
-    match pt {
-        b'p' => {
-            let d = if is_white(p) { -1i32 } else { 1 };
-            dr == d && dc.abs() == 1
-        }
-        b'n' => (dr.abs() == 2 && dc.abs() == 1) || (dr.abs() == 1 && dc.abs() == 2),
-        b'k' => dr.abs() <= 1 && dc.abs() <= 1 && (dr != 0 || dc != 0),
-        b'b' => {
-            if dr.abs() != dc.abs() || dr == 0 { return false; }
-            let sr = dr.signum(); let sc = dc.signum();
-            let (mut r, mut c) = (fr as i32 + sr, fc as i32 + sc);
-            while (r, c) != (tr as i32, tc as i32) {
-                if b[r as usize][c as usize] != EMPTY { return false; }
-                r += sr; c += sc;
-            }
-            true
-        }
-        b'r' => {
-            if dr != 0 && dc != 0 { return false; }
-            if dr == 0 && dc == 0 { return false; }
-            let sr = dr.signum(); let sc = dc.signum();
-            let (mut r, mut c) = (fr as i32 + sr, fc as i32 + sc);
-            while (r, c) != (tr as i32, tc as i32) {
-                if b[r as usize][c as usize] != EMPTY { return false; }
-                r += sr; c += sc;
-            }
-            true
-        }
-        b'q' => {
-            if dr == 0 && dc == 0 { return false; }
-            if dr != 0 && dc != 0 && dr.abs() != dc.abs() { return false; }
-            let sr = dr.signum(); let sc = dc.signum();
-            let (mut r, mut c) = (fr as i32 + sr, fc as i32 + sc);
-            while (r, c) != (tr as i32, tc as i32) {
-                if b[r as usize][c as usize] != EMPTY { return false; }
-                r += sr; c += sc;
-            }
-            true
-        }
-        _ => false
-    }
+pub fn see_val(pt: u8) -> i32 {
+    match pt { 0 => 100, 1 => 325, 2 => 340, 3 => 500, 4 => 950, 5 => 20000, _ => 0 }
 }
 
-pub fn is_attacked(b: &Board8, row: usize, col: usize, attacker_w: bool) -> bool {
-    for r in 0..8 {
-        for c in 0..8 {
-            let p = b[r][c];
-            if p != EMPTY && is_white(p) == attacker_w && can_attack(b, r, c, row, col) {
-                return true;
-            }
-        }
+pub fn has_non_pawn(bb: &[u64; 12], white: bool) -> bool {
+    if white { bb[WN]|bb[WB]|bb[WR]|bb[WQ] != 0 }
+    else      { bb[BN]|bb[BB]|bb[BR]|bb[BQ] != 0 }
+}
+
+use crate::magic::{bishop_attacks, rook_attacks};
+
+pub fn attacked_by(bb: &[u64; 12], occ: u64, white: bool) -> u64 {
+    let (p, n, b, r, q, k) = if white {
+        (bb[WP], bb[WN], bb[WB], bb[WR], bb[WQ], bb[WK])
+    } else {
+        (bb[BP], bb[BN], bb[BB], bb[BR], bb[BQ], bb[BK])
+    };
+    let mut att = 0u64;
+    if white { att |= (p & !0x8080808080808080) >> 7 | (p & !0x0101010101010101) >> 9; }
+    else      { att |= (p & !0x0101010101010101) << 7 | (p & !0x8080808080808080) << 9; }
+    let mut tmp = n;
+    while tmp != 0 { let s = tmp.trailing_zeros() as usize; att |= KNIGHT_ATTACKS[s]; tmp &= tmp-1; }
+    let mut tmp = b | q;
+    while tmp != 0 { let s = tmp.trailing_zeros() as usize; att |= bishop_attacks(s, occ); tmp &= tmp-1; }
+    let mut tmp = r | q;
+    while tmp != 0 { let s = tmp.trailing_zeros() as usize; att |= rook_attacks(s, occ); tmp &= tmp-1; }
+    let mut tmp = k;
+    while tmp != 0 { let s = tmp.trailing_zeros() as usize; att |= KING_ATTACKS[s]; tmp &= tmp-1; }
+    att
+}
+
+#[inline(always)]
+pub fn is_attacked(bb: &[u64; 12], s: usize, by_white: bool) -> bool {
+    if s >= 64 { return false; }
+    let occ = all_occ(bb);
+    let bit_s = bit(s);
+    let (p, n, b, r, q, k) = if by_white {
+        (bb[WP], bb[WN], bb[WB], bb[WR], bb[WQ], bb[WK])
+    } else {
+        (bb[BP], bb[BN], bb[BB], bb[BR], bb[BQ], bb[BK])
+    };
+    if by_white {
+        if p & ((bit_s & !0x0101010101010101) << 7 | (bit_s & !0x8080808080808080) << 9) != 0 { return true; }
+    } else {
+        if p & ((bit_s & !0x0101010101010101) >> 9 | (bit_s & !0x8080808080808080) >> 7) != 0 { return true; }
     }
+    if n & KNIGHT_ATTACKS[s] != 0 { return true; }
+    if k & KING_ATTACKS[s]   != 0 { return true; }
+    if (b | q) & bishop_attacks(s, occ) != 0 { return true; }
+    if (r | q) & rook_attacks(s, occ)   != 0 { return true; }
     false
 }
 
-pub fn has_non_pawn(b: &Board8, wturn: bool) -> bool {
-    for r in 0..8 {
-        for c in 0..8 {
-            let p = b[r][c];
-            if p != EMPTY && is_white(p) == wturn && ptype(p) != b'p' && ptype(p) != b'k' {
-                return true;
-            }
-        }
-    }
-    false
-}
+pub fn see(bb: &[u64; 12], from: usize, to: usize) -> i32 {
+    let target_pi = piece_on(bb, to);
+    if target_pi == EMPTY_SQ { return 0; }
+    let attacker_pi = piece_on(bb, from);
+    if attacker_pi == EMPTY_SQ { return 0; }
 
-fn see_val(pt: u8) -> i32 {
-    match pt {
-        b'p' => 100, b'n' => 325, b'b' => 340, b'r' => 500, b'q' => 950, b'k' => 20000,
-        _ => 0,
-    }
-}
-
-pub fn see(b: &Board8, fr: usize, fc: usize, er: usize, ec: usize) -> i32 {
-    let target = b[er][ec];
-    if target == EMPTY { return 0; }
-    let mut board = *b;
-    let target_pt = ptype(target);
-    let side = is_white(b[fr][fc]);
+    let mut bbs = *bb;
+    let mut occ = all_occ(&bbs);
+    let mut side = is_white_piece(attacker_pi);
 
     let mut gain = [0i32; 32];
-    let mut depth = 0;
-    let mut current_val = see_val(target_pt);
-    let mut current_side = side;
-
-    board[er][ec] = board[fr][fc];
-    board[fr][fc] = EMPTY;
-    gain[depth] = current_val;
+    let mut depth = 0usize;
+    gain[depth] = see_val(piece_type(target_pi));
     depth += 1;
-    current_side = !current_side;
+
+    bbs[attacker_pi as usize] &= !bit(from);
+    occ &= !bit(from);
+    let mut current_pt = piece_type(attacker_pi);
+
+    side = !side;
 
     loop {
-        let mut best_val = i32::MAX;
-        let mut best_r = 8;
-        let mut best_c = 8;
-        for r in 0..8 {
-            for c in 0..8 {
-                let p = board[r][c];
-                if p == EMPTY { continue; }
-                if is_white(p) != current_side { continue; }
-                if can_attack(&board, r, c, er, ec) {
-                    let v = see_val(ptype(p));
-                    if v < best_val {
-                        best_val = v;
-                        best_r = r;
-                        best_c = c;
-                    }
-                }
-            }
-        }
-        if best_r == 8 { break; }
+        let (lva_sq, lva_pi) = least_valuable_attacker(&bbs, to, occ, side);
+        if lva_sq == 64 { break; }
 
-        current_val = best_val;
-        board[er][ec] = board[best_r][best_c];
-        board[best_r][best_c] = EMPTY;
-        gain[depth] = current_val - gain[depth - 1].max(0);
+        gain[depth] = see_val(current_pt) - gain[depth - 1].max(0);
         depth += 1;
-        current_side = !current_side;
+        current_pt = piece_type(lva_pi);
+
+        bbs[lva_pi as usize] &= !bit(lva_sq);
+        occ &= !bit(lva_sq);
+        side = !side;
+
+        if depth >= 32 { break; }
     }
 
     let mut i = depth as i32 - 1;
@@ -162,3 +185,71 @@ pub fn see(b: &Board8, fr: usize, fc: usize, er: usize, ec: usize) -> i32 {
     }
     gain[0]
 }
+
+fn least_valuable_attacker(bb: &[u64; 12], to: usize, occ: u64, white: bool) -> (usize, u8) {
+    let (p, n, b, r, q, k, base) = if white {
+        (bb[WP], bb[WN], bb[WB], bb[WR], bb[WQ], bb[WK], 0usize)
+    } else {
+        (bb[BP], bb[BN], bb[BB], bb[BR], bb[BQ], bb[BK], 6usize)
+    };
+    let to_bit = bit(to);
+    let patt = if white {
+        (to_bit & !0x0101010101010101) << 7 | (to_bit & !0x8080808080808080) << 9
+    } else {
+        (to_bit & !0x0101010101010101) >> 9 | (to_bit & !0x8080808080808080) >> 7
+    };
+    if p & patt != 0 { let s = (p & patt).trailing_zeros() as usize; return (s, (base) as u8); }
+    if n & KNIGHT_ATTACKS[to] != 0 { let s = (n & KNIGHT_ATTACKS[to]).trailing_zeros() as usize; return (s, (base+1) as u8); }
+    let ba = bishop_attacks(to, occ);
+    if b & ba != 0 { let s = (b & ba).trailing_zeros() as usize; return (s, (base+2) as u8); }
+    let ra = rook_attacks(to, occ);
+    if r & ra != 0 { let s = (r & ra).trailing_zeros() as usize; return (s, (base+3) as u8); }
+    if q & ba != 0 { let s = (q & ba).trailing_zeros() as usize; return (s, (base+4) as u8); }
+    if q & ra != 0 { let s = (q & ra).trailing_zeros() as usize; return (s, (base+4) as u8); }
+    if k & KING_ATTACKS[to] != 0 { let s = (k & KING_ATTACKS[to]).trailing_zeros() as usize; return (s, (base+5) as u8); }
+    (64, EMPTY_SQ)
+}
+
+pub static KNIGHT_ATTACKS: [u64; 64] = {
+    let mut t = [0u64; 64];
+    let mut s = 0usize;
+    while s < 64 {
+        let r = s / 8; let c = s % 8;
+        let mut v = 0u64;
+        if r>=2&&c>=1 { v|=1<<((r-2)*8+(c-1)); }
+        if r>=2&&c<=6 { v|=1<<((r-2)*8+(c+1)); }
+        if r>=1&&c>=2 { v|=1<<((r-1)*8+(c-2)); }
+        if r>=1&&c<=5 { v|=1<<((r-1)*8+(c+2)); }
+        if r<=6&&c>=2 { v|=1<<((r+1)*8+(c-2)); }
+        if r<=6&&c<=5 { v|=1<<((r+1)*8+(c+2)); }
+        if r<=5&&c>=1 { v|=1<<((r+2)*8+(c-1)); }
+        if r<=5&&c<=6 { v|=1<<((r+2)*8+(c+1)); }
+        t[s] = v;
+        s += 1;
+    }
+    t
+};
+
+pub static KING_ATTACKS: [u64; 64] = {
+    let mut t = [0u64; 64];
+    let mut s = 0usize;
+    while s < 64 {
+        let r = s/8; let c = s%8;
+        let mut v = 0u64;
+        if r>0 {
+            if c>0 { v|=1<<((r-1)*8+(c-1)); }
+            v|=1<<((r-1)*8+c);
+            if c<7 { v|=1<<((r-1)*8+(c+1)); }
+        }
+        if c>0 { v|=1<<(r*8+(c-1)); }
+        if c<7 { v|=1<<(r*8+(c+1)); }
+        if r<7 {
+            if c>0 { v|=1<<((r+1)*8+(c-1)); }
+            v|=1<<((r+1)*8+c);
+            if c<7 { v|=1<<((r+1)*8+(c+1)); }
+        }
+        t[s] = v;
+        s += 1;
+    }
+    t
+};

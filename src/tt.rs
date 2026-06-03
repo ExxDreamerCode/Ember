@@ -1,10 +1,20 @@
 #[derive(Clone)]
-pub struct TTEntry { pub key: u64, pub depth: i32, pub score: i32, pub flag: u8, pub best_move: Option<[usize; 4]> }
+pub struct TTEntry {
+    pub key:       u64,
+    pub depth:     i32,
+    pub score:     i32,
+    pub flag:      u8,
+    pub best_move: Option<[usize; 4]>,
+}
 pub const TT_EXACT: u8 = 0;
 pub const TT_ALPHA: u8 = 1;
 pub const TT_BETA:  u8 = 2;
 
-pub struct TT { pub entries: Vec<Option<TTEntry>>, pub mask: usize }
+pub struct TT {
+    pub entries: Vec<Option<TTEntry>>,
+    pub mask:    usize,
+}
+
 impl TT {
     pub fn new(mb: usize) -> Self {
         let size = (mb * 1024 * 1024 / 40).next_power_of_two();
@@ -14,7 +24,7 @@ impl TT {
     pub fn store(&mut self, key: u64, depth: i32, score: i32, flag: u8, best_move: Option<[usize; 4]>) {
         let idx = self.idx(key);
         let replace = match &self.entries[idx] {
-            None => true,
+            None    => true,
             Some(e) => e.key != key || e.depth <= depth || flag == TT_EXACT,
         };
         if replace {
