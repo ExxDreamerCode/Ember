@@ -65,7 +65,7 @@
 
 ## 🔧 Установка
 
-- Скачайте [последний релиз](https://github.com/ExxDreamerCode/Ember/releases/tag/V0.9.3)
+- Скачайте [последний релиз](https://github.com/ExxDreamerCode/Ember/releases/tag/V0.9.4)
 
 ## ♟️ Использование
 
