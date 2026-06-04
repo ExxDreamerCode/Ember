@@ -21,6 +21,10 @@ pub struct OpeningBook {
 impl OpeningBook {
     pub fn load(path: &str) -> Result<Self, String> {
         let data = fs::read(path).map_err(|e| format!("read {}: {}", path, e))?;
+        Self::load_from_bytes(&data, path)
+    }
+
+    pub fn load_from_bytes(data: &[u8], name: &str) -> Result<Self, String> {
         if data.len() % 16 != 0 {
             return Err(format!("book size {} not multiple of 16", data.len()));
         }
@@ -38,7 +42,7 @@ impl OpeningBook {
             moves.sort_by(|a, b| b.weight.cmp(&a.weight));
         }
         let count = entries.len();
-        eprintln!("info string Book loaded: {} positions from {}", count, path);
+        eprintln!("info string Book loaded: {} positions from {}", count, name);
         Ok(OpeningBook { entries })
     }
 

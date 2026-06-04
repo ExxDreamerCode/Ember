@@ -9,5 +9,8 @@ pub mod polyglot_randoms;
 pub mod book;
 pub mod magic;
 
+pub mod opening_book;
+
 pub use board::piece_type as ptype;
 pub use engine::Engine;
+pub use book::OpeningBook;

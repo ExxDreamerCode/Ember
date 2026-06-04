@@ -1,5 +1,5 @@
 use std::io::{self, BufRead};
-use chess_rs_lib::{Engine, ptype};
+use chess_rs_lib::{Engine, OpeningBook, opening_book, ptype};
 use chess_rs_lib::board::{piece_on, piece_char};
 
 fn try_load_book(engine: &mut Engine, path: &std::path::Path) -> bool {
@@ -27,7 +27,14 @@ fn main() {
         }
     }
     if !loaded {
-        try_load_book(&mut engine, &std::path::Path::new("book.bin"));
+        loaded = try_load_book(&mut engine, &std::path::Path::new("book.bin"));
+    }
+    if !loaded {
+        eprintln!("info string Book file not found, using embedded book");
+        match OpeningBook::load_from_bytes(opening_book::BOOK_DATA, "<embedded>") {
+            Ok(book) => engine.book = Some(book),
+            Err(e) => eprintln!("info string Failed to load embedded book: {}", e),
+        }
     }
     
     for line in stdin.lock().lines() {
@@ -57,6 +64,15 @@ fn main() {
                         let val = parts[val_start..].join(" ");
                         if val.is_empty() {
                             engine.book = None;
+                            eprintln!("info string Book disabled");
+                        } else if val.to_lowercase() == "<embedded>" || val.to_lowercase() == "<default>" {
+                            match OpeningBook::load_from_bytes(opening_book::BOOK_DATA, "<embedded>") {
+                                Ok(book) => {
+                                    engine.book = Some(book);
+                                    eprintln!("info string Book switched to embedded");
+                                }
+                                Err(e) => eprintln!("info string Failed to load embedded book: {}", e),
+                            }
                         } else {
                             let path = std::path::Path::new(&val);
                             if !try_load_book(&mut engine, path) {
