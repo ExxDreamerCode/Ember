@@ -187,6 +187,7 @@ impl Engine {
 
         let init_eval = self.searcher.corrected_eval(&self.st);
         let mut prev_score = init_eval;
+        let mut best_depth = 0;
         #[cfg(feature = "decision-trace")]
         let mut depth_infos = Vec::new();
 
@@ -270,6 +271,7 @@ impl Engine {
             if elapsed <= time_limit {
                 best_move  = asp_best;
                 best_score = asp_score;
+                best_depth = depth;
                 prev_score = best_score;
                 let nps = if elapsed > 0.0 { (total_nodes as f64 / elapsed) as i64 } else { 0 };
                 let score_str = if best_score.abs() > 90_000 {
@@ -296,6 +298,7 @@ impl Engine {
 
         let mv_str = move_to_uci(&self.st, &best_move);
         let elapsed = start.elapsed().as_secs_f64();
+        self.searcher.update_correction_history(&self.st, best_score, best_depth);
         #[cfg(feature = "decision-trace")]
         self.trace.emit_decision(DecisionTrace {
             fen: &root_fen,

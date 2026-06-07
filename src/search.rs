@@ -5,9 +5,7 @@ use crate::board::{
     has_non_pawn, see, all_occ, bit,
 };
 use crate::evaluate::evaluate;
-use crate::zobrist::compute_hash;
-#[cfg(feature = "search-debug")]
-use crate::zobrist::compute_pawn_hash;
+use crate::zobrist::{compute_hash, compute_pawn_hash};
 use crate::movegen::{apply_move, generate_moves};
 use crate::tt::{TT, TT_EXACT, TT_ALPHA, TT_BETA};
 
@@ -23,9 +21,7 @@ fn from_to_key(sr: usize, sc: usize, er: usize, ec: usize) -> (usize, usize) {
     (sr * 8 + sc, er * 8 + ec)
 }
 
-#[cfg(feature = "search-debug")]
 const CORR_HIST_SIZE: usize = 16384;
-#[cfg(feature = "search-debug")]
 fn corr_idx(h: u64, side: bool) -> usize {
     let k = h.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(if side { 1 } else { 0 });
     k as usize & (CORR_HIST_SIZE - 1)
@@ -36,7 +32,6 @@ pub struct Searcher {
     pub killers:      [[Option<[usize; 4]>; 2]; MAX_PLY],
     pub history:      [[i32; 64]; 64],
     pub counter_move: [[Option<[usize; 4]>; 64]; 13],
-    #[cfg(feature = "search-debug")]
     pub corr_hist:    [i32; CORR_HIST_SIZE * 2],
     pub rep_stack:    Vec<u64>,
     pub rep_stack_len: usize,
@@ -65,7 +60,6 @@ impl Searcher {
             killers:      [[None; 2]; MAX_PLY],
             history:      [[0i32; 64]; 64],
             counter_move: [[None; 64]; 13],
-            #[cfg(feature = "search-debug")]
             corr_hist:    [0i32; CORR_HIST_SIZE * 2],
             rep_stack:    Vec::with_capacity(512),
             rep_stack_len: 0,
@@ -83,6 +77,9 @@ impl Searcher {
     #[cfg(feature = "search-debug")]
     #[inline(always)]
     fn corr_hist_enabled(&self) -> bool { !self.debug.disable_corr_hist }
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    fn corr_hist_enabled(&self) -> bool { true }
 
     #[cfg(feature = "search-debug")]
     #[inline(always)]
@@ -142,16 +139,27 @@ impl Searcher {
 
     pub fn corrected_eval(&self, st: &BoardState) -> i32 {
         let base = evaluate(st) * if st.w { 1 } else { -1 };
-        #[cfg(feature = "search-debug")]
-        {
-            if self.corr_hist_enabled() {
-                let ph   = compute_pawn_hash(st);
-                let idx  = corr_idx(ph, st.w);
-                let corr = self.corr_hist[idx];
-                return base + corr.clamp(-200, 200);
-            }
+        if self.corr_hist_enabled() {
+            let ph   = compute_pawn_hash(st);
+            let idx  = corr_idx(ph, st.w);
+            let corr = self.corr_hist[idx];
+            return base + corr.clamp(-200, 200);
         }
         base
+    }
+
+    pub fn update_correction_history(&mut self, st: &BoardState, score: i32, depth: i32) {
+        if !self.corr_hist_enabled() || depth < 3 || score.abs() > MATE / 2 {
+            return;
+        }
+        let ev = self.corrected_eval(st);
+        let diff = score - ev;
+        if diff.abs() < 500 {
+            let ph = compute_pawn_hash(st);
+            let idx = corr_idx(ph, st.w);
+            let corr = &mut self.corr_hist[idx];
+            *corr = (*corr + diff.clamp(-64, 64) / 8).clamp(-1024, 1024);
+        }
     }
 
     fn is_repetition(&self) -> bool {
@@ -454,20 +462,6 @@ impl Searcher {
             }
         }
 
-        #[cfg(feature = "search-debug")]
-        {
-            if self.corr_hist_enabled() && !in_check && actual_depth >= 3 && best_score != -INF {
-                let ev  = self.corrected_eval(st);
-                let diff = best_score - ev;
-                if diff.abs() < 500 {
-                    let ph  = compute_pawn_hash(st);
-                    let idx = corr_idx(ph, st.w);
-                    let corr = &mut self.corr_hist[idx];
-                    *corr = (*corr + diff.clamp(-64, 64) / 8).clamp(-1024, 1024);
-                }
-            }
-        }
-
         let flag = if best_score <= orig_alpha { TT_ALPHA }
                    else if best_score >= beta  { TT_BETA  }
                    else                        { TT_EXACT };
@@ -479,11 +473,10 @@ impl Searcher {
 #[cfg(feature = "search-debug")]
 impl SearchDebug {
     fn from_env() -> Self {
-        let corr_hist_enabled = env_flag("EMBER_ENABLE_CORR_HIST");
         let lmp_enabled = env_flag("EMBER_ENABLE_LMP");
         let null_move_enabled = env_flag("EMBER_ENABLE_NULL_MOVE");
         Self {
-            disable_corr_hist: !corr_hist_enabled || env_flag("EMBER_DISABLE_CORR_HIST"),
+            disable_corr_hist: env_flag("EMBER_DISABLE_CORR_HIST"),
             disable_futility: env_flag("EMBER_DISABLE_FUTILITY"),
             disable_history_pruning: env_flag("EMBER_DISABLE_HISTORY_PRUNING"),
             disable_iid_reduction: env_flag("EMBER_DISABLE_IID_REDUCTION"),
