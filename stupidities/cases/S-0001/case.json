@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "case_id": "S-0001",
+  "title": "Search heuristics choose non-defensive rook moves under king attack",
+  "status": "fixed",
+  "fen": "4r1k1/1p3pp1/1p1p3p/1Pr5/4Ppn1/1B1P1N1q/1RP2P2/3QR1K1 w - - 0 23",
+  "side": "white",
+  "bad_move": "b2b1",
+  "also_bad_moves": [
+    "b2a2"
+  ],
+  "reference_best_move": "b3d5",
+  "reference_note": "The forced-mate bad rook moves are the proof target; Stockfish's exact best defensive move varies by depth, but b2b1 and b2a2 are consistently refuted by ...Rc5-h5 and ...Qxf3/Qf2 mating lines.",
+  "source_run_id": "hunt-001",
+  "source_candidate_id": "C-0002",
+  "before": {
+    "baseline": "pre-fix baseline commit 3099825, before search changes; correction history, LMP, and null move pruning were enabled by default",
+    "old_env": {},
+    "depth_moves": {
+      "6": "b2b1",
+      "8": "b2a2",
+      "10": "b2a2"
+    }
+  },
+  "fix": {
+    "summary": "Correction history now updates only after root searches, and LMP/null move pruning are guarded in tactical king-pressure positions.",
+    "fixed_move": "b3d5",
+    "depth_moves": {
+      "6": "b3c4",
+      "8": "b3d5",
+      "10": "b3d5"
+    }
+  },
+  "root_cause": {
+    "summary": "Correction history was mutating evaluation during the same recursive search, making sibling positions order-dependent. Late move pruning removed quiet defensive resources in the color-swapped variant. Null move pruning hid the shallow original defensive move. Together they produced optimistic scores for passive rook moves while the king was under a mating attack.",
+    "ablation": {
+      "original_depth_6": {
+        "baseline": "b2b1",
+        "disable_correction_history": "b3c4",
+        "disable_lmp": "b3c4",
+        "disable_null_move_after_other_fixes": "b3d5",
+        "disable_all_selective": "b3d5"
+      },
+      "mirror_depth_8": {
+        "baseline": "b7a7",
+        "disable_lmp": "b6d4",
+        "disable_all_selective": "e5e4"
+      }
+    }
+  },
+  "proof": {
+    "bad_line_b2b1": [
+      "b2b1",
+      "c5h5",
+      "b3f7",
+      "g8f7",
+      "f3g5",
+      "h6g5",
+      "d1f3",
+      "h3f3",
+      "c2c3",
+      "f3f2"
+    ],
+    "bad_line_b2a2": [
+      "b2a2",
+      "c5h5",
+      "b3f7",
+      "g8f7",
+      "f3g5",
+      "h6g5",
+      "d1f3",
+      "h3f3",
+      "a2a8",
+      "f3f2"
+    ]
+  },
+  "variants": [
+    {
+      "name": "color-swapped mirror",
+      "fen": "3qr1k1/1rp2p2/1b1p1n1Q/4pPN1/1pR5/1P1P3P/1P3PP1/4R1K1 b - - 0 23",
+      "bad_move": "b7a7",
+      "reference_best_move": "b6d4",
+      "fixed_move": "b6d4",
+      "before_depth_moves": {
+        "6": "e8f8",
+        "8": "b7a7",
+        "10": "b6d4"
+      },
+      "after_depth_moves": {
+        "6": "b6d4",
+        "8": "b6d4",
+        "10": "b6d4"
+      }
+    }
+  ]
+}
