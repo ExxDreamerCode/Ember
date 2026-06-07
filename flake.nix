@@ -22,6 +22,7 @@
             coreutils
             cargo
             rustc
+            git
             gnugrep
             gnused
             gnutar
