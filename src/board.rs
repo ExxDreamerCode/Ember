@@ -89,6 +89,55 @@ pub fn coord_to_square(r: usize, c: usize) -> String {
 }
 pub fn sq_to_str(s: usize) -> String { coord_to_square(sq_r(s), sq_c(s)) }
 
+pub fn move_to_uci(st: &BoardState, mv: &[usize; 4]) -> String {
+    let from = sq(mv[0], mv[1]);
+    let to = sq(mv[2], mv[3]);
+    let mut out = format!("{}{}", sq_to_str(from), sq_to_str(to));
+    let pi = piece_on(&st.bb, from);
+    if pi != EMPTY_SQ && piece_type(pi) == 0 && (mv[2] == 0 || mv[2] == 7) {
+        out.push('q');
+    }
+    out
+}
+
+pub fn board_to_fen(st: &BoardState) -> String {
+    let mut board = String::new();
+    for r in 0..8 {
+        if r > 0 {
+            board.push('/');
+        }
+        let mut empty = 0usize;
+        for c in 0..8 {
+            let pi = piece_on(&st.bb, sq(r, c));
+            if pi == EMPTY_SQ {
+                empty += 1;
+            } else {
+                if empty > 0 {
+                    board.push(char::from_digit(empty as u32, 10).unwrap());
+                    empty = 0;
+                }
+                board.push(piece_char(pi) as char);
+            }
+        }
+        if empty > 0 {
+            board.push(char::from_digit(empty as u32, 10).unwrap());
+        }
+    }
+
+    let side = if st.w { "w" } else { "b" };
+    let mut castling = String::new();
+    if st.cr[0] { castling.push('K'); }
+    if st.cr[1] { castling.push('Q'); }
+    if st.cr[2] { castling.push('k'); }
+    if st.cr[3] { castling.push('q'); }
+    if castling.is_empty() {
+        castling.push('-');
+    }
+    let ep = st.ep.map(sq_to_str).unwrap_or_else(|| "-".to_string());
+    let fullmove = st.mc / 2 + 1;
+    format!("{} {} {} {} 0 {}", board, side, castling, ep, fullmove)
+}
+
 pub fn see_val(pt: u8) -> i32 {
     match pt { 0 => 100, 1 => 325, 2 => 340, 3 => 500, 4 => 950, 5 => 20000, _ => 0 }
 }
