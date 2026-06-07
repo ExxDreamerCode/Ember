@@ -1,6 +1,6 @@
 use std::io::{self, BufRead};
 use chess_rs_lib::{Engine, OpeningBook, opening_book, ptype};
-use chess_rs_lib::board::{piece_on, piece_char};
+use chess_rs_lib::board::{piece_on, piece_type, EMPTY_SQ};
 
 fn try_load_book(engine: &mut Engine, path: &std::path::Path) -> bool {
     let display = path.display();
@@ -194,23 +194,22 @@ fn parse_go(engine: &mut Engine, parts: &[&str]) {
     };
     let tl = tl.max(0.05).min(60.0);
 
+    let root_state = engine.st;
     let (best_move, _, nodes, elapsed) = engine.find_best_move(tl, depth);
     let _nps = if elapsed > 0.0 { (nodes as f64 / elapsed) as i64 } else { 0 };
 
     if best_move.len() >= 4 && best_move != "0000" {
-        let b = best_move.as_bytes();
-        let sc = (b[0] - b'a') as usize;
-        let sr = 8 - (b[1] - b'0') as usize;
-        let ec = (b[2] - b'a') as usize;
-        let er = 8 - (b[3] - b'0') as usize;
-        
-        if sr < 8 && sc < 8 && er < 8 && ec < 8 {
-            let piece_idx = piece_on(&engine.st.bb, sr * 8 + sc);
-            let piece_char = piece_char(piece_idx);
-            
-            if piece_char == b'p' && (er == 0 || er == 7) && best_move.len() == 4 {
-                println!("bestmove {}q", best_move);
-                return;
+        if best_move.len() == 4 {
+            let b = best_move.as_bytes();
+            let sc = (b[0] - b'a') as usize;
+            let sr = 8 - (b[1] - b'0') as usize;
+            let er = 8 - (b[3] - b'0') as usize;
+            if sr < 8 && sc < 8 && er < 8 {
+                let piece_idx = piece_on(&root_state.bb, sr * 8 + sc);
+                if piece_idx != EMPTY_SQ && piece_type(piece_idx) == 0 && (er == 0 || er == 7) {
+                    println!("bestmove {}q", best_move);
+                    return;
+                }
             }
         }
         println!("bestmove {}", best_move);
