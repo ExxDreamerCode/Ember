@@ -5,7 +5,9 @@ use crate::board::{
     has_non_pawn, see, all_occ, bit,
 };
 use crate::evaluate::evaluate;
-use crate::zobrist::{compute_hash, compute_pawn_hash};
+use crate::zobrist::compute_hash;
+#[cfg(feature = "search-debug")]
+use crate::zobrist::compute_pawn_hash;
 use crate::movegen::{apply_move, generate_moves};
 use crate::tt::{TT, TT_EXACT, TT_ALPHA, TT_BETA};
 
@@ -21,7 +23,9 @@ fn from_to_key(sr: usize, sc: usize, er: usize, ec: usize) -> (usize, usize) {
     (sr * 8 + sc, er * 8 + ec)
 }
 
+#[cfg(feature = "search-debug")]
 const CORR_HIST_SIZE: usize = 16384;
+#[cfg(feature = "search-debug")]
 fn corr_idx(h: u64, side: bool) -> usize {
     let k = h.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(if side { 1 } else { 0 });
     k as usize & (CORR_HIST_SIZE - 1)
@@ -32,10 +36,26 @@ pub struct Searcher {
     pub killers:      [[Option<[usize; 4]>; 2]; MAX_PLY],
     pub history:      [[i32; 64]; 64],
     pub counter_move: [[Option<[usize; 4]>; 64]; 13],
+    #[cfg(feature = "search-debug")]
     pub corr_hist:    [i32; CORR_HIST_SIZE * 2],
     pub rep_stack:    Vec<u64>,
     pub rep_stack_len: usize,
     pub tt_mb:        usize,
+    #[cfg(feature = "search-debug")]
+    pub debug:        SearchDebug,
+}
+
+#[cfg(feature = "search-debug")]
+pub struct SearchDebug {
+    pub disable_corr_hist: bool,
+    pub disable_futility: bool,
+    pub disable_history_pruning: bool,
+    pub disable_iid_reduction: bool,
+    pub disable_lmp: bool,
+    pub disable_lmr: bool,
+    pub disable_null_move: bool,
+    pub disable_reverse_futility: bool,
+    pub disable_see_pruning: bool,
 }
 
 impl Searcher {
@@ -45,10 +65,13 @@ impl Searcher {
             killers:      [[None; 2]; MAX_PLY],
             history:      [[0i32; 64]; 64],
             counter_move: [[None; 64]; 13],
+            #[cfg(feature = "search-debug")]
             corr_hist:    [0i32; CORR_HIST_SIZE * 2],
             rep_stack:    Vec::with_capacity(512),
             rep_stack_len: 0,
             tt_mb:        128,
+            #[cfg(feature = "search-debug")]
+            debug:        SearchDebug::from_env(),
         }
     }
 
@@ -57,12 +80,78 @@ impl Searcher {
         self.tt_mb = mb;
     }
 
+    #[cfg(feature = "search-debug")]
+    #[inline(always)]
+    fn corr_hist_enabled(&self) -> bool { !self.debug.disable_corr_hist }
+
+    #[cfg(feature = "search-debug")]
+    #[inline(always)]
+    fn futility_enabled(&self) -> bool { !self.debug.disable_futility }
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    fn futility_enabled(&self) -> bool { true }
+
+    #[cfg(feature = "search-debug")]
+    #[inline(always)]
+    fn history_pruning_enabled(&self) -> bool { !self.debug.disable_history_pruning }
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    fn history_pruning_enabled(&self) -> bool { true }
+
+    #[cfg(feature = "search-debug")]
+    #[inline(always)]
+    fn iid_reduction_enabled(&self) -> bool { !self.debug.disable_iid_reduction }
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    fn iid_reduction_enabled(&self) -> bool { true }
+
+    #[cfg(feature = "search-debug")]
+    #[inline(always)]
+    fn lmp_enabled(&self) -> bool { !self.debug.disable_lmp }
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    fn lmp_enabled(&self) -> bool { false }
+
+    #[cfg(feature = "search-debug")]
+    #[inline(always)]
+    fn lmr_enabled(&self) -> bool { !self.debug.disable_lmr }
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    fn lmr_enabled(&self) -> bool { true }
+
+    #[cfg(feature = "search-debug")]
+    #[inline(always)]
+    fn null_move_enabled(&self) -> bool { !self.debug.disable_null_move }
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    fn null_move_enabled(&self) -> bool { false }
+
+    #[cfg(feature = "search-debug")]
+    #[inline(always)]
+    fn reverse_futility_enabled(&self) -> bool { !self.debug.disable_reverse_futility }
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    fn reverse_futility_enabled(&self) -> bool { true }
+
+    #[cfg(feature = "search-debug")]
+    #[inline(always)]
+    fn see_pruning_enabled(&self) -> bool { !self.debug.disable_see_pruning }
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    fn see_pruning_enabled(&self) -> bool { true }
+
     pub fn corrected_eval(&self, st: &BoardState) -> i32 {
         let base = evaluate(st) * if st.w { 1 } else { -1 };
-        let ph   = compute_pawn_hash(st);
-        let idx  = corr_idx(ph, st.w);
-        let corr = self.corr_hist[idx];
-        base + corr.clamp(-200, 200)
+        #[cfg(feature = "search-debug")]
+        {
+            if self.corr_hist_enabled() {
+                let ph   = compute_pawn_hash(st);
+                let idx  = corr_idx(ph, st.w);
+                let corr = self.corr_hist[idx];
+                return base + corr.clamp(-200, 200);
+            }
+        }
+        base
     }
 
     fn is_repetition(&self) -> bool {
@@ -175,18 +264,18 @@ impl Searcher {
 
         let eval_score = self.corrected_eval(st);
 
-        if !in_check && !is_pv && actual_depth <= 8 && ply > 0 {
+        if self.reverse_futility_enabled() && !in_check && !is_pv && actual_depth <= 8 && ply > 0 {
             let margin = 80 + 65 * actual_depth;
             if eval_score - margin >= beta { return eval_score - margin; }
         }
-        if !in_check && !is_pv && actual_depth <= 3 && ply > 0 {
+        if self.futility_enabled() && !in_check && !is_pv && actual_depth <= 3 && ply > 0 {
             let margin = 150 * actual_depth;
             if eval_score + margin <= alpha {
                 let q = self.qsearch(st, alpha - margin, beta - margin, QS_DEPTH, start, tl, cnt);
                 if q + margin <= alpha { return alpha; }
             }
         }
-        if !in_check && can_null && !is_pv && ply > 0 && actual_depth >= 3
+        if self.null_move_enabled() && !in_check && can_null && !is_pv && ply > 0 && actual_depth >= 3
             && has_non_pawn(&st.bb, st.w) && eval_score >= beta
         {
             let r = 3 + actual_depth / 4 + ((eval_score - beta) / 200).min(3);
@@ -209,7 +298,7 @@ impl Searcher {
             return if in_check { -MATE + ply as i32 } else { 0 };
         }
 
-        let actual_depth = if tt_move.is_none() && actual_depth >= 4 && is_pv {
+        let actual_depth = if self.iid_reduction_enabled() && tt_move.is_none() && actual_depth >= 4 && is_pv {
             actual_depth - 1
         } else { actual_depth };
 
@@ -241,7 +330,7 @@ impl Searcher {
         }).collect();
         scored.sort_unstable_by(|a, b| b.0.cmp(&a.0));
 
-        let lmp_count = if !is_pv && !in_check && actual_depth <= 8 {
+        let lmp_count = if self.lmp_enabled() && !is_pv && !in_check && actual_depth <= 8 {
             match actual_depth { 1=>4, 2=>7, 3=>11, 4=>17, 5=>24, 6=>33, 7=>44, 8=>57, _=>usize::MAX }
         } else { usize::MAX };
 
@@ -283,8 +372,8 @@ impl Searcher {
             if !is_pv && !in_check && is_quiet && i >= lmp_count { break; }
             if !is_pv && !in_check && i > 0 && best_score > -MATE / 2 {
                 if capture {
-                    if see(&st.bb, from, to) < -80 * actual_depth { continue; }
-                } else if is_quiet {
+                    if self.see_pruning_enabled() && see(&st.bb, from, to) < -80 * actual_depth { continue; }
+                } else if is_quiet && self.history_pruning_enabled() {
                     let (fk, tk) = from_to_key(mv[0], mv[1], mv[2], mv[3]);
                     if actual_depth <= 5 && self.history[fk][tk] < -1024 * actual_depth { continue; }
                 }
@@ -300,7 +389,7 @@ impl Searcher {
 
             let new_depth = actual_depth - 1 + move_ext;
 
-            let lmr_eligible = i >= 2 && actual_depth >= 3 && is_quiet && !in_check && !gives_check;
+            let lmr_eligible = self.lmr_enabled() && i >= 2 && actual_depth >= 3 && is_quiet && !in_check && !gives_check;
             let s = if i == 0 {
                 -self.negamax(st, new_depth, ply+1, -beta, -alpha, true, start, tl, cnt)
             } else if lmr_eligible {
@@ -365,14 +454,17 @@ impl Searcher {
             }
         }
 
-        if !in_check && actual_depth >= 3 && best_score != -INF {
-            let ev  = self.corrected_eval(st);
-            let diff = best_score - ev;
-            if diff.abs() < 500 {
-                let ph  = compute_pawn_hash(st);
-                let idx = corr_idx(ph, st.w);
-                let corr = &mut self.corr_hist[idx];
-                *corr = (*corr + diff.clamp(-64, 64) / 8).clamp(-1024, 1024);
+        #[cfg(feature = "search-debug")]
+        {
+            if self.corr_hist_enabled() && !in_check && actual_depth >= 3 && best_score != -INF {
+                let ev  = self.corrected_eval(st);
+                let diff = best_score - ev;
+                if diff.abs() < 500 {
+                    let ph  = compute_pawn_hash(st);
+                    let idx = corr_idx(ph, st.w);
+                    let corr = &mut self.corr_hist[idx];
+                    *corr = (*corr + diff.clamp(-64, 64) / 8).clamp(-1024, 1024);
+                }
             }
         }
 
@@ -382,4 +474,34 @@ impl Searcher {
         self.tt.store(h, actual_depth, best_score, flag, best_move);
         best_score
     }
+}
+
+#[cfg(feature = "search-debug")]
+impl SearchDebug {
+    fn from_env() -> Self {
+        let corr_hist_enabled = env_flag("EMBER_ENABLE_CORR_HIST");
+        let lmp_enabled = env_flag("EMBER_ENABLE_LMP");
+        let null_move_enabled = env_flag("EMBER_ENABLE_NULL_MOVE");
+        Self {
+            disable_corr_hist: !corr_hist_enabled || env_flag("EMBER_DISABLE_CORR_HIST"),
+            disable_futility: env_flag("EMBER_DISABLE_FUTILITY"),
+            disable_history_pruning: env_flag("EMBER_DISABLE_HISTORY_PRUNING"),
+            disable_iid_reduction: env_flag("EMBER_DISABLE_IID_REDUCTION"),
+            disable_lmp: !lmp_enabled || env_flag("EMBER_DISABLE_LMP"),
+            disable_lmr: env_flag("EMBER_DISABLE_LMR"),
+            disable_null_move: !null_move_enabled || env_flag("EMBER_DISABLE_NULL_MOVE"),
+            disable_reverse_futility: env_flag("EMBER_DISABLE_REVERSE_FUTILITY"),
+            disable_see_pruning: env_flag("EMBER_DISABLE_SEE_PRUNING"),
+        }
+    }
+}
+
+#[cfg(feature = "search-debug")]
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            let value = value.to_ascii_lowercase();
+            value == "1" || value == "true" || value == "yes" || value == "on"
+        })
+        .unwrap_or(false)
 }

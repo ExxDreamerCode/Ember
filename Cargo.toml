@@ -17,6 +17,7 @@ rand = { version = "0.8", features = ["small_rng"] }
 [features]
 default = []
 decision-trace = []
+search-debug = []
  
 [profile.release]
 opt-level = 3
