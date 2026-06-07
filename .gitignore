@@ -38,3 +38,7 @@ engine.log
 .env.local
 test_output/
 benchmark_results/
+results/
+.elo-remote/
+__pycache__/
+*.py[cod]
