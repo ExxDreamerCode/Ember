@@ -18,6 +18,7 @@ Options:
   --config PATH         Config path. Default: configs/elo/default.toml
   --run-id ID           Run id. Default: generated locally
   --workers N           Override worker count
+  --max-games N         Override maximum games scheduled by the runner
   --older-than AGE      Cleanup age for cleanup command, such as 14d
 EOF
 }
@@ -27,6 +28,7 @@ remote_root="${EMBER_ELO_REMOTE_ROOT:-ember-elo-runs}"
 config="configs/elo/default.toml"
 run_id=""
 workers=""
+max_games=""
 older_than=""
 
 while [[ $# -gt 0 ]]; do
@@ -49,6 +51,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --workers)
       workers="$2"
+      shift 2
+      ;;
+    --max-games)
+      max_games="$2"
       shift 2
       ;;
     --older-than)
@@ -107,8 +113,12 @@ fi
 
 remote_measure_command() {
   local extra_workers=()
+  local extra_max_games=()
   if [[ -n "$workers" ]]; then
     extra_workers=(--workers "$workers")
+  fi
+  if [[ -n "$max_games" ]]; then
+    extra_max_games=(--max-games "$max_games")
   fi
   printf 'cd %q && EMBER_ELO_GIT_COMMIT=%q EMBER_ELO_GIT_DIRTY=%q nix %q %q %q %q develop .#elo-runner --command python3 tools/measure_elo.py all --config %q --run-id %q' \
     "$remote_source" \
@@ -117,6 +127,9 @@ remote_measure_command() {
     "$config" "$run_id"
   if [[ ${#extra_workers[@]} -gt 0 ]]; then
     printf ' %q %q' "${extra_workers[0]}" "${extra_workers[1]}"
+  fi
+  if [[ ${#extra_max_games[@]} -gt 0 ]]; then
+    printf ' %q %q' "${extra_max_games[0]}" "${extra_max_games[1]}"
   fi
 }
 

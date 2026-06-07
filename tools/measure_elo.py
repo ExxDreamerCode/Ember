@@ -128,7 +128,21 @@ def detect_workers(cfg, explicit_workers):
     return workers, cores, "auto"
 
 
-def metadata_base(cfg, config_path, run_id, workers, cores, worker_source):
+def effective_max_games(cfg, explicit_max_games):
+    if explicit_max_games is not None:
+        return max(2, int(explicit_max_games)), "cli"
+    return max(2, int(cfg["run"].get("max_games", 10_000))), "config"
+
+
+def metadata_base(
+    cfg,
+    config_path,
+    run_id,
+    workers,
+    cores,
+    worker_source,
+    explicit_max_games=None,
+):
     git_commit = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         text=True,
@@ -149,6 +163,7 @@ def metadata_base(cfg, config_path, run_id, workers, cores, worker_source):
     )
     env_commit = os.environ.get("EMBER_ELO_GIT_COMMIT") or None
     env_dirty = os.environ.get("EMBER_ELO_GIT_DIRTY")
+    max_games, max_games_source = effective_max_games(cfg, explicit_max_games)
     return {
         "run_id": run_id,
         "started_at": now_utc(),
@@ -156,6 +171,9 @@ def metadata_base(cfg, config_path, run_id, workers, cores, worker_source):
         "cpu_count": cores,
         "workers": workers,
         "worker_source": worker_source,
+        "max_games": max_games,
+        "max_games_source": max_games_source,
+        "measurement_mode": cfg["run"].get("mode", "mixed-prior"),
         "config_path": str(config_path),
         "config_sha256": sha256_file(config_path),
         "git_commit": env_commit or (git_commit.stdout.strip() if git_commit.returncode == 0 else None),
@@ -167,12 +185,20 @@ def metadata_base(cfg, config_path, run_id, workers, cores, worker_source):
     }
 
 
-def probe(config_path, run_id, explicit_workers=None):
+def probe(config_path, run_id, explicit_workers=None, explicit_max_games=None):
     cfg, opponents = load_config(config_path)
     workers, cores, worker_source = detect_workers(cfg, explicit_workers)
     rd = run_dir_for(run_id)
     rd.mkdir(parents=True, exist_ok=True)
-    meta = metadata_base(cfg, config_path, run_id, workers, cores, worker_source)
+    meta = metadata_base(
+        cfg,
+        config_path,
+        run_id,
+        workers,
+        cores,
+        worker_source,
+        explicit_max_games,
+    )
 
     tools = {}
     for cmd in ["cargo", "rustc", "cutechess-cli", "python3", "tar", "zstd"]:
@@ -191,6 +217,19 @@ def probe(config_path, run_id, explicit_workers=None):
         engine_probe.append(item)
         if engine.get("required", False) and not available:
             missing_required.append(engine["name"])
+
+    if cfg["run"].get("mode") == "stockfish-adaptive":
+        sf_cfg = cfg.get("stockfish_adaptive", {})
+        sf_cmd = sf_cfg.get("cmd", "stockfish")
+        available = command_exists(sf_cmd)
+        engine_probe.append({
+            "name": "Stockfish adaptive",
+            "cmd": sf_cmd,
+            "available": available,
+            "path": shutil.which(sf_cmd),
+        })
+        if not available:
+            missing_required.append("Stockfish adaptive")
 
     meta["tools"] = tools
     meta["opponents"] = engine_probe
@@ -315,10 +354,11 @@ def run_match(cfg, rd, whiteish, blackish, rounds, workers, pgn_name):
     pgn = games_dir / pgn_name
     log = games_dir / (pgn_name + ".cutechess.log")
     want = expected_games(rounds)
-    if count_games_in_pgn(pgn) >= want:
+    before = count_games_in_pgn(pgn)
+    if before >= want:
         with open(rd / "commands.log", "a", encoding="utf-8") as f:
             f.write(f"skip existing {pgn} ({want} games)\n")
-        return
+        return 0
 
     opening_file = cfg["run"]["opening_file"]
     args = ["cutechess-cli"]
@@ -348,10 +388,16 @@ def run_match(cfg, rd, whiteish, blackish, rounds, workers, pgn_name):
     run_cmd(args, log_path=log, check=True)
     with open(rd / "commands.log", "a", encoding="utf-8") as f:
         f.write(" ".join(shell_quote(a) for a in args) + "\n")
+    after = count_games_in_pgn(pgn)
+    return max(0, min(after, want) - before)
 
 
-def run_matches(config_path, run_id, explicit_workers=None):
+def run_matches(config_path, run_id, explicit_workers=None, explicit_max_games=None):
     cfg, opponents = load_config(config_path)
+    if cfg["run"].get("mode") == "stockfish-adaptive":
+        run_stockfish_adaptive_matches(config_path, run_id, explicit_workers, explicit_max_games)
+        return
+
     rd = run_dir_for(run_id)
     rd.mkdir(parents=True, exist_ok=True)
     workers, cores, worker_source = detect_workers(cfg, explicit_workers)
@@ -372,13 +418,13 @@ def run_matches(config_path, run_id, explicit_workers=None):
 
     rounds = int(cfg["run"].get("rounds_per_pair", 10))
     cal_rounds = int(cfg["run"].get("calibration_rounds_per_pair", 4))
-    max_games = int(cfg["run"].get("max_games", 10_000))
+    max_games, _ = effective_max_games(cfg, explicit_max_games)
     scheduled_games = 0
 
     for opponent in selected:
         if scheduled_games + expected_games(rounds) > max_games:
             break
-        run_match(
+        scheduled_games += run_match(
             cfg,
             rd,
             ember,
@@ -387,7 +433,6 @@ def run_matches(config_path, run_id, explicit_workers=None):
             workers,
             f"{safe_name(ember['name'])}-vs-{safe_name(opponent['name'])}.pgn",
         )
-        scheduled_games += expected_games(rounds)
 
     by_rating = sorted(selected, key=lambda e: int(e.get("rating", 0)))
     seen = set()
@@ -399,7 +444,7 @@ def run_matches(config_path, run_id, explicit_workers=None):
             seen.add(key)
             if scheduled_games + expected_games(cal_rounds) > max_games:
                 break
-            run_match(
+            scheduled_games += run_match(
                 cfg,
                 rd,
                 a,
@@ -408,7 +453,195 @@ def run_matches(config_path, run_id, explicit_workers=None):
                 workers,
                 f"{safe_name(a['name'])}-vs-{safe_name(b['name'])}.pgn",
             )
-            scheduled_games += expected_games(cal_rounds)
+
+    state["finished_at"] = now_utc()
+    state["scheduled_games"] = scheduled_games
+    state["max_games"] = max_games
+    write_json(rd / "state.json", state)
+
+
+def stockfish_engine(cfg, level):
+    sf_cfg = cfg.get("stockfish_adaptive", {})
+    options = dict(sf_cfg.get("options", {}))
+    options["UCI_LimitStrength"] = "true"
+    options["UCI_Elo"] = str(int(level))
+    options.setdefault("Threads", "1")
+    options.setdefault("Hash", "64")
+    return {
+        "name": f"Stockfish-UCI-{int(level)}",
+        "cmd": sf_cfg.get("cmd", "stockfish"),
+        "proto": sf_cfg.get("proto", "uci"),
+        "options": options,
+        "family": "stockfish-limited",
+        "rating": int(level),
+    }
+
+
+def stockfish_level_from_name(name):
+    match = re.search(r"Stockfish-UCI-(\d+)", name)
+    return int(match.group(1)) if match else None
+
+
+def ember_observations_vs_stockfish(games, ember_name):
+    observations = []
+    for game in games:
+        white_level = stockfish_level_from_name(game["white"])
+        black_level = stockfish_level_from_name(game["black"])
+        if game["white"] == ember_name and black_level is not None:
+            observations.append((black_level, game["white_score"]))
+        elif game["black"] == ember_name and white_level is not None:
+            observations.append((white_level, game["black_score"]))
+    return observations
+
+
+def fit_stockfish_equivalent(cfg, observations):
+    if not observations:
+        return {
+            "rating": None,
+            "ci95_low": None,
+            "ci95_high": None,
+            "standard_error": None,
+            "observations": 0,
+        }
+
+    levels = [level for level, _ in observations]
+    sf_cfg = cfg.get("stockfish_adaptive", {})
+    prior = float(sf_cfg.get("rating_prior", sum(levels) / len(levels)))
+    prior_sigma = float(sf_cfg.get("rating_prior_sigma", 1000))
+    rating = prior
+    c = math.log(10.0) / 400.0
+
+    for _ in range(80):
+        grad = (rating - prior) / (prior_sigma * prior_sigma)
+        hess = 1.0 / (prior_sigma * prior_sigma)
+        for level, score in observations:
+            p = 1.0 / (1.0 + math.exp(-c * (rating - level)))
+            grad += c * (p - score)
+            hess += c * c * p * (1.0 - p)
+        if hess <= 0.0:
+            break
+        step = grad / hess
+        rating -= step
+        if abs(step) < 1e-5:
+            break
+
+    hess = 1.0 / (prior_sigma * prior_sigma)
+    for level, _ in observations:
+        p = 1.0 / (1.0 + math.exp(-c * (rating - level)))
+        hess += c * c * p * (1.0 - p)
+    se = math.sqrt(1.0 / hess) if hess > 0.0 else None
+    return {
+        "rating": rating,
+        "ci95_low": rating - 1.96 * se if se is not None else None,
+        "ci95_high": rating + 1.96 * se if se is not None else None,
+        "standard_error": se,
+        "observations": len(observations),
+    }
+
+
+def clamp_level(cfg, level):
+    sf_cfg = cfg.get("stockfish_adaptive", {})
+    lo = int(sf_cfg.get("uci_elo_min", 1320))
+    hi = int(sf_cfg.get("uci_elo_max", 3190))
+    step = max(1, int(sf_cfg.get("target_step", 10)))
+    rounded = int(round(level / step) * step)
+    return max(lo, min(hi, rounded))
+
+
+def run_stockfish_adaptive_matches(
+    config_path,
+    run_id,
+    explicit_workers=None,
+    explicit_max_games=None,
+):
+    cfg, _ = load_config(config_path)
+    rd = run_dir_for(run_id)
+    rd.mkdir(parents=True, exist_ok=True)
+    workers, cores, _ = detect_workers(cfg, explicit_workers)
+    max_games, max_games_source = effective_max_games(cfg, explicit_max_games)
+    ember = ember_engine(cfg)
+    sf_cfg = cfg.get("stockfish_adaptive", {})
+    levels = [int(level) for level in sf_cfg.get("levels", [1900, 2050, 2200, 2350])]
+    if not levels:
+        raise RuntimeError("stockfish adaptive mode needs at least one level")
+
+    state = {
+        "run_id": run_id,
+        "phase": "run",
+        "mode": "stockfish-adaptive",
+        "started_at": now_utc(),
+        "workers": workers,
+        "cpu_count": cores,
+        "max_games": max_games,
+        "max_games_source": max_games_source,
+        "pilot_levels": levels,
+    }
+    write_json(rd / "state.json", state)
+
+    scheduled_games = 0
+    pilot_games_per_level = int(sf_cfg.get("pilot_games_per_level", 24))
+    pilot_games_per_level = max(2, pilot_games_per_level - (pilot_games_per_level % 2))
+    if max_games < pilot_games_per_level * len(levels):
+        pilot_games_per_level = max(2, (max_games // max(1, len(levels))) // 2 * 2)
+
+    for level in levels:
+        if scheduled_games + 2 > max_games:
+            break
+        games_for_level = min(pilot_games_per_level, max_games - scheduled_games)
+        games_for_level -= games_for_level % 2
+        if games_for_level < 2:
+            break
+        scheduled_games += run_match(
+            cfg,
+            rd,
+            ember,
+            stockfish_engine(cfg, level),
+            games_for_level // 2,
+            workers,
+            f"{safe_name(ember['name'])}-vs-Stockfish-UCI-{level}.pgn",
+        )
+
+    pilot_games = parse_all_games(rd)
+    pilot_fit = fit_stockfish_equivalent(
+        cfg,
+        ember_observations_vs_stockfish(pilot_games, ember["name"]),
+    )
+    if pilot_fit["rating"] is None:
+        target = clamp_level(cfg, sum(levels) / len(levels))
+    else:
+        target = clamp_level(cfg, pilot_fit["rating"])
+
+    state["pilot_finished_at"] = now_utc()
+    state["pilot_scheduled_games"] = scheduled_games
+    state["pilot_estimate"] = pilot_fit
+    state["target_level"] = target
+    write_json(rd / "state.json", state)
+
+    remaining = max_games - scheduled_games
+    offsets = [int(offset) for offset in sf_cfg.get("main_level_offsets", [0])]
+    if remaining >= 2 and offsets:
+        remaining_budget = remaining
+        for idx, offset in enumerate(offsets):
+            slots_left = len(offsets) - idx
+            games_for_level = remaining_budget // slots_left
+            games_for_level -= games_for_level % 2
+            if games_for_level < 2:
+                continue
+            level = clamp_level(cfg, target + offset)
+            before = count_games_in_pgn(
+                rd / "games" / f"{safe_name(ember['name'])}-vs-Stockfish-UCI-{level}.pgn"
+            )
+            total_games = before + games_for_level
+            scheduled_games += run_match(
+                cfg,
+                rd,
+                ember,
+                stockfish_engine(cfg, level),
+                total_games // 2,
+                workers,
+                f"{safe_name(ember['name'])}-vs-Stockfish-UCI-{level}.pgn",
+            )
+            remaining_budget = max(0, max_games - scheduled_games)
 
     state["finished_at"] = now_utc()
     state["scheduled_games"] = scheduled_games
@@ -659,8 +892,101 @@ def percentile(values, pct):
     return values[lo] * (hi - pos) + values[hi] * (pos - lo)
 
 
+def analyze_stockfish_adaptive(config_path, run_id):
+    cfg, _ = load_config(config_path)
+    rd = run_dir_for(run_id)
+    games = parse_all_games(rd)
+    ember_name = cfg["ember"]["name"]
+    observations = ember_observations_vs_stockfish(games, ember_name)
+    fit = fit_stockfish_equivalent(cfg, observations)
+    score_table = summarize_scores(games, ember_name)
+    ember_scores = [row for (player, _), row in score_table.items() if player == ember_name]
+
+    estimates_dir = rd / "estimates"
+    estimates_dir.mkdir(parents=True, exist_ok=True)
+    with open(estimates_dir / "stockfish-observations.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["opponent_uci_elo", "ember_score"])
+        writer.writerows(observations)
+
+    state_path = rd / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+    players = [{
+        "player": ember_name,
+        "rating": fit["rating"],
+        "starting_rating": None,
+        "rating_delta": None,
+        "prior_sigma": None,
+        "family": "ember",
+        "rating_source": "Stockfish adaptive fit",
+    }]
+    seen_levels = sorted({level for level, _ in observations})
+    for level in seen_levels:
+        players.append({
+            "player": f"Stockfish-UCI-{level}",
+            "rating": float(level),
+            "starting_rating": float(level),
+            "rating_delta": 0.0,
+            "prior_sigma": 0.0,
+            "family": "stockfish-limited",
+            "rating_source": "Stockfish UCI_Elo setting",
+        })
+
+    with open(estimates_dir / "fitted-ratings.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "player",
+                "rating",
+                "starting_rating",
+                "rating_delta",
+                "prior_sigma",
+                "family",
+                "rating_source",
+            ],
+        )
+        writer.writeheader()
+        writer.writerows(players)
+
+    estimate = {
+        "run_id": run_id,
+        "estimated_at": now_utc(),
+        "game_count": len(games),
+        "ember": {
+            "name": ember_name,
+            "rating": fit["rating"],
+            "ci95_low": fit["ci95_low"],
+            "ci95_high": fit["ci95_high"],
+            "bootstrap_samples": 0,
+        },
+        "players": players,
+        "ember_scores": ember_scores,
+        "terminations": termination_summary(games),
+        "rating_scale": cfg["estimator"].get(
+            "primary_scale",
+            "Stockfish UCI_Elo equivalent",
+        ),
+        "ci95_method": "1D logistic Hessian",
+        "stockfish_adaptive": {
+            "observations": fit["observations"],
+            "standard_error": fit["standard_error"],
+            "target_level": state.get("target_level"),
+            "pilot_levels": state.get("pilot_levels", []),
+            "pilot_estimate": state.get("pilot_estimate"),
+            "max_games": state.get("max_games"),
+            "scheduled_games": state.get("scheduled_games"),
+        },
+    }
+    write_json(estimates_dir / "estimate.json", estimate)
+    write_estimate_md(estimates_dir / "estimate.md", estimate)
+    return estimate
+
+
 def analyze(config_path, run_id):
     cfg, opponents = load_config(config_path)
+    if cfg["run"].get("mode") == "stockfish-adaptive":
+        return analyze_stockfish_adaptive(config_path, run_id)
+
     rd = run_dir_for(run_id)
     games = parse_all_games(rd)
     priors, sigmas = build_priors(cfg, opponents, games)
@@ -721,6 +1047,7 @@ def analyze(config_path, run_id):
         "ember_scores": ember_scores,
         "terminations": termination_summary(games),
         "rating_scale": cfg["estimator"].get("primary_scale", "unspecified"),
+        "ci95_method": "bootstrap",
     }
     write_json(estimates_dir / "estimate.json", estimate)
     write_estimate_md(estimates_dir / "estimate.md", estimate)
@@ -736,6 +1063,8 @@ def write_estimate_md(path, estimate):
     ]
     if ember["ci95_low"] is not None and ember["ci95_high"] is not None:
         lines.append(f"95% CI: {ember['ci95_low']:.1f} to {ember['ci95_high']:.1f}")
+    if estimate.get("ci95_method"):
+        lines.append(f"95% CI method: {estimate['ci95_method']}")
     lines.extend([
         f"Games: {estimate['game_count']}",
         f"Rating scale: {estimate['rating_scale']}",
@@ -813,7 +1142,8 @@ def report(config_path, run_id):
     else:
         lines.append("Current measured Ember score: unavailable")
     if ember["ci95_low"] is not None and ember["ci95_high"] is not None:
-        lines.append(f"95% bootstrap CI: **{ember['ci95_low']:.0f} to {ember['ci95_high']:.0f} Elo**")
+        method = estimate.get("ci95_method", "bootstrap")
+        lines.append(f"95% {method} CI: **{ember['ci95_low']:.0f} to {ember['ci95_high']:.0f} Elo**")
     lines.extend([
         f"Games parsed: {estimate['game_count']}",
         f"Rating scale: {estimate['rating_scale']}",
@@ -822,6 +1152,8 @@ def report(config_path, run_id):
         "",
         f"Time control: `{cfg['run']['time_control']}`",
         f"Workers: `{meta.get('workers', 'unknown')}` from `{meta.get('worker_source', 'unknown')}`; CPU cores detected: `{meta.get('cpu_count', 'unknown')}`",
+        f"Game budget: `{meta.get('max_games', cfg['run'].get('max_games', 'unknown'))}` from `{meta.get('max_games_source', 'config')}`",
+        f"Measurement mode: `{meta.get('measurement_mode', cfg['run'].get('mode', 'mixed-prior'))}`",
         f"Execution host captured at runtime: `{meta.get('hostname', 'unknown')}`",
         f"Git commit: `{meta.get('git_commit', 'unknown')}`; dirty: `{meta.get('git_dirty', 'unknown')}`",
         f"Nix: `{meta.get('nix_version', 'unknown')}`",
@@ -857,10 +1189,26 @@ def report(config_path, run_id):
         "| --- | ---: | ---: | ---: | ---: | --- |",
     ])
     for row in estimate["players"]:
+        rating = "" if row["rating"] is None else f"{row['rating']:.0f}"
         start = "" if row["starting_rating"] is None else f"{row['starting_rating']:.0f}"
         delta = "" if row["rating_delta"] is None else f"{row['rating_delta']:+.0f}"
         sigma = "" if row["prior_sigma"] is None else f"{row['prior_sigma']:.0f}"
-        lines.append(f"| {row['player']} | {row['rating']:.0f} | {start} | {delta} | {sigma} | {row['family']} |")
+        lines.append(f"| {row['player']} | {rating} | {start} | {delta} | {sigma} | {row['family']} |")
+
+    if "stockfish_adaptive" in estimate:
+        adaptive = estimate["stockfish_adaptive"]
+        se = adaptive.get("standard_error")
+        lines.extend([
+            "",
+            "## Stockfish adaptive",
+            "",
+            f"Target UCI_Elo after pilot: `{adaptive.get('target_level', 'unknown')}`",
+            f"Stockfish observations: `{adaptive.get('observations', 0)}`",
+            f"Standard error: `{se:.2f} Elo`" if se is not None else "Standard error: unavailable",
+            f"Scheduled games: `{adaptive.get('scheduled_games', 'unknown')}` of budget `{adaptive.get('max_games', 'unknown')}`",
+            "",
+            "This mode reports a Stockfish-UCI_Elo-equivalent rating under the run conditions, not a fixed external CCRL rating.",
+        ])
 
     lines.extend([
         "",
@@ -869,7 +1217,7 @@ def report(config_path, run_id):
         f"Archive: `{artifact.name if artifact else 'none'}`",
         f"Archive SHA256: `{artifact_hash or 'none'}`",
         "",
-        "The archive contains the raw PGNs, Cute Chess logs, commands, parsed game table, fitted ratings, bootstrap data, config, and metadata needed to validate this report.",
+        "The archive contains the raw PGNs, Cute Chess logs, commands, parsed game table, fitted ratings, estimator data, config, and metadata needed to validate this report.",
         "",
         "### Archive manifest",
         "",
@@ -879,14 +1227,19 @@ def report(config_path, run_id):
     if len(manifest) > 200:
         lines.append(f"- ... {len(manifest) - 200} more entries")
 
-    lines.extend([
-        "",
-        "## Caveats",
-        "",
-        "- Opponent ratings are priors, not fixed truth; the fitted table shows how much they moved.",
-        "- The default pool mixes external CCRL-style priors and Stockfish limited-strength diagnostics, so this first score should be treated as a current calibrated estimate with visible uncertainty.",
-        "- Longer runs with more independent Nix-available external engines will narrow the confidence interval and reduce dependence on Stockfish-limited opponents.",
-    ])
+    lines.extend(["", "## Caveats", ""])
+    if "stockfish_adaptive" in estimate:
+        lines.extend([
+            "- This is a Stockfish-UCI_Elo-equivalent estimate under this exact time control, opening set, book setting, and Stockfish build.",
+            "- It is useful for repeatable development comparisons, but it is not a fixed external CCRL rating.",
+            "- Longer runs and a larger opening set are needed for narrow confidence intervals.",
+        ])
+    else:
+        lines.extend([
+            "- Opponent ratings are priors, not fixed truth; the fitted table shows how much they moved.",
+            "- The default pool mixes external CCRL-style priors and Stockfish limited-strength diagnostics, so this first score should be treated as a current calibrated estimate with visible uncertainty.",
+            "- Longer runs with more independent Nix-available external engines will narrow the confidence interval and reduce dependence on Stockfish-limited opponents.",
+        ])
     (rd / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     meta["artifact"] = str(artifact) if artifact else None
@@ -902,12 +1255,12 @@ def copy_config(config_path, run_id):
     shutil.copyfile(config_path, rd / "config.toml")
 
 
-def all_steps(config_path, run_id, explicit_workers=None):
+def all_steps(config_path, run_id, explicit_workers=None, explicit_max_games=None):
     copy_config(config_path, run_id)
-    probe(config_path, run_id, explicit_workers)
+    probe(config_path, run_id, explicit_workers, explicit_max_games)
     build(config_path, run_id)
     smoke(config_path, run_id)
-    run_matches(config_path, run_id, explicit_workers)
+    run_matches(config_path, run_id, explicit_workers, explicit_max_games)
     analyze(config_path, run_id)
     report(config_path, run_id)
 
@@ -918,6 +1271,7 @@ def main():
     parser.add_argument("--config", default="configs/elo/default.toml")
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--workers", default=None)
+    parser.add_argument("--max-games", default=None)
     args = parser.parse_args()
 
     config_path = Path(args.config)
@@ -925,19 +1279,19 @@ def main():
 
     if args.command == "probe":
         copy_config(config_path, run_id)
-        probe(config_path, run_id, args.workers)
+        probe(config_path, run_id, args.workers, args.max_games)
     elif args.command == "build":
         build(config_path, run_id)
     elif args.command == "smoke":
         smoke(config_path, run_id)
     elif args.command == "run":
-        run_matches(config_path, run_id, args.workers)
+        run_matches(config_path, run_id, args.workers, args.max_games)
     elif args.command == "analyze":
         analyze(config_path, run_id)
     elif args.command == "report":
         report(config_path, run_id)
     elif args.command == "all":
-        all_steps(config_path, run_id, args.workers)
+        all_steps(config_path, run_id, args.workers, args.max_games)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,52 @@
+[run]
+name = "ember-stockfish-adaptive"
+mode = "stockfish-adaptive"
+time_control = "8+0.08"
+timemargin_ms = 2000
+max_games = 500
+confidence_target = 20
+workers = "auto"
+worker_multiplier = 1.5
+opening_file = "ratings/openings.epd"
+opening_format = "epd"
+remote_work_root = "~/ember-elo-runs"
+artifact_name = "artifacts.tar.zst"
+
+[ember]
+name = "Ember"
+binary = "target/release/ember"
+proto = "uci"
+book = "<embedded>"
+book_name = "embedded-mini-polyglot"
+
+[ember.options]
+Hash = "64"
+Threads = "1"
+Book = "<embedded>"
+
+[selection]
+opponent_file = "ratings/opponents.toml"
+min_final_opponents = 1
+target_final_opponents = 1
+max_family_game_share = 1.0
+include_roles = ["bracket"]
+
+[estimator]
+primary_scale = "Stockfish UCI_Elo equivalent"
+default_sigma = 250
+ember_prior_sigma = 10000
+
+[stockfish_adaptive]
+cmd = "stockfish"
+proto = "uci"
+levels = [1900, 2050, 2200, 2350]
+pilot_games_per_level = 24
+main_level_offsets = [0]
+target_step = 10
+uci_elo_min = 1320
+uci_elo_max = 3190
+rating_prior_sigma = 1000
+
+[stockfish_adaptive.options]
+Threads = "1"
+Hash = "64"
