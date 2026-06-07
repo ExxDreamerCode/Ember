@@ -132,7 +132,7 @@ impl Searcher {
     fn null_move_enabled(&self) -> bool { !self.debug.disable_null_move }
     #[cfg(not(feature = "search-debug"))]
     #[inline(always)]
-    fn null_move_enabled(&self) -> bool { false }
+    fn null_move_enabled(&self) -> bool { true }
 
     #[cfg(feature = "search-debug")]
     #[inline(always)]
@@ -295,7 +295,7 @@ impl Searcher {
                 if q + margin <= alpha { return alpha; }
             }
         }
-        if self.null_move_enabled() && !in_check && can_null && !is_pv && ply > 0 && actual_depth >= 3
+        if self.null_move_enabled() && king_pressure < 3 && !in_check && can_null && !is_pv && ply > 0 && actual_depth >= 3
             && has_non_pawn(&st.bb, st.w) && eval_score >= beta
         {
             let r = 3 + actual_depth / 4 + ((eval_score - beta) / 200).min(3);
@@ -485,7 +485,6 @@ impl Searcher {
 #[cfg(feature = "search-debug")]
 impl SearchDebug {
     fn from_env() -> Self {
-        let null_move_enabled = env_flag("EMBER_ENABLE_NULL_MOVE");
         Self {
             disable_corr_hist: env_flag("EMBER_DISABLE_CORR_HIST"),
             disable_futility: env_flag("EMBER_DISABLE_FUTILITY"),
@@ -493,7 +492,7 @@ impl SearchDebug {
             disable_iid_reduction: env_flag("EMBER_DISABLE_IID_REDUCTION"),
             disable_lmp: env_flag("EMBER_DISABLE_LMP"),
             disable_lmr: env_flag("EMBER_DISABLE_LMR"),
-            disable_null_move: !null_move_enabled || env_flag("EMBER_DISABLE_NULL_MOVE"),
+            disable_null_move: env_flag("EMBER_DISABLE_NULL_MOVE"),
             disable_reverse_futility: env_flag("EMBER_DISABLE_REVERSE_FUTILITY"),
             disable_see_pruning: env_flag("EMBER_DISABLE_SEE_PRUNING"),
         }
