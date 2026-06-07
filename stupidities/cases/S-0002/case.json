@@ -1,0 +1,88 @@
+{
+  "schema": 1,
+  "case_id": "S-0002",
+  "title": "Futility pruning chooses a mate-losing rook move in a sparse promotion endgame",
+  "status": "fixed",
+  "fen": "7R/1P4p1/4Kpk1/3N4/4P3/7P/8/4r3 b - - 0 72",
+  "side": "black",
+  "bad_move": "e1b1",
+  "reference_best_move": "e1e4",
+  "reference_note": "The bad rook move allows a forced mate. The fixed move is Stockfish's depth-16 best defensive move and avoids the immediate mate, although Black remains worse.",
+  "source_run_id": "stupidity-002-broad-01",
+  "source_candidate_id": "C-0016",
+  "before": {
+    "baseline": "pre-fix search-debug build before the futility guard",
+    "old_env": {},
+    "depth_moves": {
+      "6": "e1b1",
+      "8": "e1b1",
+      "10": "e1e4"
+    }
+  },
+  "fix": {
+    "summary": "Futility pruning remains enabled, but depth-2 and depth-3 futility cutoffs are skipped in promotion-race and sparse-endgame nodes where static margins are not a safe bound for quiet mating or promotion resources.",
+    "fixed_move": "e1e4",
+    "depth_moves": {
+      "6": "e1e4",
+      "8": "e1e4",
+      "10": "e1e4"
+    }
+  },
+  "root_cause": {
+    "summary": "The shallow futility cutoff used static evaluation plus a small margin in a sparse rook/pawn endgame with an immediate promotion race. In the refutation tree after Re1-b1, quiet promotion and mating resources are decisive, but the cutoff can return alpha before those resources are searched. Disabling futility alone removed the bad move; other individual pruning toggles did not remove it at both reproduced depths.",
+    "ablation": {
+      "base_depth_6": {
+        "baseline": "e1b1",
+        "disable_futility": "e1e4",
+        "disable_history_pruning": "e1b1",
+        "disable_lmp": "e1b1",
+        "disable_lmr": "e1b1",
+        "disable_null_move": "e1b1",
+        "disable_reverse_futility": "e1b1",
+        "disable_see_pruning": "e1b1",
+        "disable_iid_reduction": "e1b1"
+      },
+      "base_depth_8": {
+        "baseline": "e1b1",
+        "disable_futility": "e1e4",
+        "disable_lmr": "e1e4",
+        "disable_other_single_toggles": "e1b1"
+      }
+    }
+  },
+  "proof": {
+    "bad_line_e1b1": [
+      "e1b1",
+      "h3h4",
+      "b1b6",
+      "d5b6",
+      "f6f5",
+      "e4f5"
+    ],
+    "fixed_line_e1e4": [
+      "e1e4",
+      "e6d6",
+      "g6f5",
+      "b7b8q",
+      "e4e6",
+      "d6c7"
+    ]
+  },
+  "variants": [
+    {
+      "name": "horizontal mirror",
+      "fen": "R7/1p4P1/1kpK4/4N3/3P4/P7/8/3r4 b - - 0 72",
+      "bad_move": "d1g1",
+      "reference_best_move": "d1d4",
+      "fixed_move": "d1d4",
+      "before_depth_moves": {
+        "6": "d1g1",
+        "8": "d1g1"
+      },
+      "after_depth_moves": {
+        "6": "d1d4",
+        "8": "d1d4"
+      }
+    }
+  ]
+}
