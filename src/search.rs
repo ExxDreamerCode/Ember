@@ -2,7 +2,7 @@ use std::time::Instant;
 use crate::board::{
     BoardState, MATE, INF, MAX_PLY, QS_DEPTH,
     piece_on, piece_type, is_white_piece, EMPTY_SQ,
-    has_non_pawn, see, all_occ, bit,
+    has_non_pawn, see, all_occ, bit, attacked_by, KING_ATTACKS,
 };
 use crate::evaluate::evaluate;
 use crate::zobrist::{compute_hash, compute_pawn_hash};
@@ -25,6 +25,17 @@ const CORR_HIST_SIZE: usize = 16384;
 fn corr_idx(h: u64, side: bool) -> usize {
     let k = h.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(if side { 1 } else { 0 });
     k as usize & (CORR_HIST_SIZE - 1)
+}
+
+fn king_zone_pressure(st: &BoardState, white: bool) -> u32 {
+    let ks = st.king_sq(white);
+    let zone = KING_ATTACKS[ks] | bit(ks);
+    let occ = all_occ(&st.bb);
+    (attacked_by(&st.bb, occ, !white) & zone).count_ones()
+}
+
+fn tactical_king_pressure(st: &BoardState) -> u32 {
+    king_zone_pressure(st, true).max(king_zone_pressure(st, false))
 }
 
 pub struct Searcher {
@@ -107,7 +118,7 @@ impl Searcher {
     fn lmp_enabled(&self) -> bool { !self.debug.disable_lmp }
     #[cfg(not(feature = "search-debug"))]
     #[inline(always)]
-    fn lmp_enabled(&self) -> bool { false }
+    fn lmp_enabled(&self) -> bool { true }
 
     #[cfg(feature = "search-debug")]
     #[inline(always)]
@@ -244,6 +255,7 @@ impl Searcher {
         let in_check = crate::board::is_attacked(&st.bb, ks, !st.w);
         let is_pv  = beta - alpha > 1;
         let is_root = ply == 0;
+        let king_pressure = if in_check { 8 } else { tactical_king_pressure(st) };
 
         if !is_root && ply >= 2 && self.is_repetition() { return 0; }
 
@@ -338,7 +350,7 @@ impl Searcher {
         }).collect();
         scored.sort_unstable_by(|a, b| b.0.cmp(&a.0));
 
-        let lmp_count = if self.lmp_enabled() && !is_pv && !in_check && actual_depth <= 8 {
+        let lmp_count = if self.lmp_enabled() && king_pressure < 3 && !is_pv && !in_check && actual_depth <= 8 {
             match actual_depth { 1=>4, 2=>7, 3=>11, 4=>17, 5=>24, 6=>33, 7=>44, 8=>57, _=>usize::MAX }
         } else { usize::MAX };
 
@@ -473,14 +485,13 @@ impl Searcher {
 #[cfg(feature = "search-debug")]
 impl SearchDebug {
     fn from_env() -> Self {
-        let lmp_enabled = env_flag("EMBER_ENABLE_LMP");
         let null_move_enabled = env_flag("EMBER_ENABLE_NULL_MOVE");
         Self {
             disable_corr_hist: env_flag("EMBER_DISABLE_CORR_HIST"),
             disable_futility: env_flag("EMBER_DISABLE_FUTILITY"),
             disable_history_pruning: env_flag("EMBER_DISABLE_HISTORY_PRUNING"),
             disable_iid_reduction: env_flag("EMBER_DISABLE_IID_REDUCTION"),
-            disable_lmp: !lmp_enabled || env_flag("EMBER_DISABLE_LMP"),
+            disable_lmp: env_flag("EMBER_DISABLE_LMP"),
             disable_lmr: env_flag("EMBER_DISABLE_LMR"),
             disable_null_move: !null_move_enabled || env_flag("EMBER_DISABLE_NULL_MOVE"),
             disable_reverse_futility: env_flag("EMBER_DISABLE_REVERSE_FUTILITY"),
