@@ -1,0 +1,119 @@
+# Ratings here are starting priors, not fixed truth. The estimator may adjust them.
+# Prefer updating this file with a single primary external rating scale as better
+# Nix-available opponents are added.
+
+[[engine]]
+name = "Fairy-Max-5.0b"
+role = "diagnostic"
+package = "fairymax"
+cmd = "fairymax"
+proto = "xboard"
+rating = 1891
+rating_sigma = 120
+rating_scale = "CCRL 40/2 archive"
+rating_source = "CCRL 40/2 Archive engine details: Fairy-Max 5.0b"
+rating_source_url = "https://computerchess.org.uk/ccrl/402.archive/cgi/engine_details.cgi?eng=Fairy-Max+5.0b&print=Details"
+rating_source_date = "2020-02-04"
+engine_version = "5.0b"
+family = "fairymax"
+required = false
+
+[[engine]]
+name = "GNU-Chess"
+role = "final"
+package = "gnuchess"
+cmd = "gnuchess"
+proto = "xboard"
+rating = 2661
+rating_sigma = 220
+rating_scale = "CCRL 40/2 approximate"
+rating_source = "CCRL-linked GNU Chess 6.x references; broad prior until exact Nix build is matched"
+rating_source_url = "https://www.gnu.org/software/chess/"
+rating_source_date = "2026-06-06"
+engine_version = "nixpkgs"
+family = "gnuchess"
+required = false
+
+[[engine]]
+name = "Stockfish-UCI-1320"
+role = "bracket"
+package = "stockfish"
+cmd = "stockfish"
+proto = "uci"
+rating = 1320
+rating_sigma = 300
+rating_scale = "Stockfish UCI_Elo"
+rating_source = "Stockfish limited strength UCI_Elo setting"
+rating_source_date = "2026-06-06"
+engine_version = "nixpkgs"
+family = "stockfish-limited"
+required = true
+
+[engine.options]
+UCI_LimitStrength = "true"
+UCI_Elo = "1320"
+Threads = "1"
+Hash = "64"
+
+[[engine]]
+name = "Stockfish-UCI-1600"
+role = "bracket"
+package = "stockfish"
+cmd = "stockfish"
+proto = "uci"
+rating = 1600
+rating_sigma = 300
+rating_scale = "Stockfish UCI_Elo"
+rating_source = "Stockfish limited strength UCI_Elo setting"
+rating_source_date = "2026-06-06"
+engine_version = "nixpkgs"
+family = "stockfish-limited"
+required = true
+
+[engine.options]
+UCI_LimitStrength = "true"
+UCI_Elo = "1600"
+Threads = "1"
+Hash = "64"
+
+[[engine]]
+name = "Stockfish-UCI-2000"
+role = "bracket"
+package = "stockfish"
+cmd = "stockfish"
+proto = "uci"
+rating = 2000
+rating_sigma = 350
+rating_scale = "Stockfish UCI_Elo"
+rating_source = "Stockfish limited strength UCI_Elo setting"
+rating_source_date = "2026-06-06"
+engine_version = "nixpkgs"
+family = "stockfish-limited"
+required = false
+
+[engine.options]
+UCI_LimitStrength = "true"
+UCI_Elo = "2000"
+Threads = "1"
+Hash = "64"
+
+[[engine]]
+name = "Stockfish-UCI-2400"
+role = "bracket"
+package = "stockfish"
+cmd = "stockfish"
+proto = "uci"
+rating = 2400
+rating_sigma = 400
+rating_scale = "Stockfish UCI_Elo"
+rating_source = "Stockfish limited strength UCI_Elo setting"
+rating_source_date = "2026-06-06"
+engine_version = "nixpkgs"
+family = "stockfish-limited"
+required = false
+
+[engine.options]
+UCI_LimitStrength = "true"
+UCI_Elo = "2400"
+Threads = "1"
+Hash = "64"
