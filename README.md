@@ -44,6 +44,7 @@ echo -e "uci\nisready\nquit" | cargo run --release
 | `Hash`    | spin  | 128       | 1–4096   | Размер TT в мегабайтах      |
 | `Threads` | spin  | 1         | 1        | Количество потоков (только 1)|
 | `Book`    | string| `<empty>` | —        | Путь к дебютной книге .bin  |
+| `TraceFile`    | string| `<empty>` | —        | Путь к TraceBack файлу .jsonl  |
 
 ### Дебютная книга
 
@@ -87,6 +88,7 @@ setoption name Book value <embedded>
 ```
 setoption name Hash value 256
 setoption name Book value book.bin
+setoption option name TraceFile value Trace.jsonl
 ```
 
 ## 📊 Измерение Elo
@@ -130,7 +132,7 @@ CCRL-оценка.
 | ±7.5 Elo | 15 Elo | ~8 250 | ~6-9 ч |
 | ±5 Elo | 10 Elo | ~18 550 | ~13-20 ч |
 
-По нашим данным рейтинг Ember **2269** +- 30 elo
+По нашим данным рейтинг Ember **2382** +- 30 elo
 
 ## 🛠️ Разработка
 
