@@ -56,7 +56,7 @@ fn sparse_endgame(st: &BoardState) -> bool {
     pieces <= 8
 }
 
-fn futility_unsafe(st: &BoardState) -> bool {
+fn selective_pruning_unsafe(st: &BoardState) -> bool {
     promotion_race(st) || sparse_endgame(st)
 }
 
@@ -311,7 +311,7 @@ impl Searcher {
             if eval_score - margin >= beta { return eval_score - margin; }
         }
         if self.futility_enabled() && !in_check && !is_pv && actual_depth <= 3 && ply > 0 &&
-           !(actual_depth >= 2 && futility_unsafe(st))
+           !(actual_depth >= 2 && selective_pruning_unsafe(st))
         {
             let margin = 150 * actual_depth;
             if eval_score + margin <= alpha {
@@ -374,7 +374,9 @@ impl Searcher {
         }).collect();
         scored.sort_unstable_by(|a, b| b.0.cmp(&a.0));
 
-        let lmp_count = if self.lmp_enabled() && king_pressure < 3 && !is_pv && !in_check && actual_depth <= 8 {
+        let lmp_count = if self.lmp_enabled() && king_pressure < 3 && !is_pv && !in_check &&
+            actual_depth <= 8 && !selective_pruning_unsafe(st)
+        {
             match actual_depth { 1=>4, 2=>7, 3=>11, 4=>17, 5=>24, 6=>33, 7=>44, 8=>57, _=>usize::MAX }
         } else { usize::MAX };
 
@@ -433,7 +435,8 @@ impl Searcher {
 
             let new_depth = actual_depth - 1 + move_ext;
 
-            let lmr_eligible = self.lmr_enabled() && i >= 2 && actual_depth >= 3 && is_quiet && !in_check && !gives_check;
+            let lmr_eligible = self.lmr_enabled() && i >= 2 && actual_depth >= 3 && is_quiet &&
+                !in_check && !gives_check && !selective_pruning_unsafe(st);
             let s = if i == 0 {
                 -self.negamax(st, new_depth, ply+1, -beta, -alpha, true, start, tl, cnt)
             } else if lmr_eligible {
