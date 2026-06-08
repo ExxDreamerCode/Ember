@@ -1,8 +1,9 @@
 use std::time::Instant;
 use crate::board::{
     BoardState, MATE, INF, MAX_PLY, QS_DEPTH,
-    piece_on, piece_type, is_white_piece, EMPTY_SQ,
+    piece_on, piece_type, EMPTY_SQ,
     has_non_pawn, see, all_occ, bit, attacked_by, KING_ATTACKS,
+    WP, BP, WK, BK,
 };
 use crate::evaluate::evaluate;
 use crate::zobrist::{compute_hash, compute_pawn_hash};
@@ -36,6 +37,27 @@ fn king_zone_pressure(st: &BoardState, white: bool) -> u32 {
 
 fn tactical_king_pressure(st: &BoardState) -> u32 {
     king_zone_pressure(st, true).max(king_zone_pressure(st, false))
+}
+
+fn promotion_race(st: &BoardState) -> bool {
+    const WHITE_ADVANCED: u64 = 0x0000_0000_00FF_FF00;
+    const BLACK_ADVANCED: u64 = 0x00FF_FF00_0000_0000;
+    (st.bb[WP] & WHITE_ADVANCED) != 0 ||
+    (st.bb[BP] & BLACK_ADVANCED) != 0
+}
+
+fn sparse_endgame(st: &BoardState) -> bool {
+    let mut pieces = 0;
+    for idx in 0..12 {
+        if idx != WK && idx != BK {
+            pieces += st.bb[idx].count_ones();
+        }
+    }
+    pieces <= 8
+}
+
+fn selective_pruning_unsafe(st: &BoardState) -> bool {
+    promotion_race(st) || sparse_endgame(st)
 }
 
 pub struct Searcher {
@@ -288,7 +310,9 @@ impl Searcher {
             let margin = 80 + 65 * actual_depth;
             if eval_score - margin >= beta { return eval_score - margin; }
         }
-        if self.futility_enabled() && !in_check && !is_pv && actual_depth <= 3 && ply > 0 {
+        if self.futility_enabled() && !in_check && !is_pv && actual_depth <= 3 && ply > 0 &&
+           !(actual_depth >= 2 && selective_pruning_unsafe(st))
+        {
             let margin = 150 * actual_depth;
             if eval_score + margin <= alpha {
                 let q = self.qsearch(st, alpha - margin, beta - margin, QS_DEPTH, start, tl, cnt);
@@ -350,7 +374,9 @@ impl Searcher {
         }).collect();
         scored.sort_unstable_by(|a, b| b.0.cmp(&a.0));
 
-        let lmp_count = if self.lmp_enabled() && king_pressure < 3 && !is_pv && !in_check && actual_depth <= 8 {
+        let lmp_count = if self.lmp_enabled() && king_pressure < 3 && !is_pv && !in_check &&
+            actual_depth <= 8 && !selective_pruning_unsafe(st)
+        {
             match actual_depth { 1=>4, 2=>7, 3=>11, 4=>17, 5=>24, 6=>33, 7=>44, 8=>57, _=>usize::MAX }
         } else { usize::MAX };
 
@@ -409,7 +435,8 @@ impl Searcher {
 
             let new_depth = actual_depth - 1 + move_ext;
 
-            let lmr_eligible = self.lmr_enabled() && i >= 2 && actual_depth >= 3 && is_quiet && !in_check && !gives_check;
+            let lmr_eligible = self.lmr_enabled() && i >= 2 && actual_depth >= 3 && is_quiet &&
+                !in_check && !gives_check && !selective_pruning_unsafe(st);
             let s = if i == 0 {
                 -self.negamax(st, new_depth, ply+1, -beta, -alpha, true, start, tl, cnt)
             } else if lmr_eligible {

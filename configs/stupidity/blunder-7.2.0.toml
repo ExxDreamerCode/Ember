@@ -1,0 +1,47 @@
+[run]
+name = "ember-stupidity-hunt-blunder-7.2.0"
+time_control = "4+0.04"
+timemargin_ms = 2000
+rounds_per_pair = 100
+max_games = 400
+workers = "auto"
+worker_multiplier = 1.25
+opening_file = "ratings/openings.epd"
+opening_format = "epd"
+trace = true
+artifact_name = "stupidity-artifacts.tar.zst"
+
+[ember]
+name = "Ember"
+binary = "target/release/ember"
+proto = "uci"
+features = ["decision-trace", "search-debug"]
+
+[ember.options]
+Hash = "64"
+Threads = "1"
+Book = ""
+
+[opponent]
+name = "Blunder-7.2.0"
+cmd = "blunder-7.2.0"
+proto = "uci"
+
+[opponent.options]
+Hash = "64"
+
+[stockfish]
+name = "Stockfish-Analyzer"
+cmd = "stockfish"
+proto = "uci"
+analysis_depth = 10
+multipv = 5
+verify_depth = 8
+
+[stockfish.options]
+Threads = "1"
+Hash = "128"
+
+[render]
+fps = 1
+board_size = 720

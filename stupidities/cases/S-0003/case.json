@@ -1,0 +1,85 @@
+{
+  "schema": 1,
+  "case_id": "S-0003",
+  "title": "Selective reductions hide quiet promotion-race defenses",
+  "status": "fixed",
+  "fen": "3b4/8/5k2/8/5K1p/p6P/Pp6/5R2 w - - 0 85",
+  "side": "white",
+  "bad_move": "f4g4",
+  "reference_best_move": "f1e1",
+  "reference_note": "The bad king move lets Black's connected passed pawns take over. Stockfish triage scored the bad move about 416 cp worse than a rook-file defense; the fixed engine no longer repeats f4g4 at the traced depth.",
+  "source_run_id": "hunt-blunder-7.2.0-400g",
+  "source_candidate_id": "C-0007",
+  "before": {
+    "baseline": "pre-fix baseline commit d611f85, before the passed-pawn rank fix and selective-reduction guard",
+    "old_env": {},
+    "depth_moves": {
+      "6": "f4g4",
+      "8": "f4g4",
+      "10": "f4g4",
+      "12": "f1b1"
+    }
+  },
+  "fix": {
+    "summary": "Passed-pawn blocker detection now uses real board rows, and late move pruning / late move reductions are skipped in sparse promotion-race nodes where quiet blockade moves are tactically decisive.",
+    "fixed_move": "f4e4",
+    "depth_moves": {
+      "8": "f4e4"
+    }
+  },
+  "root_cause": {
+    "summary": "The verifier reproduced the traced depth-8 f4g4 decision five times. The original position isolated late move pruning at depth 8, while the color-swapped variant isolated late move reductions at depths 6 and 8. Both heuristics assumed late quiet moves were disposable in a sparse endgame even though quiet rook and king blockade moves are the critical defense against near-promotion pawns.",
+    "ablation": {
+      "base_depth_8": {
+        "baseline": "f4g4",
+        "disable_lmp": "f1d1",
+        "disable_lmr": "f4g4",
+        "disable_futility": "f4g4",
+        "disable_history_pruning": "f4g4"
+      },
+      "color_swapped_depth_8": {
+        "baseline": "f5g5",
+        "disable_lmr": "f5e5",
+        "disable_lmp": "f5g5",
+        "disable_futility": "f8b8",
+        "disable_history_pruning": "f5g5"
+      }
+    }
+  },
+  "proof": {
+    "bad_line_f4g4": [
+      "f4g4",
+      "f6e5",
+      "f1f5",
+      "e5d4",
+      "f5b5",
+      "d4c3",
+      "b5b8",
+      "c3c2",
+      "b8c8",
+      "c2b1",
+      "c8d8",
+      "b1a2",
+      "d8d2"
+    ]
+  },
+  "variants": [
+    {
+      "name": "color-swapped promotion race",
+      "fen": "5r2/pP6/P6p/5k1P/8/5K2/8/3B4 b - - 0 85",
+      "bad_move": "f5g5",
+      "reference_best_move": "f5e5",
+      "fixed_move": "f5e5",
+      "before_depth_moves": {
+        "6": "f5g5",
+        "8": "f5g5",
+        "10": "f5g5"
+      },
+      "after_depth_moves": {
+        "6": "f5e5",
+        "8": "f5e5",
+        "10": "f5e5"
+      }
+    }
+  ]
+}

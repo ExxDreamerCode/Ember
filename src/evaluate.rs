@@ -182,15 +182,15 @@ fn eval_pawns(bb: &[u64; 12]) -> i32 {
     let mut score = 0i32;
     let mut w_file = [0i32; 8];
     let mut b_file = [0i32; 8];
-    let mut w_rank = [[false; 8]; 8];
-    let mut b_rank = [[false; 8]; 8];
+    let mut w_pawns = [[false; 8]; 8];
+    let mut b_pawns = [[false; 8]; 8];
 
     let mut wp = bb[WP];
     while wp != 0 {
         let s = wp.trailing_zeros() as usize;
         let r = sq_r(s); let c = sq_c(s);
         w_file[c] += 1;
-        w_rank[c][7 - r] = true;
+        w_pawns[c][r] = true;
         wp &= wp - 1;
     }
     let mut bp = bb[BP];
@@ -198,7 +198,7 @@ fn eval_pawns(bb: &[u64; 12]) -> i32 {
         let s = bp.trailing_zeros() as usize;
         let r = sq_r(s); let c = sq_c(s);
         b_file[c] += 1;
-        b_rank[c][r] = true;
+        b_pawns[c][r] = true;
         bp &= bp - 1;
     }
 
@@ -211,26 +211,28 @@ fn eval_pawns(bb: &[u64; 12]) -> i32 {
         if w_file[c] > 0 && wn == 0 { score -= 20; }
         if b_file[c] > 0 && bn == 0 { score += 20; }
 
-        if w_file[c] > 0 {
-            for rank in 0..8 {
-                if !w_rank[c][rank] { continue; }
-                let blocked = (0..rank).any(|r2|
-                    b_rank[c][r2] ||
-                    (c>0 && b_rank[c-1][r2]) ||
-                    (c<7 && b_rank[c+1][r2])
+        for r in 0..8 {
+            if w_pawns[c][r] {
+                let blocked = (0..r).any(|r2|
+                    b_pawns[c][r2] ||
+                    (c>0 && b_pawns[c-1][r2]) ||
+                    (c<7 && b_pawns[c+1][r2])
                 );
-                if !blocked { score += 10 + rank as i32 * rank as i32 * 3; }
+                if !blocked {
+                    let rank = (7 - r) as i32;
+                    score += 10 + rank * rank * 3;
+                }
             }
-        }
-        if b_file[c] > 0 {
-            for rank in 0..8 {
-                if !b_rank[c][rank] { continue; }
-                let blocked = (0..rank).any(|r2|
-                    w_rank[c][r2] ||
-                    (c>0 && w_rank[c-1][r2]) ||
-                    (c<7 && w_rank[c+1][r2])
+            if b_pawns[c][r] {
+                let blocked = (r + 1..8).any(|r2|
+                    w_pawns[c][r2] ||
+                    (c>0 && w_pawns[c-1][r2]) ||
+                    (c<7 && w_pawns[c+1][r2])
                 );
-                if !blocked { score -= 10 + rank as i32 * rank as i32 * 3; }
+                if !blocked {
+                    let rank = r as i32;
+                    score -= 10 + rank * rank * 3;
+                }
             }
         }
     }

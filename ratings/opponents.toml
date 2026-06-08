@@ -35,6 +35,22 @@ family = "gnuchess"
 required = false
 
 [[engine]]
+name = "Blunder-7.2.0"
+role = "final"
+package = "blunder-7.2.0"
+cmd = "blunder-7.2.0"
+proto = "uci"
+rating = 2425
+rating_sigma = 120
+rating_scale = "Blunder upstream CCRL Blitz table"
+rating_source = "Blunder README rating table for version 7.2.0"
+rating_source_url = "https://github.com/deanmchris/blunder"
+rating_source_date = "2026-06-07"
+engine_version = "v7.2.0"
+family = "blunder"
+required = false
+
+[[engine]]
 name = "Stockfish-UCI-1320"
 role = "bracket"
 package = "stockfish"
