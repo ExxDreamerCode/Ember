@@ -165,6 +165,18 @@ def stockfish_engine(cfg):
     }
 
 
+def opponent_engine(cfg):
+    if "opponent" not in cfg:
+        return stockfish_engine(cfg)
+    opponent = cfg["opponent"]
+    return {
+        "name": opponent["name"],
+        "cmd": opponent["cmd"],
+        "proto": opponent.get("proto", "uci"),
+        "options": dict(opponent.get("options", {})),
+    }
+
+
 def copy_config(config_path, rd):
     rd.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(config_path, rd / "config.toml")
@@ -174,8 +186,9 @@ def probe(config_path, run_id, explicit_workers=None):
     cfg = read_toml(config_path)
     rd = run_dir_for(run_id)
     copy_config(config_path, rd)
+    opponent = opponent_engine(cfg)
     tools = {}
-    for cmd in ["cargo", "rustc", "cutechess-cli", cfg["stockfish"].get("cmd", "stockfish"), "ffmpeg"]:
+    for cmd in ["cargo", "rustc", "cutechess-cli", cfg["stockfish"].get("cmd", "stockfish"), opponent["cmd"], "ffmpeg"]:
         tools[cmd] = {"path": shutil.which(cmd), "available": command_exists(cmd)}
     meta = {
         "run_id": run_id,
@@ -185,7 +198,8 @@ def probe(config_path, run_id, explicit_workers=None):
         "tools": tools,
     }
     write_json(rd / "metadata.json", meta)
-    missing = [name for name, item in tools.items() if not item["available"] and name in ["cargo", "cutechess-cli", cfg["stockfish"].get("cmd", "stockfish")]]
+    required = ["cargo", "cutechess-cli", cfg["stockfish"].get("cmd", "stockfish"), opponent["cmd"]]
+    missing = [name for name, item in tools.items() if not item["available"] and name in required]
     print(json.dumps({"run_id": run_id, "missing": missing, "workers": meta["workers"]}, indent=2))
     if missing:
         raise SystemExit(2)
@@ -274,8 +288,10 @@ def run_matches(config_path, run_id, explicit_workers=None, explicit_max_games=N
     max_games = int(explicit_max_games or cfg["run"].get("max_games", 48))
     rounds = int(cfg["run"].get("rounds_per_pair", 12))
     scheduled = 0
+    opponent = opponent_engine(cfg)
     if scheduled + expected_games(rounds) <= max_games:
-        run_match(cfg, rd, ember_engine(cfg), stockfish_engine(cfg), rounds, workers, "Ember-vs-Stockfish.pgn")
+        pgn_name = f"Ember-vs-{safe_name(opponent['name'])}.pgn"
+        run_match(cfg, rd, ember_engine(cfg), opponent, rounds, workers, pgn_name)
         scheduled += expected_games(rounds)
     self_rounds = max(1, min(rounds, (max_games - scheduled) // 2))
     if self_rounds > 0:
