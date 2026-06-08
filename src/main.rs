@@ -1,5 +1,5 @@
 use std::io::{self, BufRead};
-use chess_rs_lib::{Engine, OpeningBook, opening_book, ptype};
+use chess_rs_lib::{Engine, OpeningBook, opening_book};
 use chess_rs_lib::board::{piece_on, piece_type, EMPTY_SQ};
 
 fn try_load_book(engine: &mut Engine, path: &std::path::Path) -> bool {
@@ -49,18 +49,21 @@ fn main() {
                 println!("option name Hash type spin default 128 min 1 max 4096");
                 println!("option name Threads type spin default 1 min 1 max 1");
                 println!("option name Book type string default <empty>");
+                #[cfg(feature = "decision-trace")]
+                println!("option name TraceFile type string default <empty>");
                 println!("uciok");
             }
             "isready" => { println!("readyok"); }
             "ucinewgame" => {
-                let book = engine.book.take();
-                engine = Engine::new();
-                engine.book = book;
+                reset_engine(&mut engine);
             }
             "setoption" => {
                 if parts.len() >= 3 && parts[1].to_lowercase() == "name" {
                     if parts[2].to_lowercase() == "book" {
-                        let val_start = if parts.len() >= 5 && parts[3].to_lowercase() == "value" { 4 } else { 3 };
+                        let val_start = parts.iter()
+                            .position(|part| part.eq_ignore_ascii_case("value"))
+                            .map(|idx| idx + 1)
+                            .unwrap_or(3);
                         let val = parts[val_start..].join(" ");
                         if val.is_empty() {
                             engine.book = None;
@@ -99,12 +102,19 @@ fn main() {
 
 fn parse_setoption(engine: &mut Engine, parts: &[&str]) {
     if parts.len() >= 5 && parts[1].to_lowercase() == "name" && parts[3].to_lowercase() == "value" {
-        let name = parts[2].to_lowercase();
-        let val = parts[4];
+        let value_idx = parts.iter().position(|part| part.eq_ignore_ascii_case("value")).unwrap_or(3);
+        let name = parts[2..value_idx].join(" ").to_lowercase();
+        let val = parts.get(value_idx + 1..).unwrap_or(&[]).join(" ");
         match name.as_str() {
             "hash" => {
                 if let Ok(mb) = val.parse::<usize>() {
                     engine.searcher.resize_tt(mb);
+                }
+            }
+            #[cfg(feature = "decision-trace")]
+            "tracefile" => {
+                if !val.is_empty() {
+                    engine.set_trace_file(&val);
                 }
             }
             _ => {}
@@ -112,13 +122,24 @@ fn parse_setoption(engine: &mut Engine, parts: &[&str]) {
     }
 }
 
+fn reset_engine(engine: &mut Engine) {
+    let book = engine.book.take();
+    #[cfg(feature = "decision-trace")]
+    let trace = std::mem::take(&mut engine.trace);
+    let tt_mb = engine.searcher.tt_mb;
+    *engine = Engine::new();
+    engine.book = book;
+    #[cfg(feature = "decision-trace")]
+    {
+        engine.trace = trace;
+    }
+    engine.searcher.resize_tt(tt_mb);
+}
+
 fn parse_position(engine: &mut Engine, parts: &[&str]) {
     if parts.len() < 2 { return; }
     if parts[1] == "startpos" {
-        let book = engine.book.take();
-        *engine = Engine::new();
-        engine.book = book;
-        engine.searcher.resize_tt(engine.searcher.tt_mb);
+        reset_engine(engine);
         let mut i = 2;
         if i < parts.len() && parts[i] == "moves" {
             i += 1;

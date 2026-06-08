@@ -4,6 +4,8 @@ pub mod evaluate;
 pub mod movegen;
 pub mod tt;
 pub mod search;
+#[cfg(feature = "decision-trace")]
+pub mod trace;
 pub mod engine;
 pub mod polyglot_randoms;
 pub mod book;

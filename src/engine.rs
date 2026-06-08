@@ -1,12 +1,14 @@
 use std::time::Instant;
 use crate::board::{
     BoardState, EMPTY_SQ, MATE, INF, MAX_PLY,
-    piece_on, piece_type, is_white_piece,
-    piece_from_char, bit, sq_to_str,
-    WP, WN, WB, WR, WQ, WK, BP, BN, BB as BBi, BR, BQ, BK,
-    is_attacked, all_occ, sq,
+    piece_from_char, bit, sq_to_str, move_to_uci,
+    is_attacked,
 };
+#[cfg(feature = "decision-trace")]
+use crate::board::board_to_fen;
 use crate::search::Searcher;
+#[cfg(feature = "decision-trace")]
+use crate::trace::{DecisionTrace, DepthInfo, TraceLogger};
 use crate::zobrist::compute_hash;
 use crate::movegen::{apply_move, generate_moves};
 use crate::book::OpeningBook;
@@ -15,6 +17,8 @@ pub struct Engine {
     pub st:       BoardState,
     pub searcher: Searcher,
     pub book:     Option<OpeningBook>,
+    #[cfg(feature = "decision-trace")]
+    pub trace:    TraceLogger,
 }
 
 impl Engine {
@@ -23,6 +27,8 @@ impl Engine {
             st:       BoardState::empty(),
             searcher: Searcher::new(),
             book:     None,
+            #[cfg(feature = "decision-trace")]
+            trace:    TraceLogger::from_env(),
         };
         e.set_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
         let h = compute_hash(&e.st);
@@ -96,27 +102,77 @@ impl Engine {
         Ok(())
     }
 
+    #[cfg(feature = "decision-trace")]
+    pub fn set_trace_file(&mut self, path: &str) {
+        self.trace.set_path(path);
+    }
+
     pub fn find_best_move(&mut self, time_limit: f64, depth_limit: i32) -> (String, i32, u64, f64) {
         let moves = generate_moves(&self.st, self.st.w, &self.st.cr, self.st.ep);
+        #[cfg(feature = "decision-trace")]
+        let root_fen = board_to_fen(&self.st);
+        #[cfg(feature = "decision-trace")]
+        let legal_moves: Vec<String> = moves.iter().map(|mv| move_to_uci(&self.st, mv)).collect();
+        #[cfg(feature = "decision-trace")]
+        let side = if self.st.w { "white" } else { "black" };
         if moves.is_empty() {
             let ks = self.st.king_sq(self.st.w);
             let in_check = is_attacked(&self.st.bb, ks, !self.st.w);
             if in_check {
                 eprintln!("info depth 0 score mate 0");
                 println! ("info depth 0 score mate 0");
+                #[cfg(feature = "decision-trace")]
+                self.trace.emit_decision(DecisionTrace {
+                    fen: &root_fen,
+                    side,
+                    legal_moves: &legal_moves,
+                    chosen_move: "0000",
+                    source: "terminal",
+                    depth_reached: 0,
+                    score_cp: -MATE,
+                    nodes: 0,
+                    elapsed_ms: 0,
+                    depth_infos: &[],
+                });
                 return ("0000".into(), -MATE, 0, 0.0);
             } else {
                 eprintln!("info depth 0 score cp 0");
                 println! ("info depth 0 score cp 0");
+                #[cfg(feature = "decision-trace")]
+                self.trace.emit_decision(DecisionTrace {
+                    fen: &root_fen,
+                    side,
+                    legal_moves: &legal_moves,
+                    chosen_move: "0000",
+                    source: "terminal",
+                    depth_reached: 0,
+                    score_cp: 0,
+                    nodes: 0,
+                    elapsed_ms: 0,
+                    depth_infos: &[],
+                });
                 return ("0000".into(), 0, 0, 0.0);
             }
         }
 
         if let Some(ref book) = self.book {
             if let Some(bm) = book.pick_move(&self.st, &moves) {
-                let mv_str = format!("{}{}", sq_to_str(bm[0]*8+bm[1]), sq_to_str(bm[2]*8+bm[3]));
+                let mv_str = move_to_uci(&self.st, &bm);
                 let eval_score = self.searcher.corrected_eval(&self.st);
                 println!("info depth 1 score cp {} nodes 0 nps 0 time 0 pv {}", eval_score, mv_str);
+                #[cfg(feature = "decision-trace")]
+                self.trace.emit_decision(DecisionTrace {
+                    fen: &root_fen,
+                    side,
+                    legal_moves: &legal_moves,
+                    chosen_move: &mv_str,
+                    source: "book",
+                    depth_reached: 1,
+                    score_cp: eval_score,
+                    nodes: 0,
+                    elapsed_ms: 0,
+                    depth_infos: &[],
+                });
                 return (mv_str, eval_score, 0, 0.0);
             }
         }
@@ -131,6 +187,9 @@ impl Engine {
 
         let init_eval = self.searcher.corrected_eval(&self.st);
         let mut prev_score = init_eval;
+        let mut best_depth = 0;
+        #[cfg(feature = "decision-trace")]
+        let mut depth_infos = Vec::new();
 
         for depth in 1..=depth_limit {
             if start.elapsed().as_secs_f64() > time_limit { break; }
@@ -212,6 +271,7 @@ impl Engine {
             if elapsed <= time_limit {
                 best_move  = asp_best;
                 best_score = asp_score;
+                best_depth = depth;
                 prev_score = best_score;
                 let nps = if elapsed > 0.0 { (total_nodes as f64 / elapsed) as i64 } else { 0 };
                 let score_str = if best_score.abs() > 90_000 {
@@ -225,15 +285,33 @@ impl Engine {
                           depth, score_str, total_nodes, nps, pv);
                 println! ("info depth {} score {} nodes {} nps {} pv {}",
                           depth, score_str, total_nodes, nps, pv);
+                #[cfg(feature = "decision-trace")]
+                depth_infos.push(DepthInfo {
+                    depth,
+                    score_cp: best_score,
+                    nodes: total_nodes,
+                    elapsed_ms: (elapsed * 1000.0) as u128,
+                    pv,
+                });
             } else { break; }
         }
 
-        let mut mv_str = format!("{}{}", sq_to_str(best_move[0]*8+best_move[1]),
-                                          sq_to_str(best_move[2]*8+best_move[3]));
-        let from_pi = piece_on(&self.st.bb, best_move[0]*8+best_move[1]);
-        if from_pi != EMPTY_SQ && piece_type(from_pi) == 0 && (best_move[2] == 0 || best_move[2] == 7) {
-            mv_str.push('q');
-        }
-        (mv_str, best_score, total_nodes, start.elapsed().as_secs_f64())
+        let mv_str = move_to_uci(&self.st, &best_move);
+        let elapsed = start.elapsed().as_secs_f64();
+        self.searcher.update_correction_history(&self.st, best_score, best_depth);
+        #[cfg(feature = "decision-trace")]
+        self.trace.emit_decision(DecisionTrace {
+            fen: &root_fen,
+            side,
+            legal_moves: &legal_moves,
+            chosen_move: &mv_str,
+            source: "search",
+            depth_reached: depth_infos.last().map(|d| d.depth).unwrap_or(0),
+            score_cp: best_score,
+            nodes: total_nodes,
+            elapsed_ms: (elapsed * 1000.0) as u128,
+            depth_infos: &depth_infos,
+        });
+        (mv_str, best_score, total_nodes, elapsed)
     }
 }

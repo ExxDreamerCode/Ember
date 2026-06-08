@@ -22,6 +22,7 @@
             coreutils
             cargo
             rustc
+            git
             gnugrep
             gnused
             gnutar
@@ -29,11 +30,15 @@
             rsync
             zstd
             tmux
-            python3
+            (python3.withPackages (ps: [
+              ps.chess
+              ps.cairosvg
+            ]))
             cutechess
             stockfish
             gnuchess
             fairymax
+            ffmpeg
           ];
 
           shellHook = ''
