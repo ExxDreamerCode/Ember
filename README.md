@@ -43,7 +43,7 @@ echo -e "uci\nisready\nquit" | cargo run --release
 |-----------|-------|-----------|----------|-----------------------------|
 | `Hash`    | spin  | 128       | 1–4096   | Размер TT в мегабайтах      |
 | `Threads` | spin  | 1         | 1        | Количество потоков (только 1)|
-| `Book`    | string| `<empty>` | —        | Путь к дебютной книге .bin  |
+| `Book`    | string| `<embedded>` | —        | Путь к дебютной книге .bin  |
 | `TraceFile`    | string| `<empty>` | —        | Путь к TraceBack файлу .jsonl  |
 
 ### Дебютная книга
