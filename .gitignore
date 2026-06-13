@@ -42,3 +42,4 @@ results/
 .elo-remote/
 __pycache__/
 *.py[cod]
+1.sh
