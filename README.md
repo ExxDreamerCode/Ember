@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="Ember Logo" width="200">
+</p>
+
 # 🔥 Ember — шахматный движок на Rust
 
 <p align="center">
