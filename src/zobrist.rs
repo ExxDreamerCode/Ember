@@ -2,7 +2,7 @@ use std::sync::OnceLock;
 use rand::Rng;
 use rand::SeedableRng;
 
-use crate::board::{BoardState, piece_type, EMPTY_SQ, piece_on};
+use crate::board::BoardState;
 
 static ZOBRIST: OnceLock<ZobristKeys> = OnceLock::new();
 fn zobrist() -> &'static ZobristKeys { ZOBRIST.get_or_init(ZobristKeys::new) }

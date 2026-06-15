@@ -1,6 +1,6 @@
 use crate::board::{
     BoardState, EMPTY_SQ, WP, WN, WB, WR, WQ, WK, BP, BN, BB, BR, BQ, BK,
-    bit, sq, sq_r, sq_c, piece_on, is_white_piece, piece_type, piece_char, piece_from_char,
+    bit, sq, sq_r, sq_c, piece_on, is_white_piece, piece_type,
     white_occ, black_occ, all_occ, is_attacked, KNIGHT_ATTACKS, KING_ATTACKS,
 };
 use crate::magic::{bishop_attacks, rook_attacks};

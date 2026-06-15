@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::polyglot_randoms::POLYGLOT_RANDOMS;
 use crate::board::{
     BoardState, EMPTY_SQ, piece_on, piece_type, is_white_piece,
-    sq, sq_r, sq_c, bit,
+    sq, sq_r, sq_c,
     WP, BP,
 };
 

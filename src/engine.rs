@@ -119,8 +119,7 @@ impl Engine {
             let ks = self.st.king_sq(self.st.w);
             let in_check = is_attacked(&self.st.bb, ks, !self.st.w);
             if in_check {
-                eprintln!("info depth 0 score mate 0");
-                println! ("info depth 0 score mate 0");
+                println!("info depth 0 score mate 0");
                 #[cfg(feature = "decision-trace")]
                 self.trace.emit_decision(DecisionTrace {
                     fen: &root_fen,
@@ -136,8 +135,7 @@ impl Engine {
                 });
                 return ("0000".into(), -MATE, 0, 0.0);
             } else {
-                eprintln!("info depth 0 score cp 0");
-                println! ("info depth 0 score cp 0");
+                println!("info depth 0 score cp 0");
                 #[cfg(feature = "decision-trace")]
                 self.trace.emit_decision(DecisionTrace {
                     fen: &root_fen,
@@ -274,6 +272,7 @@ impl Engine {
                 best_depth = depth;
                 prev_score = best_score;
                 let nps = if elapsed > 0.0 { (total_nodes as f64 / elapsed) as i64 } else { 0 };
+                let time_ms = (elapsed * 1000.0) as u64;
                 let score_str = if best_score.abs() > 90_000 {
                     let mate_in = (MATE - best_score.abs()) / 2 + 1;
                     if best_score > 0 { format!("mate {}", mate_in) }
@@ -281,10 +280,8 @@ impl Engine {
                 } else { format!("cp {}", best_score) };
                 let pv = format!("{}{}", sq_to_str(best_move[0]*8+best_move[1]),
                                          sq_to_str(best_move[2]*8+best_move[3]));
-                eprintln!("info depth {} score {} nodes {} nps {} pv {}",
-                          depth, score_str, total_nodes, nps, pv);
-                println! ("info depth {} score {} nodes {} nps {} pv {}",
-                          depth, score_str, total_nodes, nps, pv);
+                println!("info depth {} score {} nodes {} nps {} time {} pv {}",
+                          depth, score_str, total_nodes, nps, time_ms, pv);
                 #[cfg(feature = "decision-trace")]
                 depth_infos.push(DepthInfo {
                     depth,
