@@ -318,12 +318,14 @@ impl Searcher {
 
     fn static_eval(&self, st: &BoardState, ply: usize) -> i32 {
         if let Some(net) = get_nnue_net() {
-            if ply < self.nnue_stack.len() {
-                return evaluate_nnue_acc(net, &self.nnue_stack[ply], st);
-            }
-            let mut acc = NNUEAccumulator::new(net.hidden_size);
-            acc.refresh(net, st);
-            return evaluate_nnue_acc(net, &acc, st);
+            let score = if ply < self.nnue_stack.len() {
+                evaluate_nnue_acc(net, &self.nnue_stack[ply], st)
+            } else {
+                let mut acc = NNUEAccumulator::new(net.hidden_size);
+                acc.refresh(net, st);
+                evaluate_nnue_acc(net, &acc, st)
+            };
+            return if st.w { score } else { -score };
         }
         evaluate(st) * if st.w { 1 } else { -1 }
     }
@@ -333,7 +335,8 @@ impl Searcher {
             let net = get_nnue_net().unwrap();
             let mut acc = NNUEAccumulator::new(net.hidden_size);
             acc.refresh(net, st);
-            return evaluate_nnue_acc(net, &acc, st);
+            let score = evaluate_nnue_acc(net, &acc, st);
+            return if st.w { score } else { -score };
         }
         let base = evaluate(st) * if st.w { 1 } else { -1 };
         if self.corr_hist_enabled() {
@@ -450,6 +453,11 @@ impl Searcher {
         if moves.is_empty() {
             return if in_check { -MATE + 1000 } else { alpha };
         }
+        if get_nnue_net().is_some() && ply + 1 >= self.nnue_stack.len() {
+            if ply + 1 < MAX_PLY + 1 {
+                self.nnue_stack.resize(ply + 2, NNUEAccumulator::new(self.nnue_stack[0].hs));
+            }
+        }
 
         let mut caps: Vec<Move> = if in_check {
             moves
@@ -496,6 +504,7 @@ impl Searcher {
             }
             let st_before = *st;
             apply_move(st, mv[0], mv[1], mv[2], move_ec(&mv), move_promotion(&mv));
+            self.push_nnue_acc(&st_before, st, mv[0], mv[1], mv[2], move_ec(&mv), move_promotion(&mv), ply);
             let score = -self.qsearch(st, -beta, -alpha, depth - 1, start, tl, cnt, ply + 1);
             *st = st_before;
             if self.stopped {

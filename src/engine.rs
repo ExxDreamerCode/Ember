@@ -192,6 +192,7 @@ impl Engine {
         self.searcher.killers = [[None; 2]; MAX_PLY];
         self.searcher.history = [[0i32; 64]; 64];
         self.searcher.stopped = false;
+        self.searcher.init_nnue_stack(&self.st);
 
         let start = Instant::now();
         let mut best_move = moves[0];
@@ -246,6 +247,11 @@ impl Engine {
                         move_ec(&mv),
                         move_promotion(&mv),
                     );
+                    if let Some(net) = crate::evaluate::get_nnue_net() {
+                        if !self.searcher.nnue_stack.is_empty() {
+                            self.searcher.nnue_stack[1].refresh(net, &self.st);
+                        }
+                    }
                     let h = compute_hash(&self.st);
                     self.searcher.rep_stack.push(h);
                     self.searcher.rep_stack_len += 1;
