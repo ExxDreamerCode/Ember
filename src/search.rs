@@ -22,6 +22,26 @@ fn from_to_key(sr: usize, sc: usize, er: usize, ec: usize) -> (usize, usize) {
     (sr * 8 + sc, er * 8 + ec)
 }
 
+fn score_to_tt(score: i32, ply: usize) -> i32 {
+    if score > MATE / 2 {
+        score + ply as i32
+    } else if score < -MATE / 2 {
+        score - ply as i32
+    } else {
+        score
+    }
+}
+
+fn score_from_tt(score: i32, ply: usize) -> i32 {
+    if score > MATE / 2 {
+        score - ply as i32
+    } else if score < -MATE / 2 {
+        score + ply as i32
+    } else {
+        score
+    }
+}
+
 #[inline]
 fn is_promotion_move(fpi: u8, mv: &[usize; 4]) -> bool {
     fpi != EMPTY_SQ && piece_type(fpi) == 0 && (mv[2] == 0 || mv[2] == 7)
@@ -342,7 +362,7 @@ impl Searcher {
 
         let tt_entry = self.tt.get(h);
         let tt_move  = tt_entry.and_then(|e| e.best_move);
-        let tt_score = tt_entry.map(|e| e.score);
+        let tt_score = tt_entry.map(|e| score_from_tt(e.score, ply));
         let tt_depth = tt_entry.map(|e| e.depth).unwrap_or(-1);
         let tt_flag  = tt_entry.map(|e| e.flag);
 
@@ -564,7 +584,7 @@ impl Searcher {
         let flag = if best_score <= orig_alpha { TT_ALPHA }
                    else if best_score >= beta  { TT_BETA  }
                    else                        { TT_EXACT };
-        self.tt.store(h, actual_depth, best_score, flag, best_move);
+        self.tt.store(h, actual_depth, score_to_tt(best_score, ply), flag, best_move);
         best_score
     }
 }
@@ -666,5 +686,23 @@ mod tests {
         assert_ne!(best_move, "0000");
         assert!(nodes > 0);
         assert!(!engine.searcher.stopped);
+    }
+
+    #[test]
+    fn tt_mate_scores_are_stored_ply_independent() {
+        let winning_score = MATE - 9;
+        let losing_score = -MATE + 11;
+
+        assert_eq!(score_to_tt(winning_score, 9), MATE);
+        assert_eq!(score_from_tt(MATE, 3), MATE - 3);
+
+        assert_eq!(score_to_tt(losing_score, 11), -MATE);
+        assert_eq!(score_from_tt(-MATE, 4), -MATE + 4);
+    }
+
+    #[test]
+    fn tt_non_mate_scores_are_not_adjusted() {
+        assert_eq!(score_to_tt(42, 8), 42);
+        assert_eq!(score_from_tt(-313, 5), -313);
     }
 }
