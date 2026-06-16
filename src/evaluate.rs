@@ -1,14 +1,16 @@
 use crate::board::{
-    BoardState, WP, WN, WB, WR, WQ, WK, BP, BN, BB, BR, BQ, BK,
-    all_occ, white_occ, black_occ, KNIGHT_ATTACKS, KING_ATTACKS,
-    bit, sq_r, sq_c, sq,
+    all_occ, bit, black_occ, sq, sq_c, sq_r, white_occ, BoardState, BB, BK, BN, BP, BQ, BR,
+    KING_ATTACKS, KNIGHT_ATTACKS, WB, WK, WN, WP, WQ, WR,
 };
 use crate::magic::{bishop_attacks, rook_attacks};
+use crate::nnue::{NNUEAccumulator, NNUENet};
+use crate::types::*;
+use std::sync::OnceLock;
 
 const MG_VALUE: [i32; 6] = [82, 337, 365, 477, 1025, 0];
-const EG_VALUE: [i32; 6] = [94, 281, 297, 512, 936,  0];
+const EG_VALUE: [i32; 6] = [94, 281, 297, 512, 936, 0];
 
-const PHASE_INC:   [i32; 6] = [0, 1, 1, 2, 4, 0];
+const PHASE_INC: [i32; 6] = [0, 1, 1, 2, 4, 0];
 const TOTAL_PHASE: i32 = 24;
 
 #[rustfmt::skip]
@@ -151,14 +153,18 @@ const EG_TABLES: [&[i32; 64]; 6] = [
     &EG_PAWN, &EG_KNIGHT, &EG_BISHOP, &EG_ROOK, &EG_QUEEN, &EG_KING,
 ];
 
-const MOB_KNIGHT: [i32; 9]  = [-20,-15,-5, 0, 5, 10, 15, 18, 20];
-const MOB_BISHOP: [i32; 14] = [-20,-10,-5, 0, 5,  8, 11, 13, 15, 16, 17, 18, 18, 18];
-const MOB_ROOK:   [i32; 15] = [-15,-8, -4, 0, 3,  5,  7,  9, 11, 12, 13, 14, 14, 14, 14];
-const MOB_QUEEN:  [i32; 28] = [-20,-14,-8,-2, 0,  2,  4,  5,  6,  7,  8,  9, 10, 11, 12,
-                                 12, 13, 13, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14];
+const MOB_KNIGHT: [i32; 9] = [-20, -15, -5, 0, 5, 10, 15, 18, 20];
+const MOB_BISHOP: [i32; 14] = [-20, -10, -5, 0, 5, 8, 11, 13, 15, 16, 17, 18, 18, 18];
+const MOB_ROOK: [i32; 15] = [-15, -8, -4, 0, 3, 5, 7, 9, 11, 12, 13, 14, 14, 14, 14];
+const MOB_QUEEN: [i32; 28] = [
+    -20, -14, -8, -2, 0, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 12, 13, 13, 14, 14, 14, 14, 14, 14, 14,
+    14, 14, 14,
+];
 
 #[inline]
-fn flip_sq(sq: usize) -> usize { sq ^ 56 }
+fn flip_sq(sq: usize) -> usize {
+    sq ^ 56
+}
 
 fn count_mobility_bb(bb: &[u64; 12], s: usize, occ: u64, white: bool) -> usize {
     let own = if white { white_occ(bb) } else { black_occ(bb) };
@@ -166,7 +172,12 @@ fn count_mobility_bb(bb: &[u64; 12], s: usize, occ: u64, white: bool) -> usize {
         let b = bit(s);
         let base = if white { 0usize } else { 6 };
         let mut t = 6usize;
-        for i in 0..6 { if bb[base+i] & b != 0 { t = i; break; } }
+        for i in 0..6 {
+            if bb[base + i] & b != 0 {
+                t = i;
+                break;
+            }
+        }
         t
     };
     match pi_type {
@@ -188,7 +199,8 @@ fn eval_pawns(bb: &[u64; 12]) -> i32 {
     let mut wp = bb[WP];
     while wp != 0 {
         let s = wp.trailing_zeros() as usize;
-        let r = sq_r(s); let c = sq_c(s);
+        let r = sq_r(s);
+        let c = sq_c(s);
         w_file[c] += 1;
         w_pawns[c][r] = true;
         wp &= wp - 1;
@@ -196,39 +208,44 @@ fn eval_pawns(bb: &[u64; 12]) -> i32 {
     let mut bp = bb[BP];
     while bp != 0 {
         let s = bp.trailing_zeros() as usize;
-        let r = sq_r(s); let c = sq_c(s);
+        let r = sq_r(s);
+        let c = sq_c(s);
         b_file[c] += 1;
         b_pawns[c][r] = true;
         bp &= bp - 1;
     }
 
     for c in 0..8 {
-        if w_file[c] > 1 { score -= 15 * (w_file[c] - 1); }
-        if b_file[c] > 1 { score += 15 * (b_file[c] - 1); }
+        if w_file[c] > 1 {
+            score -= 15 * (w_file[c] - 1);
+        }
+        if b_file[c] > 1 {
+            score += 15 * (b_file[c] - 1);
+        }
 
-        let wn = (if c>0 {w_file[c-1]} else {0}) + (if c<7 {w_file[c+1]} else {0});
-        let bn = (if c>0 {b_file[c-1]} else {0}) + (if c<7 {b_file[c+1]} else {0});
-        if w_file[c] > 0 && wn == 0 { score -= 20; }
-        if b_file[c] > 0 && bn == 0 { score += 20; }
+        let wn = (if c > 0 { w_file[c - 1] } else { 0 }) + (if c < 7 { w_file[c + 1] } else { 0 });
+        let bn = (if c > 0 { b_file[c - 1] } else { 0 }) + (if c < 7 { b_file[c + 1] } else { 0 });
+        if w_file[c] > 0 && wn == 0 {
+            score -= 20;
+        }
+        if b_file[c] > 0 && bn == 0 {
+            score += 20;
+        }
 
         for r in 0..8 {
             if w_pawns[c][r] {
-                let blocked = (0..r).any(|r2|
-                    b_pawns[c][r2] ||
-                    (c>0 && b_pawns[c-1][r2]) ||
-                    (c<7 && b_pawns[c+1][r2])
-                );
+                let blocked = (0..r).any(|r2| {
+                    b_pawns[c][r2] || (c > 0 && b_pawns[c - 1][r2]) || (c < 7 && b_pawns[c + 1][r2])
+                });
                 if !blocked {
                     let rank = (7 - r) as i32;
                     score += 10 + rank * rank * 3;
                 }
             }
             if b_pawns[c][r] {
-                let blocked = (r + 1..8).any(|r2|
-                    w_pawns[c][r2] ||
-                    (c>0 && w_pawns[c-1][r2]) ||
-                    (c<7 && w_pawns[c+1][r2])
-                );
+                let blocked = (r + 1..8).any(|r2| {
+                    w_pawns[c][r2] || (c > 0 && w_pawns[c - 1][r2]) || (c < 7 && w_pawns[c + 1][r2])
+                });
                 if !blocked {
                     let rank = r as i32;
                     score -= 10 + rank * rank * 3;
@@ -240,11 +257,16 @@ fn eval_pawns(bb: &[u64; 12]) -> i32 {
 }
 
 fn king_safety(bb: &[u64; 12], white: bool, phase: i32) -> i32 {
-    if phase <= 6 { return 0; }
+    if phase <= 6 {
+        return 0;
+    }
     let kbb = if white { bb[WK] } else { bb[BK] };
-    if kbb == 0 { return 0; }
+    if kbb == 0 {
+        return 0;
+    }
     let ks = kbb.trailing_zeros() as usize;
-    let kr = sq_r(ks); let kc = sq_c(ks);
+    let kr = sq_r(ks);
+    let kc = sq_c(ks);
     let opp = !white;
 
     let mut danger = 0i32;
@@ -264,32 +286,101 @@ fn king_safety(bb: &[u64; 12], white: bool, phase: i32) -> i32 {
         } else {
             (tb & !0x0101010101010101u64) >> 9 | (tb & !0x8080808080808080u64) >> 7
         };
-        if p & patt  != 0 { danger += 8; }
-        if n & KNIGHT_ATTACKS[t] != 0 { danger += 15; }
+        if p & patt != 0 {
+            danger += 8;
+        }
+        if n & KNIGHT_ATTACKS[t] != 0 {
+            danger += 15;
+        }
         let ba = bishop_attacks(t, occ);
         let ra = rook_attacks(t, occ);
-        if b & ba != 0 { danger += 15; }
-        if r & ra != 0 { danger += 20; }
-        if q & (ba|ra) != 0 { danger += 40; }
+        if b & ba != 0 {
+            danger += 15;
+        }
+        if r & ra != 0 {
+            danger += 20;
+        }
+        if q & (ba | ra) != 0 {
+            danger += 40;
+        }
         z &= z - 1;
     }
     let front_r = if white { kr.wrapping_sub(1) } else { kr + 1 };
     if front_r < 8 {
         for dc in 0usize..3 {
-            let fc = match dc { 0 => kc, 1 => kc.wrapping_sub(1), _ => kc+1 };
-            if fc >= 8 { continue; }
-            let _shelter = if white { b'P' } else { b'p' };
+            let fc = match dc {
+                0 => kc,
+                1 => kc.wrapping_sub(1),
+                _ => kc + 1,
+            };
+            if fc >= 8 {
+                continue;
+            }
             let shelter_bit = bit(sq(front_r, fc));
-            let has = if white { bb[WP] & shelter_bit != 0 } else { bb[BP] & shelter_bit != 0 };
-            if !has { danger += 10; }
+            let has = if white {
+                bb[WP] & shelter_bit != 0
+            } else {
+                bb[BP] & shelter_bit != 0
+            };
+            if !has {
+                danger += 10;
+            }
         }
     }
     -(danger * phase / 24).max(0)
 }
 
+static NNUE_NET: OnceLock<NNUENet> = OnceLock::new();
+
+pub fn init_nnue(path: &str) -> Result<(), String> {
+    let net = NNUENet::load(path)?;
+    NNUE_NET
+        .set(net)
+        .map_err(|_| "NNUE already initialised".to_string())
+}
+
+pub fn init_nnue_from_bytes(data: &[u8]) -> Result<(), String> {
+    let path = format!("{}/.nnue_temp", std::env::temp_dir().display());
+    std::fs::write(&path, data).map_err(|e| format!("write temp: {}", e))?;
+    let net = NNUENet::load(&path)?;
+    let _ = std::fs::remove_file(&path);
+    NNUE_NET
+        .set(net)
+        .map_err(|_| "NNUE already initialised".to_string())
+}
+
+pub fn nnue_loaded() -> bool {
+    NNUE_NET.get().is_some()
+}
+
+pub fn get_nnue_net() -> Option<&'static NNUENet> {
+    NNUE_NET.get()
+}
+
+pub fn evaluate_nnue_acc(net: &NNUENet, acc: &NNUEAccumulator, st: &BoardState) -> i32 {
+    let stm = if st.w { WHITE } else { BLACK };
+    let pc: u32 = (0..12).map(|i| st.bb[i].count_ones()).sum();
+    let score = net.forward(acc, stm, pc);
+    if stm == WHITE {
+        score
+    } else {
+        -score
+    }
+}
+
+pub fn evaluate_nnue(st: &BoardState) -> i32 {
+    let net = match NNUE_NET.get() {
+        Some(n) => n,
+        None => return evaluate(st),
+    };
+    let mut acc = NNUEAccumulator::new(net.hidden_size);
+    acc.refresh(net, st);
+    evaluate_nnue_acc(net, &acc, st)
+}
+
 pub fn evaluate(st: &BoardState) -> i32 {
     let occ = all_occ(&st.bb);
-    let mut phase    = 0i32;
+    let mut phase = 0i32;
     let mut mg_score = 0i32;
     let mut eg_score = 0i32;
 
@@ -303,7 +394,7 @@ pub fn evaluate(st: &BoardState) -> i32 {
             let table_sq = if white { s } else { flip_sq(s) };
             mg_score += sign * (MG_VALUE[pt] + MG_TABLES[pt][table_sq]);
             eg_score += sign * (EG_VALUE[pt] + EG_TABLES[pt][table_sq]);
-            phase    += PHASE_INC[pt];
+            phase += PHASE_INC[pt];
 
             let mob = count_mobility_bb(&st.bb, s, occ, white).min(27);
             let mob_bonus = match pt {
@@ -322,19 +413,25 @@ pub fn evaluate(st: &BoardState) -> i32 {
 
     phase = phase.min(TOTAL_PHASE);
 
-    if st.bb[WB].count_ones() >= 2 { mg_score += 40; eg_score += 40; }
-    if st.bb[BB].count_ones() >= 2 { mg_score -= 40; eg_score -= 40; }
+    if st.bb[WB].count_ones() >= 2 {
+        mg_score += 40;
+        eg_score += 40;
+    }
+    if st.bb[BB].count_ones() >= 2 {
+        mg_score -= 40;
+        eg_score -= 40;
+    }
 
     let ps = eval_pawns(&st.bb);
     mg_score += ps;
     eg_score += ps;
 
-    mg_score += king_safety(&st.bb, true,  phase);
+    mg_score += king_safety(&st.bb, true, phase);
     mg_score -= king_safety(&st.bb, false, phase);
 
     for pi in [WR, BR] {
         let white = pi == WR;
-        let sign  = if white { 1 } else { -1 };
+        let sign = if white { 1 } else { -1 };
         let mut rooks = st.bb[pi];
         while rooks != 0 {
             let s = rooks.trailing_zeros() as usize;
@@ -344,9 +441,13 @@ pub fn evaluate(st: &BoardState) -> i32 {
             let bp = (st.bb[BP] & file_mask).count_ones() as i32;
             let own_p = if white { wp } else { bp };
             let opp_p = if white { bp } else { wp };
-            let bonus = if own_p == 0 && opp_p == 0 { 20 }
-                        else if own_p == 0 { 10 }
-                        else { 0 };
+            let bonus = if own_p == 0 && opp_p == 0 {
+                20
+            } else if own_p == 0 {
+                10
+            } else {
+                0
+            };
             mg_score += sign * bonus;
             eg_score += sign * bonus;
             rooks &= rooks - 1;

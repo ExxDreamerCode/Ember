@@ -58,7 +58,9 @@ impl TraceLogger {
     }
 
     pub fn emit_decision(&mut self, tr: DecisionTrace<'_>) {
-        let Some(file) = self.file.as_mut() else { return; };
+        let Some(file) = self.file.as_mut() else {
+            return;
+        };
         self.seq += 1;
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)

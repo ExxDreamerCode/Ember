@@ -1,6 +1,7 @@
-use std::io::{self, BufRead};
-use chess_rs_lib::{Engine, OpeningBook, opening_book};
 use chess_rs_lib::board::{piece_on, piece_type, EMPTY_SQ};
+use chess_rs_lib::evaluate;
+use chess_rs_lib::{opening_book, Engine, OpeningBook};
+use std::io::{self, BufRead};
 
 fn try_load_book(engine: &mut Engine, path: &std::path::Path) -> bool {
     let display = path.display();
@@ -16,9 +17,38 @@ fn try_load_book(engine: &mut Engine, path: &std::path::Path) -> bool {
     false
 }
 
+fn maybe_load_nnue(_engine: &mut Engine, path: &str) -> bool {
+    match evaluate::init_nnue(path) {
+        Ok(()) => {
+            eprintln!("info string NNUE loaded: {}", path);
+            true
+        }
+        Err(e) => {
+            eprintln!("info string Failed to load NNUE ({}): {}", path, e);
+            false
+        }
+    }
+}
+
 fn main() {
     let stdin = io::stdin();
     let mut engine = Engine::new();
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let net_path = exe_dir.join("net.nnue");
+            if net_path.exists() {
+                if let Some(p) = net_path.to_str() {
+                    maybe_load_nnue(&mut engine, p);
+                }
+            }
+        }
+    }
+    if !evaluate::nnue_loaded() {
+        if std::path::Path::new("net.nnue").exists() {
+            maybe_load_nnue(&mut engine, "net.nnue");
+        }
+    }
 
     let mut loaded = false;
     if let Ok(exe_path) = std::env::current_exe() {
@@ -36,11 +66,16 @@ fn main() {
             Err(e) => eprintln!("info string Failed to load embedded book: {}", e),
         }
     }
-    
+
     for line in stdin.lock().lines() {
-        let line = match line { Ok(l) => l, Err(_) => break };
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
         let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
+        if trimmed.is_empty() {
+            continue;
+        }
         let parts: Vec<&str> = trimmed.split_whitespace().collect();
         match parts[0] {
             "uci" => {
@@ -48,19 +83,22 @@ fn main() {
                 println!("id author ExxDreamerCode");
                 println!("option name Hash type spin default 128 min 1 max 4096");
                 println!("option name Threads type spin default 1 min 1 max 1");
-                println!("option name Book type string default <empty>");
+                println!("option name Book type string default <embedded>");
                 #[cfg(feature = "decision-trace")]
                 println!("option name TraceFile type string default <empty>");
                 println!("uciok");
             }
-            "isready" => { println!("readyok"); }
+            "isready" => {
+                println!("readyok");
+            }
             "ucinewgame" => {
                 reset_engine(&mut engine);
             }
             "setoption" => {
                 if parts.len() >= 3 && parts[1].to_lowercase() == "name" {
                     if parts[2].to_lowercase() == "book" {
-                        let val_start = parts.iter()
+                        let val_start = parts
+                            .iter()
                             .position(|part| part.eq_ignore_ascii_case("value"))
                             .map(|idx| idx + 1)
                             .unwrap_or(3);
@@ -68,13 +106,20 @@ fn main() {
                         if val.is_empty() {
                             engine.book = None;
                             eprintln!("info string Book disabled");
-                        } else if val.to_lowercase() == "<embedded>" || val.to_lowercase() == "<default>" {
-                            match OpeningBook::load_from_bytes(opening_book::BOOK_DATA, "<embedded>") {
+                        } else if val.to_lowercase() == "<embedded>"
+                            || val.to_lowercase() == "<default>"
+                        {
+                            match OpeningBook::load_from_bytes(
+                                opening_book::BOOK_DATA,
+                                "<embedded>",
+                            ) {
                                 Ok(book) => {
                                     engine.book = Some(book);
                                     eprintln!("info string Book switched to embedded");
                                 }
-                                Err(e) => eprintln!("info string Failed to load embedded book: {}", e),
+                                Err(e) => {
+                                    eprintln!("info string Failed to load embedded book: {}", e)
+                                }
                             }
                         } else {
                             let path = std::path::Path::new(&val);
@@ -91,8 +136,23 @@ fn main() {
                     }
                 }
             }
-            "position" => { parse_position(&mut engine, &parts); }
-            "go" => { parse_go(&mut engine, &parts); }
+            "eval" => {
+                let score = evaluate::evaluate_nnue(&engine.st);
+                let classic = chess_rs_lib::evaluate::evaluate(&engine.st);
+                println!("info string NNUE eval: {} cp (from stm)", score);
+                let stm_sign = if engine.st.w { 1 } else { -1 };
+                println!(
+                    "info string Classic eval: {} cp (from white), {} cp (from stm)",
+                    classic,
+                    classic * stm_sign
+                );
+            }
+            "position" => {
+                parse_position(&mut engine, &parts);
+            }
+            "go" => {
+                parse_go(&mut engine, &parts);
+            }
             "quit" => break,
             "stop" => {}
             _ => {}
@@ -102,7 +162,10 @@ fn main() {
 
 fn parse_setoption(engine: &mut Engine, parts: &[&str]) {
     if parts.len() >= 5 && parts[1].to_lowercase() == "name" && parts[3].to_lowercase() == "value" {
-        let value_idx = parts.iter().position(|part| part.eq_ignore_ascii_case("value")).unwrap_or(3);
+        let value_idx = parts
+            .iter()
+            .position(|part| part.eq_ignore_ascii_case("value"))
+            .unwrap_or(3);
         let name = parts[2..value_idx].join(" ").to_lowercase();
         let val = parts.get(value_idx + 1..).unwrap_or(&[]).join(" ");
         match name.as_str() {
@@ -137,7 +200,9 @@ fn reset_engine(engine: &mut Engine) {
 }
 
 fn parse_position(engine: &mut Engine, parts: &[&str]) {
-    if parts.len() < 2 { return; }
+    if parts.len() < 2 {
+        return;
+    }
     if parts[1] == "startpos" {
         reset_engine(engine);
         let mut i = 2;
@@ -151,7 +216,10 @@ fn parse_position(engine: &mut Engine, parts: &[&str]) {
             }
         }
     } else if parts[1] == "fen" && parts.len() >= 8 {
-        let fen = format!("{} {} {} {} {} {}", parts[2], parts[3], parts[4], parts[5], parts[6], parts[7]);
+        let fen = format!(
+            "{} {} {} {} {} {}",
+            parts[2], parts[3], parts[4], parts[5], parts[6], parts[7]
+        );
         engine.set_fen(&fen);
         let mut idx = 8;
         if idx < parts.len() && parts[idx] == "moves" {
@@ -166,17 +234,29 @@ fn parse_position(engine: &mut Engine, parts: &[&str]) {
     }
 }
 
-fn parse_uci_move(mv: &str) -> Option<(usize,usize,usize,usize,u8)> {
-    if mv.len() < 4 { return None; }
+fn parse_uci_move(mv: &str) -> Option<(usize, usize, usize, usize, u8)> {
+    if mv.len() < 4 {
+        return None;
+    }
     let b = mv.as_bytes();
-    let sc = (b[0]-b'a') as usize; let sr = 8-(b[1]-b'0') as usize;
-    let ec = (b[2]-b'a') as usize; let er = 8-(b[3]-b'0') as usize;
-    if sr >= 8 || sc >= 8 || er >= 8 || ec >= 8 { return None; }
+    let sc = (b[0] - b'a') as usize;
+    let sr = 8 - (b[1] - b'0') as usize;
+    let ec = (b[2] - b'a') as usize;
+    let er = 8 - (b[3] - b'0') as usize;
+    if sr >= 8 || sc >= 8 || er >= 8 || ec >= 8 {
+        return None;
+    }
     let promotion = if mv.len() >= 5 {
         match b[4] {
-            b'q'|b'Q' => b'Q', b'r'|b'R' => b'R', b'b'|b'B' => b'B', b'n'|b'N' => b'N', _ => 0
+            b'q' | b'Q' => b'Q',
+            b'r' | b'R' => b'R',
+            b'b' | b'B' => b'B',
+            b'n' | b'N' => b'N',
+            _ => 0,
         }
-    } else { 0 };
+    } else {
+        0
+    };
     Some((sr, sc, er, ec, promotion))
 }
 
@@ -192,14 +272,51 @@ fn parse_go(engine: &mut Engine, parts: &[&str]) {
     let mut i = 1;
     while i < parts.len() {
         match parts[i] {
-            "wtime"     => { if i+1 < parts.len() { wtime = parts[i+1].parse().unwrap_or(300000.0); i += 1; } }
-            "btime"     => { if i+1 < parts.len() { btime = parts[i+1].parse().unwrap_or(300000.0); i += 1; } }
-            "winc"      => { if i+1 < parts.len() { winc = parts[i+1].parse().unwrap_or(0.0); i += 1; } }
-            "binc"      => { if i+1 < parts.len() { binc = parts[i+1].parse().unwrap_or(0.0); i += 1; } }
-            "movetime"  => { if i+1 < parts.len() { movetime = parts[i+1].parse().unwrap_or(0.0); i += 1; } }
-            "depth"     => { if i+1 < parts.len() { depth = parts[i+1].parse().unwrap_or(64); i += 1; } }
-            "movestogo" => { if i+1 < parts.len() { movestogo = parts[i+1].parse().unwrap_or(0); i += 1; } }
-            "infinite"  => { movetime = 1_000_000.0; }
+            "wtime" => {
+                if i + 1 < parts.len() {
+                    wtime = parts[i + 1].parse().unwrap_or(300000.0);
+                    i += 1;
+                }
+            }
+            "btime" => {
+                if i + 1 < parts.len() {
+                    btime = parts[i + 1].parse().unwrap_or(300000.0);
+                    i += 1;
+                }
+            }
+            "winc" => {
+                if i + 1 < parts.len() {
+                    winc = parts[i + 1].parse().unwrap_or(0.0);
+                    i += 1;
+                }
+            }
+            "binc" => {
+                if i + 1 < parts.len() {
+                    binc = parts[i + 1].parse().unwrap_or(0.0);
+                    i += 1;
+                }
+            }
+            "movetime" => {
+                if i + 1 < parts.len() {
+                    movetime = parts[i + 1].parse().unwrap_or(0.0);
+                    i += 1;
+                }
+            }
+            "depth" => {
+                if i + 1 < parts.len() {
+                    depth = parts[i + 1].parse().unwrap_or(64);
+                    i += 1;
+                }
+            }
+            "movestogo" => {
+                if i + 1 < parts.len() {
+                    movestogo = parts[i + 1].parse().unwrap_or(0);
+                    i += 1;
+                }
+            }
+            "infinite" => {
+                movetime = 1_000_000.0;
+            }
             _ => {}
         }
         i += 1;
@@ -210,14 +327,22 @@ fn parse_go(engine: &mut Engine, parts: &[&str]) {
     } else {
         let t = if engine.st.w { wtime } else { btime };
         let inc = if engine.st.w { winc } else { binc };
-        let moves_left = if movestogo > 0 { movestogo as f64 } else { 30.0 };
+        let moves_left = if movestogo > 0 {
+            movestogo as f64
+        } else {
+            30.0
+        };
         (t / (moves_left + 2.0) + inc * 0.8) / 1000.0
     };
     let tl = tl.max(0.05).min(60.0);
 
     let root_state = engine.st;
     let (best_move, _, nodes, elapsed) = engine.find_best_move(tl, depth);
-    let _nps = if elapsed > 0.0 { (nodes as f64 / elapsed) as i64 } else { 0 };
+    let _nps = if elapsed > 0.0 {
+        (nodes as f64 / elapsed) as i64
+    } else {
+        0
+    };
 
     if best_move.len() >= 4 && best_move != "0000" {
         if best_move.len() == 4 {

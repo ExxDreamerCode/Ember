@@ -1,18 +1,22 @@
 pub mod board;
-pub mod zobrist;
+pub mod book;
+pub mod engine;
 pub mod evaluate;
+pub mod magic;
 pub mod movegen;
-pub mod tt;
+pub mod polyglot_randoms;
 pub mod search;
 #[cfg(feature = "decision-trace")]
 pub mod trace;
-pub mod engine;
-pub mod polyglot_randoms;
-pub mod book;
-pub mod magic;
+pub mod tt;
+pub mod zobrist;
 
 pub mod opening_book;
 
+pub mod bitboard;
+pub mod nnue;
+pub mod types;
+
 pub use board::piece_type as ptype;
-pub use engine::Engine;
 pub use book::OpeningBook;
+pub use engine::Engine;

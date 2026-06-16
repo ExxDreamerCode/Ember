@@ -1,20 +1,22 @@
 use std::sync::OnceLock;
 
 struct Magic {
-    mask:   u64,
-    magic:  u64,
-    shift:  u32,
+    mask: u64,
+    magic: u64,
+    shift: u32,
     offset: usize,
 }
 
 static TABLES: OnceLock<MagicTables> = OnceLock::new();
-fn tables() -> &'static MagicTables { TABLES.get_or_init(MagicTables::init) }
+fn tables() -> &'static MagicTables {
+    TABLES.get_or_init(MagicTables::init)
+}
 
 struct MagicTables {
     bishop: [Magic; 64],
-    rook:   [Magic; 64],
+    rook: [Magic; 64],
     bishop_attacks: Vec<u64>,
-    rook_attacks:   Vec<u64>,
+    rook_attacks: Vec<u64>,
 }
 
 #[inline(always)]
@@ -76,11 +78,12 @@ const ROOK_MAGICS: [u64; 64] = [
 fn bishop_mask(sq: usize) -> u64 {
     let (r, c) = (sq / 8, sq % 8);
     let mut m = 0u64;
-    for (dr, dc) in [(-1i32,-1i32),(-1,1),(1,-1),(1,1)] {
+    for (dr, dc) in [(-1i32, -1i32), (-1, 1), (1, -1), (1, 1)] {
         let (mut rr, mut rc) = (r as i32 + dr, c as i32 + dc);
         while rr > 0 && rr < 7 && rc > 0 && rc < 7 {
-            m |= 1u64 << (rr*8 + rc);
-            rr += dr; rc += dc;
+            m |= 1u64 << (rr * 8 + rc);
+            rr += dr;
+            rc += dc;
         }
     }
     m
@@ -89,21 +92,32 @@ fn bishop_mask(sq: usize) -> u64 {
 fn rook_mask(sq: usize) -> u64 {
     let (r, c) = (sq / 8, sq % 8);
     let mut m = 0u64;
-    for rr in 1..7i32 { if rr != r as i32 { m |= 1u64 << (rr*8 + c as i32); } }
-    for rc in 1..7i32 { if rc != c as i32 { m |= 1u64 << (r as i32*8 + rc); } }
+    for rr in 1..7i32 {
+        if rr != r as i32 {
+            m |= 1u64 << (rr * 8 + c as i32);
+        }
+    }
+    for rc in 1..7i32 {
+        if rc != c as i32 {
+            m |= 1u64 << (r as i32 * 8 + rc);
+        }
+    }
     m
 }
 
 fn slow_bishop(sq: usize, occ: u64) -> u64 {
     let (r, c) = (sq / 8, sq % 8);
     let mut att = 0u64;
-    for (dr, dc) in [(-1i32,-1i32),(-1,1),(1,-1),(1,1)] {
+    for (dr, dc) in [(-1i32, -1i32), (-1, 1), (1, -1), (1, 1)] {
         let (mut rr, mut rc) = (r as i32 + dr, c as i32 + dc);
         while rr >= 0 && rr < 8 && rc >= 0 && rc < 8 {
-            let b = 1u64 << (rr*8 + rc);
+            let b = 1u64 << (rr * 8 + rc);
             att |= b;
-            if occ & b != 0 { break; }
-            rr += dr; rc += dc;
+            if occ & b != 0 {
+                break;
+            }
+            rr += dr;
+            rc += dc;
         }
     }
     att
@@ -112,13 +126,16 @@ fn slow_bishop(sq: usize, occ: u64) -> u64 {
 fn slow_rook(sq: usize, occ: u64) -> u64 {
     let (r, c) = (sq / 8, sq % 8);
     let mut att = 0u64;
-    for (dr, dc) in [(-1i32,0i32),(1,0),(0,-1),(0,1)] {
+    for (dr, dc) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
         let (mut rr, mut rc) = (r as i32 + dr, c as i32 + dc);
         while rr >= 0 && rr < 8 && rc >= 0 && rc < 8 {
-            let b = 1u64 << (rr*8 + rc);
+            let b = 1u64 << (rr * 8 + rc);
             att |= b;
-            if occ & b != 0 { break; }
-            rr += dr; rc += dc;
+            if occ & b != 0 {
+                break;
+            }
+            rr += dr;
+            rc += dc;
         }
     }
     att
@@ -129,13 +146,17 @@ fn subsets(mask: u64) -> Vec<u64> {
     let mut sub = 0u64;
     loop {
         v.push(sub);
-        if sub == mask { break; }
+        if sub == mask {
+            break;
+        }
         sub = sub.wrapping_sub(mask) & mask;
     }
     v
 }
 
-fn shift_for(mask: u64) -> u32 { 64 - mask.count_ones() }
+fn shift_for(mask: u64) -> u32 {
+    64 - mask.count_ones()
+}
 
 impl MagicTables {
     fn init() -> Self {
@@ -144,10 +165,10 @@ impl MagicTables {
         let mut offset = 0usize;
 
         for sq in 0..64 {
-            let mask  = bishop_mask(sq);
+            let mask = bishop_mask(sq);
             let shift = shift_for(mask);
             let magic = BISHOP_MAGICS[sq];
-            let size  = 1usize << mask.count_ones();
+            let size = 1usize << mask.count_ones();
 
             let mut table = vec![0u64; size];
             for sub in subsets(mask) {
@@ -155,7 +176,12 @@ impl MagicTables {
                 table[idx] = slow_bishop(sq, sub);
             }
 
-            bishop_magics_arr[sq] = Magic { mask, magic, shift, offset };
+            bishop_magics_arr[sq] = Magic {
+                mask,
+                magic,
+                shift,
+                offset,
+            };
             bishop_attacks_vec.extend_from_slice(&table);
             offset += size;
         }
@@ -165,10 +191,10 @@ impl MagicTables {
         let mut offset = 0usize;
 
         for sq in 0..64 {
-            let mask  = rook_mask(sq);
+            let mask = rook_mask(sq);
             let shift = shift_for(mask);
             let magic = ROOK_MAGICS[sq];
-            let size  = 1usize << mask.count_ones();
+            let size = 1usize << mask.count_ones();
 
             let mut table = vec![0u64; size];
             for sub in subsets(mask) {
@@ -176,16 +202,21 @@ impl MagicTables {
                 table[idx] = slow_rook(sq, sub);
             }
 
-            rook_magics_arr[sq] = Magic { mask, magic, shift, offset };
+            rook_magics_arr[sq] = Magic {
+                mask,
+                magic,
+                shift,
+                offset,
+            };
             rook_attacks_vec.extend_from_slice(&table);
             offset += size;
         }
 
         MagicTables {
             bishop: bishop_magics_arr,
-            rook:   rook_magics_arr,
+            rook: rook_magics_arr,
             bishop_attacks: bishop_attacks_vec,
-            rook_attacks:   rook_attacks_vec,
+            rook_attacks: rook_attacks_vec,
         }
     }
 }

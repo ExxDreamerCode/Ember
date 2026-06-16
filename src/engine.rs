@@ -1,35 +1,33 @@
-use std::time::Instant;
-use crate::board::{
-    BoardState, EMPTY_SQ, MATE, INF, MAX_PLY,
-    piece_from_char, bit, move_to_uci,
-    is_attacked,
-    move_ec, move_promotion,
-};
 #[cfg(feature = "decision-trace")]
 use crate::board::board_to_fen;
+use crate::board::{
+    bit, is_attacked, move_ec, move_promotion, move_to_uci, piece_from_char, BoardState, EMPTY_SQ,
+    INF, MATE, MAX_PLY,
+};
+use crate::book::OpeningBook;
+use crate::movegen::{apply_move, generate_moves};
 use crate::search::Searcher;
 #[cfg(feature = "decision-trace")]
 use crate::trace::{DecisionTrace, DepthInfo, TraceLogger};
 use crate::zobrist::compute_hash;
-use crate::movegen::{apply_move, generate_moves};
-use crate::book::OpeningBook;
+use std::time::Instant;
 
 pub struct Engine {
-    pub st:       BoardState,
+    pub st: BoardState,
     pub searcher: Searcher,
-    pub book:     Option<OpeningBook>,
+    pub book: Option<OpeningBook>,
     #[cfg(feature = "decision-trace")]
-    pub trace:    TraceLogger,
+    pub trace: TraceLogger,
 }
 
 impl Engine {
     pub fn new() -> Self {
         let mut e = Engine {
-            st:       BoardState::empty(),
+            st: BoardState::empty(),
             searcher: Searcher::new(),
-            book:     None,
+            book: None,
             #[cfg(feature = "decision-trace")]
-            trace:    TraceLogger::from_env(),
+            trace: TraceLogger::from_env(),
         };
         e.set_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
         let h = compute_hash(&e.st);
@@ -73,11 +71,23 @@ impl Engine {
             if b.len() >= 2 {
                 let col = (b[0] - b'a') as usize;
                 let row = 8usize.wrapping_sub((b[1] - b'0') as usize);
-                if row < 8 { Some(row * 8 + col) } else { None }
-            } else { None }
-        } else { None };
+                if row < 8 {
+                    Some(row * 8 + col)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
-        self.st.mc = if parts.len() > 4 { parts[4].parse().unwrap_or(0) } else { 0 };
+        self.st.mc = if parts.len() > 4 {
+            parts[4].parse().unwrap_or(0)
+        } else {
+            0
+        };
 
         self.searcher.rep_stack.clear();
         self.searcher.rep_stack_len = 0;
@@ -158,7 +168,10 @@ impl Engine {
             if let Some(bm) = book.pick_move(&self.st, &moves) {
                 let mv_str = move_to_uci(&self.st, &bm);
                 let eval_score = self.searcher.corrected_eval(&self.st);
-                println!("info depth 1 score cp {} nodes 0 nps 0 time 0 pv {}", eval_score, mv_str);
+                println!(
+                    "info depth 1 score cp {} nodes 0 nps 0 time 0 pv {}",
+                    eval_score, mv_str
+                );
                 #[cfg(feature = "decision-trace")]
                 self.trace.emit_decision(DecisionTrace {
                     fen: &root_fen,
@@ -176,12 +189,12 @@ impl Engine {
             }
         }
 
-        self.searcher.killers  = [[None; 2]; MAX_PLY];
-        self.searcher.history  = [[0i32; 64]; 64];
-        self.searcher.stopped  = false;
+        self.searcher.killers = [[None; 2]; MAX_PLY];
+        self.searcher.history = [[0i32; 64]; 64];
+        self.searcher.stopped = false;
 
-        let start      = Instant::now();
-        let mut best_move  = moves[0];
+        let start = Instant::now();
+        let mut best_move = moves[0];
         let mut best_score = 0i32;
         let mut total_nodes = 0u64;
 
@@ -192,16 +205,20 @@ impl Engine {
         let mut depth_infos = Vec::new();
 
         for depth in 1..=depth_limit {
-            if start.elapsed().as_secs_f64() > time_limit { break; }
+            if start.elapsed().as_secs_f64() > time_limit {
+                break;
+            }
 
             let mut nd = 0u64;
             let init_delta = if depth >= 5 { 25 } else { INF };
             let mut asp_delta = init_delta;
             let (mut alpha, mut beta) = if asp_delta < INF {
                 (prev_score - asp_delta, prev_score + asp_delta)
-            } else { (-INF, INF) };
+            } else {
+                (-INF, INF)
+            };
 
-            let mut asp_best  = best_move;
+            let mut asp_best = best_move;
             let mut asp_score = -INF;
 
             'asp: loop {
@@ -212,79 +229,140 @@ impl Engine {
                     }
                 }
 
-                let mut cur_best  = sorted[0];
+                let mut cur_best = sorted[0];
                 let mut cur_score = -INF;
                 let mut loop_alpha = alpha;
 
                 for &mv in &sorted {
-                    if start.elapsed().as_secs_f64() > time_limit { break; }
+                    if start.elapsed().as_secs_f64() > time_limit {
+                        break;
+                    }
                     let old = self.st;
-                    apply_move(&mut self.st, mv[0], mv[1], mv[2], move_ec(&mv), move_promotion(&mv));
+                    apply_move(
+                        &mut self.st,
+                        mv[0],
+                        mv[1],
+                        mv[2],
+                        move_ec(&mv),
+                        move_promotion(&mv),
+                    );
                     let h = compute_hash(&self.st);
                     self.searcher.rep_stack.push(h);
                     self.searcher.rep_stack_len += 1;
 
                     let score = if cur_score == -INF {
-                        -self.searcher.negamax(&mut self.st, depth-1, 1, -beta, -loop_alpha,
-                                               true, start, time_limit, &mut nd)
+                        -self.searcher.negamax(
+                            &mut self.st,
+                            depth - 1,
+                            1,
+                            -beta,
+                            -loop_alpha,
+                            true,
+                            start,
+                            time_limit,
+                            &mut nd,
+                        )
                     } else {
-                        let s = -self.searcher.negamax(&mut self.st, depth-1, 1,
-                                                       -loop_alpha-1, -loop_alpha,
-                                                       true, start, time_limit, &mut nd);
+                        let s = -self.searcher.negamax(
+                            &mut self.st,
+                            depth - 1,
+                            1,
+                            -loop_alpha - 1,
+                            -loop_alpha,
+                            true,
+                            start,
+                            time_limit,
+                            &mut nd,
+                        );
                         if s > loop_alpha && s < beta {
-                            -self.searcher.negamax(&mut self.st, depth-1, 1, -beta, -loop_alpha,
-                                                   true, start, time_limit, &mut nd)
-                        } else { s }
+                            -self.searcher.negamax(
+                                &mut self.st,
+                                depth - 1,
+                                1,
+                                -beta,
+                                -loop_alpha,
+                                true,
+                                start,
+                                time_limit,
+                                &mut nd,
+                            )
+                        } else {
+                            s
+                        }
                     };
 
                     self.searcher.rep_stack.pop();
                     self.searcher.rep_stack_len -= 1;
                     self.st = old;
 
-                    if self.searcher.stopped { break; }
-                    if score > cur_score { cur_score = score; cur_best = mv; }
-                    if score > loop_alpha { loop_alpha = score; }
-                    if loop_alpha >= beta { break; }
+                    if self.searcher.stopped {
+                        break;
+                    }
+                    if score > cur_score {
+                        cur_score = score;
+                        cur_best = mv;
+                    }
+                    if score > loop_alpha {
+                        loop_alpha = score;
+                    }
+                    if loop_alpha >= beta {
+                        break;
+                    }
                 }
 
-                if self.searcher.stopped || start.elapsed().as_secs_f64() > time_limit { break 'asp; }
+                if self.searcher.stopped || start.elapsed().as_secs_f64() > time_limit {
+                    break 'asp;
+                }
 
                 if cur_score <= alpha {
                     asp_delta = asp_delta.saturating_mul(2).min(INF);
                     alpha = (prev_score - asp_delta).max(-INF);
-                    beta  = prev_score + init_delta;
+                    beta = prev_score + init_delta;
                     continue 'asp;
                 }
                 if cur_score >= beta {
                     asp_delta = asp_delta.saturating_mul(2).min(INF);
-                    beta  = (prev_score + asp_delta).min(INF);
+                    beta = (prev_score + asp_delta).min(INF);
                     asp_best = cur_best;
                     continue 'asp;
                 }
-                asp_best  = cur_best;
+                asp_best = cur_best;
                 asp_score = cur_score;
                 break;
             }
 
-            if self.searcher.stopped { break; }
+            if self.searcher.stopped {
+                break;
+            }
             total_nodes += nd;
             let elapsed = start.elapsed().as_secs_f64();
 
             if elapsed <= time_limit {
-                best_move  = asp_best;
+                best_move = asp_best;
                 best_score = asp_score;
                 best_depth = depth;
                 prev_score = best_score;
-                let nps = if elapsed > 0.0 { (total_nodes as f64 / elapsed) as i64 } else { 0 };
+                let nps = if elapsed > 0.0 {
+                    (total_nodes as f64 / elapsed) as i64
+                } else {
+                    0
+                };
                 let time_ms = (elapsed * 1000.0) as u64;
                 let score_str = if best_score.abs() > 90_000 {
                     let mate_in = (MATE - best_score.abs()) / 2 + 1;
-                    if best_score > 0 { format!("mate {}", mate_in) }
-                    else              { format!("mate -{}", mate_in) }
-                } else { format!("cp {}", best_score) };
+                    if best_score > 0 {
+                        format!("mate {}", mate_in)
+                    } else {
+                        format!("mate -{}", mate_in)
+                    }
+                } else {
+                    format!("cp {}", best_score)
+                };
                 let pv = move_to_uci(&self.st, &best_move);
-                println!("info depth {} score {} nodes {} nps {} time {} pv {}",
-                          depth, score_str, total_nodes, nps, time_ms, pv);
+                println!(
+                    "info depth {} score {} nodes {} nps {} time {} pv {}",
+                    depth, score_str, total_nodes, nps, time_ms, pv
+                );
                 #[cfg(feature = "decision-trace")]
                 depth_infos.push(DepthInfo {
                     depth,
@@ -293,12 +371,15 @@ impl Engine {
                     elapsed_ms: (elapsed * 1000.0) as u128,
                     pv,
                 });
-            } else { break; }
+            } else {
+                break;
+            }
         }
 
         let mv_str = move_to_uci(&self.st, &best_move);
         let elapsed = start.elapsed().as_secs_f64();
-        self.searcher.update_correction_history(&self.st, best_score, best_depth);
+        self.searcher
+            .update_correction_history(&self.st, best_score, best_depth);
         #[cfg(feature = "decision-trace")]
         self.trace.emit_decision(DecisionTrace {
             fen: &root_fen,
