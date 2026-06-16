@@ -31,10 +31,6 @@
             subPackages = [ "blunder" ];
             vendorHash = null;
 
-            patchPhase = ''
-              find . -type f \( -name '*.go' -o -name '*.sh' -o -name '*.mk' -o -name 'Makefile' -o -name 'makefile' \) -exec sed -i 's/\r$//' {} +
-            '';
-
             postInstall = ''
               mv "$out/bin/blunder" "$out/bin/blunder-7.2.0"
             '';
