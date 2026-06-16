@@ -76,6 +76,8 @@ fn main() {
                 println!("option name Threads type spin default 1 min 1 max 1");
                 println!("option name Book type string default <embedded>");
                 println!("option name NNUE type string default <embedded>");
+                println!("option name UCI_Chess960 type check default false");
+                println!("option name UCI_Variant type combo default normal var normal var chess960");
                 #[cfg(feature = "decision-trace")]
                 println!("option name TraceFile type string default <empty>");
                 println!("uciok");
@@ -148,6 +150,15 @@ fn main() {
                                 }
                             } else {
                                 maybe_load_nnue(&val);
+                            }
+                        }
+                        "uci_chess960" => {
+                            let enable = val == "true";
+                            engine.st.chess960 = enable;
+                            if enable {
+                                eprintln!("info string Chess960 mode enabled");
+                            } else {
+                                eprintln!("info string Chess960 mode disabled");
                             }
                         }
                         _ => {

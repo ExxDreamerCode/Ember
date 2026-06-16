@@ -1,8 +1,8 @@
 #[cfg(feature = "decision-trace")]
 use crate::board::board_to_fen;
 use crate::board::{
-    bit, is_attacked, move_ec, move_promotion, move_to_uci, piece_from_char, BoardState, EMPTY_SQ,
-    INF, MATE, MAX_PLY,
+    bit, is_attacked, move_ec, move_promotion, move_to_uci, piece_from_char, piece_on, piece_type,
+    sq, sq_c, BoardState, EMPTY_SQ, INF, MATE, MAX_PLY,
 };
 use crate::book::OpeningBook;
 use crate::movegen::{apply_move, generate_moves};
@@ -60,10 +60,32 @@ impl Engine {
         self.st.cr = [false; 4];
         if parts.len() > 2 {
             let r = parts[2];
-            self.st.cr[0] = r.contains('K');
-            self.st.cr[1] = r.contains('Q');
-            self.st.cr[2] = r.contains('k');
-            self.st.cr[3] = r.contains('q');
+            if r == "-" {
+            } else if r.contains('K') || r.contains('Q') || r.contains('k') || r.contains('q') {
+                self.st.cr[0] = r.contains('K');
+                self.st.cr[1] = r.contains('Q');
+                self.st.cr[2] = r.contains('k');
+                self.st.cr[3] = r.contains('q');
+            } else {
+                self.st.chess960 = true;
+                for ch in r.chars() {
+                    let col = ((ch as u8).to_ascii_lowercase() - b'a') as usize;
+                    let rank = if ch.is_uppercase() { 7usize } else { 0usize };
+                    if piece_on(&self.st.bb, sq(rank, col)) != EMPTY_SQ {
+                        let pi = piece_on(&self.st.bb, sq(rank, col));
+                        if piece_type(pi) == 3 {
+                            let wk_sq = self.st.king_sq(true);
+                            let bk_sq = self.st.king_sq(false);
+                            let idx = if ch.is_uppercase() {
+                                if col > sq_c(wk_sq) { 0 } else { 1 }
+                            } else {
+                                if col > sq_c(bk_sq) { 2 } else { 3 }
+                            };
+                            self.st.cr[idx] = true;
+                        }
+                    }
+                }
+            }
         }
 
         self.st.ep = if parts.len() > 3 && parts[3] != "-" {

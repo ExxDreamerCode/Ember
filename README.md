@@ -50,6 +50,7 @@ echo -e "uci\nisready\nquit" | cargo run --release
 | `Book`      | string | `<embedded>` | —        | Путь к дебютной книге .bin        |
 | `NNUE`      | string | `<embedded>` | —        | Путь к файлу нейросети .nnue      |
 | `TraceFile` | string | `<empty>`    | —        | Путь к TraceBack файлу .jsonl     |
+| `UCI_Chess960` | string | `false`    | —        | Включение/отключение Chess 960     |
 
 ### Дебютная книга
 

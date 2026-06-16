@@ -140,6 +140,7 @@ pub struct BoardState {
     pub cr: [bool; 4],
     pub ep: Option<usize>,
     pub mc: usize,
+    pub chess960: bool,
 }
 
 impl BoardState {
@@ -150,6 +151,7 @@ impl BoardState {
             cr: [false; 4],
             ep: None,
             mc: 0,
+            chess960: false,
         }
     }
 
@@ -178,15 +180,27 @@ pub fn sq_to_str(s: usize) -> String {
 pub fn move_to_uci(st: &BoardState, mv: &Move) -> String {
     let from = sq(mv[0], mv[1]);
     let to = sq(mv[2], move_ec(mv));
-    let mut out = format!("{}{}", sq_to_str(from), sq_to_str(to));
-    let promotion = move_promotion(mv);
     let pi = piece_on(&st.bb, from);
-    if promotion != 0 {
-        out.push(promotion.to_ascii_lowercase() as char);
-    } else if pi != EMPTY_SQ && piece_type(pi) == 0 && (mv[2] == 0 || mv[2] == 7) {
-        out.push('q');
+    let promo = move_promotion(mv);
+    if st.chess960 && pi != EMPTY_SQ && piece_type(pi) == 5 {
+        let kr = mv[0];
+        if mv[1] == 4 && (move_ec(mv) == 6 || move_ec(mv) == 2) {
+            let rook_to = if move_ec(mv) == 6 { sq(kr, 5) } else { sq(kr, 3) };
+            let rook_pi = if is_white_piece(pi) { WR } else { BR };
+            if st.bb[rook_pi] & bit(rook_to) != 0 {
+                return format!("{}{}", sq_to_str(from), sq_to_str(to));
+            }
+        }
     }
-    out
+    if promo != 0 {
+        let mut out = format!("{}{}", sq_to_str(from), sq_to_str(to));
+        out.push(promo.to_ascii_lowercase() as char);
+        return out;
+    }
+    if pi != EMPTY_SQ && piece_type(pi) == 0 && (mv[2] == 0 || mv[2] == 7) {
+        return format!("{}{}q", sq_to_str(from), sq_to_str(to));
+    }
+    format!("{}{}", sq_to_str(from), sq_to_str(to))
 }
 
 pub fn board_to_fen(st: &BoardState) -> String {
@@ -215,17 +229,24 @@ pub fn board_to_fen(st: &BoardState) -> String {
 
     let side = if st.w { "w" } else { "b" };
     let mut castling = String::new();
-    if st.cr[0] {
-        castling.push('K');
-    }
-    if st.cr[1] {
-        castling.push('Q');
-    }
-    if st.cr[2] {
-        castling.push('k');
-    }
-    if st.cr[3] {
-        castling.push('q');
+    if st.chess960 {
+        for (cr_idx, &(rk_sq, w_king)) in [(0, 7usize), (1, 7), (2, 0), (3, 0)].iter().enumerate() {
+            if st.cr[cr_idx] {
+                let rook_col = sq_c(rk_sq);
+                let king_col = sq_c(w_king);
+                let ch = if cr_idx % 2 == 0 {
+                    (b'A' + rook_col as u8) as char
+                } else {
+                    (b'A' + king_col as u8) as char
+                };
+                castling.push(ch);
+            }
+        }
+    } else {
+        if st.cr[0] { castling.push('K'); }
+        if st.cr[1] { castling.push('Q'); }
+        if st.cr[2] { castling.push('k'); }
+        if st.cr[3] { castling.push('q'); }
     }
     if castling.is_empty() {
         castling.push('-');

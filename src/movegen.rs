@@ -30,15 +30,27 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
         }
     }
 
-    if mover_type == 5 && sc == 4 && (ec == 6 || ec == 2) {
+    if mover_type == 5 && (st.chess960 || sc == 4) && (ec == 6 || ec == 2) {
         let rook_pi = if white { WR } else { BR };
-        if ec == 6 {
-            st.bb[rook_pi] &= !bit(sq(sr, 7));
-            st.bb[rook_pi] |= bit(sq(sr, 5));
+        let (r_from, r_to) = if st.chess960 {
+            if ec == 6 {
+                let rooks = st.bb[rook_pi] & if white { 0xFF00000000000000 } else { 0x00000000000000FF };
+                let r_from = if rooks != 0 {
+                    rooks.trailing_zeros() as usize
+                } else { 0 };
+                (r_from, sq(sr, 5))
+            } else {
+                let rooks = st.bb[rook_pi] & if white { 0xFF00000000000000 } else { 0x00000000000000FF };
+                let r_from = if rooks != 0 {
+                    rooks.trailing_zeros() as usize
+                } else { 0 };
+                (r_from, sq(sr, 3))
+            }
         } else {
-            st.bb[rook_pi] &= !bit(sq(sr, 0));
-            st.bb[rook_pi] |= bit(sq(sr, 3));
-        }
+            if ec == 6 { (sq(sr, 7), sq(sr, 5)) } else { (sq(sr, 0), sq(sr, 3)) }
+        };
+        st.bb[rook_pi] &= !bit(r_from);
+        st.bb[rook_pi] |= bit(r_to);
     }
 
     st.bb[mover_pi as usize] &= !bit(from);
@@ -371,7 +383,58 @@ pub fn generate_moves(
             }
             att &= att - 1;
         }
-        if !in_check {
+        if !in_check && st.chess960 {
+            let rook_pi = if wturn { WR } else { BR };
+            let kr = if wturn { 7usize } else { 0usize };
+            let rooks = st.bb[rook_pi] & if wturn { 0xFF00000000000000 } else { 0x00000000000000FF };
+            let king_col = sq_c(kf);
+            let mut rook_list: Vec<usize> = Vec::new();
+            let mut tmp = rooks;
+            while tmp != 0 {
+                let rs = tmp.trailing_zeros() as usize;
+                rook_list.push(rs % 8);
+                tmp &= tmp - 1;
+            }
+            rook_list.sort();
+            if cr[if wturn { 0 } else { 2 }] {
+                if let Some(&rc) = rook_list.iter().find(|&&c| c > king_col) {
+                    let c_lo = king_col + 1;
+                    let c_hi = rc - 1;
+                    let mut blocked = false;
+                    for c in c_lo..=c_hi {
+                        if all_occ(&st.bb) & bit(sq(kr, c)) != 0 { blocked = true; break; }
+                    }
+                    if !blocked {
+                        let mut attacked = false;
+                        for c in king_col..=rc {
+                            if is_attacked(&st.bb, sq(kr, c), !wturn) { attacked = true; break; }
+                        }
+                        if !attacked {
+                            result.push(encode_move(kr, king_col, kr, 6, 0));
+                        }
+                    }
+                }
+            }
+            if cr[if wturn { 1 } else { 3 }] {
+                if let Some(&rc) = rook_list.iter().rev().find(|&&c| c < king_col) {
+                    let c_lo = rc + 1;
+                    let c_hi = king_col - 1;
+                    let mut blocked = false;
+                    for c in c_lo..=c_hi {
+                        if all_occ(&st.bb) & bit(sq(kr, c)) != 0 { blocked = true; break; }
+                    }
+                    if !blocked {
+                        let mut attacked = false;
+                        for c in rc..=king_col {
+                            if is_attacked(&st.bb, sq(kr, c), !wturn) { attacked = true; break; }
+                        }
+                        if !attacked {
+                            result.push(encode_move(kr, king_col, kr, 2, 0));
+                        }
+                    }
+                }
+            }
+        } else if !in_check {
             let rook_pi = if wturn { WR } else { BR };
             let kr = if wturn { 7usize } else { 0usize };
             if cr[if wturn { 0 } else { 2 }]
