@@ -326,3 +326,65 @@ pub fn generate_moves(
 
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::Engine;
+
+    fn state_from_fen(fen: &str) -> BoardState {
+        let mut engine = Engine::new();
+        engine.set_fen(fen);
+        engine.st
+    }
+
+    fn perft(st: &BoardState, depth: u32) -> u64 {
+        if depth == 0 {
+            return 1;
+        }
+
+        let moves = generate_moves(st, st.w, &st.cr, st.ep);
+        if depth == 1 {
+            return moves.len() as u64;
+        }
+
+        let mut nodes = 0u64;
+        for mv in moves {
+            let mut next = *st;
+            apply_move(&mut next, mv[0], mv[1], mv[2], mv[3], 0);
+            nodes += perft(&next, depth - 1);
+        }
+        nodes
+    }
+
+    #[test]
+    fn start_position_perft_smoke() {
+        let st = state_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        assert_eq!(perft(&st, 1), 20);
+        assert_eq!(perft(&st, 2), 400);
+        assert_eq!(perft(&st, 3), 8902);
+    }
+
+    #[test]
+    fn rook_castling_perft_covers_castling_rights() {
+        let st = state_from_fen("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
+        assert_eq!(perft(&st, 1), 26);
+        assert_eq!(perft(&st, 2), 568);
+    }
+
+    #[test]
+    fn en_passant_move_removes_the_captured_pawn() {
+        let mut st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
+        let moves = generate_moves(&st, st.w, &st.cr, st.ep);
+        let ep = moves
+            .into_iter()
+            .find(|mv| *mv == [3, 4, 2, 3])
+            .expect("expected e5d6 en passant to be legal");
+
+        apply_move(&mut st, ep[0], ep[1], ep[2], ep[3], 0);
+
+        assert_ne!(piece_on(&st.bb, sq(2, 3)), EMPTY_SQ);
+        assert_eq!(piece_on(&st.bb, sq(3, 3)), EMPTY_SQ);
+        assert!(!st.w);
+    }
+}
