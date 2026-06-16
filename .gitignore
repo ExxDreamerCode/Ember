@@ -39,6 +39,7 @@ engine.log
 test_output/
 benchmark_results/
 results/
+/result
 .elo-remote/
 __pycache__/
 *.py[cod]
