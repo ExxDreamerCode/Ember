@@ -1,2 +1,13 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Files that are interpreted by Linux tooling must stay LF in the
+# working tree, even when checked out from Windows/WSL with autocrlf.
+*.nix text eol=lf
+*.sh text eol=lf
+*.toml text eol=lf
+*.lock text eol=lf
+*.rs text eol=lf
+*.md text eol=lf
+.gitattributes text eol=lf
+.gitignore text eol=lf
