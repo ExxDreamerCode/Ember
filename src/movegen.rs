@@ -2,10 +2,11 @@ use crate::board::{
     BoardState, EMPTY_SQ, WP, WN, WB, WR, WQ, WK, BP, BN, BB, BR, BQ, BK,
     bit, sq, sq_r, sq_c, piece_on, is_white_piece, piece_type,
     white_occ, black_occ, all_occ, is_attacked, KNIGHT_ATTACKS, KING_ATTACKS,
+    encode_move, promotion_piece_index,
 };
 use crate::magic::{bishop_attacks, rook_attacks};
 
-pub type Move = [usize; 4];
+pub use crate::board::Move;
 
 pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usize, promotion: u8) {
     let from = sq(sr, sc);
@@ -38,16 +39,7 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
     st.bb[mover_pi as usize] &= !bit(from);
 
     if mover_type == 0 && (er == 0 || er == 7) {
-        let promo_type: usize = if promotion != 0 {
-            match promotion {
-                b'Q' | b'q' => 4,
-                b'R' | b'r' => 3,
-                b'B' | b'b' => 2,
-                b'N' | b'n' => 1,
-                _ => 4,
-            }
-        } else { 4 };
-        let promo_pi = if white { promo_type } else { promo_type + 6 };
+        let promo_pi = promotion_piece_index(white, promotion).unwrap_or(if white { WQ } else { BQ });
         st.bb[promo_pi] |= bit(to);
     } else {
         st.bb[mover_pi as usize] |= bit(to);
@@ -98,7 +90,7 @@ pub fn generate_moves(
                 bb2[pi as usize] |=  bit(t);
                 let ks = if piece_type(pi) == 5 { t } else { king_sq_own };
                 if !is_attacked(&bb2, ks, !wturn) {
-                    result.push([sq_r(f), sq_c(f), sq_r(t), sq_c(t)]);
+                    result.push(encode_move(sq_r(f), sq_c(f), sq_r(t), sq_c(t), 0));
                 }
             }
         }};
@@ -116,14 +108,14 @@ pub fn generate_moves(
                 bb2[pi as usize] &= !bit(f);
                 bb2[pi as usize] |=  bit(t);
                 if !is_attacked(&bb2, king_sq_own, !wturn) {
-                    result.push([sq_r(f), sq_c(f), sq_r(t), sq_c(t)]);
+                    result.push(encode_move(sq_r(f), sq_c(f), sq_r(t), sq_c(t), 0));
                 }
             }
         }};
     }
 
     macro_rules! try_push_promo {
-        ($from:expr, $to:expr) => {{
+        ($from:expr, $to:expr, $promotion:expr) => {{
             let f = $from; let t = $to;
             let mut bb2 = st.bb;
             let pi = piece_on(&bb2, f);
@@ -131,10 +123,11 @@ pub fn generate_moves(
                 let cap = piece_on(&bb2, t);
                 if cap != EMPTY_SQ { bb2[cap as usize] &= !bit(t); }
                 bb2[pi as usize] &= !bit(f);
-                let qpi = if wturn { WQ } else { BQ };
-                bb2[qpi] |= bit(t);
+                if let Some(promo_pi) = promotion_piece_index(wturn, $promotion) {
+                    bb2[promo_pi] |= bit(t);
+                }
                 if !is_attacked(&bb2, king_sq_own, !wturn) {
-                    result.push([sq_r(f), sq_c(f), sq_r(t), sq_c(t)]);
+                    result.push(encode_move(sq_r(f), sq_c(f), sq_r(t), sq_c(t), $promotion));
                 }
             }
         }};
@@ -142,9 +135,11 @@ pub fn generate_moves(
 
     {
         let pawns = if wturn { st.bb[WP] } else { st.bb[BP] };
-        let promo_rank_bb: u64 = if wturn { 0x00FF000000000000u64 } else { 0x000000000000FF00u64 };
-        let pushed = if wturn { (pawns & !promo_rank_bb) >> 8 & free }
-                     else     { (pawns & !promo_rank_bb) << 8 & free };
+        let promo_rank_bb: u64 = if wturn { 0x000000000000FF00u64 } else { 0x00FF000000000000u64 };
+        let start_rank: u64 = if wturn { 0x00FF000000000000u64 }
+                              else      { 0x000000000000FF00u64 };
+        let pushed = if wturn { (pawns & !promo_rank_bb & !start_rank) >> 8 & free }
+                     else     { (pawns & !promo_rank_bb & !start_rank) << 8 & free };
         let mut tmp = pushed;
         while tmp != 0 {
             let t = tmp.trailing_zeros() as usize;
@@ -152,9 +147,6 @@ pub fn generate_moves(
             try_push!(f, t);
             tmp &= tmp - 1;
         }
-        let _start_rank: u64 = if wturn { 0x00FF000000000000u64 >> 8 } else { 0x000000FF00000000u64 >> (8*3) };
-        let start_rank: u64 = if wturn { 0x00FF000000000000u64 }
-                              else      { 0x000000000000FF00u64 };
         let pushed2 = if wturn {
             let p1 = (pawns & start_rank) >> 8 & free;
             p1 >> 8 & free
@@ -199,13 +191,25 @@ pub fn generate_moves(
             tmp &= tmp - 1;
         }
 
+        let start_pushed = if wturn { (pawns & start_rank) >> 8 & free }
+                           else     { (pawns & start_rank) << 8 & free };
+        let mut tmp = start_pushed;
+        while tmp != 0 {
+            let t = tmp.trailing_zeros() as usize;
+            let f = if wturn { t + 8 } else { t - 8 };
+            try_push!(f, t);
+            tmp &= tmp - 1;
+        }
+
         let promo_push = if wturn { promo_pawns >> 8 & free }
                          else     { promo_pawns << 8 & free };
         let mut tmp = promo_push;
         while tmp != 0 {
             let t = tmp.trailing_zeros() as usize;
             let f = if wturn { t + 8 } else { t - 8 };
-            try_push_promo!(f, t);
+            for promotion in [b'Q', b'R', b'B', b'N'] {
+                try_push_promo!(f, t, promotion);
+            }
             tmp &= tmp - 1;
         }
         let pc1 = if wturn { (promo_pawns & !0x0101010101010101u64) >> 9 }
@@ -214,7 +218,9 @@ pub fn generate_moves(
         while tmp != 0 {
             let t = tmp.trailing_zeros() as usize;
             let f = if wturn { t + 9 } else { t - 7 };
-            try_push_promo!(f, t);
+            for promotion in [b'Q', b'R', b'B', b'N'] {
+                try_push_promo!(f, t, promotion);
+            }
             tmp &= tmp - 1;
         }
         let pc2 = if wturn { (promo_pawns & !0x8080808080808080u64) >> 7 }
@@ -223,7 +229,9 @@ pub fn generate_moves(
         while tmp != 0 {
             let t = tmp.trailing_zeros() as usize;
             let f = if wturn { t + 7 } else { t - 9 };
-            try_push_promo!(f, t);
+            for promotion in [b'Q', b'R', b'B', b'N'] {
+                try_push_promo!(f, t, promotion);
+            }
             tmp &= tmp - 1;
         }
     }
@@ -296,7 +304,7 @@ pub fn generate_moves(
             let cap = piece_on(&st.bb, t);
             if cap != EMPTY_SQ { bb2[cap as usize] &= !bit(t); }
             if !is_attacked(&bb2, t, !wturn) {
-                result.push([sq_r(kf), sq_c(kf), sq_r(t), sq_c(t)]);
+                result.push(encode_move(sq_r(kf), sq_c(kf), sq_r(t), sq_c(t), 0));
             }
             att &= att - 1;
         }
@@ -310,7 +318,7 @@ pub fn generate_moves(
                 && !is_attacked(&st.bb, sq(kr,5), !wturn)
                 && !is_attacked(&st.bb, sq(kr,6), !wturn)
             {
-                result.push([kr, 4, kr, 6]);
+                result.push(encode_move(kr, 4, kr, 6, 0));
             }
             if cr[if wturn {1} else {3}]
                 && st.bb[rook_pi] & bit(sq(kr,0)) != 0
@@ -319,10 +327,103 @@ pub fn generate_moves(
                 && !is_attacked(&st.bb, sq(kr,3), !wturn)
                 && !is_attacked(&st.bb, sq(kr,2), !wturn)
             {
-                result.push([kr, 4, kr, 2]);
+                result.push(encode_move(kr, 4, kr, 2, 0));
             }
         }
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::board::{move_ec, move_promotion, move_to_uci};
+    use crate::engine::Engine;
+    use std::collections::BTreeSet;
+
+    fn state_from_fen(fen: &str) -> BoardState {
+        let mut engine = Engine::new();
+        engine.set_fen(fen);
+        engine.st
+    }
+
+    fn perft(st: &BoardState, depth: u32) -> u64 {
+        if depth == 0 {
+            return 1;
+        }
+
+        let moves = generate_moves(st, st.w, &st.cr, st.ep);
+        if depth == 1 {
+            return moves.len() as u64;
+        }
+
+        let mut nodes = 0u64;
+        for mv in moves {
+            let mut next = *st;
+            apply_move(&mut next, mv[0], mv[1], mv[2], move_ec(&mv), move_promotion(&mv));
+            nodes += perft(&next, depth - 1);
+        }
+        nodes
+    }
+
+    #[test]
+    fn start_position_perft_smoke() {
+        let st = state_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        assert_eq!(perft(&st, 1), 20);
+        assert_eq!(perft(&st, 2), 400);
+        assert_eq!(perft(&st, 3), 8902);
+    }
+
+    #[test]
+    fn rook_castling_perft_covers_castling_rights() {
+        let st = state_from_fen("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
+        assert_eq!(perft(&st, 1), 26);
+        assert_eq!(perft(&st, 2), 568);
+    }
+
+    #[test]
+    fn en_passant_move_removes_the_captured_pawn() {
+        let mut st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
+        let moves = generate_moves(&st, st.w, &st.cr, st.ep);
+        let ep = moves
+            .into_iter()
+            .find(|mv| *mv == [3, 4, 2, 3])
+            .expect("expected e5d6 en passant to be legal");
+
+        apply_move(&mut st, ep[0], ep[1], ep[2], move_ec(&ep), move_promotion(&ep));
+
+        assert_ne!(piece_on(&st.bb, sq(2, 3)), EMPTY_SQ);
+        assert_eq!(piece_on(&st.bb, sq(3, 3)), EMPTY_SQ);
+        assert!(!st.w);
+    }
+
+    #[test]
+    fn generate_moves_includes_underpromotions() {
+        let mut st = state_from_fen("1r2k3/P7/8/8/8/8/8/4K3 w - - 0 1");
+        let moves = generate_moves(&st, st.w, &st.cr, st.ep);
+        let uci: BTreeSet<String> = moves.iter().map(|mv| move_to_uci(&st, mv)).collect();
+
+        for suffix in ["q", "r", "b", "n"] {
+            assert!(uci.contains(&format!("a7a8{suffix}")));
+            assert!(uci.contains(&format!("a7b8{suffix}")));
+        }
+
+        let knight_promotion = moves
+            .into_iter()
+            .find(|mv| move_to_uci(&st, mv) == "a7a8n")
+            .expect("expected a7a8n to be legal");
+        apply_move(
+            &mut st,
+            knight_promotion[0],
+            knight_promotion[1],
+            knight_promotion[2],
+            move_ec(&knight_promotion),
+            move_promotion(&knight_promotion),
+        );
+
+        assert_eq!(piece_on(&st.bb, sq(0, 0)), WN as u8);
+        assert_eq!(piece_on(&st.bb, sq(1, 0)), EMPTY_SQ);
+        assert!(!st.w);
+    }
 }

@@ -4,6 +4,7 @@ use crate::board::{
     piece_on, piece_type, EMPTY_SQ,
     has_non_pawn, see, all_occ, bit, attacked_by, KING_ATTACKS,
     WP, BP, WK, BK,
+    Move, move_ec, move_promotion, promotion_piece_index,
 };
 use crate::evaluate::evaluate;
 use crate::zobrist::{compute_hash, compute_pawn_hash};
@@ -20,6 +21,75 @@ fn piece_to_idx(pt: u8) -> usize {
 
 fn from_to_key(sr: usize, sc: usize, er: usize, ec: usize) -> (usize, usize) {
     (sr * 8 + sc, er * 8 + ec)
+}
+
+fn score_to_tt(score: i32, ply: usize) -> i32 {
+    if score > MATE / 2 {
+        score + ply as i32
+    } else if score < -MATE / 2 {
+        score - ply as i32
+    } else {
+        score
+    }
+}
+
+fn score_from_tt(score: i32, ply: usize) -> i32 {
+    if score > MATE / 2 {
+        score - ply as i32
+    } else if score < -MATE / 2 {
+        score + ply as i32
+    } else {
+        score
+    }
+}
+
+#[inline]
+fn is_promotion_move(fpi: u8, mv: &Move) -> bool {
+    move_promotion(mv) != 0 || (fpi != EMPTY_SQ && piece_type(fpi) == 0 && (mv[2] == 0 || mv[2] == 7))
+}
+
+fn promotion_value(mv: &Move) -> i32 {
+    match move_promotion(mv).to_ascii_uppercase() {
+        b'N' => piece_val(1),
+        b'B' => piece_val(2),
+        b'R' => piece_val(3),
+        b'Q' => piece_val(4),
+        _ => 0,
+    }
+}
+
+#[inline]
+fn is_en_passant_capture(st: &BoardState, fpi: u8, mv: &Move, to: usize, tpi: u8) -> bool {
+    fpi != EMPTY_SQ &&
+    tpi == EMPTY_SQ &&
+    piece_type(fpi) == 0 &&
+    Some(to) == st.ep &&
+    mv[1] != move_ec(mv)
+}
+
+#[inline]
+fn capture_victim_value(st: &BoardState, fpi: u8, mv: &Move, to: usize, tpi: u8) -> i32 {
+    if tpi != EMPTY_SQ {
+        piece_val(piece_type(tpi))
+    } else if is_en_passant_capture(st, fpi, mv, to, tpi) {
+        piece_val(0)
+    } else {
+        0
+    }
+}
+
+#[inline]
+fn move_is_capture(st: &BoardState, fpi: u8, mv: &Move, to: usize, tpi: u8) -> bool {
+    tpi != EMPTY_SQ || is_en_passant_capture(st, fpi, mv, to, tpi)
+}
+
+#[inline]
+fn move_see(st: &BoardState, mv: &Move, from: usize, to: usize, fpi: u8, tpi: u8) -> i32 {
+    if is_en_passant_capture(st, fpi, mv, to, tpi) {
+        0
+    } else {
+        see(&st.bb, from, to)
+    }
 }
 
 const CORR_HIST_SIZE: usize = 16384;
@@ -62,13 +132,14 @@ fn selective_pruning_unsafe(st: &BoardState) -> bool {
 
 pub struct Searcher {
     pub tt:           TT,
-    pub killers:      [[Option<[usize; 4]>; 2]; MAX_PLY],
+    pub killers:      [[Option<Move>; 2]; MAX_PLY],
     pub history:      [[i32; 64]; 64],
-    pub counter_move: [[Option<[usize; 4]>; 64]; 13],
+    pub counter_move: [[Option<Move>; 64]; 13],
     pub corr_hist:    [i32; CORR_HIST_SIZE * 2],
     pub rep_stack:    Vec<u64>,
     pub rep_stack_len: usize,
     pub tt_mb:        usize,
+    pub stopped:      bool,
     #[cfg(feature = "search-debug")]
     pub debug:        SearchDebug,
 }
@@ -97,6 +168,7 @@ impl Searcher {
             rep_stack:    Vec::with_capacity(512),
             rep_stack_len: 0,
             tt_mb:        128,
+            stopped:      false,
             #[cfg(feature = "search-debug")]
             debug:        SearchDebug::from_env(),
         }
@@ -105,6 +177,16 @@ impl Searcher {
     pub fn resize_tt(&mut self, mb: usize) {
         self.tt.resize(mb);
         self.tt_mb = mb;
+    }
+
+    #[inline]
+    fn time_up(&mut self, start: Instant, tl: f64) -> bool {
+        if self.stopped || start.elapsed().as_secs_f64() > tl {
+            self.stopped = true;
+            true
+        } else {
+            false
+        }
     }
 
     #[cfg(feature = "search-debug")]
@@ -212,7 +294,7 @@ impl Searcher {
     fn qsearch(&mut self, st: &mut BoardState, mut alpha: i32, beta: i32, depth: i32,
                start: Instant, tl: f64, cnt: &mut u64) -> i32 {
         *cnt += 1;
-        if start.elapsed().as_secs_f64() > tl { return 0; }
+        if self.time_up(start, tl) { return 0; }
         let ks = st.king_sq(st.w);
         let in_check = crate::board::is_attacked(&st.bb, ks, !st.w);
 
@@ -231,34 +313,39 @@ impl Searcher {
             return if in_check { -MATE + 1000 } else { alpha };
         }
 
-        let mut caps: Vec<[usize; 4]> = if in_check {
+        let mut caps: Vec<Move> = if in_check {
             moves
         } else {
             moves.into_iter().filter(|mv| {
-                let to = mv[2]*8 + mv[3];
-                piece_on(&st.bb, to) != EMPTY_SQ ||
-                (piece_type(piece_on(&st.bb, mv[0]*8+mv[1])) == 0 && (mv[2]==0||mv[2]==7))
+                let to = mv[2]*8 + move_ec(mv);
+                let from = mv[0]*8 + mv[1];
+                let fpi = piece_on(&st.bb, from);
+                let tpi = piece_on(&st.bb, to);
+                move_is_capture(st, fpi, mv, to, tpi) || is_promotion_move(fpi, mv)
             }).collect()
         };
         if caps.is_empty() { return alpha; }
 
         caps.sort_by_key(|mv| {
-            let to = mv[2]*8+mv[3]; let from = mv[0]*8+mv[1];
+            let to = mv[2]*8+move_ec(mv); let from = mv[0]*8+mv[1];
             let vpi = piece_on(&st.bb, to);
             let api = piece_on(&st.bb, from);
-            let victim   = if vpi != EMPTY_SQ { piece_val(piece_type(vpi)) } else { 0 };
+            let victim   = capture_victim_value(st, api, mv, to, vpi);
             let attacker = if api != EMPTY_SQ { piece_val(piece_type(api)) } else { 0 };
-            -(victim * 10 - attacker)
+            -(victim * 10 - attacker + promotion_value(mv))
         });
 
         for mv in caps {
-            if start.elapsed().as_secs_f64() > tl { return 0; }
-            let from = mv[0]*8+mv[1]; let to = mv[2]*8+mv[3];
-            if !in_check && see(&st.bb, from, to) < 0 { continue; }
+            if self.time_up(start, tl) { return 0; }
+            let from = mv[0]*8+mv[1]; let to = mv[2]*8+move_ec(&mv);
+            let fpi = piece_on(&st.bb, from);
+            let tpi = piece_on(&st.bb, to);
+            if !in_check && move_see(st, &mv, from, to, fpi, tpi) < 0 { continue; }
             let old = *st;
-            apply_move(st, mv[0], mv[1], mv[2], mv[3], 0);
+            apply_move(st, mv[0], mv[1], mv[2], move_ec(&mv), move_promotion(&mv));
             let score = -self.qsearch(st, -beta, -alpha, depth - 1, start, tl, cnt);
             *st = old;
+            if self.stopped { return 0; }
             if score >= beta  { return score; }
             if score > alpha  { alpha = score; }
         }
@@ -269,7 +356,7 @@ impl Searcher {
                    mut alpha: i32, beta: i32, can_null: bool,
                    start: Instant, tl: f64, cnt: &mut u64) -> i32 {
         *cnt += 1;
-        if start.elapsed().as_secs_f64() > tl { return 0; }
+        if self.time_up(start, tl) { return 0; }
         if ply >= MAX_PLY { return self.corrected_eval(st); }
 
         let h = compute_hash(st);
@@ -286,7 +373,7 @@ impl Searcher {
 
         let tt_entry = self.tt.get(h);
         let tt_move  = tt_entry.and_then(|e| e.best_move);
-        let tt_score = tt_entry.map(|e| e.score);
+        let tt_score = tt_entry.map(|e| score_from_tt(e.score, ply));
         let tt_depth = tt_entry.map(|e| e.depth).unwrap_or(-1);
         let tt_flag  = tt_entry.map(|e| e.flag);
 
@@ -333,7 +420,7 @@ impl Searcher {
             self.rep_stack.pop();
             self.rep_stack_len -= 1;
             st.w = ow; st.ep = oe;
-            if start.elapsed().as_secs_f64() > tl { return 0; }
+            if self.time_up(start, tl) { return 0; }
             if s >= beta { return beta; }
         }
 
@@ -346,27 +433,27 @@ impl Searcher {
             actual_depth - 1
         } else { actual_depth };
 
-        let mut scored: Vec<(i32, [usize; 4])> = moves.into_iter().map(|mv| {
+        let mut scored: Vec<(i32, Move)> = moves.into_iter().map(|mv| {
             let mut s = 0i32;
             if Some(mv) == tt_move { s = 10_000_000; }
             else {
-                let from = mv[0]*8+mv[1]; let to = mv[2]*8+mv[3];
+                let from = mv[0]*8+mv[1]; let to = mv[2]*8+move_ec(&mv);
                 let tpi  = piece_on(&st.bb, to);
                 let fpi  = piece_on(&st.bb, from);
-                let is_promo = fpi != EMPTY_SQ && piece_type(fpi) == 0 && (mv[2]==0||mv[2]==7);
-                if tpi != EMPTY_SQ || is_promo {
-                    let v   = if tpi != EMPTY_SQ { piece_val(piece_type(tpi)) } else { 0 };
+                let is_promo = is_promotion_move(fpi, &mv);
+                if move_is_capture(st, fpi, &mv, to, tpi) || is_promo {
+                    let v   = capture_victim_value(st, fpi, &mv, to, tpi);
                     let a   = if fpi != EMPTY_SQ { piece_val(piece_type(fpi)) } else { 0 };
-                    let see_sc = see(&st.bb, from, to);
+                    let see_sc = move_see(st, &mv, from, to, fpi, tpi);
                     if see_sc >= 0 { s += 2_000_000 + v * 10 - a + see_sc; }
                     else           { s += 500_000   + v * 10 - a; }
-                    if is_promo    { s += 1_500_000; }
+                    if is_promo    { s += 1_500_000 + promotion_value(&mv); }
                 } else {
                     if self.killers[ply][0] == Some(mv) { s += 900_000; }
                     else if self.killers[ply][1] == Some(mv) { s += 800_000; }
                     let p_idx = if fpi != EMPTY_SQ { piece_to_idx(piece_type(fpi)) } else { 0 };
                     if self.counter_move[p_idx][to] == Some(mv) { s += 700_000; }
-                    let (fk, tk) = from_to_key(mv[0], mv[1], mv[2], mv[3]);
+                    let (fk, tk) = from_to_key(mv[0], mv[1], mv[2], move_ec(&mv));
                     s += self.history[fk][tk].clamp(-32768, 32768);
                 }
             }
@@ -383,16 +470,16 @@ impl Searcher {
         let orig_alpha = alpha;
         let mut best_score = -INF;
         let mut best_move  = scored.first().map(|&(_, mv)| mv);
-        let mut quiets_tried: Vec<[usize; 4]> = Vec::new();
+        let mut quiets_tried: Vec<Move> = Vec::new();
 
         for (i, &(_, mv)) in scored.iter().enumerate() {
-            if start.elapsed().as_secs_f64() > tl { return 0; }
+            if self.time_up(start, tl) { return 0; }
 
-            let from = mv[0]*8+mv[1]; let to = mv[2]*8+mv[3];
+            let from = mv[0]*8+mv[1]; let to = mv[2]*8+move_ec(&mv);
             let fpi  = piece_on(&st.bb, from);
             let tpi  = piece_on(&st.bb, to);
-            let capture  = tpi != EMPTY_SQ;
-            let is_promo = fpi != EMPTY_SQ && piece_type(fpi) == 0 && (mv[2]==0||mv[2]==7);
+            let capture  = move_is_capture(st, fpi, &mv, to, tpi);
+            let is_promo = is_promotion_move(fpi, &mv);
             let is_quiet = !capture && !is_promo;
 
             let gives_check = {
@@ -401,13 +488,17 @@ impl Searcher {
                 if pi != EMPTY_SQ {
                     let cap = piece_on(&bb2, to);
                     if cap != EMPTY_SQ { bb2[cap as usize] &= !bit(to); }
-                    if piece_type(pi) == 0 && mv[1] != mv[3] && cap == EMPTY_SQ {
+                    if piece_type(pi) == 0 && mv[1] != move_ec(&mv) && cap == EMPTY_SQ {
                         let cap_sq = if st.w { to + 8 } else { to - 8 };
                         let cpi = piece_on(&bb2, cap_sq);
                         if cpi != EMPTY_SQ { bb2[cpi as usize] &= !bit(cap_sq); }
                     }
                     bb2[pi as usize] &= !bit(from);
-                    bb2[pi as usize] |=  bit(to);
+                    if let Some(promo_pi) = promotion_piece_index(st.w, move_promotion(&mv)) {
+                        bb2[promo_pi] |= bit(to);
+                    } else {
+                        bb2[pi as usize] |= bit(to);
+                    }
                     let _opp_ks = st.king_sq(!st.w);
                     let opp_k_pi = if st.w { crate::board::BK } else { crate::board::WK };
                     let opp_ks2 = if bb2[opp_k_pi] != 0 { bb2[opp_k_pi].trailing_zeros() as usize } else { 64 };
@@ -418,9 +509,9 @@ impl Searcher {
             if !is_pv && !in_check && is_quiet && i >= lmp_count { break; }
             if !is_pv && !in_check && i > 0 && best_score > -MATE / 2 {
                 if capture {
-                    if self.see_pruning_enabled() && see(&st.bb, from, to) < -80 * actual_depth { continue; }
+                    if self.see_pruning_enabled() && move_see(st, &mv, from, to, fpi, tpi) < -80 * actual_depth { continue; }
                 } else if is_quiet && self.history_pruning_enabled() {
-                    let (fk, tk) = from_to_key(mv[0], mv[1], mv[2], mv[3]);
+                    let (fk, tk) = from_to_key(mv[0], mv[1], mv[2], move_ec(&mv));
                     if actual_depth <= 5 && self.history[fk][tk] < -1024 * actual_depth { continue; }
                 }
             }
@@ -428,7 +519,7 @@ impl Searcher {
             let move_ext = if gives_check && !in_check && i == 0 { 1 } else { 0 };
 
             let old = *st;
-            apply_move(st, mv[0], mv[1], mv[2], mv[3], 0);
+            apply_move(st, mv[0], mv[1], mv[2], move_ec(&mv), move_promotion(&mv));
             let h_after = compute_hash(st);
             self.rep_stack.push(h_after);
             self.rep_stack_len += 1;
@@ -465,6 +556,8 @@ impl Searcher {
             self.rep_stack_len -= 1;
             *st = old;
 
+            if self.stopped { return 0; }
+
             if is_quiet { quiets_tried.push(mv); }
 
             if s > best_score {
@@ -478,7 +571,7 @@ impl Searcher {
                                 self.killers[ply][1] = self.killers[ply][0];
                                 self.killers[ply][0] = Some(mv);
                             }
-                            let (fk, tk) = from_to_key(mv[0], mv[1], mv[2], mv[3]);
+                            let (fk, tk) = from_to_key(mv[0], mv[1], mv[2], move_ec(&mv));
                             let bonus = (actual_depth * actual_depth).min(512);
                             self.history[fk][tk] += bonus;
                             if self.history[fk][tk] > 16384 {
@@ -486,7 +579,7 @@ impl Searcher {
                             }
                             for &qmv in &quiets_tried {
                                 if qmv == mv { continue; }
-                                let (qfk, qtk) = from_to_key(qmv[0], qmv[1], qmv[2], qmv[3]);
+                                let (qfk, qtk) = from_to_key(qmv[0], qmv[1], qmv[2], move_ec(&qmv));
                                 self.history[qfk][qtk] -= bonus;
                                 if self.history[qfk][qtk] < -16384 {
                                     for a in 0..64 { for b in 0..64 { self.history[a][b] /= 2; } }
@@ -501,10 +594,12 @@ impl Searcher {
             }
         }
 
+        if self.stopped { return 0; }
+
         let flag = if best_score <= orig_alpha { TT_ALPHA }
                    else if best_score >= beta  { TT_BETA  }
                    else                        { TT_EXACT };
-        self.tt.store(h, actual_depth, best_score, flag, best_move);
+        self.tt.store(h, actual_depth, score_to_tt(best_score, ply), flag, best_move);
         best_score
     }
 }
@@ -534,4 +629,95 @@ fn env_flag(name: &str) -> bool {
             value == "1" || value == "true" || value == "yes" || value == "on"
         })
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::Engine;
+    use std::time::Duration;
+
+    fn state_from_fen(fen: &str) -> BoardState {
+        let mut engine = Engine::new();
+        engine.set_fen(fen);
+        engine.st
+    }
+
+    #[test]
+    fn qsearch_searches_en_passant_captures() {
+        let mut st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
+        let mut searcher = Searcher::new();
+        let stand_pat = searcher.corrected_eval(&st);
+        let mut nodes = 0u64;
+
+        let score = searcher.qsearch(
+            &mut st,
+            -INF,
+            INF,
+            QS_DEPTH,
+            Instant::now(),
+            10.0,
+            &mut nodes,
+        );
+
+        assert!(
+            score > stand_pat + 50,
+            "qsearch should improve on stand-pat by searching e5xd6 en passant: stand_pat={stand_pat}, score={score}"
+        );
+    }
+
+    #[test]
+    fn negamax_timeout_sets_stopped_without_storing_tt() {
+        let mut st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
+        let mut searcher = Searcher::new();
+        let key = compute_hash(&st);
+        let mut nodes = 0u64;
+
+        let score = searcher.negamax(
+            &mut st,
+            4,
+            0,
+            -INF,
+            INF,
+            true,
+            Instant::now() - Duration::from_secs(1),
+            0.0,
+            &mut nodes,
+        );
+
+        assert_eq!(score, 0);
+        assert!(searcher.stopped);
+        assert!(searcher.tt.get(key).is_none());
+    }
+
+    #[test]
+    fn root_search_resets_previous_timeout_state() {
+        let mut engine = Engine::new();
+        engine.book = None;
+        engine.searcher.stopped = true;
+
+        let (best_move, _, nodes, _) = engine.find_best_move(1.0, 1);
+
+        assert_ne!(best_move, "0000");
+        assert!(nodes > 0);
+        assert!(!engine.searcher.stopped);
+    }
+
+    #[test]
+    fn tt_mate_scores_are_stored_ply_independent() {
+        let winning_score = MATE - 9;
+        let losing_score = -MATE + 11;
+
+        assert_eq!(score_to_tt(winning_score, 9), MATE);
+        assert_eq!(score_from_tt(MATE, 3), MATE - 3);
+
+        assert_eq!(score_to_tt(losing_score, 11), -MATE);
+        assert_eq!(score_from_tt(-MATE, 4), -MATE + 4);
+    }
+
+    #[test]
+    fn tt_non_mate_scores_are_not_adjusted() {
+        assert_eq!(score_to_tt(42, 8), 42);
+        assert_eq!(score_from_tt(-313, 5), -313);
+    }
 }

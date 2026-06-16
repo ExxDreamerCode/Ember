@@ -1,8 +1,9 @@
 use std::time::Instant;
 use crate::board::{
     BoardState, EMPTY_SQ, MATE, INF, MAX_PLY,
-    piece_from_char, bit, sq_to_str, move_to_uci,
+    piece_from_char, bit, move_to_uci,
     is_attacked,
+    move_ec, move_promotion,
 };
 #[cfg(feature = "decision-trace")]
 use crate::board::board_to_fen;
@@ -177,6 +178,7 @@ impl Engine {
 
         self.searcher.killers  = [[None; 2]; MAX_PLY];
         self.searcher.history  = [[0i32; 64]; 64];
+        self.searcher.stopped  = false;
 
         let start      = Instant::now();
         let mut best_move  = moves[0];
@@ -217,7 +219,7 @@ impl Engine {
                 for &mv in &sorted {
                     if start.elapsed().as_secs_f64() > time_limit { break; }
                     let old = self.st;
-                    apply_move(&mut self.st, mv[0], mv[1], mv[2], mv[3], 0);
+                    apply_move(&mut self.st, mv[0], mv[1], mv[2], move_ec(&mv), move_promotion(&mv));
                     let h = compute_hash(&self.st);
                     self.searcher.rep_stack.push(h);
                     self.searcher.rep_stack_len += 1;
@@ -239,12 +241,13 @@ impl Engine {
                     self.searcher.rep_stack_len -= 1;
                     self.st = old;
 
+                    if self.searcher.stopped { break; }
                     if score > cur_score { cur_score = score; cur_best = mv; }
                     if score > loop_alpha { loop_alpha = score; }
                     if loop_alpha >= beta { break; }
                 }
 
-                if start.elapsed().as_secs_f64() > time_limit { break 'asp; }
+                if self.searcher.stopped || start.elapsed().as_secs_f64() > time_limit { break 'asp; }
 
                 if cur_score <= alpha {
                     asp_delta = asp_delta.saturating_mul(2).min(INF);
@@ -263,6 +266,7 @@ impl Engine {
                 break;
             }
 
+            if self.searcher.stopped { break; }
             total_nodes += nd;
             let elapsed = start.elapsed().as_secs_f64();
 
@@ -278,8 +282,7 @@ impl Engine {
                     if best_score > 0 { format!("mate {}", mate_in) }
                     else              { format!("mate -{}", mate_in) }
                 } else { format!("cp {}", best_score) };
-                let pv = format!("{}{}", sq_to_str(best_move[0]*8+best_move[1]),
-                                         sq_to_str(best_move[2]*8+best_move[3]));
+                let pv = move_to_uci(&self.st, &best_move);
                 println!("info depth {} score {} nodes {} nps {} time {} pv {}",
                           depth, score_str, total_nodes, nps, time_ms, pv);
                 #[cfg(feature = "decision-trace")]
