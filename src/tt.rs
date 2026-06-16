@@ -1,10 +1,12 @@
+use crate::board::Move;
+
 #[derive(Clone)]
 pub struct TTEntry {
     pub key:       u64,
     pub depth:     i32,
     pub score:     i32,
     pub flag:      u8,
-    pub best_move: Option<[usize; 4]>,
+    pub best_move: Option<Move>,
 }
 pub const TT_EXACT: u8 = 0;
 pub const TT_ALPHA: u8 = 1;
@@ -21,7 +23,7 @@ impl TT {
         TT { entries: vec![None; size], mask: size - 1 }
     }
     pub fn idx(&self, key: u64) -> usize { (key as usize) & self.mask }
-    pub fn store(&mut self, key: u64, depth: i32, score: i32, flag: u8, best_move: Option<[usize; 4]>) {
+    pub fn store(&mut self, key: u64, depth: i32, score: i32, flag: u8, best_move: Option<Move>) {
         let idx = self.idx(key);
         let replace = match &self.entries[idx] {
             None    => true,

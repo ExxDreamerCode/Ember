@@ -17,10 +17,32 @@ pub const BR: usize = 9;
 pub const BQ: usize = 10;
 pub const BK: usize = 11;
 
+pub type Move = [usize; 4];
+
 #[inline(always)] pub fn sq(r: usize, c: usize) -> usize { r * 8 + c }
 #[inline(always)] pub fn sq_r(s: usize) -> usize { s >> 3 }
 #[inline(always)] pub fn sq_c(s: usize) -> usize { s & 7 }
 #[inline(always)] pub fn bit(s: usize) -> u64 { 1u64 << s }
+
+#[inline(always)]
+pub fn encode_move(sr: usize, sc: usize, er: usize, ec: usize, promotion: u8) -> Move {
+    [sr, sc, er, ec | ((promotion as usize) << 3)]
+}
+
+#[inline(always)] pub fn move_ec(mv: &Move) -> usize { mv[3] & 7 }
+#[inline(always)] pub fn move_promotion(mv: &Move) -> u8 { (mv[3] >> 3) as u8 }
+
+#[inline(always)]
+pub fn promotion_piece_index(white: bool, promotion: u8) -> Option<usize> {
+    let pt = match promotion.to_ascii_uppercase() {
+        b'N' => 1,
+        b'B' => 2,
+        b'R' => 3,
+        b'Q' => 4,
+        _ => return None,
+    };
+    Some(if white { pt } else { pt + 6 })
+}
 
 #[inline(always)]
 pub fn piece_on(bbs: &[u64; 12], s: usize) -> u8 {
@@ -89,12 +111,15 @@ pub fn coord_to_square(r: usize, c: usize) -> String {
 }
 pub fn sq_to_str(s: usize) -> String { coord_to_square(sq_r(s), sq_c(s)) }
 
-pub fn move_to_uci(st: &BoardState, mv: &[usize; 4]) -> String {
+pub fn move_to_uci(st: &BoardState, mv: &Move) -> String {
     let from = sq(mv[0], mv[1]);
-    let to = sq(mv[2], mv[3]);
+    let to = sq(mv[2], move_ec(mv));
     let mut out = format!("{}{}", sq_to_str(from), sq_to_str(to));
+    let promotion = move_promotion(mv);
     let pi = piece_on(&st.bb, from);
-    if pi != EMPTY_SQ && piece_type(pi) == 0 && (mv[2] == 0 || mv[2] == 7) {
+    if promotion != 0 {
+        out.push(promotion.to_ascii_lowercase() as char);
+    } else if pi != EMPTY_SQ && piece_type(pi) == 0 && (mv[2] == 0 || mv[2] == 7) {
         out.push('q');
     }
     out

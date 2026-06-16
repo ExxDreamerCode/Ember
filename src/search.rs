@@ -4,6 +4,7 @@ use crate::board::{
     piece_on, piece_type, EMPTY_SQ,
     has_non_pawn, see, all_occ, bit, attacked_by, KING_ATTACKS,
     WP, BP, WK, BK,
+    Move, move_ec, move_promotion, promotion_piece_index,
 };
 use crate::evaluate::evaluate;
 use crate::zobrist::{compute_hash, compute_pawn_hash};
@@ -43,21 +44,31 @@ fn score_from_tt(score: i32, ply: usize) -> i32 {
 }
 
 #[inline]
-fn is_promotion_move(fpi: u8, mv: &[usize; 4]) -> bool {
-    fpi != EMPTY_SQ && piece_type(fpi) == 0 && (mv[2] == 0 || mv[2] == 7)
+fn is_promotion_move(fpi: u8, mv: &Move) -> bool {
+    move_promotion(mv) != 0 || (fpi != EMPTY_SQ && piece_type(fpi) == 0 && (mv[2] == 0 || mv[2] == 7))
+}
+
+fn promotion_value(mv: &Move) -> i32 {
+    match move_promotion(mv).to_ascii_uppercase() {
+        b'N' => piece_val(1),
+        b'B' => piece_val(2),
+        b'R' => piece_val(3),
+        b'Q' => piece_val(4),
+        _ => 0,
+    }
 }
 
 #[inline]
-fn is_en_passant_capture(st: &BoardState, fpi: u8, mv: &[usize; 4], to: usize, tpi: u8) -> bool {
+fn is_en_passant_capture(st: &BoardState, fpi: u8, mv: &Move, to: usize, tpi: u8) -> bool {
     fpi != EMPTY_SQ &&
     tpi == EMPTY_SQ &&
     piece_type(fpi) == 0 &&
     Some(to) == st.ep &&
-    mv[1] != mv[3]
+    mv[1] != move_ec(mv)
 }
 
 #[inline]
-fn capture_victim_value(st: &BoardState, fpi: u8, mv: &[usize; 4], to: usize, tpi: u8) -> i32 {
+fn capture_victim_value(st: &BoardState, fpi: u8, mv: &Move, to: usize, tpi: u8) -> i32 {
     if tpi != EMPTY_SQ {
         piece_val(piece_type(tpi))
     } else if is_en_passant_capture(st, fpi, mv, to, tpi) {
@@ -68,12 +79,12 @@ fn capture_victim_value(st: &BoardState, fpi: u8, mv: &[usize; 4], to: usize, tp
 }
 
 #[inline]
-fn move_is_capture(st: &BoardState, fpi: u8, mv: &[usize; 4], to: usize, tpi: u8) -> bool {
+fn move_is_capture(st: &BoardState, fpi: u8, mv: &Move, to: usize, tpi: u8) -> bool {
     tpi != EMPTY_SQ || is_en_passant_capture(st, fpi, mv, to, tpi)
 }
 
 #[inline]
-fn move_see(st: &BoardState, mv: &[usize; 4], from: usize, to: usize, fpi: u8, tpi: u8) -> i32 {
+fn move_see(st: &BoardState, mv: &Move, from: usize, to: usize, fpi: u8, tpi: u8) -> i32 {
     if is_en_passant_capture(st, fpi, mv, to, tpi) {
         0
     } else {
@@ -121,9 +132,9 @@ fn selective_pruning_unsafe(st: &BoardState) -> bool {
 
 pub struct Searcher {
     pub tt:           TT,
-    pub killers:      [[Option<[usize; 4]>; 2]; MAX_PLY],
+    pub killers:      [[Option<Move>; 2]; MAX_PLY],
     pub history:      [[i32; 64]; 64],
-    pub counter_move: [[Option<[usize; 4]>; 64]; 13],
+    pub counter_move: [[Option<Move>; 64]; 13],
     pub corr_hist:    [i32; CORR_HIST_SIZE * 2],
     pub rep_stack:    Vec<u64>,
     pub rep_stack_len: usize,
@@ -302,11 +313,11 @@ impl Searcher {
             return if in_check { -MATE + 1000 } else { alpha };
         }
 
-        let mut caps: Vec<[usize; 4]> = if in_check {
+        let mut caps: Vec<Move> = if in_check {
             moves
         } else {
             moves.into_iter().filter(|mv| {
-                let to = mv[2]*8 + mv[3];
+                let to = mv[2]*8 + move_ec(mv);
                 let from = mv[0]*8 + mv[1];
                 let fpi = piece_on(&st.bb, from);
                 let tpi = piece_on(&st.bb, to);
@@ -316,22 +327,22 @@ impl Searcher {
         if caps.is_empty() { return alpha; }
 
         caps.sort_by_key(|mv| {
-            let to = mv[2]*8+mv[3]; let from = mv[0]*8+mv[1];
+            let to = mv[2]*8+move_ec(mv); let from = mv[0]*8+mv[1];
             let vpi = piece_on(&st.bb, to);
             let api = piece_on(&st.bb, from);
             let victim   = capture_victim_value(st, api, mv, to, vpi);
             let attacker = if api != EMPTY_SQ { piece_val(piece_type(api)) } else { 0 };
-            -(victim * 10 - attacker)
+            -(victim * 10 - attacker + promotion_value(mv))
         });
 
         for mv in caps {
             if self.time_up(start, tl) { return 0; }
-            let from = mv[0]*8+mv[1]; let to = mv[2]*8+mv[3];
+            let from = mv[0]*8+mv[1]; let to = mv[2]*8+move_ec(&mv);
             let fpi = piece_on(&st.bb, from);
             let tpi = piece_on(&st.bb, to);
             if !in_check && move_see(st, &mv, from, to, fpi, tpi) < 0 { continue; }
             let old = *st;
-            apply_move(st, mv[0], mv[1], mv[2], mv[3], 0);
+            apply_move(st, mv[0], mv[1], mv[2], move_ec(&mv), move_promotion(&mv));
             let score = -self.qsearch(st, -beta, -alpha, depth - 1, start, tl, cnt);
             *st = old;
             if self.stopped { return 0; }
@@ -422,11 +433,11 @@ impl Searcher {
             actual_depth - 1
         } else { actual_depth };
 
-        let mut scored: Vec<(i32, [usize; 4])> = moves.into_iter().map(|mv| {
+        let mut scored: Vec<(i32, Move)> = moves.into_iter().map(|mv| {
             let mut s = 0i32;
             if Some(mv) == tt_move { s = 10_000_000; }
             else {
-                let from = mv[0]*8+mv[1]; let to = mv[2]*8+mv[3];
+                let from = mv[0]*8+mv[1]; let to = mv[2]*8+move_ec(&mv);
                 let tpi  = piece_on(&st.bb, to);
                 let fpi  = piece_on(&st.bb, from);
                 let is_promo = is_promotion_move(fpi, &mv);
@@ -436,13 +447,13 @@ impl Searcher {
                     let see_sc = move_see(st, &mv, from, to, fpi, tpi);
                     if see_sc >= 0 { s += 2_000_000 + v * 10 - a + see_sc; }
                     else           { s += 500_000   + v * 10 - a; }
-                    if is_promo    { s += 1_500_000; }
+                    if is_promo    { s += 1_500_000 + promotion_value(&mv); }
                 } else {
                     if self.killers[ply][0] == Some(mv) { s += 900_000; }
                     else if self.killers[ply][1] == Some(mv) { s += 800_000; }
                     let p_idx = if fpi != EMPTY_SQ { piece_to_idx(piece_type(fpi)) } else { 0 };
                     if self.counter_move[p_idx][to] == Some(mv) { s += 700_000; }
-                    let (fk, tk) = from_to_key(mv[0], mv[1], mv[2], mv[3]);
+                    let (fk, tk) = from_to_key(mv[0], mv[1], mv[2], move_ec(&mv));
                     s += self.history[fk][tk].clamp(-32768, 32768);
                 }
             }
@@ -459,12 +470,12 @@ impl Searcher {
         let orig_alpha = alpha;
         let mut best_score = -INF;
         let mut best_move  = scored.first().map(|&(_, mv)| mv);
-        let mut quiets_tried: Vec<[usize; 4]> = Vec::new();
+        let mut quiets_tried: Vec<Move> = Vec::new();
 
         for (i, &(_, mv)) in scored.iter().enumerate() {
             if self.time_up(start, tl) { return 0; }
 
-            let from = mv[0]*8+mv[1]; let to = mv[2]*8+mv[3];
+            let from = mv[0]*8+mv[1]; let to = mv[2]*8+move_ec(&mv);
             let fpi  = piece_on(&st.bb, from);
             let tpi  = piece_on(&st.bb, to);
             let capture  = move_is_capture(st, fpi, &mv, to, tpi);
@@ -477,13 +488,17 @@ impl Searcher {
                 if pi != EMPTY_SQ {
                     let cap = piece_on(&bb2, to);
                     if cap != EMPTY_SQ { bb2[cap as usize] &= !bit(to); }
-                    if piece_type(pi) == 0 && mv[1] != mv[3] && cap == EMPTY_SQ {
+                    if piece_type(pi) == 0 && mv[1] != move_ec(&mv) && cap == EMPTY_SQ {
                         let cap_sq = if st.w { to + 8 } else { to - 8 };
                         let cpi = piece_on(&bb2, cap_sq);
                         if cpi != EMPTY_SQ { bb2[cpi as usize] &= !bit(cap_sq); }
                     }
                     bb2[pi as usize] &= !bit(from);
-                    bb2[pi as usize] |=  bit(to);
+                    if let Some(promo_pi) = promotion_piece_index(st.w, move_promotion(&mv)) {
+                        bb2[promo_pi] |= bit(to);
+                    } else {
+                        bb2[pi as usize] |= bit(to);
+                    }
                     let _opp_ks = st.king_sq(!st.w);
                     let opp_k_pi = if st.w { crate::board::BK } else { crate::board::WK };
                     let opp_ks2 = if bb2[opp_k_pi] != 0 { bb2[opp_k_pi].trailing_zeros() as usize } else { 64 };
@@ -496,7 +511,7 @@ impl Searcher {
                 if capture {
                     if self.see_pruning_enabled() && move_see(st, &mv, from, to, fpi, tpi) < -80 * actual_depth { continue; }
                 } else if is_quiet && self.history_pruning_enabled() {
-                    let (fk, tk) = from_to_key(mv[0], mv[1], mv[2], mv[3]);
+                    let (fk, tk) = from_to_key(mv[0], mv[1], mv[2], move_ec(&mv));
                     if actual_depth <= 5 && self.history[fk][tk] < -1024 * actual_depth { continue; }
                 }
             }
@@ -504,7 +519,7 @@ impl Searcher {
             let move_ext = if gives_check && !in_check && i == 0 { 1 } else { 0 };
 
             let old = *st;
-            apply_move(st, mv[0], mv[1], mv[2], mv[3], 0);
+            apply_move(st, mv[0], mv[1], mv[2], move_ec(&mv), move_promotion(&mv));
             let h_after = compute_hash(st);
             self.rep_stack.push(h_after);
             self.rep_stack_len += 1;
@@ -556,7 +571,7 @@ impl Searcher {
                                 self.killers[ply][1] = self.killers[ply][0];
                                 self.killers[ply][0] = Some(mv);
                             }
-                            let (fk, tk) = from_to_key(mv[0], mv[1], mv[2], mv[3]);
+                            let (fk, tk) = from_to_key(mv[0], mv[1], mv[2], move_ec(&mv));
                             let bonus = (actual_depth * actual_depth).min(512);
                             self.history[fk][tk] += bonus;
                             if self.history[fk][tk] > 16384 {
@@ -564,7 +579,7 @@ impl Searcher {
                             }
                             for &qmv in &quiets_tried {
                                 if qmv == mv { continue; }
-                                let (qfk, qtk) = from_to_key(qmv[0], qmv[1], qmv[2], qmv[3]);
+                                let (qfk, qtk) = from_to_key(qmv[0], qmv[1], qmv[2], move_ec(&qmv));
                                 self.history[qfk][qtk] -= bonus;
                                 if self.history[qfk][qtk] < -16384 {
                                     for a in 0..64 { for b in 0..64 { self.history[a][b] /= 2; } }

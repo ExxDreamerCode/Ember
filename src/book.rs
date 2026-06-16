@@ -7,6 +7,7 @@ use crate::board::{
     BoardState, EMPTY_SQ, piece_on, piece_type, is_white_piece,
     sq, sq_r, sq_c,
     WP, BP,
+    Move, move_ec, move_promotion,
 };
 
 struct BookMove {
@@ -46,12 +47,12 @@ impl OpeningBook {
         Ok(OpeningBook { entries })
     }
 
-    pub fn pick_move(&self, st: &BoardState, moves: &[[usize; 4]]) -> Option<[usize; 4]> {
+    pub fn pick_move(&self, st: &BoardState, moves: &[Move]) -> Option<Move> {
         let hash = polyglot_hash(st);
         let bmoves = self.entries.get(&hash)?;
         if bmoves.is_empty() { return None; }
 
-        let mut candidates: Vec<([usize; 4], u32)> = Vec::new();
+        let mut candidates: Vec<(Move, u32)> = Vec::new();
         let mut total_weight = 0u32;
 
         for bm in bmoves {
@@ -75,12 +76,12 @@ impl OpeningBook {
     }
 }
 
-fn match_polyglot_move(pm: u16, legal: &[[usize; 4]], st: &BoardState) -> Option<[usize; 4]> {
+fn match_polyglot_move(pm: u16, legal: &[Move], st: &BoardState) -> Option<Move> {
     let to_file   = (pm & 7) as usize;
     let to_rank   = ((pm >> 3) & 7) as usize;
     let from_file = ((pm >> 6) & 7) as usize;
     let from_rank = ((pm >> 9) & 7) as usize;
-    let promo     = ((pm >> 12) & 7) as u8;
+    let promo     = polyglot_promotion((pm >> 12) & 7);
 
     let from_r = 7 - from_rank;
     let from_c = from_file;
@@ -98,17 +99,28 @@ fn match_polyglot_move(pm: u16, legal: &[[usize; 4]], st: &BoardState) -> Option
     }
 
     for &mv in legal {
-        if mv[0] == from_r && mv[1] == from_c && mv[2] == to_r && mv[3] == to_c {
+        if mv[0] == from_r && mv[1] == from_c && mv[2] == to_r && move_ec(&mv) == to_c {
             let from_s = sq(mv[0], mv[1]);
             let pi = piece_on(&st.bb, from_s);
             if pi != EMPTY_SQ && piece_type(pi) == 0 && (mv[2] == 0 || mv[2] == 7) {
-                if promo == 0 || promo == 4 { return Some(mv); }
+                let move_promo = move_promotion(&mv).to_ascii_uppercase();
+                if (promo == 0 && move_promo == b'Q') || promo == move_promo { return Some(mv); }
             } else {
                 return Some(mv);
             }
         }
     }
     None
+}
+
+fn polyglot_promotion(promo: u16) -> u8 {
+    match promo {
+        1 => b'N',
+        2 => b'B',
+        3 => b'R',
+        4 => b'Q',
+        _ => 0,
+    }
 }
 
 const CASTLE_OFFSET: usize = 768;
