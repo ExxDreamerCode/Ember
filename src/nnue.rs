@@ -163,6 +163,12 @@ impl NNUENet {
         Self::load_reader(&mut r, len, path)
     }
 
+    pub fn load_from_bytes(data: &[u8], name: &str) -> Result<Self, String> {
+        let len = data.len() as u64;
+        let mut r = std::io::Cursor::new(data);
+        Self::load_reader(&mut r, len, name)
+    }
+
     fn load_reader(
         r: &mut impl IoRead,
         data_len: u64,

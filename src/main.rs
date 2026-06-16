@@ -17,7 +17,7 @@ fn try_load_book(engine: &mut Engine, path: &std::path::Path) -> bool {
     false
 }
 
-fn maybe_load_nnue(_engine: &mut Engine, path: &str) -> bool {
+fn maybe_load_nnue(path: &str) -> bool {
     match evaluate::init_nnue(path) {
         Ok(()) => {
             eprintln!("info string NNUE loaded: {}", path);
@@ -34,32 +34,23 @@ fn main() {
     let stdin = io::stdin();
     let mut engine = Engine::new();
 
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            let net_path = exe_dir.join("net.nnue");
-            if net_path.exists() {
-                if let Some(p) = net_path.to_str() {
-                    maybe_load_nnue(&mut engine, p);
-                }
-            }
-        }
-    }
-    if !evaluate::nnue_loaded() {
-        if std::path::Path::new("net.nnue").exists() {
-            maybe_load_nnue(&mut engine, "net.nnue");
-        }
+    eprintln!("info string Loading embedded NNUE...");
+    match evaluate::init_embedded_nnue() {
+        Ok(()) => eprintln!("info string Embedded NNUE loaded"),
+        Err(e) => eprintln!("info string Failed to load embedded NNUE: {}", e),
     }
 
-    let mut loaded = false;
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
-            loaded = try_load_book(&mut engine, &exe_dir.join("book.bin"));
+            try_load_book(&mut engine, &exe_dir.join("book.bin"));
         }
     }
-    if !loaded {
-        loaded = try_load_book(&mut engine, &std::path::Path::new("book.bin"));
+    if engine.book.is_none() {
+        if std::path::Path::new("book.bin").exists() {
+            try_load_book(&mut engine, &std::path::Path::new("book.bin"));
+        }
     }
-    if !loaded {
+    if engine.book.is_none() {
         eprintln!("info string Book file not found, using embedded book");
         match OpeningBook::load_from_bytes(opening_book::BOOK_DATA, "<embedded>") {
             Ok(book) => engine.book = Some(book),
@@ -84,6 +75,7 @@ fn main() {
                 println!("option name Hash type spin default 128 min 1 max 4096");
                 println!("option name Threads type spin default 1 min 1 max 1");
                 println!("option name Book type string default <embedded>");
+                println!("option name NNUE type string default <embedded>");
                 #[cfg(feature = "decision-trace")]
                 println!("option name TraceFile type string default <empty>");
                 println!("uciok");
@@ -96,43 +88,71 @@ fn main() {
             }
             "setoption" => {
                 if parts.len() >= 3 && parts[1].to_lowercase() == "name" {
-                    if parts[2].to_lowercase() == "book" {
-                        let val_start = parts
-                            .iter()
-                            .position(|part| part.eq_ignore_ascii_case("value"))
-                            .map(|idx| idx + 1)
-                            .unwrap_or(3);
-                        let val = parts[val_start..].join(" ");
-                        if val.is_empty() {
-                            engine.book = None;
-                            eprintln!("info string Book disabled");
-                        } else if val.to_lowercase() == "<embedded>"
-                            || val.to_lowercase() == "<default>"
-                        {
-                            match OpeningBook::load_from_bytes(
-                                opening_book::BOOK_DATA,
-                                "<embedded>",
-                            ) {
-                                Ok(book) => {
-                                    engine.book = Some(book);
-                                    eprintln!("info string Book switched to embedded");
+                    let name = parts[2].to_lowercase();
+                    let val_start = parts
+                        .iter()
+                        .position(|part| part.eq_ignore_ascii_case("value"))
+                        .map(|idx| idx + 1)
+                        .unwrap_or(3);
+                    let val = parts[val_start..].join(" ");
+
+                    match name.as_str() {
+                        "book" => {
+                            if val.is_empty() {
+                                engine.book = None;
+                                eprintln!("info string Book disabled");
+                            } else if val.to_lowercase() == "<embedded>"
+                                || val.to_lowercase() == "<default>"
+                            {
+                                match OpeningBook::load_from_bytes(
+                                    opening_book::BOOK_DATA,
+                                    "<embedded>",
+                                ) {
+                                    Ok(book) => {
+                                        engine.book = Some(book);
+                                        eprintln!("info string Book switched to embedded");
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "info string Failed to load embedded book: {}",
+                                            e
+                                        )
+                                    }
                                 }
-                                Err(e) => {
-                                    eprintln!("info string Failed to load embedded book: {}", e)
-                                }
-                            }
-                        } else {
-                            let path = std::path::Path::new(&val);
-                            if !try_load_book(&mut engine, path) {
-                                if let Ok(exe_path) = std::env::current_exe() {
-                                    if let Some(exe_dir) = exe_path.parent() {
-                                        try_load_book(&mut engine, &exe_dir.join(&val));
+                            } else {
+                                let path = std::path::Path::new(&val);
+                                if !try_load_book(&mut engine, path) {
+                                    if let Ok(exe_path) = std::env::current_exe() {
+                                        if let Some(exe_dir) = exe_path.parent() {
+                                            try_load_book(&mut engine, &exe_dir.join(&val));
+                                        }
                                     }
                                 }
                             }
                         }
-                    } else {
-                        parse_setoption(&mut engine, &parts);
+                        "nnue" => {
+                            if val.is_empty() {
+                                match evaluate::reset_nnue() {
+                                    Ok(()) => eprintln!("info string NNUE disabled (eval will fall back to classic)"),
+                                    Err(e) => eprintln!("info string Failed to disable NNUE: {}", e),
+                                }
+                            } else if val.to_lowercase() == "<embedded>"
+                                || val.to_lowercase() == "<default>"
+                            {
+                                match evaluate::init_embedded_nnue() {
+                                    Ok(()) => eprintln!("info string NNUE switched to embedded"),
+                                    Err(e) => eprintln!(
+                                        "info string Failed to load embedded NNUE: {}",
+                                        e
+                                    ),
+                                }
+                            } else {
+                                maybe_load_nnue(&val);
+                            }
+                        }
+                        _ => {
+                            parse_setoption(&mut engine, &parts);
+                        }
                     }
                 }
             }

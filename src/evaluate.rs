@@ -5,7 +5,7 @@ use crate::board::{
 use crate::magic::{bishop_attacks, rook_attacks};
 use crate::nnue::{NNUEAccumulator, NNUENet};
 use crate::types::*;
-use std::sync::OnceLock;
+use std::sync::RwLock;
 
 const MG_VALUE: [i32; 6] = [82, 337, 365, 477, 1025, 0];
 const EG_VALUE: [i32; 6] = [94, 281, 297, 512, 936, 0];
@@ -330,31 +330,48 @@ fn king_safety(bb: &[u64; 12], white: bool, phase: i32) -> i32 {
     -(danger * phase / 24).max(0)
 }
 
-static NNUE_NET: OnceLock<NNUENet> = OnceLock::new();
+static NNUE_NET: RwLock<Option<NNUENet>> = RwLock::new(None);
+
+pub const EMBEDDED_NNUE: &[u8] = include_bytes!("net.nnue");
 
 pub fn init_nnue(path: &str) -> Result<(), String> {
     let net = NNUENet::load(path)?;
-    NNUE_NET
-        .set(net)
-        .map_err(|_| "NNUE already initialised".to_string())
+    let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
+    *lock = Some(net);
+    Ok(())
+}
+
+pub fn reset_nnue() -> Result<(), String> {
+    let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
+    *lock = None;
+    Ok(())
+}
+
+pub fn init_embedded_nnue() -> Result<(), String> {
+    init_nnue_from_bytes(EMBEDDED_NNUE)
 }
 
 pub fn init_nnue_from_bytes(data: &[u8]) -> Result<(), String> {
-    let path = format!("{}/.nnue_temp", std::env::temp_dir().display());
-    std::fs::write(&path, data).map_err(|e| format!("write temp: {}", e))?;
-    let net = NNUENet::load(&path)?;
-    let _ = std::fs::remove_file(&path);
-    NNUE_NET
-        .set(net)
-        .map_err(|_| "NNUE already initialised".to_string())
+    let net = NNUENet::load_from_bytes(data, "<embedded>")?;
+    let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
+    *lock = Some(net);
+    Ok(())
 }
 
 pub fn nnue_loaded() -> bool {
-    NNUE_NET.get().is_some()
+    NNUE_NET.read().map_or(false, |lock| lock.is_some())
 }
 
 pub fn get_nnue_net() -> Option<&'static NNUENet> {
-    NNUE_NET.get()
+    None
+}
+
+pub fn with_nnue_net<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&NNUENet) -> R,
+{
+    let lock = NNUE_NET.read().ok()?;
+    lock.as_ref().map(|net| f(net))
 }
 
 pub fn evaluate_nnue_acc(net: &NNUENet, acc: &NNUEAccumulator, st: &BoardState) -> i32 {
@@ -369,13 +386,12 @@ pub fn evaluate_nnue_acc(net: &NNUENet, acc: &NNUEAccumulator, st: &BoardState) 
 }
 
 pub fn evaluate_nnue(st: &BoardState) -> i32 {
-    let net = match NNUE_NET.get() {
-        Some(n) => n,
-        None => return evaluate(st),
-    };
-    let mut acc = NNUEAccumulator::new(net.hidden_size);
-    acc.refresh(net, st);
-    evaluate_nnue_acc(net, &acc, st)
+    with_nnue_net(|net| {
+        let mut acc = NNUEAccumulator::new(net.hidden_size);
+        acc.refresh(net, st);
+        evaluate_nnue_acc(net, &acc, st)
+    })
+    .unwrap_or_else(|| evaluate(st))
 }
 
 pub fn evaluate(st: &BoardState) -> i32 {

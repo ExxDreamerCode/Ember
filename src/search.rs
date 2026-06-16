@@ -3,7 +3,7 @@ use crate::board::{
     promotion_piece_index, see, BoardState, Move, BK, BP, EMPTY_SQ, INF, KING_ATTACKS, MATE,
     MAX_PLY, QS_DEPTH, WK, WP,
 };
-use crate::evaluate::{evaluate, evaluate_nnue_acc, get_nnue_net};
+use crate::evaluate::{evaluate, evaluate_nnue_acc, with_nnue_net};
 use crate::movegen::{apply_move, generate_moves};
 use crate::nnue::NNUEAccumulator;
 use crate::tt::{TT, TT_ALPHA, TT_BETA, TT_EXACT};
@@ -198,13 +198,13 @@ impl Searcher {
     }
 
     pub fn init_nnue_stack(&mut self, st: &BoardState) {
-        if let Some(net) = get_nnue_net() {
+        with_nnue_net(|net| {
             if self.nnue_stack.len() < MAX_PLY + 1 {
                 self.nnue_stack
                     .resize(MAX_PLY + 1, NNUEAccumulator::new(net.hidden_size));
             }
             self.nnue_stack[0].refresh(net, st);
-        }
+        });
     }
 
     #[inline]
@@ -317,7 +317,7 @@ impl Searcher {
     }
 
     fn static_eval(&self, st: &BoardState, ply: usize) -> i32 {
-        if let Some(net) = get_nnue_net() {
+        with_nnue_net(|net| {
             let score = if ply < self.nnue_stack.len() {
                 evaluate_nnue_acc(net, &self.nnue_stack[ply], st)
             } else {
@@ -325,18 +325,19 @@ impl Searcher {
                 acc.refresh(net, st);
                 evaluate_nnue_acc(net, &acc, st)
             };
-            return if st.w { score } else { -score };
-        }
-        evaluate(st) * if st.w { 1 } else { -1 }
+            if st.w { score } else { -score }
+        })
+        .unwrap_or_else(|| evaluate(st) * if st.w { 1 } else { -1 })
     }
 
     pub fn corrected_eval(&self, st: &BoardState) -> i32 {
-        if get_nnue_net().is_some() {
-            let net = get_nnue_net().unwrap();
+        if let Some(nnue_score) = with_nnue_net(|net| {
             let mut acc = NNUEAccumulator::new(net.hidden_size);
             acc.refresh(net, st);
             let score = evaluate_nnue_acc(net, &acc, st);
-            return if st.w { score } else { -score };
+            if st.w { score } else { -score }
+        }) {
+            return nnue_score;
         }
         let base = evaluate(st) * if st.w { 1 } else { -1 };
         if self.corr_hist_enabled() {
@@ -394,23 +395,22 @@ impl Searcher {
         promotion: u8,
         ply: usize,
     ) -> bool {
-        let net = match get_nnue_net() {
-            Some(n) => n,
-            None => return false,
-        };
-        if ply + 1 >= self.nnue_stack.len() {
-            return false;
-        }
+        with_nnue_net(|net| {
+            if ply + 1 >= self.nnue_stack.len() {
+                return false;
+            }
 
-        let (left, right) = self.nnue_stack.split_at_mut(ply + 1);
-        right[0].clone_from(&left[ply]);
+            let (left, right) = self.nnue_stack.split_at_mut(ply + 1);
+            right[0].clone_from(&left[ply]);
 
-        let ok = self.nnue_stack[ply + 1].update_move(net, st_before, sr, sc, er, ec, promotion);
+            let ok = self.nnue_stack[ply + 1].update_move(net, st_before, sr, sc, er, ec, promotion);
 
-        if !ok {
-            self.nnue_stack[ply + 1].refresh(net, st_after);
-        }
-        true
+            if !ok {
+                self.nnue_stack[ply + 1].refresh(net, st_after);
+            }
+            true
+        })
+        .unwrap_or(false)
     }
 
     fn qsearch(
@@ -453,7 +453,7 @@ impl Searcher {
         if moves.is_empty() {
             return if in_check { -MATE + 1000 } else { alpha };
         }
-        if get_nnue_net().is_some() && ply + 1 >= self.nnue_stack.len() {
+        if with_nnue_net(|_| true).unwrap_or(false) && ply + 1 >= self.nnue_stack.len() {
             if ply + 1 < MAX_PLY + 1 {
                 self.nnue_stack.resize(ply + 2, NNUEAccumulator::new(self.nnue_stack[0].hs));
             }
