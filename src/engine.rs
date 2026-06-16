@@ -177,6 +177,7 @@ impl Engine {
 
         self.searcher.killers  = [[None; 2]; MAX_PLY];
         self.searcher.history  = [[0i32; 64]; 64];
+        self.searcher.stopped  = false;
 
         let start      = Instant::now();
         let mut best_move  = moves[0];
@@ -239,12 +240,13 @@ impl Engine {
                     self.searcher.rep_stack_len -= 1;
                     self.st = old;
 
+                    if self.searcher.stopped { break; }
                     if score > cur_score { cur_score = score; cur_best = mv; }
                     if score > loop_alpha { loop_alpha = score; }
                     if loop_alpha >= beta { break; }
                 }
 
-                if start.elapsed().as_secs_f64() > time_limit { break 'asp; }
+                if self.searcher.stopped || start.elapsed().as_secs_f64() > time_limit { break 'asp; }
 
                 if cur_score <= alpha {
                     asp_delta = asp_delta.saturating_mul(2).min(INF);
@@ -263,6 +265,7 @@ impl Engine {
                 break;
             }
 
+            if self.searcher.stopped { break; }
             total_nodes += nd;
             let elapsed = start.elapsed().as_secs_f64();
 

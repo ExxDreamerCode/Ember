@@ -108,6 +108,7 @@ pub struct Searcher {
     pub rep_stack:    Vec<u64>,
     pub rep_stack_len: usize,
     pub tt_mb:        usize,
+    pub stopped:      bool,
     #[cfg(feature = "search-debug")]
     pub debug:        SearchDebug,
 }
@@ -136,6 +137,7 @@ impl Searcher {
             rep_stack:    Vec::with_capacity(512),
             rep_stack_len: 0,
             tt_mb:        128,
+            stopped:      false,
             #[cfg(feature = "search-debug")]
             debug:        SearchDebug::from_env(),
         }
@@ -144,6 +146,16 @@ impl Searcher {
     pub fn resize_tt(&mut self, mb: usize) {
         self.tt.resize(mb);
         self.tt_mb = mb;
+    }
+
+    #[inline]
+    fn time_up(&mut self, start: Instant, tl: f64) -> bool {
+        if self.stopped || start.elapsed().as_secs_f64() > tl {
+            self.stopped = true;
+            true
+        } else {
+            false
+        }
     }
 
     #[cfg(feature = "search-debug")]
@@ -251,7 +263,7 @@ impl Searcher {
     fn qsearch(&mut self, st: &mut BoardState, mut alpha: i32, beta: i32, depth: i32,
                start: Instant, tl: f64, cnt: &mut u64) -> i32 {
         *cnt += 1;
-        if start.elapsed().as_secs_f64() > tl { return 0; }
+        if self.time_up(start, tl) { return 0; }
         let ks = st.king_sq(st.w);
         let in_check = crate::board::is_attacked(&st.bb, ks, !st.w);
 
@@ -293,7 +305,7 @@ impl Searcher {
         });
 
         for mv in caps {
-            if start.elapsed().as_secs_f64() > tl { return 0; }
+            if self.time_up(start, tl) { return 0; }
             let from = mv[0]*8+mv[1]; let to = mv[2]*8+mv[3];
             let fpi = piece_on(&st.bb, from);
             let tpi = piece_on(&st.bb, to);
@@ -302,6 +314,7 @@ impl Searcher {
             apply_move(st, mv[0], mv[1], mv[2], mv[3], 0);
             let score = -self.qsearch(st, -beta, -alpha, depth - 1, start, tl, cnt);
             *st = old;
+            if self.stopped { return 0; }
             if score >= beta  { return score; }
             if score > alpha  { alpha = score; }
         }
@@ -312,7 +325,7 @@ impl Searcher {
                    mut alpha: i32, beta: i32, can_null: bool,
                    start: Instant, tl: f64, cnt: &mut u64) -> i32 {
         *cnt += 1;
-        if start.elapsed().as_secs_f64() > tl { return 0; }
+        if self.time_up(start, tl) { return 0; }
         if ply >= MAX_PLY { return self.corrected_eval(st); }
 
         let h = compute_hash(st);
@@ -376,7 +389,7 @@ impl Searcher {
             self.rep_stack.pop();
             self.rep_stack_len -= 1;
             st.w = ow; st.ep = oe;
-            if start.elapsed().as_secs_f64() > tl { return 0; }
+            if self.time_up(start, tl) { return 0; }
             if s >= beta { return beta; }
         }
 
@@ -429,7 +442,7 @@ impl Searcher {
         let mut quiets_tried: Vec<[usize; 4]> = Vec::new();
 
         for (i, &(_, mv)) in scored.iter().enumerate() {
-            if start.elapsed().as_secs_f64() > tl { return 0; }
+            if self.time_up(start, tl) { return 0; }
 
             let from = mv[0]*8+mv[1]; let to = mv[2]*8+mv[3];
             let fpi  = piece_on(&st.bb, from);
@@ -508,6 +521,8 @@ impl Searcher {
             self.rep_stack_len -= 1;
             *st = old;
 
+            if self.stopped { return 0; }
+
             if is_quiet { quiets_tried.push(mv); }
 
             if s > best_score {
@@ -543,6 +558,8 @@ impl Searcher {
                 }
             }
         }
+
+        if self.stopped { return 0; }
 
         let flag = if best_score <= orig_alpha { TT_ALPHA }
                    else if best_score >= beta  { TT_BETA  }
@@ -583,6 +600,7 @@ fn env_flag(name: &str) -> bool {
 mod tests {
     use super::*;
     use crate::engine::Engine;
+    use std::time::Duration;
 
     fn state_from_fen(fen: &str) -> BoardState {
         let mut engine = Engine::new();
@@ -611,5 +629,42 @@ mod tests {
             score > stand_pat + 50,
             "qsearch should improve on stand-pat by searching e5xd6 en passant: stand_pat={stand_pat}, score={score}"
         );
+    }
+
+    #[test]
+    fn negamax_timeout_sets_stopped_without_storing_tt() {
+        let mut st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
+        let mut searcher = Searcher::new();
+        let key = compute_hash(&st);
+        let mut nodes = 0u64;
+
+        let score = searcher.negamax(
+            &mut st,
+            4,
+            0,
+            -INF,
+            INF,
+            true,
+            Instant::now() - Duration::from_secs(1),
+            0.0,
+            &mut nodes,
+        );
+
+        assert_eq!(score, 0);
+        assert!(searcher.stopped);
+        assert!(searcher.tt.get(key).is_none());
+    }
+
+    #[test]
+    fn root_search_resets_previous_timeout_state() {
+        let mut engine = Engine::new();
+        engine.book = None;
+        engine.searcher.stopped = true;
+
+        let (best_move, _, nodes, _) = engine.find_best_move(1.0, 1);
+
+        assert_ne!(best_move, "0000");
+        assert!(nodes > 0);
+        assert!(!engine.searcher.stopped);
     }
 }
