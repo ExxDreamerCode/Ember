@@ -729,16 +729,6 @@ impl NNUEAccumulator {
             self.remove_piece(net, ep_color, 0, cap_sq as u8);
         }
 
-        if mover_type == 5 && sc == 4 && (ec == 6 || ec == 2) {
-            if ec == 6 {
-                self.remove_piece(net, color, 3, sq(sr, 7) as u8);
-                self.add_piece(net, color, 3, sq(sr, 5) as u8);
-            } else {
-                self.remove_piece(net, color, 3, sq(sr, 0) as u8);
-                self.add_piece(net, color, 3, sq(sr, 3) as u8);
-            }
-        }
-
         if mover_type == 0 && (er == 0 || er == 7) {
             let promo_type = match promotion.to_ascii_uppercase() {
                 b'Q' => 4u8, b'R' => 3, b'B' => 2, b'N' => 1, _ => 4,
@@ -781,4 +771,78 @@ fn read_i16s(r: &mut impl IoRead, buf: &mut [i16]) -> Result<(), String> {
         unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, buf.len() * 2) };
     r.read_exact(bytes).map_err(|e| format!("i16s: {}", e))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::Engine;
+    use crate::movegen::apply_move;
+
+    fn load_test_net() -> NNUENet {
+        NNUENet::load_from_bytes(crate::evaluate::EMBEDDED_NNUE, "<embedded>")
+            .expect("embedded test NNUE should load")
+    }
+
+    fn state_from_fen(fen: &str) -> BoardState {
+        let mut engine = Engine::new();
+        engine.set_fen(fen);
+        engine.st
+    }
+
+    fn assert_accumulators_match(actual: &NNUEAccumulator, expected: &NNUEAccumulator) {
+        assert_eq!(actual.wk, expected.wk);
+        assert_eq!(actual.bk, expected.bk);
+        assert_eq!(actual.white(), expected.white());
+        assert_eq!(actual.black(), expected.black());
+    }
+
+    fn assert_incremental_matches_refresh(
+        fen: &str,
+        sr: usize,
+        sc: usize,
+        er: usize,
+        ec: usize,
+        promotion: u8,
+    ) {
+        let net = load_test_net();
+        let mut st = state_from_fen(fen);
+        let before = st;
+        let mut incremental = NNUEAccumulator::new(net.hidden_size);
+        incremental.refresh(&net, &before);
+
+        apply_move(&mut st, sr, sc, er, ec, promotion);
+        if !incremental.update_move(&net, &before, sr, sc, er, ec, promotion) {
+            incremental.refresh(&net, &st);
+        }
+
+        let mut refreshed = NNUEAccumulator::new(net.hidden_size);
+        refreshed.refresh(&net, &st);
+        assert_accumulators_match(&incremental, &refreshed);
+    }
+
+    #[test]
+    fn incremental_update_matches_refresh_for_quiet_move() {
+        assert_incremental_matches_refresh("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1", 6, 4, 4, 4, 0);
+    }
+
+    #[test]
+    fn incremental_update_matches_refresh_for_capture() {
+        assert_incremental_matches_refresh("4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1", 4, 4, 3, 3, 0);
+    }
+
+    #[test]
+    fn incremental_update_matches_refresh_for_en_passant() {
+        assert_incremental_matches_refresh("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", 3, 4, 2, 3, 0);
+    }
+
+    #[test]
+    fn incremental_update_matches_refresh_for_promotion() {
+        assert_incremental_matches_refresh("4k3/P7/8/8/8/8/8/4K3 w - - 0 1", 1, 0, 0, 0, b'N');
+    }
+
+    #[test]
+    fn king_moves_fall_back_to_refresh() {
+        assert_incremental_matches_refresh("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", 7, 4, 7, 6, 0);
+    }
 }
