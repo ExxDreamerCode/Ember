@@ -15,6 +15,7 @@ pub mod opening_book;
 
 pub mod bitboard;
 pub mod nnue;
+pub mod syzygy;
 pub mod types;
 
 pub use board::piece_type as ptype;

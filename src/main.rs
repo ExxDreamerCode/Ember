@@ -1,5 +1,6 @@
 use chess_rs_lib::board::{piece_on, piece_type, EMPTY_SQ};
 use chess_rs_lib::evaluate;
+use chess_rs_lib::syzygy::SyzygyTables;
 use chess_rs_lib::{opening_book, Engine, OpeningBook};
 use std::io::{self, BufRead};
 
@@ -76,6 +77,7 @@ fn main() {
                 println!("option name Threads type spin default 1 min 1 max 1");
                 println!("option name Book type string default <embedded>");
                 println!("option name NNUE type string default <embedded>");
+                println!("option name SyzygyPath type string default <empty>");
                 println!("option name UCI_Chess960 type check default false");
                 println!("option name UCI_Variant type combo default normal var normal var chess960");
                 #[cfg(feature = "decision-trace")]
@@ -150,6 +152,17 @@ fn main() {
                                 }
                             } else {
                                 maybe_load_nnue(&val);
+                            }
+                        }
+                        "syzygypath" => {
+                            if val.is_empty() || val.to_lowercase() == "<empty>" {
+                                engine.searcher.syzygy = SyzygyTables::new();
+                                eprintln!("info string Syzygy tables disabled");
+                            } else {
+                                match engine.searcher.syzygy.load(&val) {
+                                    Ok(()) => eprintln!("info string Syzygy tables loaded: {}", val),
+                                    Err(e) => eprintln!("info string Failed to load Syzygy tables: {}", e),
+                                }
                             }
                         }
                         "uci_chess960" => {

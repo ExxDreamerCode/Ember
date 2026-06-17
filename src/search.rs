@@ -6,6 +6,7 @@ use crate::board::{
 use crate::evaluate::{evaluate, evaluate_nnue_acc, with_nnue_net};
 use crate::movegen::{apply_move, generate_moves};
 use crate::nnue::NNUEAccumulator;
+use crate::syzygy::SyzygyTables;
 use crate::tt::{TT, TT_ALPHA, TT_BETA, TT_EXACT};
 use crate::zobrist::{compute_hash, compute_pawn_hash};
 use std::time::Instant;
@@ -157,6 +158,7 @@ pub struct Searcher {
     pub tt_mb: usize,
     pub stopped: bool,
     pub nnue_stack: Vec<NNUEAccumulator>,
+    pub syzygy: SyzygyTables,
     #[cfg(feature = "search-debug")]
     pub debug: SearchDebug,
 }
@@ -187,6 +189,7 @@ impl Searcher {
             tt_mb: 128,
             stopped: false,
             nnue_stack: Vec::new(),
+            syzygy: SyzygyTables::new(),
             #[cfg(feature = "search-debug")]
             debug: SearchDebug::from_env(),
         }
@@ -195,6 +198,10 @@ impl Searcher {
     pub fn resize_tt(&mut self, mb: usize) {
         self.tt.resize(mb);
         self.tt_mb = mb;
+    }
+
+    pub fn set_syzygy(&mut self, syzygy: SyzygyTables) {
+        self.syzygy = syzygy;
     }
 
     pub fn init_nnue_stack(&mut self, st: &BoardState) {
@@ -348,6 +355,10 @@ impl Searcher {
         base
     }
 
+    pub fn probe_syzygy(&self, st: &BoardState) -> Option<i32> {
+        self.syzygy.probe_wdl(st).and_then(SyzygyTables::wdl_to_score)
+    }
+
     pub fn update_correction_history(&mut self, st: &BoardState, score: i32, depth: i32) {
         if !self.corr_hist_enabled() || depth < 3 || score.abs() > MATE / 2 {
             return;
@@ -430,6 +441,15 @@ impl Searcher {
         }
         let ks = st.king_sq(st.w);
         let in_check = crate::board::is_attacked(&st.bb, ks, !st.w);
+
+        if !in_check
+            && self.syzygy.tables.is_some()
+            && SyzygyTables::pieces_ok(st)
+        {
+            if let Some(cutoff) = self.syzygy.probe_cutoff(st, beta, alpha) {
+                return cutoff;
+            }
+        }
 
         if !in_check {
             let stand = self.static_eval(st, ply);
@@ -551,7 +571,23 @@ impl Searcher {
             tactical_king_pressure(st)
         };
 
-        if !is_root && ply >= 2 && self.is_repetition() {
+        let tb_available = !in_check
+            && self.syzygy.tables.is_some()
+            && SyzygyTables::pieces_ok(st);
+
+        let eval_score = if tb_available {
+            self.probe_syzygy(st).unwrap_or_else(|| self.static_eval(st, ply))
+        } else {
+            self.static_eval(st, ply)
+        };
+
+        if tb_available && !is_pv && !is_root {
+            if let Some(cutoff) = self.syzygy.probe_cutoff(st, beta, alpha) {
+                return cutoff;
+            }
+        }
+
+        if !is_root && ply >= 2 && self.is_repetition() && eval_score < 100 {
             return 0;
         }
 
@@ -585,8 +621,6 @@ impl Searcher {
         if actual_depth <= 0 {
             return self.qsearch(st, alpha, beta, QS_DEPTH, start, tl, cnt, ply);
         }
-
-        let eval_score = self.static_eval(st, ply);
 
         if self.reverse_futility_enabled() && !in_check && !is_pv && actual_depth <= 8 && ply > 0 {
             let margin = 80 + 65 * actual_depth;

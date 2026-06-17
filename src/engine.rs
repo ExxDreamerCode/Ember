@@ -4,6 +4,8 @@ use crate::board::{
     bit, is_attacked, move_ec, move_promotion, move_to_uci, piece_from_char, piece_on, piece_type,
     sq, sq_c, BoardState, EMPTY_SQ, INF, MATE, MAX_PLY,
 };
+use crate::movegen::Move;
+use crate::syzygy::SyzygyTables;
 use crate::book::OpeningBook;
 use crate::movegen::{apply_move, generate_moves};
 use crate::search::Searcher;
@@ -245,12 +247,43 @@ impl Engine {
             let mut asp_score = -INF;
 
             'asp: loop {
-                let mut sorted = moves.clone();
-                if asp_best != moves[0] {
-                    if let Some(pos) = sorted.iter().position(|&m| m == asp_best) {
-                        sorted.swap(0, pos);
+                let sorted = if SyzygyTables::pieces_ok(&self.st)
+                    && self.searcher.syzygy.tables.is_some()
+                    && depth >= 2
+                {
+                    let mut with_dtz: Vec<(i32, Move)> = moves
+                        .iter()
+                        .map(|&mv| {
+                            let old = self.st;
+                            apply_move(
+                                &mut self.st,
+                                mv[0],
+                                mv[1],
+                                mv[2],
+                                move_ec(&mv),
+                                move_promotion(&mv),
+                            );
+                            let bonus = self.searcher.syzygy.dtz_bonus(&self.st).unwrap_or(0);
+                            self.st = old;
+                            (bonus, mv)
+                        })
+                        .collect();
+                    with_dtz.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+                    if asp_best != with_dtz[0].1 {
+                        if let Some(pos) = with_dtz.iter().position(|&(_, m)| m == asp_best) {
+                            with_dtz.swap(0, pos);
+                        }
                     }
-                }
+                    with_dtz.into_iter().map(|(_, mv)| mv).collect()
+                } else {
+                    let mut s = moves.clone();
+                    if asp_best != moves[0] {
+                        if let Some(pos) = s.iter().position(|&m| m == asp_best) {
+                            s.swap(0, pos);
+                        }
+                    }
+                    s
+                };
 
                 let mut cur_best = sorted[0];
                 let mut cur_score = -INF;
