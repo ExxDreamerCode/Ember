@@ -5,7 +5,7 @@ use crate::board::{
 };
 use crate::evaluate::{evaluate, evaluate_nnue_acc, with_nnue_net};
 use crate::movegen::{apply_move, generate_moves};
-use crate::nnue::{NNUEAccumulator, NNUENet};
+use crate::nnue::NNUEAccumulator;
 use crate::tt::{TT, TT_ALPHA, TT_BETA, TT_EXACT};
 use crate::zobrist::{compute_hash, compute_pawn_hash};
 use std::time::Instant;
@@ -199,16 +199,12 @@ impl Searcher {
 
     pub fn init_nnue_stack(&mut self, st: &BoardState) {
         with_nnue_net(|net| {
-            self.ensure_nnue_stack_len(net, MAX_PLY + 1);
+            if self.nnue_stack.len() < MAX_PLY + 1 {
+                self.nnue_stack
+                    .resize(MAX_PLY + 1, NNUEAccumulator::new(net.hidden_size));
+            }
             self.nnue_stack[0].refresh(net, st);
         });
-    }
-
-    fn ensure_nnue_stack_len(&mut self, net: &NNUENet, len: usize) {
-        if self.nnue_stack.len() < len {
-            self.nnue_stack
-                .resize_with(len, || NNUEAccumulator::new(net.hidden_size));
-        }
     }
 
     #[inline]
@@ -388,7 +384,7 @@ impl Searcher {
         false
     }
 
-    pub(crate) fn push_nnue_acc(
+    fn push_nnue_acc(
         &mut self,
         st_before: &BoardState,
         st_after: &BoardState,
@@ -400,14 +396,9 @@ impl Searcher {
         ply: usize,
     ) -> bool {
         with_nnue_net(|net| {
-            if ply >= MAX_PLY {
+            if ply + 1 >= self.nnue_stack.len() {
                 return false;
             }
-            if self.nnue_stack.len() <= ply {
-                self.ensure_nnue_stack_len(net, ply + 1);
-                self.nnue_stack[ply].refresh(net, st_before);
-            }
-            self.ensure_nnue_stack_len(net, ply + 2);
 
             let (left, right) = self.nnue_stack.split_at_mut(ply + 1);
             right[0].clone_from(&left[ply]);
@@ -417,23 +408,6 @@ impl Searcher {
             if !ok {
                 self.nnue_stack[ply + 1].refresh(net, st_after);
             }
-            true
-        })
-        .unwrap_or(false)
-    }
-
-    fn push_null_nnue_acc(&mut self, st: &BoardState, ply: usize) -> bool {
-        with_nnue_net(|net| {
-            if ply >= MAX_PLY {
-                return false;
-            }
-            if self.nnue_stack.len() <= ply {
-                self.ensure_nnue_stack_len(net, ply + 1);
-                self.nnue_stack[ply].refresh(net, st);
-            }
-            self.ensure_nnue_stack_len(net, ply + 2);
-            let (left, right) = self.nnue_stack.split_at_mut(ply + 1);
-            right[0].clone_from(&left[ply]);
             true
         })
         .unwrap_or(false)
@@ -479,6 +453,12 @@ impl Searcher {
         if moves.is_empty() {
             return if in_check { -MATE + 1000 } else { alpha };
         }
+        if with_nnue_net(|_| true).unwrap_or(false) && ply + 1 >= self.nnue_stack.len() {
+            if ply + 1 < MAX_PLY + 1 {
+                self.nnue_stack.resize(ply + 2, NNUEAccumulator::new(self.nnue_stack[0].hs));
+            }
+        }
+
         let mut caps: Vec<Move> = if in_check {
             moves
         } else {
@@ -524,16 +504,7 @@ impl Searcher {
             }
             let st_before = *st;
             apply_move(st, mv[0], mv[1], mv[2], move_ec(&mv), move_promotion(&mv));
-            self.push_nnue_acc(
-                &st_before,
-                st,
-                mv[0],
-                mv[1],
-                mv[2],
-                move_ec(&mv),
-                move_promotion(&mv),
-                ply,
-            );
+            self.push_nnue_acc(&st_before, st, mv[0], mv[1], mv[2], move_ec(&mv), move_promotion(&mv), ply);
             let score = -self.qsearch(st, -beta, -alpha, depth - 1, start, tl, cnt, ply + 1);
             *st = st_before;
             if self.stopped {
@@ -660,7 +631,6 @@ impl Searcher {
             let r = 3 + actual_depth / 4 + ((eval_score - beta) / 200).min(3);
             let ow = st.w;
             let oe = st.ep;
-            self.push_null_nnue_acc(st, ply);
             st.w = !st.w;
             st.ep = None;
             let null_h = compute_hash(st);
@@ -1065,10 +1035,6 @@ mod tests {
         engine.st
     }
 
-    fn ensure_nnue_loaded() {
-        crate::evaluate::init_embedded_nnue().expect("embedded test NNUE should load");
-    }
-
     #[test]
     fn qsearch_searches_en_passant_captures() {
         let mut st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
@@ -1088,7 +1054,7 @@ mod tests {
         );
 
         assert!(
-            score > stand_pat,
+            score > stand_pat + 50,
             "qsearch should improve on stand-pat by searching e5xd6 en passant: stand_pat={stand_pat}, score={score}"
         );
     }
@@ -1128,33 +1094,6 @@ mod tests {
         assert_ne!(best_move, "0000");
         assert!(nodes > 0);
         assert!(!engine.searcher.stopped);
-    }
-
-    #[test]
-    fn null_move_copies_current_nnue_accumulator() {
-        ensure_nnue_loaded();
-        let mut st = state_from_fen("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
-        let mut searcher = Searcher::new();
-        searcher.init_nnue_stack(&st);
-
-        assert!(searcher.push_null_nnue_acc(&st, 0));
-        st.w = !st.w;
-        st.ep = None;
-
-        let copied_eval = searcher.static_eval(&st, 1);
-        let expected = crate::evaluate::with_nnue_net(|net| {
-            let mut refreshed = NNUEAccumulator::new(net.hidden_size);
-            refreshed.refresh(net, &st);
-            let refreshed_eval = evaluate_nnue_acc(net, &refreshed, &st);
-            if st.w {
-                refreshed_eval
-            } else {
-                -refreshed_eval
-            }
-        })
-        .expect("embedded test NNUE should load");
-
-        assert_eq!(copied_eval, expected);
     }
 
     #[test]

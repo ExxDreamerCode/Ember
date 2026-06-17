@@ -269,16 +269,11 @@ impl Engine {
                         move_ec(&mv),
                         move_promotion(&mv),
                     );
-                    self.searcher.push_nnue_acc(
-                        &old,
-                        &self.st,
-                        mv[0],
-                        mv[1],
-                        mv[2],
-                        move_ec(&mv),
-                        move_promotion(&mv),
-                        0,
-                    );
+                    crate::evaluate::with_nnue_net(|net| {
+                        if !self.searcher.nnue_stack.is_empty() {
+                            self.searcher.nnue_stack[1].refresh(net, &self.st);
+                        }
+                    });
                     let h = compute_hash(&self.st);
                     self.searcher.rep_stack.push(h);
                     self.searcher.rep_stack_len += 1;
