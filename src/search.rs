@@ -7,8 +7,10 @@ use crate::evaluate::{evaluate, evaluate_nnue_acc, with_nnue_net};
 use crate::movegen::{apply_move, generate_moves};
 use crate::nnue::NNUEAccumulator;
 use crate::syzygy::SyzygyTables;
-use crate::tt::{TT, TT_ALPHA, TT_BETA, TT_EXACT};
+use crate::tt::{SharedTT, TT_ALPHA, TT_BETA, TT_EXACT};
 use crate::zobrist::{compute_hash, compute_pawn_hash};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 fn piece_val(pt: u8) -> i32 {
@@ -148,7 +150,7 @@ fn selective_pruning_unsafe(st: &BoardState) -> bool {
 }
 
 pub struct Searcher {
-    pub tt: TT,
+    pub shared_tt: Arc<SharedTT>,
     pub killers: [[Option<Move>; 2]; MAX_PLY],
     pub history: [[i32; 64]; 64],
     pub counter_move: [[Option<Move>; 64]; 13],
@@ -156,7 +158,7 @@ pub struct Searcher {
     pub rep_stack: Vec<u64>,
     pub rep_stack_len: usize,
     pub tt_mb: usize,
-    pub stopped: bool,
+    pub stopped: Arc<AtomicBool>,
     pub nnue_stack: Vec<NNUEAccumulator>,
     pub syzygy: SyzygyTables,
     #[cfg(feature = "search-debug")]
@@ -177,9 +179,9 @@ pub struct SearchDebug {
 }
 
 impl Searcher {
-    pub fn new() -> Self {
+    pub fn new(shared_tt: Arc<SharedTT>, stopped: Arc<AtomicBool>) -> Self {
         Searcher {
-            tt: TT::new(128),
+            shared_tt,
             killers: [[None; 2]; MAX_PLY],
             history: [[0i32; 64]; 64],
             counter_move: [[None; 64]; 13],
@@ -187,7 +189,7 @@ impl Searcher {
             rep_stack: Vec::with_capacity(512),
             rep_stack_len: 0,
             tt_mb: 128,
-            stopped: false,
+            stopped,
             nnue_stack: Vec::new(),
             syzygy: SyzygyTables::new(),
             #[cfg(feature = "search-debug")]
@@ -196,7 +198,7 @@ impl Searcher {
     }
 
     pub fn resize_tt(&mut self, mb: usize) {
-        self.tt.resize(mb);
+        self.shared_tt.resize(mb);
         self.tt_mb = mb;
     }
 
@@ -215,17 +217,23 @@ impl Searcher {
     }
 
     #[inline]
-    fn time_up(&mut self, start: Instant, tl: f64) -> bool {
-        if self.stopped || start.elapsed().as_secs_f64() > tl {
-            self.stopped = true;
+    fn time_up(&self, start: Instant, tl: f64) -> bool {
+        if self.stopped.load(Ordering::Relaxed) {
+            return true;
+        }
+        if start.elapsed().as_secs_f64() > tl {
+            self.set_stopped();
             true
         } else {
             false
         }
     }
 
+    pub fn set_stopped(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+    }
+
     #[cfg(feature = "search-debug")]
-    #[inline(always)]
     fn corr_hist_enabled(&self) -> bool {
         !self.debug.disable_corr_hist
     }
@@ -236,7 +244,6 @@ impl Searcher {
     }
 
     #[cfg(feature = "search-debug")]
-    #[inline(always)]
     fn futility_enabled(&self) -> bool {
         !self.debug.disable_futility
     }
@@ -247,7 +254,6 @@ impl Searcher {
     }
 
     #[cfg(feature = "search-debug")]
-    #[inline(always)]
     fn history_pruning_enabled(&self) -> bool {
         !self.debug.disable_history_pruning
     }
@@ -258,7 +264,6 @@ impl Searcher {
     }
 
     #[cfg(feature = "search-debug")]
-    #[inline(always)]
     fn iid_reduction_enabled(&self) -> bool {
         !self.debug.disable_iid_reduction
     }
@@ -269,7 +274,6 @@ impl Searcher {
     }
 
     #[cfg(feature = "search-debug")]
-    #[inline(always)]
     fn lmp_enabled(&self) -> bool {
         !self.debug.disable_lmp
     }
@@ -280,7 +284,6 @@ impl Searcher {
     }
 
     #[cfg(feature = "search-debug")]
-    #[inline(always)]
     fn lmr_enabled(&self) -> bool {
         !self.debug.disable_lmr
     }
@@ -291,7 +294,6 @@ impl Searcher {
     }
 
     #[cfg(feature = "search-debug")]
-    #[inline(always)]
     fn null_move_enabled(&self) -> bool {
         !self.debug.disable_null_move
     }
@@ -302,7 +304,6 @@ impl Searcher {
     }
 
     #[cfg(feature = "search-debug")]
-    #[inline(always)]
     fn reverse_futility_enabled(&self) -> bool {
         !self.debug.disable_reverse_futility
     }
@@ -313,7 +314,6 @@ impl Searcher {
     }
 
     #[cfg(feature = "search-debug")]
-    #[inline(always)]
     fn see_pruning_enabled(&self) -> bool {
         !self.debug.disable_see_pruning
     }
@@ -527,7 +527,7 @@ impl Searcher {
             self.push_nnue_acc(&st_before, st, mv[0], mv[1], mv[2], move_ec(&mv), move_promotion(&mv), ply);
             let score = -self.qsearch(st, -beta, -alpha, depth - 1, start, tl, cnt, ply + 1);
             *st = st_before;
-            if self.stopped {
+            if self.stopped.load(Ordering::Relaxed) {
                 return 0;
             }
             if score >= beta {
@@ -594,11 +594,11 @@ impl Searcher {
         let ext = if in_check { 1 } else { 0 };
         let actual_depth = depth + ext;
 
-        let tt_entry = self.tt.get(h);
-        let tt_move = tt_entry.and_then(|e| e.best_move);
-        let tt_score = tt_entry.map(|e| score_from_tt(e.score, ply));
-        let tt_depth = tt_entry.map(|e| e.depth).unwrap_or(-1);
-        let tt_flag = tt_entry.map(|e| e.flag);
+        let tt_data = self.shared_tt.get_depth(h);
+        let tt_move = tt_data.and_then(|(_, _, _, best)| best);
+        let tt_score = tt_data.map(|(_, s, _, _)| score_from_tt(s, ply));
+        let tt_depth = tt_data.map(|(d, _, _, _)| d).unwrap_or(-1);
+        let tt_flag = tt_data.map(|(_, _, f, _)| f);
 
         if !is_pv && tt_depth >= actual_depth && tt_flag.is_some() {
             let s = tt_score.unwrap();
@@ -952,7 +952,7 @@ impl Searcher {
             self.rep_stack_len -= 1;
             *st = st_before;
 
-            if self.stopped {
+            if self.stopped.load(Ordering::Relaxed) {
                 return 0;
             }
 
@@ -1008,7 +1008,7 @@ impl Searcher {
             }
         }
 
-        if self.stopped {
+        if self.stopped.load(Ordering::Relaxed) {
             return 0;
         }
 
@@ -1019,7 +1019,7 @@ impl Searcher {
         } else {
             TT_EXACT
         };
-        self.tt.store(
+        self.shared_tt.store(
             h,
             actual_depth,
             score_to_tt(best_score, ply),
@@ -1057,6 +1057,282 @@ fn env_flag(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+struct ThreadResult {
+    best_move: Move,
+    score: i32,
+    depth: i32,
+    nodes: u64,
+}
+
+pub fn lazy_smp_search(
+    shared_tt: Arc<SharedTT>,
+    st: &BoardState,
+    time_limit: f64,
+    depth_limit: i32,
+    num_threads: usize,
+) -> (Move, i32, i32, u64) {
+    let stopped = Arc::new(AtomicBool::new(false));
+    let all_moves = generate_moves(st, st.w, &st.cr, st.ep);
+
+    let actual_threads = if all_moves.len() < num_threads {
+        1
+    } else {
+        num_threads
+    };
+
+    let results = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let global_best_depth: Arc<AtomicI32> = Arc::new(AtomicI32::new(0));
+    let global_nodes: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
+    let start = Instant::now();
+    let root_hash = compute_hash(st);
+
+    let mut handles = Vec::with_capacity(actual_threads);
+
+    let moves_per_thread = (all_moves.len() + actual_threads - 1) / actual_threads;
+
+    for thread_id in 0..actual_threads {
+        let start_idx = thread_id * moves_per_thread;
+        let end_idx = (start_idx + moves_per_thread).min(all_moves.len());
+        if start_idx >= end_idx {
+            break;
+        }
+        let mut my_moves: Vec<Move> = all_moves[start_idx..end_idx].to_vec();
+
+        let shared_tt = Arc::clone(&shared_tt);
+        let stopped = Arc::clone(&stopped);
+        let results = Arc::clone(&results);
+        let global_best_depth = Arc::clone(&global_best_depth);
+        let global_nodes = Arc::clone(&global_nodes);
+        let st = *st;
+
+        let handle = std::thread::Builder::new()
+            .name(format!("rts-{}", thread_id))
+            .spawn(move || {
+                let mut searcher = Searcher::new(shared_tt, Arc::clone(&stopped));
+                searcher.syzygy = SyzygyTables::new();
+                searcher.init_nnue_stack(&st);
+
+                let mut best_move = my_moves[0];
+                let mut best_score = 0i32;
+                let mut best_depth = 0;
+                let mut total_nodes = 0u64;
+
+                let init_eval = searcher.corrected_eval(&st);
+                let mut prev_score = init_eval;
+
+                for depth in 1..=depth_limit {
+                    if searcher.time_up(start, time_limit) {
+                        break;
+                    }
+
+                    let mut nd = 0u64;
+                    let init_delta = if depth >= 5 { 25 } else { INF };
+                    let mut asp_delta = init_delta;
+                    let (mut alpha, mut beta) = if asp_delta < INF {
+                        (prev_score - asp_delta, prev_score + asp_delta)
+                    } else {
+                        (-INF, INF)
+                    };
+
+                    let mut asp_best = best_move;
+                    let mut asp_score = -INF;
+
+                    if let Some((tt_d, _, _, Some(tt_mv))) = searcher.shared_tt.get_depth(root_hash) {
+                        if tt_d >= 1 && !my_moves.contains(&tt_mv) {
+                            my_moves.push(tt_mv);
+                        }
+                    }
+
+                    'asp: loop {
+                        let mut sorted = my_moves.clone();
+                        if asp_best != my_moves[0] {
+                            if let Some(pos) = sorted.iter().position(|&m| m == asp_best) {
+                                sorted.swap(0, pos);
+                            }
+                        }
+
+                        let mut cur_best = sorted[0];
+                        let mut cur_score = -INF;
+                        let mut loop_alpha = alpha;
+
+                        for &mv in &sorted {
+                            if searcher.time_up(start, time_limit) {
+                                break;
+                            }
+                            let mut s = st;
+                            apply_move(&mut s, mv[0], mv[1], mv[2], move_ec(&mv), move_promotion(&mv));
+                            crate::evaluate::with_nnue_net(|net| {
+                                if !searcher.nnue_stack.is_empty() {
+                                    searcher.nnue_stack[1].refresh(net, &s);
+                                }
+                            });
+                            let h = compute_hash(&s);
+                            searcher.rep_stack.push(h);
+                            searcher.rep_stack_len += 1;
+
+                            let score = if cur_score == -INF {
+                                -searcher.negamax(
+                                    &mut s,
+                                    depth - 1,
+                                    1,
+                                    -beta,
+                                    -loop_alpha,
+                                    true,
+                                    start,
+                                    time_limit,
+                                    &mut nd,
+                                )
+                            } else {
+                                let sc = -searcher.negamax(
+                                    &mut s,
+                                    depth - 1,
+                                    1,
+                                    -loop_alpha - 1,
+                                    -loop_alpha,
+                                    true,
+                                    start,
+                                    time_limit,
+                                    &mut nd,
+                                );
+                                if sc > loop_alpha && sc < beta {
+                                    -searcher.negamax(
+                                        &mut s,
+                                        depth - 1,
+                                        1,
+                                        -beta,
+                                        -loop_alpha,
+                                        true,
+                                        start,
+                                        time_limit,
+                                        &mut nd,
+                                    )
+                                } else {
+                                    sc
+                                }
+                            };
+
+                            searcher.rep_stack.pop();
+                            searcher.rep_stack_len -= 1;
+
+                            if stopped.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            if score > cur_score {
+                                cur_score = score;
+                                cur_best = mv;
+                            }
+                            if score > loop_alpha {
+                                loop_alpha = score;
+                            }
+                            if loop_alpha >= beta {
+                                break;
+                            }
+                        }
+
+                        if stopped.load(Ordering::Relaxed)
+                            || start.elapsed().as_secs_f64() > time_limit
+                        {
+                            break 'asp;
+                        }
+
+                        if cur_score <= alpha {
+                            asp_delta = asp_delta.saturating_mul(2).min(INF);
+                            alpha = (prev_score - asp_delta).max(-INF);
+                            beta = prev_score + init_delta;
+                            continue 'asp;
+                        }
+                        if cur_score >= beta {
+                            asp_delta = asp_delta.saturating_mul(2).min(INF);
+                            beta = (prev_score + asp_delta).min(INF);
+                            asp_best = cur_best;
+                            continue 'asp;
+                        }
+                        asp_best = cur_best;
+                        asp_score = cur_score;
+                        break;
+                    }
+
+                    if stopped.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    total_nodes += nd;
+                    global_nodes.fetch_add(nd, Ordering::Relaxed);
+                    let elapsed = start.elapsed().as_secs_f64();
+
+                    if elapsed <= time_limit {
+                        let prev = global_best_depth.fetch_max(depth, Ordering::SeqCst);
+                        if prev < depth {
+                            let score_str = if asp_score.abs() > 90_000 {
+                                let mate_in = (MATE - asp_score.abs()) / 2 + 1;
+                                if asp_score > 0 {
+                                    format!("mate {}", mate_in)
+                                } else {
+                                    format!("mate -{}", mate_in)
+                                }
+                            } else {
+                                format!("cp {}", asp_score)
+                            };
+                            let mv_str = crate::board::move_to_uci(&st, &asp_best);
+                            let g_nodes = global_nodes.load(Ordering::Relaxed);
+                            let nps = if elapsed > 0.0 {
+                                (g_nodes as f64 / elapsed) as i64
+                            } else {
+                                0
+                            };
+                            println!(
+                                "info depth {} score {} nodes {} nps {} time {} pv {}",
+                                depth,
+                                score_str,
+                                g_nodes,
+                                nps,
+                                (elapsed * 1000.0) as u64,
+                                mv_str
+                            );
+                        }
+                        best_move = asp_best;
+                        best_score = asp_score;
+                        best_depth = depth;
+                        prev_score = best_score;
+                        searcher.update_correction_history(&st, best_score, best_depth);
+                    } else {
+                        break;
+                    }
+                }
+
+                let mut lock = results.lock().unwrap();
+                lock.push(ThreadResult {
+                    best_move,
+                    score: best_score,
+                    depth: best_depth,
+                    nodes: total_nodes,
+                });
+            });
+
+        if let Ok(h) = handle {
+            handles.push(h);
+        }
+    }
+
+    for h in handles {
+        let _ = h.join();
+    }
+
+    let lock = results.lock().unwrap();
+    let best = lock
+        .iter()
+        .max_by(|a, b| {
+            a.depth
+                .cmp(&b.depth)
+                .then_with(|| a.score.cmp(&b.score))
+        })
+        .unwrap_or(&lock[0]);
+
+    let best_depth = best.depth;
+    let total_nodes: u64 = lock.iter().map(|r| r.nodes).sum();
+
+    (best.best_move, best.score, best_depth, total_nodes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1072,7 +1348,9 @@ mod tests {
     #[test]
     fn qsearch_searches_en_passant_captures() {
         let mut st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
-        let mut searcher = Searcher::new();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(128));
+        let mut searcher = Searcher::new(shared_tt, stopped);
         let stand_pat = searcher.corrected_eval(&st);
         let mut nodes = 0u64;
 
@@ -1096,7 +1374,9 @@ mod tests {
     #[test]
     fn negamax_timeout_sets_stopped_without_storing_tt() {
         let mut st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
-        let mut searcher = Searcher::new();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(128));
+        let mut searcher = Searcher::new(shared_tt.clone(), stopped);
         let key = compute_hash(&st);
         let mut nodes = 0u64;
 
@@ -1113,21 +1393,21 @@ mod tests {
         );
 
         assert_eq!(score, 0);
-        assert!(searcher.stopped);
-        assert!(searcher.tt.get(key).is_none());
+        assert!(searcher.stopped.load(Ordering::Relaxed));
+        assert!(searcher.shared_tt.get_depth(key).is_none());
     }
 
     #[test]
     fn root_search_resets_previous_timeout_state() {
         let mut engine = Engine::new();
         engine.book = None;
-        engine.searcher.stopped = true;
+        engine.searcher.set_stopped();
 
         let (best_move, _, nodes, _) = engine.find_best_move(1.0, 1);
 
         assert_ne!(best_move, "0000");
         assert!(nodes > 0);
-        assert!(!engine.searcher.stopped);
+        assert!(!engine.searcher.stopped.load(Ordering::Relaxed));
     }
 
     #[test]

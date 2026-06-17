@@ -8,15 +8,21 @@ use crate::movegen::Move;
 use crate::syzygy::SyzygyTables;
 use crate::book::OpeningBook;
 use crate::movegen::{apply_move, generate_moves};
-use crate::search::Searcher;
+use crate::search::{lazy_smp_search, Searcher};
+use crate::tt::SharedTT;
 #[cfg(feature = "decision-trace")]
 use crate::trace::{DecisionTrace, DepthInfo, TraceLogger};
 use crate::zobrist::compute_hash;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 pub struct Engine {
     pub st: BoardState,
     pub searcher: Searcher,
+    pub shared_tt: Arc<SharedTT>,
+    pub num_threads: usize,
+    pub stopped: Arc<AtomicBool>,
     pub book: Option<OpeningBook>,
     #[cfg(feature = "decision-trace")]
     pub trace: TraceLogger,
@@ -24,9 +30,14 @@ pub struct Engine {
 
 impl Engine {
     pub fn new() -> Self {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(128));
         let mut e = Engine {
             st: BoardState::empty(),
-            searcher: Searcher::new(),
+            searcher: Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped)),
+            shared_tt,
+            num_threads: 1,
+            stopped,
             book: None,
             #[cfg(feature = "decision-trace")]
             trace: TraceLogger::from_env(),
@@ -213,9 +224,27 @@ impl Engine {
             }
         }
 
+        if self.num_threads > 1 {
+            let start = Instant::now();
+            self.searcher.stopped.store(false, Ordering::SeqCst);
+
+            let (best_move, best_score, best_depth, total_nodes) = lazy_smp_search(
+                Arc::clone(&self.shared_tt),
+                &self.st,
+                time_limit,
+                depth_limit,
+                self.num_threads,
+            );
+
+            let mv_str = move_to_uci(&self.st, &best_move);
+            let elapsed = start.elapsed().as_secs_f64();
+            self.searcher.update_correction_history(&self.st, best_score, best_depth);
+            return (mv_str, best_score, total_nodes, elapsed);
+        }
+
         self.searcher.killers = [[None; 2]; MAX_PLY];
         self.searcher.history = [[0i32; 64]; 64];
-        self.searcher.stopped = false;
+        self.searcher.stopped.store(false, Ordering::SeqCst);
         self.searcher.init_nnue_stack(&self.st);
 
         let start = Instant::now();
@@ -356,7 +385,7 @@ impl Engine {
                     self.searcher.rep_stack_len -= 1;
                     self.st = old;
 
-                    if self.searcher.stopped {
+                    if self.searcher.stopped.load(Ordering::Relaxed) {
                         break;
                     }
                     if score > cur_score {
@@ -371,7 +400,7 @@ impl Engine {
                     }
                 }
 
-                if self.searcher.stopped || start.elapsed().as_secs_f64() > time_limit {
+                if self.searcher.stopped.load(Ordering::Relaxed) || start.elapsed().as_secs_f64() > time_limit {
                     break 'asp;
                 }
 
@@ -392,7 +421,7 @@ impl Engine {
                 break;
             }
 
-            if self.searcher.stopped {
+            if self.searcher.stopped.load(Ordering::Relaxed) {
                 break;
             }
             total_nodes += nd;

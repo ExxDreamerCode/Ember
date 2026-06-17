@@ -71,10 +71,10 @@ fn main() {
         let parts: Vec<&str> = trimmed.split_whitespace().collect();
         match parts[0] {
             "uci" => {
-                println!("id name Ember 0.9.5");
+                println!("id name Ember 1.0.0");
                 println!("id author ExxDreamerCode");
                 println!("option name Hash type spin default 128 min 1 max 4096");
-                println!("option name Threads type spin default 1 min 1 max 1");
+                println!("option name Threads type spin default 1 min 1 max 256");
                 println!("option name Book type string default <embedded>");
                 println!("option name NNUE type string default <embedded>");
                 println!("option name SyzygyPath type string default <empty>");
@@ -218,6 +218,12 @@ fn parse_setoption(engine: &mut Engine, parts: &[&str]) {
                     engine.searcher.resize_tt(mb);
                 }
             }
+            "threads" => {
+                if let Ok(n) = val.parse::<usize>() {
+                    engine.num_threads = n.max(1);
+                    eprintln!("info string Set threads to {}", engine.num_threads);
+                }
+            }
             #[cfg(feature = "decision-trace")]
             "tracefile" => {
                 if !val.is_empty() {
@@ -231,11 +237,13 @@ fn parse_setoption(engine: &mut Engine, parts: &[&str]) {
 
 fn reset_engine(engine: &mut Engine) {
     let book = engine.book.take();
+    let num_threads = engine.num_threads;
     #[cfg(feature = "decision-trace")]
     let trace = std::mem::take(&mut engine.trace);
     let tt_mb = engine.searcher.tt_mb;
     *engine = Engine::new();
     engine.book = book;
+    engine.num_threads = num_threads;
     #[cfg(feature = "decision-trace")]
     {
         engine.trace = trace;

@@ -1,4 +1,5 @@
 use crate::board::Move;
+use std::sync::RwLock;
 
 #[derive(Clone)]
 pub struct TTEntry {
@@ -54,5 +55,32 @@ impl TT {
         let size = (mb * 1024 * 1024 / 40).next_power_of_two();
         self.entries = vec![None; size];
         self.mask = size - 1;
+    }
+}
+
+pub struct SharedTT {
+    inner: RwLock<TT>,
+}
+
+impl SharedTT {
+    pub fn new(mb: usize) -> Self {
+        SharedTT {
+            inner: RwLock::new(TT::new(mb)),
+        }
+    }
+
+    pub fn get_depth(&self, key: u64) -> Option<(i32, i32, u8, Option<Move>)> {
+        let tt = self.inner.read().unwrap();
+        tt.get(key).map(|e| (e.depth, e.score, e.flag, e.best_move))
+    }
+
+    pub fn store(&self, key: u64, depth: i32, score: i32, flag: u8, best_move: Option<Move>) {
+        let mut tt = self.inner.write().unwrap();
+        tt.store(key, depth, score, flag, best_move);
+    }
+
+    pub fn resize(&self, mb: usize) {
+        let mut tt = self.inner.write().unwrap();
+        tt.resize(mb);
     }
 }
