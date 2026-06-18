@@ -17,9 +17,23 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
     let mover_type = piece_type(mover_pi);
     let white = is_white_piece(mover_pi);
 
-    let cap_pi = piece_on(&st.bb, to);
-    if cap_pi != EMPTY_SQ {
-        st.bb[cap_pi as usize] &= !bit(to);
+    let is_chess960_castle = if mover_type == 5 && st.chess960 {
+        let target_pi = piece_on(&st.bb, to);
+        if target_pi != EMPTY_SQ && piece_type(target_pi) == 3 && is_white_piece(target_pi) == white {
+            let king_dst_col = if ec > sc { 6usize } else { 2usize };
+            king_dst_col != sc
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if !is_chess960_castle {
+        let cap_pi = piece_on(&st.bb, to);
+        if cap_pi != EMPTY_SQ {
+            st.bb[cap_pi as usize] &= !bit(to);
+        }
     }
 
     if mover_type == 0 && Some(to) == st.ep {
@@ -30,37 +44,44 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
         }
     }
 
-    if mover_type == 5 && (st.chess960 || sc == 4) && (ec == 6 || ec == 2) {
-        let rook_pi = if white { WR } else { BR };
-        let (r_from, r_to) = if st.chess960 {
-            if ec == 6 {
-                let rooks = st.bb[rook_pi] & if white { 0xFF00000000000000 } else { 0x00000000000000FF };
-                let r_from = if rooks != 0 {
-                    rooks.trailing_zeros() as usize
-                } else { 0 };
-                (r_from, sq(sr, 5))
-            } else {
-                let rooks = st.bb[rook_pi] & if white { 0xFF00000000000000 } else { 0x00000000000000FF };
-                let r_from = if rooks != 0 {
-                    rooks.trailing_zeros() as usize
-                } else { 0 };
-                (r_from, sq(sr, 3))
+    if mover_type == 5 {
+        if st.chess960 {
+            let target_pi = piece_on(&st.bb, to);
+            if target_pi != EMPTY_SQ && piece_type(target_pi) == 3 && is_white_piece(target_pi) == white {
+                let rook_pi = if white { WR } else { BR };
+                let rook_col = ec;
+                let (king_dst_col, rook_dst_col) = if rook_col > sc {
+                    (6usize, 5usize)
+                } else {
+                    (2usize, 3usize)
+                };
+                st.bb[rook_pi] &= !bit(sq(sr, rook_col));
+                st.bb[rook_pi] |= bit(sq(sr, rook_dst_col));
+                st.bb[mover_pi as usize] &= !bit(sq(sr, sc));
+                st.bb[mover_pi as usize] |= bit(sq(sr, king_dst_col));
             }
-        } else {
-            if ec == 6 { (sq(sr, 7), sq(sr, 5)) } else { (sq(sr, 0), sq(sr, 3)) }
-        };
-        st.bb[rook_pi] &= !bit(r_from);
-        st.bb[rook_pi] |= bit(r_to);
+        } else if sc == 4 && (ec == 6 || ec == 2) {
+            let rook_pi = if white { WR } else { BR };
+            let (r_from, r_to) = if ec == 6 {
+                (sq(sr, 7), sq(sr, 5))
+            } else {
+                (sq(sr, 0), sq(sr, 3))
+            };
+            st.bb[rook_pi] &= !bit(r_from);
+            st.bb[rook_pi] |= bit(r_to);
+        }
     }
 
-    st.bb[mover_pi as usize] &= !bit(from);
+    if !is_chess960_castle {
+        st.bb[mover_pi as usize] &= !bit(from);
 
-    if mover_type == 0 && (er == 0 || er == 7) {
-        let promo_pi =
-            promotion_piece_index(white, promotion).unwrap_or(if white { WQ } else { BQ });
-        st.bb[promo_pi] |= bit(to);
-    } else {
-        st.bb[mover_pi as usize] |= bit(to);
+        if mover_type == 0 && (er == 0 || er == 7) {
+            let promo_pi =
+                promotion_piece_index(white, promotion).unwrap_or(if white { WQ } else { BQ });
+            st.bb[promo_pi] |= bit(to);
+        } else {
+            st.bb[mover_pi as usize] |= bit(to);
+        }
     }
 
     if mover_pi == WK as u8 {
@@ -388,6 +409,7 @@ pub fn generate_moves(
             let kr = if wturn { 7usize } else { 0usize };
             let rooks = st.bb[rook_pi] & if wturn { 0xFF00000000000000 } else { 0x00000000000000FF };
             let king_col = sq_c(kf);
+            let occ = all_occ(&st.bb);
             let mut rook_list: Vec<usize> = Vec::new();
             let mut tmp = rooks;
             while tmp != 0 {
@@ -398,38 +420,56 @@ pub fn generate_moves(
             rook_list.sort();
             if cr[if wturn { 0 } else { 2 }] {
                 if let Some(&rc) = rook_list.iter().find(|&&c| c > king_col) {
-                    let c_lo = king_col + 1;
-                    let c_hi = rc - 1;
-                    let mut blocked = false;
-                    for c in c_lo..=c_hi {
-                        if all_occ(&st.bb) & bit(sq(kr, c)) != 0 { blocked = true; break; }
-                    }
-                    if !blocked {
-                        let mut attacked = false;
-                        for c in king_col..=rc {
-                            if is_attacked(&st.bb, sq(kr, c), !wturn) { attacked = true; break; }
+                    let king_dst = 6usize;
+                    let rook_dst = 5usize;
+                    if king_dst != king_col {
+                        let mut blocked = false;
+                        for c in (king_col + 1)..rc {
+                            if occ & bit(sq(kr, c)) != 0 { blocked = true; break; }
                         }
-                        if !attacked {
-                            result.push(encode_move(kr, king_col, kr, 6, 0));
+                        if !blocked {
+                            let rlo = rook_dst.min(rc);
+                            let rhi = rook_dst.max(rc);
+                            for c in rlo..=rhi {
+                                if occ & bit(sq(kr, c)) != 0 && c != rc { blocked = true; break; }
+                            }
+                        }
+                        if !blocked {
+                            let mut attacked = false;
+                            for c in king_col..=king_dst {
+                                if is_attacked(&st.bb, sq(kr, c), !wturn) { attacked = true; break; }
+                            }
+                            if !attacked {
+                                result.push(encode_move(kr, king_col, kr, rc, 0));
+                            }
                         }
                     }
                 }
             }
             if cr[if wturn { 1 } else { 3 }] {
                 if let Some(&rc) = rook_list.iter().rev().find(|&&c| c < king_col) {
-                    let c_lo = rc + 1;
-                    let c_hi = king_col - 1;
-                    let mut blocked = false;
-                    for c in c_lo..=c_hi {
-                        if all_occ(&st.bb) & bit(sq(kr, c)) != 0 { blocked = true; break; }
-                    }
-                    if !blocked {
-                        let mut attacked = false;
-                        for c in rc..=king_col {
-                            if is_attacked(&st.bb, sq(kr, c), !wturn) { attacked = true; break; }
+                    let king_dst = 2usize;
+                    let rook_dst = 3usize;
+                    if king_dst != king_col {
+                        let mut blocked = false;
+                        for c in (rc + 1)..king_col {
+                            if occ & bit(sq(kr, c)) != 0 { blocked = true; break; }
                         }
-                        if !attacked {
-                            result.push(encode_move(kr, king_col, kr, 2, 0));
+                        if !blocked {
+                            let rlo = rook_dst.min(rc);
+                            let rhi = rook_dst.max(rc);
+                            for c in rlo..=rhi {
+                                if occ & bit(sq(kr, c)) != 0 && c != rc { blocked = true; break; }
+                            }
+                        }
+                        if !blocked {
+                            let mut attacked = false;
+                            for c in king_dst..=king_col {
+                                if is_attacked(&st.bb, sq(kr, c), !wturn) { attacked = true; break; }
+                            }
+                            if !attacked {
+                                result.push(encode_move(kr, king_col, kr, rc, 0));
+                            }
                         }
                     }
                 }
@@ -536,6 +576,60 @@ mod tests {
         assert_ne!(piece_on(&st.bb, sq(2, 3)), EMPTY_SQ);
         assert_eq!(piece_on(&st.bb, sq(3, 3)), EMPTY_SQ);
         assert!(!st.w);
+    }
+
+    #[test]
+    fn chess960_castling_places_pieces_on_standard_squares() {
+        let mut engine = Engine::new();
+        engine.set_fen("1k6/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
+        engine.st.chess960 = true;
+
+        let moves = generate_moves(&engine.st, engine.st.w, &engine.st.cr, engine.st.ep);
+        let uci_moves: Vec<String> = moves.iter().map(|mv| move_to_uci(&engine.st, mv)).collect();
+
+        assert!(uci_moves.contains(&"e1a1".to_string()), "Queenside castling e1a1 should be legal");
+        assert!(uci_moves.contains(&"e1h1".to_string()), "Kingside castling e1h1 should be legal");
+
+        let oo = moves.iter().find(|mv| move_to_uci(&engine.st, mv) == "e1h1").unwrap();
+        apply_move(&mut engine.st, oo[0], oo[1], oo[2], move_ec(oo), move_promotion(oo));
+        assert_eq!(engine.st.king_sq(true), 7 * 8 + 6, "King should be on g1 after O-O");
+        assert!(engine.st.bb[WR] & bit(7 * 8 + 5) != 0, "Rook should be on f1 after O-O");
+        assert!(engine.st.bb[WR] & bit(7 * 8 + 7) == 0, "Rook should no longer be on h1 after O-O");
+    }
+
+    #[test]
+    fn chess960_castling_queenside_places_pieces_on_standard_squares() {
+        let mut engine = Engine::new();
+        engine.set_fen("r3k2r/8/8/8/8/8/8/1K6 b KQkq - 0 1");
+        engine.st.chess960 = true;
+
+        let moves = generate_moves(&engine.st, engine.st.w, &engine.st.cr, engine.st.ep);
+        let uci_moves: Vec<String> = moves.iter().map(|mv| move_to_uci(&engine.st, mv)).collect();
+
+        assert!(uci_moves.contains(&"e8a8".to_string()), "Black queenside castling e8a8 should be legal");
+        assert!(uci_moves.contains(&"e8h8".to_string()), "Black kingside castling e8h8 should be legal");
+
+        let ooo = moves.iter().find(|mv| move_to_uci(&engine.st, mv) == "e8a8").unwrap();
+        apply_move(&mut engine.st, ooo[0], ooo[1], ooo[2], move_ec(ooo), move_promotion(ooo));
+        assert_eq!(engine.st.king_sq(false), 0 * 8 + 2, "Black king should be on c8 after O-O-O");
+        assert!(engine.st.bb[BR] & bit(0 * 8 + 3) != 0, "Black rook should be on d8 after O-O-O");
+        assert!(engine.st.bb[BR] & bit(0 * 8 + 0) == 0, "Black rook should no longer be on a8 after O-O-O");
+    }
+
+    #[test]
+    fn chess960_castling_blocked_by_pieces() {
+        let mut engine = Engine::new();
+        engine.set_fen("1k6/8/8/8/8/8/8/RBNKBNQR w KQkq - 0 1");
+        engine.st.chess960 = true;
+
+        let king_sq = engine.st.king_sq(true);
+        assert_eq!(king_sq, 7 * 8 + 3, "White king should be on d1");
+
+        let moves = generate_moves(&engine.st, engine.st.w, &engine.st.cr, engine.st.ep);
+        let uci_moves: Vec<String> = moves.iter().map(|mv| move_to_uci(&engine.st, mv)).collect();
+
+        assert!(!uci_moves.contains(&"d1a1".to_string()), "Queenside castling d1a1 blocked by bishop on b1");
+        assert!(!uci_moves.contains(&"d1h1".to_string()), "Kingside castling d1h1 blocked by bishop on f1");
     }
 
     #[test]
