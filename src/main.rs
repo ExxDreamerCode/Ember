@@ -79,7 +79,6 @@ fn main() {
                 println!("option name NNUE type string default <embedded>");
                 println!("option name SyzygyPath type string default <empty>");
                 println!("option name UCI_Chess960 type check default false");
-                println!("option name UCI_Variant type combo default normal var normal var chess960");
                 #[cfg(feature = "decision-trace")]
                 println!("option name TraceFile type string default <empty>");
                 println!("uciok");

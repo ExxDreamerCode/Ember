@@ -391,12 +391,7 @@ impl Searcher {
         }
         let last = self.rep_stack[self.rep_stack_len - 1];
         let mut count = 0;
-        let start = if self.rep_stack_len > 20 {
-            self.rep_stack_len - 20
-        } else {
-            0
-        };
-        for i in (start..self.rep_stack_len - 1).rev() {
+        for i in (0..self.rep_stack_len - 1).rev() {
             if self.rep_stack[i] == last {
                 count += 1;
                 if count >= 2 {
@@ -603,7 +598,7 @@ impl Searcher {
             }
         }
 
-        if !is_root && ply >= 2 && self.is_repetition() {
+        if ply > 0 && self.is_repetition() {
             return 0;
         }
 
@@ -1442,5 +1437,38 @@ mod tests {
     fn tt_non_mate_scores_are_not_adjusted() {
         assert_eq!(score_to_tt(42, 8), 42);
         assert_eq!(score_from_tt(-313, 5), -313);
+    }
+
+    #[test]
+    fn threefold_repetition_detected_after_long_history() {
+        let mut engine = Engine::new();
+        engine.book = None;
+
+        engine.set_fen("K7/7b/8/8/8/8/8/k7 w - - 0 50");
+
+        for _ in 0..10 {
+            engine.make_move_uci(0, 0, 0, 1, 0);
+            engine.make_move_uci(0, 0, 0, 1, 0);
+        }
+
+        engine.make_move_uci(0, 1, 0, 0, 0);
+        engine.make_move_uci(0, 1, 0, 0, 0);
+
+        engine.make_move_uci(0, 0, 0, 1, 0);
+        engine.make_move_uci(0, 0, 0, 1, 0);
+
+        engine.make_move_uci(0, 1, 0, 0, 0); 
+        engine.make_move_uci(0, 1, 0, 0, 0); 
+
+        engine.make_move_uci(0, 0, 0, 1, 0);
+        engine.make_move_uci(0, 0, 0, 1, 0);
+
+        engine.make_move_uci(0, 1, 0, 0, 0);
+        engine.make_move_uci(0, 1, 0, 0, 0);
+
+        assert!(
+            engine.searcher.is_repetition(),
+            "Threefold repetition should be detected even after 20+ moves of history"
+        );
     }
 }
