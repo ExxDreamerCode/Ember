@@ -19,12 +19,7 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
 
     let is_chess960_castle = if mover_type == 5 && st.chess960 {
         let target_pi = piece_on(&st.bb, to);
-        if target_pi != EMPTY_SQ && piece_type(target_pi) == 3 && is_white_piece(target_pi) == white {
-            let king_dst_col = if ec > sc { 6usize } else { 2usize };
-            king_dst_col != sc
-        } else {
-            false
-        }
+        target_pi != EMPTY_SQ && piece_type(target_pi) == 3 && is_white_piece(target_pi) == white
     } else {
         false
     };
@@ -431,7 +426,12 @@ pub fn generate_moves(
                             let rlo = rook_dst.min(rc);
                             let rhi = rook_dst.max(rc);
                             for c in rlo..=rhi {
-                                if occ & bit(sq(kr, c)) != 0 && c != rc { blocked = true; break; }
+                                if occ & bit(sq(kr, c)) != 0 && c != rc && c != king_col { blocked = true; break; }
+                            }
+                        }
+                        if !blocked {
+                            if occ & bit(sq(kr, king_dst)) != 0 && king_dst != rc {
+                                blocked = true;
                             }
                         }
                         if !blocked {
@@ -440,7 +440,16 @@ pub fn generate_moves(
                                 if is_attacked(&st.bb, sq(kr, c), !wturn) { attacked = true; break; }
                             }
                             if !attacked {
-                                result.push(encode_move(kr, king_col, kr, rc, 0));
+                                let mut bb2 = st.bb;
+                                let rook_pi = if wturn { WR } else { BR };
+                                let king_pi = if wturn { WK } else { BK };
+                                bb2[king_pi] &= !bit(sq(kr, king_col));
+                                bb2[king_pi] |= bit(sq(kr, king_dst));
+                                bb2[rook_pi] &= !bit(sq(kr, rc));
+                                bb2[rook_pi] |= bit(sq(kr, rook_dst));
+                                if !is_attacked(&bb2, sq(kr, king_dst), !wturn) {
+                                    result.push(encode_move(kr, king_col, kr, rc, 0));
+                                }
                             }
                         }
                     }
@@ -459,7 +468,12 @@ pub fn generate_moves(
                             let rlo = rook_dst.min(rc);
                             let rhi = rook_dst.max(rc);
                             for c in rlo..=rhi {
-                                if occ & bit(sq(kr, c)) != 0 && c != rc { blocked = true; break; }
+                                if occ & bit(sq(kr, c)) != 0 && c != rc && c != king_col { blocked = true; break; }
+                            }
+                        }
+                        if !blocked {
+                            if occ & bit(sq(kr, king_dst)) != 0 && king_dst != rc {
+                                blocked = true;
                             }
                         }
                         if !blocked {
@@ -468,7 +482,16 @@ pub fn generate_moves(
                                 if is_attacked(&st.bb, sq(kr, c), !wturn) { attacked = true; break; }
                             }
                             if !attacked {
-                                result.push(encode_move(kr, king_col, kr, rc, 0));
+                                let mut bb2 = st.bb;
+                                let rook_pi = if wturn { WR } else { BR };
+                                let king_pi = if wturn { WK } else { BK };
+                                bb2[king_pi] &= !bit(sq(kr, king_col));
+                                bb2[king_pi] |= bit(sq(kr, king_dst));
+                                bb2[rook_pi] &= !bit(sq(kr, rc));
+                                bb2[rook_pi] |= bit(sq(kr, rook_dst));
+                                if !is_attacked(&bb2, sq(kr, king_dst), !wturn) {
+                                    result.push(encode_move(kr, king_col, kr, rc, 0));
+                                }
                             }
                         }
                     }
@@ -477,7 +500,9 @@ pub fn generate_moves(
         } else if !in_check {
             let rook_pi = if wturn { WR } else { BR };
             let kr = if wturn { 7usize } else { 0usize };
+            let king_col = sq_c(kf);
             if cr[if wturn { 0 } else { 2 }]
+                && king_col == 4
                 && st.bb[rook_pi] & bit(sq(kr, 7)) != 0
                 && all_occ(&st.bb) & (bit(sq(kr, 5)) | bit(sq(kr, 6))) == 0
                 && !is_attacked(&st.bb, sq(kr, 4), !wturn)
@@ -487,6 +512,7 @@ pub fn generate_moves(
                 result.push(encode_move(kr, 4, kr, 6, 0));
             }
             if cr[if wturn { 1 } else { 3 }]
+                && king_col == 4
                 && st.bb[rook_pi] & bit(sq(kr, 0)) != 0
                 && all_occ(&st.bb) & (bit(sq(kr, 1)) | bit(sq(kr, 2)) | bit(sq(kr, 3))) == 0
                 && !is_attacked(&st.bb, sq(kr, 4), !wturn)
@@ -630,6 +656,42 @@ mod tests {
 
         assert!(!uci_moves.contains(&"d1a1".to_string()), "Queenside castling d1a1 blocked by bishop on b1");
         assert!(!uci_moves.contains(&"d1h1".to_string()), "Kingside castling d1h1 blocked by bishop on f1");
+    }
+
+    #[test]
+    fn chess960_castling_blocked_by_piece_on_king_destination() {
+        let mut engine = Engine::new();
+        engine.set_fen("1k6/8/8/8/8/8/8/R3KBNR w KQkq - 0 1");
+        engine.st.chess960 = true;
+
+        let moves = generate_moves(&engine.st, engine.st.w, &engine.st.cr, engine.st.ep);
+        let uci_moves: Vec<String> = moves.iter().map(|mv| move_to_uci(&engine.st, mv)).collect();
+
+        assert!(!uci_moves.contains(&"e1h1".to_string()), "Kingside castling e1h1 should be blocked by bishop on g1");
+    }
+
+    #[test]
+    fn chess960_castling_queenside_blocked_by_piece_on_king_destination() {
+        let mut engine = Engine::new();
+        engine.set_fen("1k6/8/8/8/8/8/8/BNR1K2R w KQkq - 0 1");
+        engine.st.chess960 = true;
+
+        let moves = generate_moves(&engine.st, engine.st.w, &engine.st.cr, engine.st.ep);
+        let uci_moves: Vec<String> = moves.iter().map(|mv| move_to_uci(&engine.st, mv)).collect();
+
+        assert!(!uci_moves.contains(&"e1a1".to_string()), "Queenside castling e1a1 should be blocked by bishop on c1");
+    }
+
+    #[test]
+    fn chess960_castling_king_ends_in_check_from_discovered_attack() {
+        let mut engine = Engine::new();
+        engine.set_fen("4r1k1/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
+        engine.st.chess960 = true;
+
+        let moves = generate_moves(&engine.st, engine.st.w, &engine.st.cr, engine.st.ep);
+        let uci_moves: Vec<String> = moves.iter().map(|mv| move_to_uci(&engine.st, mv)).collect();
+
+        assert!(!uci_moves.contains(&"e1h1".to_string()), "Kingside castling e1h1 should be illegal: king on g1 would be attacked by rook on e8");
     }
 
     #[test]

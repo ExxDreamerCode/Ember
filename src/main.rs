@@ -238,12 +238,14 @@ fn parse_setoption(engine: &mut Engine, parts: &[&str]) {
 fn reset_engine(engine: &mut Engine) {
     let book = engine.book.take();
     let num_threads = engine.num_threads;
+    let chess960 = engine.st.chess960;
     #[cfg(feature = "decision-trace")]
     let trace = std::mem::take(&mut engine.trace);
     let tt_mb = engine.searcher.tt_mb;
     *engine = Engine::new();
     engine.book = book;
     engine.num_threads = num_threads;
+    engine.st.chess960 = chess960;
     #[cfg(feature = "decision-trace")]
     {
         engine.trace = trace;
