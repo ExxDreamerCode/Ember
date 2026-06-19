@@ -199,28 +199,30 @@ impl Engine {
             }
         }
 
-        if let Some(ref book) = self.book {
-            if let Some(bm) = book.pick_move(&self.st, &moves) {
-                let mv_str = move_to_uci(&self.st, &bm);
-                let eval_score = self.searcher.corrected_eval(&self.st);
-                println!(
-                    "info depth 1 score cp {} nodes 0 nps 0 time 0 pv {}",
-                    eval_score, mv_str
-                );
-                #[cfg(feature = "decision-trace")]
-                self.trace.emit_decision(DecisionTrace {
-                    fen: &root_fen,
-                    side,
-                    legal_moves: &legal_moves,
-                    chosen_move: &mv_str,
-                    source: "book",
-                    depth_reached: 1,
-                    score_cp: eval_score,
-                    nodes: 0,
-                    elapsed_ms: 0,
-                    depth_infos: &[],
-                });
-                return (mv_str, eval_score, 0, 0.0);
+        if !self.st.chess960 {
+            if let Some(ref book) = self.book {
+                if let Some(bm) = book.pick_move(&self.st, &moves) {
+                    let mv_str = move_to_uci(&self.st, &bm);
+                    let eval_score = self.searcher.corrected_eval(&self.st);
+                    println!(
+                        "info depth 1 score cp {} nodes 0 nps 0 time 0 pv {}",
+                        eval_score, mv_str
+                    );
+                    #[cfg(feature = "decision-trace")]
+                    self.trace.emit_decision(DecisionTrace {
+                        fen: &root_fen,
+                        side,
+                        legal_moves: &legal_moves,
+                        chosen_move: &mv_str,
+                        source: "book",
+                        depth_reached: 1,
+                        score_cp: eval_score,
+                        nodes: 0,
+                        elapsed_ms: 0,
+                        depth_infos: &[],
+                    });
+                    return (mv_str, eval_score, 0, 0.0);
+                }
             }
         }
 

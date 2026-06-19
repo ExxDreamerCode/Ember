@@ -324,6 +324,9 @@ impl Searcher {
     }
 
     fn static_eval(&self, st: &BoardState, ply: usize) -> i32 {
+        if st.chess960 && st.mc <= 3 {
+            return evaluate(st) * if st.w { 1 } else { -1 };
+        }
         with_nnue_net(|net| {
             let score = if ply < self.nnue_stack.len() {
                 evaluate_nnue_acc(net, &self.nnue_stack[ply], st)
@@ -338,6 +341,15 @@ impl Searcher {
     }
 
     pub fn corrected_eval(&self, st: &BoardState) -> i32 {
+        if st.chess960 && st.mc <= 3 {
+            let base = evaluate(st) * if st.w { 1 } else { -1 };
+            if self.corr_hist_enabled() {
+                let ph = compute_pawn_hash(st);
+                let idx = corr_idx(ph, st.w);
+                return base + self.corr_hist[idx].clamp(-200, 200);
+            }
+            return base;
+        }
         if let Some(nnue_score) = with_nnue_net(|net| {
             let mut acc = NNUEAccumulator::new(net.hidden_size);
             acc.refresh(net, st);
@@ -387,7 +399,7 @@ impl Searcher {
         for i in (start..self.rep_stack_len - 1).rev() {
             if self.rep_stack[i] == last {
                 count += 1;
-                if count >= 1 {
+                if count >= 2 {
                     return true;
                 }
             }
@@ -449,6 +461,10 @@ impl Searcher {
             if let Some(cutoff) = self.syzygy.probe_cutoff(st, beta, alpha) {
                 return cutoff;
             }
+        }
+
+        if ply >= 2 && self.is_repetition() {
+            return 0;
         }
 
         if !in_check {
@@ -587,7 +603,7 @@ impl Searcher {
             }
         }
 
-        if !is_root && ply >= 2 && self.is_repetition() && eval_score < 100 {
+        if !is_root && ply >= 2 && self.is_repetition() {
             return 0;
         }
 
