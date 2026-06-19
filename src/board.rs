@@ -138,6 +138,7 @@ pub struct BoardState {
     pub bb: [u64; 12],
     pub w: bool,
     pub cr: [bool; 4],
+    pub castling_rooks: [Option<usize>; 4],
     pub ep: Option<usize>,
     pub mc: usize,
     pub chess960: bool,
@@ -149,6 +150,7 @@ impl BoardState {
             bb: [0u64; 12],
             w: true,
             cr: [false; 4],
+            castling_rooks: [None; 4],
             ep: None,
             mc: 0,
             chess960: false,
@@ -184,7 +186,10 @@ pub fn move_to_uci(st: &BoardState, mv: &Move) -> String {
     let promo = move_promotion(mv);
     if st.chess960 && pi != EMPTY_SQ && piece_type(pi) == 5 {
         let target_pi = piece_on(&st.bb, to);
-        if target_pi != EMPTY_SQ && piece_type(target_pi) == 3 && is_white_piece(target_pi) == is_white_piece(pi) {
+        if target_pi != EMPTY_SQ
+            && piece_type(target_pi) == 3
+            && is_white_piece(target_pi) == is_white_piece(pi)
+        {
             let king_dst_col = if move_ec(mv) > mv[1] { 6usize } else { 2usize };
             if king_dst_col != mv[1] {
                 return format!("{}{}", sq_to_str(from), sq_to_str(to));
@@ -229,23 +234,39 @@ pub fn board_to_fen(st: &BoardState) -> String {
     let side = if st.w { "w" } else { "b" };
     let mut castling = String::new();
     if st.chess960 {
-        for (cr_idx, &(rk_sq, w_king)) in [(0, 7usize), (1, 7), (2, 0), (3, 0)].iter().enumerate() {
+        for cr_idx in 0..4 {
             if st.cr[cr_idx] {
-                let rook_col = sq_c(rk_sq);
-                let king_col = sq_c(w_king);
-                let ch = if cr_idx % 2 == 0 {
-                    (b'A' + rook_col as u8) as char
+                if let Some(rook_sq) = st.castling_rooks[cr_idx] {
+                    let rook_col = sq_c(rook_sq);
+                    let ch = if cr_idx < 2 {
+                        (b'A' + rook_col as u8) as char
+                    } else {
+                        (b'a' + rook_col as u8) as char
+                    };
+                    castling.push(ch);
                 } else {
-                    (b'A' + king_col as u8) as char
-                };
-                castling.push(ch);
+                    castling.push(match cr_idx {
+                        0 => 'K',
+                        1 => 'Q',
+                        2 => 'k',
+                        _ => 'q',
+                    });
+                }
             }
         }
     } else {
-        if st.cr[0] { castling.push('K'); }
-        if st.cr[1] { castling.push('Q'); }
-        if st.cr[2] { castling.push('k'); }
-        if st.cr[3] { castling.push('q'); }
+        if st.cr[0] {
+            castling.push('K');
+        }
+        if st.cr[1] {
+            castling.push('Q');
+        }
+        if st.cr[2] {
+            castling.push('k');
+        }
+        if st.cr[3] {
+            castling.push('q');
+        }
     }
     if castling.is_empty() {
         castling.push('-');

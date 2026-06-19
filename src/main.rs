@@ -116,10 +116,7 @@ fn main() {
                                         eprintln!("info string Book switched to embedded");
                                     }
                                     Err(e) => {
-                                        eprintln!(
-                                            "info string Failed to load embedded book: {}",
-                                            e
-                                        )
+                                        eprintln!("info string Failed to load embedded book: {}", e)
                                     }
                                 }
                             } else {
@@ -144,10 +141,9 @@ fn main() {
                             {
                                 match evaluate::init_embedded_nnue() {
                                     Ok(()) => eprintln!("info string NNUE switched to embedded"),
-                                    Err(e) => eprintln!(
-                                        "info string Failed to load embedded NNUE: {}",
-                                        e
-                                    ),
+                                    Err(e) => {
+                                        eprintln!("info string Failed to load embedded NNUE: {}", e)
+                                    }
                                 }
                             } else {
                                 maybe_load_nnue(&val);
@@ -159,8 +155,12 @@ fn main() {
                                 eprintln!("info string Syzygy tables disabled");
                             } else {
                                 match engine.searcher.syzygy.load(&val) {
-                                    Ok(()) => eprintln!("info string Syzygy tables loaded: {}", val),
-                                    Err(e) => eprintln!("info string Failed to load Syzygy tables: {}", e),
+                                    Ok(()) => {
+                                        eprintln!("info string Syzygy tables loaded: {}", val)
+                                    }
+                                    Err(e) => {
+                                        eprintln!("info string Failed to load Syzygy tables: {}", e)
+                                    }
                                 }
                             }
                         }
@@ -263,7 +263,12 @@ fn parse_position(engine: &mut Engine, parts: &[&str]) {
             i += 1;
             while i < parts.len() {
                 if let Some(m) = parse_uci_move(parts[i]) {
-                    engine.make_move_uci(m.0, m.1, m.2, m.3, m.4);
+                    if !engine.make_move_uci(m.0, m.1, m.2, m.3, m.4) {
+                        eprintln!(
+                            "info string Ignoring illegal move in position command: {}",
+                            parts[i]
+                        );
+                    }
                 }
                 i += 1;
             }
@@ -279,7 +284,12 @@ fn parse_position(engine: &mut Engine, parts: &[&str]) {
             idx += 1;
             while idx < parts.len() {
                 if let Some(m) = parse_uci_move(parts[idx]) {
-                    engine.make_move_uci(m.0, m.1, m.2, m.3, m.4);
+                    if !engine.make_move_uci(m.0, m.1, m.2, m.3, m.4) {
+                        eprintln!(
+                            "info string Ignoring illegal move in position command: {}",
+                            parts[idx]
+                        );
+                    }
                 }
                 idx += 1;
             }

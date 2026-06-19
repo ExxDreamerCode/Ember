@@ -4,14 +4,14 @@ use crate::board::{
     bit, is_attacked, move_ec, move_promotion, move_to_uci, piece_from_char, piece_on, piece_type,
     sq, sq_c, BoardState, EMPTY_SQ, INF, MATE, MAX_PLY,
 };
-use crate::movegen::Move;
-use crate::syzygy::SyzygyTables;
 use crate::book::OpeningBook;
+use crate::movegen::Move;
 use crate::movegen::{apply_move, generate_moves};
 use crate::search::{lazy_smp_search, Searcher};
-use crate::tt::SharedTT;
+use crate::syzygy::SyzygyTables;
 #[cfg(feature = "decision-trace")]
 use crate::trace::{DecisionTrace, DepthInfo, TraceLogger};
+use crate::tt::SharedTT;
 use crate::zobrist::compute_hash;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -26,6 +26,40 @@ pub struct Engine {
     pub book: Option<OpeningBook>,
     #[cfg(feature = "decision-trace")]
     pub trace: TraceLogger,
+}
+
+fn set_castling_rook_by_side(st: &mut BoardState, white: bool, kingside: bool) {
+    let rank = if white { 7usize } else { 0usize };
+    let king_col = sq_c(st.king_sq(white));
+    let mut candidate = None;
+
+    for col in 0..8 {
+        let rook_sq = sq(rank, col);
+        let pi = piece_on(&st.bb, rook_sq);
+        if pi == EMPTY_SQ || piece_type(pi) != 3 || (pi < 6) != white {
+            continue;
+        }
+        if kingside && col > king_col {
+            if candidate.map_or(true, |prev| col < prev) {
+                candidate = Some(col);
+            }
+        } else if !kingside && col < king_col {
+            if candidate.map_or(true, |prev| col > prev) {
+                candidate = Some(col);
+            }
+        }
+    }
+
+    if let Some(col) = candidate {
+        let idx = match (white, kingside) {
+            (true, true) => 0,
+            (true, false) => 1,
+            (false, true) => 2,
+            (false, false) => 3,
+        };
+        st.cr[idx] = true;
+        st.castling_rooks[idx] = Some(sq(rank, col));
+    }
 }
 
 impl Engine {
@@ -50,7 +84,9 @@ impl Engine {
     }
 
     pub fn set_fen(&mut self, fen: &str) {
+        let chess960_mode = self.st.chess960;
         self.st = BoardState::empty();
+        self.st.chess960 = chess960_mode;
         let parts: Vec<&str> = fen.split(' ').collect();
 
         for (ri, rs) in parts[0].split('/').enumerate() {
@@ -71,31 +107,73 @@ impl Engine {
         self.st.w = parts.len() > 1 && parts[1] == "w";
 
         self.st.cr = [false; 4];
+        self.st.castling_rooks = [None; 4];
         if parts.len() > 2 {
             let r = parts[2];
             if r == "-" {
-            } else if r.contains('K') || r.contains('Q') || r.contains('k') || r.contains('q') {
-                self.st.cr[0] = r.contains('K');
-                self.st.cr[1] = r.contains('Q');
-                self.st.cr[2] = r.contains('k');
-                self.st.cr[3] = r.contains('q');
             } else {
-                self.st.chess960 = true;
-                for ch in r.chars() {
-                    let col = ((ch as u8).to_ascii_lowercase() - b'a') as usize;
-                    let rank = if ch.is_uppercase() { 7usize } else { 0usize };
-                    if piece_on(&self.st.bb, sq(rank, col)) != EMPTY_SQ {
-                        let pi = piece_on(&self.st.bb, sq(rank, col));
-                        if piece_type(pi) == 3 {
-                            let wk_sq = self.st.king_sq(true);
-                            let bk_sq = self.st.king_sq(false);
-                            let idx = if ch.is_uppercase() {
-                                if col > sq_c(wk_sq) { 0 } else { 1 }
+                let has_file_rights = r.chars().any(|ch| {
+                    let b = ch as u8;
+                    (b'A'..=b'H').contains(&b) || (b'a'..=b'h').contains(&b)
+                });
+                if has_file_rights {
+                    self.st.chess960 = true;
+                    for ch in r.chars() {
+                        let b = ch as u8;
+                        if !(b'A'..=b'H').contains(&b) && !(b'a'..=b'h').contains(&b) {
+                            continue;
+                        }
+                        let col = (b.to_ascii_lowercase() - b'a') as usize;
+                        let white = ch.is_uppercase();
+                        let rank = if white { 7usize } else { 0usize };
+                        let rook_sq = sq(rank, col);
+                        let pi = piece_on(&self.st.bb, rook_sq);
+                        if pi != EMPTY_SQ && piece_type(pi) == 3 && (pi < 6) == white {
+                            let king_sq = self.st.king_sq(white);
+                            let idx = if white {
+                                if col > sq_c(king_sq) {
+                                    0
+                                } else {
+                                    1
+                                }
+                            } else if col > sq_c(king_sq) {
+                                2
                             } else {
-                                if col > sq_c(bk_sq) { 2 } else { 3 }
+                                3
                             };
                             self.st.cr[idx] = true;
+                            self.st.castling_rooks[idx] = Some(rook_sq);
                         }
+                    }
+                } else if self.st.chess960 {
+                    if r.contains('K') {
+                        set_castling_rook_by_side(&mut self.st, true, true);
+                    }
+                    if r.contains('Q') {
+                        set_castling_rook_by_side(&mut self.st, true, false);
+                    }
+                    if r.contains('k') {
+                        set_castling_rook_by_side(&mut self.st, false, true);
+                    }
+                    if r.contains('q') {
+                        set_castling_rook_by_side(&mut self.st, false, false);
+                    }
+                } else {
+                    if r.contains('K') {
+                        self.st.cr[0] = true;
+                        self.st.castling_rooks[0] = Some(sq(7, 7));
+                    }
+                    if r.contains('Q') {
+                        self.st.cr[1] = true;
+                        self.st.castling_rooks[1] = Some(sq(7, 0));
+                    }
+                    if r.contains('k') {
+                        self.st.cr[2] = true;
+                        self.st.castling_rooks[2] = Some(sq(0, 7));
+                    }
+                    if r.contains('q') {
+                        self.st.cr[3] = true;
+                        self.st.castling_rooks[3] = Some(sq(0, 0));
                     }
                 }
             }
@@ -118,8 +196,9 @@ impl Engine {
             None
         };
 
-        self.st.mc = if parts.len() > 4 {
-            parts[4].parse().unwrap_or(0)
+        self.st.mc = if parts.len() > 5 {
+            let fullmove = parts[5].parse::<usize>().unwrap_or(1).saturating_sub(1);
+            fullmove * 2 + usize::from(!self.st.w)
         } else {
             0
         };
@@ -131,11 +210,75 @@ impl Engine {
         self.searcher.rep_stack_len = 1;
     }
 
-    pub fn make_move_uci(&mut self, sr: usize, sc: usize, er: usize, ec: usize, promotion: u8) {
-        apply_move(&mut self.st, sr, sc, er, ec, promotion);
+    pub fn make_move_uci(
+        &mut self,
+        sr: usize,
+        sc: usize,
+        er: usize,
+        ec: usize,
+        promotion: u8,
+    ) -> bool {
+        let Some(mv) = self.legal_move_from_uci(sr, sc, er, ec, promotion) else {
+            return false;
+        };
+        apply_move(
+            &mut self.st,
+            mv[0],
+            mv[1],
+            mv[2],
+            move_ec(&mv),
+            move_promotion(&mv),
+        );
         let h = compute_hash(&self.st);
         self.searcher.rep_stack.push(h);
         self.searcher.rep_stack_len += 1;
+        true
+    }
+
+    fn legal_move_from_uci(
+        &self,
+        sr: usize,
+        sc: usize,
+        er: usize,
+        ec: usize,
+        promotion: u8,
+    ) -> Option<Move> {
+        let moves = generate_moves(&self.st, self.st.w, &self.st.cr, self.st.ep);
+        moves.into_iter().find(|mv| {
+            if mv[0] != sr || mv[1] != sc {
+                return false;
+            }
+
+            let move_promo = move_promotion(mv).to_ascii_uppercase();
+            let input_promo = promotion.to_ascii_uppercase();
+            let promo_matches =
+                move_promo == input_promo || (input_promo == 0 && move_promo == b'Q');
+            if !promo_matches {
+                return false;
+            }
+
+            if mv[2] == er && move_ec(mv) == ec {
+                return true;
+            }
+
+            let from = sq(mv[0], mv[1]);
+            let to = sq(mv[2], move_ec(mv));
+            let pi = piece_on(&self.st.bb, from);
+            let target = piece_on(&self.st.bb, to);
+            if !self.st.chess960
+                || pi == EMPTY_SQ
+                || piece_type(pi) != 5
+                || target == EMPTY_SQ
+                || piece_type(target) != 3
+                || (target < 6) != (pi < 6)
+                || er != mv[0]
+            {
+                return false;
+            }
+
+            let king_dst_col = if move_ec(mv) > mv[1] { 6usize } else { 2usize };
+            ec == king_dst_col
+        })
     }
 
     pub fn is_check(&self) -> bool {
@@ -240,7 +383,8 @@ impl Engine {
 
             let mv_str = move_to_uci(&self.st, &best_move);
             let elapsed = start.elapsed().as_secs_f64();
-            self.searcher.update_correction_history(&self.st, best_score, best_depth);
+            self.searcher
+                .update_correction_history(&self.st, best_score, best_depth);
             return (mv_str, best_score, total_nodes, elapsed);
         }
 
@@ -402,7 +546,9 @@ impl Engine {
                     }
                 }
 
-                if self.searcher.stopped.load(Ordering::Relaxed) || start.elapsed().as_secs_f64() > time_limit {
+                if self.searcher.stopped.load(Ordering::Relaxed)
+                    || start.elapsed().as_secs_f64() > time_limit
+                {
                     break 'asp;
                 }
 
