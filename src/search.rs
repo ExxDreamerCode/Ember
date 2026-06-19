@@ -1,10 +1,9 @@
 use crate::board::{
-    all_occ, attacked_by, bit, has_non_pawn, move_ec, move_promotion, piece_on, piece_type,
-    promotion_piece_index, see, BoardState, Move, BK, BP, EMPTY_SQ, INF, KING_ATTACKS, MATE,
-    MAX_PLY, QS_DEPTH, WK, WP,
+    all_occ, attacked_by, bit, has_non_pawn, move_ec, move_promotion, piece_on, piece_type, see,
+    BoardState, Move, BK, BP, EMPTY_SQ, INF, KING_ATTACKS, MATE, MAX_PLY, QS_DEPTH, WK, WP,
 };
 use crate::evaluate::{evaluate, evaluate_nnue_acc, with_nnue_net};
-use crate::movegen::{apply_move, generate_moves};
+use crate::movegen::{apply_move, generate_moves, is_chess960_castling_move};
 use crate::nnue::NNUEAccumulator;
 use crate::syzygy::SyzygyTables;
 use crate::tt::{SharedTT, TT_ALPHA, TT_BETA, TT_EXACT};
@@ -87,7 +86,9 @@ fn is_en_passant_capture(st: &BoardState, fpi: u8, mv: &Move, to: usize, tpi: u8
 
 #[inline]
 fn capture_victim_value(st: &BoardState, fpi: u8, mv: &Move, to: usize, tpi: u8) -> i32 {
-    if tpi != EMPTY_SQ {
+    if is_chess960_castling_move(st, mv) {
+        0
+    } else if tpi != EMPTY_SQ {
         piece_val(piece_type(tpi))
     } else if is_en_passant_capture(st, fpi, mv, to, tpi) {
         piece_val(0)
@@ -98,12 +99,13 @@ fn capture_victim_value(st: &BoardState, fpi: u8, mv: &Move, to: usize, tpi: u8)
 
 #[inline]
 fn move_is_capture(st: &BoardState, fpi: u8, mv: &Move, to: usize, tpi: u8) -> bool {
-    tpi != EMPTY_SQ || is_en_passant_capture(st, fpi, mv, to, tpi)
+    !is_chess960_castling_move(st, mv)
+        && (tpi != EMPTY_SQ || is_en_passant_capture(st, fpi, mv, to, tpi))
 }
 
 #[inline]
 fn move_see(st: &BoardState, mv: &Move, from: usize, to: usize, fpi: u8, tpi: u8) -> i32 {
-    if is_en_passant_capture(st, fpi, mv, to, tpi) {
+    if is_chess960_castling_move(st, mv) || is_en_passant_capture(st, fpi, mv, to, tpi) {
         0
     } else {
         see(&st.bb, from, to)
@@ -335,7 +337,11 @@ impl Searcher {
                 acc.refresh(net, st);
                 evaluate_nnue_acc(net, &acc, st)
             };
-            if st.w { score } else { -score }
+            if st.w {
+                score
+            } else {
+                -score
+            }
         })
         .unwrap_or_else(|| evaluate(st) * if st.w { 1 } else { -1 })
     }
@@ -354,7 +360,11 @@ impl Searcher {
             let mut acc = NNUEAccumulator::new(net.hidden_size);
             acc.refresh(net, st);
             let score = evaluate_nnue_acc(net, &acc, st);
-            if st.w { score } else { -score }
+            if st.w {
+                score
+            } else {
+                -score
+            }
         }) {
             return nnue_score;
         }
@@ -368,7 +378,9 @@ impl Searcher {
     }
 
     pub fn probe_syzygy(&self, st: &BoardState) -> Option<i32> {
-        self.syzygy.probe_wdl(st).and_then(SyzygyTables::wdl_to_score)
+        self.syzygy
+            .probe_wdl(st)
+            .and_then(SyzygyTables::wdl_to_score)
     }
 
     pub fn update_correction_history(&mut self, st: &BoardState, score: i32, depth: i32) {
@@ -421,7 +433,8 @@ impl Searcher {
             let (left, right) = self.nnue_stack.split_at_mut(ply + 1);
             right[0].clone_from(&left[ply]);
 
-            let ok = self.nnue_stack[ply + 1].update_move(net, st_before, sr, sc, er, ec, promotion);
+            let ok =
+                self.nnue_stack[ply + 1].update_move(net, st_before, sr, sc, er, ec, promotion);
 
             if !ok {
                 self.nnue_stack[ply + 1].refresh(net, st_after);
@@ -449,10 +462,7 @@ impl Searcher {
         let ks = st.king_sq(st.w);
         let in_check = crate::board::is_attacked(&st.bb, ks, !st.w);
 
-        if !in_check
-            && self.syzygy.tables.is_some()
-            && SyzygyTables::pieces_ok(st)
-        {
+        if !in_check && self.syzygy.tables.is_some() && SyzygyTables::pieces_ok(st) {
             if let Some(cutoff) = self.syzygy.probe_cutoff(st, beta, alpha) {
                 return cutoff;
             }
@@ -486,7 +496,8 @@ impl Searcher {
         }
         if with_nnue_net(|_| true).unwrap_or(false) && ply + 1 >= self.nnue_stack.len() {
             if ply + 1 < MAX_PLY + 1 {
-                self.nnue_stack.resize(ply + 2, NNUEAccumulator::new(self.nnue_stack[0].hs));
+                self.nnue_stack
+                    .resize(ply + 2, NNUEAccumulator::new(self.nnue_stack[0].hs));
             }
         }
 
@@ -535,7 +546,16 @@ impl Searcher {
             }
             let st_before = *st;
             apply_move(st, mv[0], mv[1], mv[2], move_ec(&mv), move_promotion(&mv));
-            self.push_nnue_acc(&st_before, st, mv[0], mv[1], mv[2], move_ec(&mv), move_promotion(&mv), ply);
+            self.push_nnue_acc(
+                &st_before,
+                st,
+                mv[0],
+                mv[1],
+                mv[2],
+                move_ec(&mv),
+                move_promotion(&mv),
+                ply,
+            );
             let score = -self.qsearch(st, -beta, -alpha, depth - 1, start, tl, cnt, ply + 1);
             *st = st_before;
             if self.stopped.load(Ordering::Relaxed) {
@@ -582,12 +602,11 @@ impl Searcher {
             tactical_king_pressure(st)
         };
 
-        let tb_available = !in_check
-            && self.syzygy.tables.is_some()
-            && SyzygyTables::pieces_ok(st);
+        let tb_available = !in_check && self.syzygy.tables.is_some() && SyzygyTables::pieces_ok(st);
 
         let eval_score = if tb_available {
-            self.probe_syzygy(st).unwrap_or_else(|| self.static_eval(st, ply))
+            self.probe_syzygy(st)
+                .unwrap_or_else(|| self.static_eval(st, ply))
         } else {
             self.static_eval(st, ply)
         };
@@ -808,40 +827,17 @@ impl Searcher {
             let is_quiet = !capture && !is_promo;
 
             let gives_check = {
-                let mut bb2 = st.bb;
-                let pi = piece_on(&bb2, from);
-                if pi != EMPTY_SQ {
-                    let cap = piece_on(&bb2, to);
-                    if cap != EMPTY_SQ {
-                        bb2[cap as usize] &= !bit(to);
-                    }
-                    if piece_type(pi) == 0 && mv[1] != move_ec(&mv) && cap == EMPTY_SQ {
-                        let cap_sq = if st.w { to + 8 } else { to - 8 };
-                        let cpi = piece_on(&bb2, cap_sq);
-                        if cpi != EMPTY_SQ {
-                            bb2[cpi as usize] &= !bit(cap_sq);
-                        }
-                    }
-                    bb2[pi as usize] &= !bit(from);
-                    if let Some(promo_pi) = promotion_piece_index(st.w, move_promotion(&mv)) {
-                        bb2[promo_pi] |= bit(to);
-                    } else {
-                        bb2[pi as usize] |= bit(to);
-                    }
-                    let opp_k_pi = if st.w {
-                        crate::board::BK
-                    } else {
-                        crate::board::WK
-                    };
-                    let opp_ks2 = if bb2[opp_k_pi] != 0 {
-                        bb2[opp_k_pi].trailing_zeros() as usize
-                    } else {
-                        64
-                    };
-                    crate::board::is_attacked(&bb2, opp_ks2, st.w)
-                } else {
-                    false
-                }
+                let mut after = *st;
+                apply_move(
+                    &mut after,
+                    mv[0],
+                    mv[1],
+                    mv[2],
+                    move_ec(&mv),
+                    move_promotion(&mv),
+                );
+                let opp_ks = after.king_sq(after.w);
+                crate::board::is_attacked(&after.bb, opp_ks, !after.w)
             };
 
             if !is_pv && !in_check && is_quiet && i >= lmp_count {
@@ -1148,7 +1144,8 @@ pub fn lazy_smp_search(
                     let mut asp_best = best_move;
                     let mut asp_score = -INF;
 
-                    if let Some((tt_d, _, _, Some(tt_mv))) = searcher.shared_tt.get_depth(root_hash) {
+                    if let Some((tt_d, _, _, Some(tt_mv))) = searcher.shared_tt.get_depth(root_hash)
+                    {
                         if tt_d >= 1 && !my_moves.contains(&tt_mv) {
                             my_moves.push(tt_mv);
                         }
@@ -1171,7 +1168,14 @@ pub fn lazy_smp_search(
                                 break;
                             }
                             let mut s = st;
-                            apply_move(&mut s, mv[0], mv[1], mv[2], move_ec(&mv), move_promotion(&mv));
+                            apply_move(
+                                &mut s,
+                                mv[0],
+                                mv[1],
+                                mv[2],
+                                move_ec(&mv),
+                                move_promotion(&mv),
+                            );
                             crate::evaluate::with_nnue_net(|net| {
                                 if !searcher.nnue_stack.is_empty() {
                                     searcher.nnue_stack[1].refresh(net, &s);
@@ -1331,11 +1335,7 @@ pub fn lazy_smp_search(
     let lock = results.lock().unwrap();
     let best = lock
         .iter()
-        .max_by(|a, b| {
-            a.depth
-                .cmp(&b.depth)
-                .then_with(|| a.score.cmp(&b.score))
-        })
+        .max_by(|a, b| a.depth.cmp(&b.depth).then_with(|| a.score.cmp(&b.score)))
         .unwrap_or(&lock[0]);
 
     let best_depth = best.depth;
@@ -1444,27 +1444,14 @@ mod tests {
         let mut engine = Engine::new();
         engine.book = None;
 
-        engine.set_fen("K7/7b/8/8/8/8/8/k7 w - - 0 50");
+        engine.set_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 50");
 
-        for _ in 0..10 {
-            engine.make_move_uci(0, 0, 0, 1, 0);
-            engine.make_move_uci(0, 0, 0, 1, 0);
+        for _ in 0..12 {
+            assert!(engine.make_move_uci(7, 4, 7, 3, 0));
+            assert!(engine.make_move_uci(0, 4, 0, 3, 0));
+            assert!(engine.make_move_uci(7, 3, 7, 4, 0));
+            assert!(engine.make_move_uci(0, 3, 0, 4, 0));
         }
-
-        engine.make_move_uci(0, 1, 0, 0, 0);
-        engine.make_move_uci(0, 1, 0, 0, 0);
-
-        engine.make_move_uci(0, 0, 0, 1, 0);
-        engine.make_move_uci(0, 0, 0, 1, 0);
-
-        engine.make_move_uci(0, 1, 0, 0, 0); 
-        engine.make_move_uci(0, 1, 0, 0, 0); 
-
-        engine.make_move_uci(0, 0, 0, 1, 0);
-        engine.make_move_uci(0, 0, 0, 1, 0);
-
-        engine.make_move_uci(0, 1, 0, 0, 0);
-        engine.make_move_uci(0, 1, 0, 0, 0);
 
         assert!(
             engine.searcher.is_repetition(),
