@@ -658,6 +658,20 @@ impl NNUEAccumulator {
     pub fn white(&self) -> &[i16] { &self.white }
     pub fn black(&self) -> &[i16] { &self.black }
 
+    #[inline(always)]
+    fn add_row(acc: &mut [i16], row: &[i16]) {
+        for (dst, &weight) in acc.iter_mut().zip(row) {
+            *dst += weight;
+        }
+    }
+
+    #[inline(always)]
+    fn remove_row(acc: &mut [i16], row: &[i16]) {
+        for (dst, &weight) in acc.iter_mut().zip(row) {
+            *dst -= weight;
+        }
+    }
+
     pub fn refresh(&mut self, net: &NNUENet, st: &BoardState) {
         let h = self.hs;
         let wk = convert(st.king_sq(true) as u8);
@@ -677,10 +691,10 @@ impl NNUEAccumulator {
                     let csq = convert(sq);
 
                     let row = net.input_row(net.halfka(0, wk, color, pt, csq));
-                    for j in 0..h { self.white[j] += row[j]; }
+                    Self::add_row(&mut self.white, row);
 
                     let row = net.input_row(net.halfka(1, bk, color, pt, csq));
-                    for j in 0..h { self.black[j] += row[j]; }
+                    Self::add_row(&mut self.black, row);
                 }
             }
         }
@@ -688,24 +702,22 @@ impl NNUEAccumulator {
 
     fn add_piece(&mut self, net: &NNUENet, color: u8, pt: u8, sq: u8) {
         let csq = convert(sq);
-        let h = self.hs;
 
         let row = net.input_row(net.halfka(0, self.wk, color, pt, csq));
-        for j in 0..h { self.white[j] += row[j]; }
+        Self::add_row(&mut self.white, row);
 
         let row = net.input_row(net.halfka(1, self.bk, color, pt, csq));
-        for j in 0..h { self.black[j] += row[j]; }
+        Self::add_row(&mut self.black, row);
     }
 
     fn remove_piece(&mut self, net: &NNUENet, color: u8, pt: u8, sq: u8) {
         let csq = convert(sq);
-        let h = self.hs;
 
         let row = net.input_row(net.halfka(0, self.wk, color, pt, csq));
-        for j in 0..h { self.white[j] -= row[j]; }
+        Self::remove_row(&mut self.white, row);
 
         let row = net.input_row(net.halfka(1, self.bk, color, pt, csq));
-        for j in 0..h { self.black[j] -= row[j]; }
+        Self::remove_row(&mut self.black, row);
     }
 
     pub fn update_move(
