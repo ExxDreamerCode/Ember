@@ -465,6 +465,17 @@ impl NNUENet {
         &self.output_weights[bucket * w..bucket * w + w]
     }
 
+    #[inline(always)]
+    fn crelu_i64(value: i16) -> i64 {
+        if value <= 0 {
+            0
+        } else if value >= QA as i16 {
+            QA as i64
+        } else {
+            value as i64
+        }
+    }
+
     fn forward_base(
         &self, stm: &[i16], ntm: &[i16], bucket: usize, out_w: &[i16],
     ) -> i32 {
@@ -473,21 +484,21 @@ impl NNUENet {
 
         if self.use_screlu {
             for i in 0..h {
-                let v = (stm[i] as i32).clamp(0, QA) as i64;
+                let v = Self::crelu_i64(stm[i]);
                 output += v * v * out_w[i] as i64;
             }
             for i in 0..h {
-                let v = (ntm[i] as i32).clamp(0, QA) as i64;
+                let v = Self::crelu_i64(ntm[i]);
                 output += v * v * out_w[h + i] as i64;
             }
             output /= QA as i64;
         } else {
             for i in 0..h {
-                let v = (stm[i] as i32).clamp(0, QA) as i64;
+                let v = Self::crelu_i64(stm[i]);
                 output += v * out_w[i] as i64;
             }
             for i in 0..h {
-                let v = (ntm[i] as i32).clamp(0, QA) as i64;
+                let v = Self::crelu_i64(ntm[i]);
                 output += v * out_w[h + i] as i64;
             }
         }
