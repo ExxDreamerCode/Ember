@@ -21,23 +21,23 @@ impl ZobristKeys {
     fn new() -> Self {
         let mut rng = rand::rngs::StdRng::seed_from_u64(12345678);
         let mut pieces = [[0u64; 64]; 12];
-        for pi in 0..12 {
-            for sq in 0..64 {
-                pieces[pi][sq] = rng.gen();
+        for piece in &mut pieces {
+            for square in piece {
+                *square = rng.gen();
             }
         }
         let mut ep = [0u64; 64];
-        for i in 0..64 {
-            ep[i] = rng.gen();
+        for square in &mut ep {
+            *square = rng.gen();
         }
         let mut castling = [0u64; 4];
-        for i in 0..4 {
-            castling[i] = rng.gen();
+        for right in &mut castling {
+            *right = rng.gen();
         }
         let mut castling_rook = [[0u64; 64]; 4];
-        for i in 0..4 {
-            for sq in 0..64 {
-                castling_rook[i][sq] = rng.gen();
+        for right in &mut castling_rook {
+            for square in right {
+                *square = rng.gen();
             }
         }
         ZobristKeys {

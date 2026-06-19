@@ -191,9 +191,15 @@ fn chess960_castling_right_is_revoked_when_non_corner_rook_moves() {
 fn standard_castling_right_is_revoked_when_corner_rook_moves() {
     let mut engine = engine_from_fen("4k3/8/8/8/8/8/8/R3K2R w KQ - 0 1", false);
 
-    assert!(engine.make_move_uci(7, 7, 6, 7, 0), "h1h2 rook move should be legal");
+    assert!(
+        engine.make_move_uci(7, 7, 6, 7, 0),
+        "h1h2 rook move should be legal"
+    );
     assert!(!engine.st.cr[0], "moving h1 rook must revoke O-O");
-    assert!(engine.make_move_uci(0, 4, 1, 4, 0), "e8e7 waiting move should be legal");
+    assert!(
+        engine.make_move_uci(0, 4, 1, 4, 0),
+        "e8e7 waiting move should be legal"
+    );
 
     let moves: BTreeSet<String> =
         generate_moves(&engine.st, engine.st.w, &engine.st.cr, engine.st.ep)
@@ -201,7 +207,10 @@ fn standard_castling_right_is_revoked_when_corner_rook_moves() {
             .map(|mv| move_to_uci(&engine.st, mv))
             .collect();
     assert!(!moves.contains("e1g1"));
-    assert!(moves.contains("e1c1"), "queenside castling right should remain");
+    assert!(
+        moves.contains("e1c1"),
+        "queenside castling right should remain"
+    );
 }
 
 #[test]

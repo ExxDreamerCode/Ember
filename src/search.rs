@@ -131,7 +131,6 @@ fn tactical_king_pressure(st: &BoardState) -> u32 {
     king_zone_pressure(st, true).max(king_zone_pressure(st, false))
 }
 
-
 pub struct Searcher {
     pub shared_tt: Arc<SharedTT>,
     pub killers: [[Option<Move>; 2]; MAX_PLY],
@@ -395,6 +394,7 @@ impl Searcher {
         false
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn push_nnue_acc(
         &mut self,
         st_before: &BoardState,
@@ -425,6 +425,7 @@ impl Searcher {
         .unwrap_or(false)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn qsearch(
         &mut self,
         st: &mut BoardState,
@@ -453,30 +454,31 @@ impl Searcher {
             return 0;
         }
 
-            if !in_check {
-                let stand = self.static_eval(st, ply);
-                if stand >= beta {
-                    return stand;
-                }
-                if stand > alpha {
-                    alpha = stand;
-                }
-                if depth <= 0 && alpha - 975 > stand {
-                    return alpha;
-                }
-            } else if depth <= -4 {
-                return self.static_eval(st, ply);
+        if !in_check {
+            let stand = self.static_eval(st, ply);
+            if stand >= beta {
+                return stand;
             }
+            if stand > alpha {
+                alpha = stand;
+            }
+            if depth <= 0 && alpha - 975 > stand {
+                return alpha;
+            }
+        } else if depth <= -4 {
+            return self.static_eval(st, ply);
+        }
 
         let moves = generate_moves(st, st.w, &st.cr, st.ep);
         if moves.is_empty() {
             return if in_check { -MATE + 1000 } else { alpha };
         }
-        if with_nnue_net(|_| true).unwrap_or(false) && ply + 1 >= self.nnue_stack.len() {
-            if ply + 1 < MAX_PLY + 1 {
-                self.nnue_stack
-                    .resize(ply + 2, NNUEAccumulator::new(self.nnue_stack[0].hs));
-            }
+        if with_nnue_net(|_| true).unwrap_or(false)
+            && ply + 1 >= self.nnue_stack.len()
+            && ply + 1 < MAX_PLY + 1
+        {
+            self.nnue_stack
+                .resize(ply + 2, NNUEAccumulator::new(self.nnue_stack[0].hs));
         }
 
         let mut caps: Vec<Move> = if in_check {
@@ -549,6 +551,7 @@ impl Searcher {
         alpha
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn negamax(
         &mut self,
         st: &mut BoardState,
@@ -608,21 +611,14 @@ impl Searcher {
         let tt_depth = tt_data.map(|(d, _, _, _)| d).unwrap_or(-1);
         let tt_flag = tt_data.map(|(_, _, f, _)| f);
 
-        if !is_pv && tt_depth >= actual_depth && tt_flag.is_some() {
-            let s = tt_score.unwrap();
-            match tt_flag.unwrap() {
-                TT_EXACT => return s,
-                TT_ALPHA => {
-                    if s <= alpha {
-                        return alpha;
-                    }
+        if !is_pv && tt_depth >= actual_depth {
+            if let (Some(flag), Some(s)) = (tt_flag, tt_score) {
+                match flag {
+                    TT_EXACT => return s,
+                    TT_ALPHA if s <= alpha => return alpha,
+                    TT_BETA if s >= beta => return beta,
+                    _ => {}
                 }
-                TT_BETA => {
-                    if s >= beta {
-                        return beta;
-                    }
-                }
-                _ => {}
             }
         }
 
@@ -636,12 +632,7 @@ impl Searcher {
                 return eval_score - margin;
             }
         }
-        if self.futility_enabled()
-            && !in_check
-            && !is_pv
-            && actual_depth <= 3
-            && ply > 0
-        {
+        if self.futility_enabled() && !in_check && !is_pv && actual_depth <= 3 && ply > 0 {
             let margin = 150 * actual_depth;
             if eval_score + margin <= alpha {
                 let q = self.qsearch(
@@ -761,7 +752,7 @@ impl Searcher {
                 (s, mv)
             })
             .collect();
-        scored.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        scored.sort_unstable_by_key(|b| std::cmp::Reverse(b.0));
 
         let lmp_count = if self.lmp_enabled()
             && king_pressure < 3
@@ -769,7 +760,7 @@ impl Searcher {
             && !in_check
             && actual_depth <= 8
         {
-            let base = match actual_depth {
+            match actual_depth {
                 1 => 4,
                 2 => 7,
                 3 => 11,
@@ -779,8 +770,7 @@ impl Searcher {
                 7 => 44,
                 8 => 57,
                 _ => usize::MAX,
-            };
-            base
+            }
         } else {
             usize::MAX
         };
@@ -1071,7 +1061,7 @@ pub fn lazy_smp_search(
 
     let mut handles = Vec::with_capacity(actual_threads);
 
-    let moves_per_thread = (all_moves.len() + actual_threads - 1) / actual_threads;
+    let moves_per_thread = all_moves.len().div_ceil(actual_threads);
 
     for thread_id in 0..actual_threads {
         let start_idx = thread_id * moves_per_thread;

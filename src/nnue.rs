@@ -58,9 +58,9 @@ pub fn compute_king_buckets(layout: KbLayout) -> ([usize; 64], [bool; 64]) {
             KbLayout::Consensus => CONSENSUS_BUCKETS[mf][r],
             KbLayout::Reckless => {
                 let t = [
-                    0, 1, 2, 3, 3, 2, 1, 0, 4, 5, 6, 7, 7, 6, 5, 4, 8, 8, 8, 8, 8, 8, 8, 8,
-                    9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9,
-                    9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9,
+                    0, 1, 2, 3, 3, 2, 1, 0, 4, 5, 6, 7, 7, 6, 5, 4, 8, 8, 8, 8, 8, 8, 8, 8, 9, 9,
+                    9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9,
+                    9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9,
                 ];
                 t[sq]
             }
@@ -139,9 +139,15 @@ struct VersionFlags {
     ft: usize,
 }
 
+type HiddenLayers = (Vec<i16>, Vec<i16>, Vec<i16>, Vec<i16>);
+
 impl VersionFlags {
     fn l1_scale_f32(&self) -> f32 {
-        if self.l1sc != 0 { self.l1sc as f32 } else { QA as f32 }
+        if self.l1sc != 0 {
+            self.l1sc as f32
+        } else {
+            QA as f32
+        }
     }
 }
 
@@ -169,11 +175,7 @@ impl NNUENet {
         Self::load_reader(&mut r, len, name)
     }
 
-    fn load_reader(
-        r: &mut impl IoRead,
-        data_len: u64,
-        name: &str,
-    ) -> Result<Self, String> {
+    fn load_reader(r: &mut impl IoRead, data_len: u64, name: &str) -> Result<Self, String> {
         let ver = Self::read_header(r)?;
         let flags = Self::read_version_flags(r, ver)?;
         let hs = Self::infer_hidden_size(ver, &flags, data_len)?;
@@ -234,10 +236,7 @@ impl NNUENet {
         read_u32(r)
     }
 
-    fn read_version_flags(
-        r: &mut impl IoRead,
-        ver: u32,
-    ) -> Result<VersionFlags, String> {
+    fn read_version_flags(r: &mut impl IoRead, ver: u32) -> Result<VersionFlags, String> {
         let mut flags = VersionFlags {
             screlu: false,
             pairwise: false,
@@ -294,11 +293,7 @@ impl NNUENet {
         Ok(flags)
     }
 
-    fn infer_hidden_size(
-        ver: u32,
-        flags: &VersionFlags,
-        data_len: u64,
-    ) -> Result<usize, String> {
+    fn infer_hidden_size(ver: u32, flags: &VersionFlags, data_len: u64) -> Result<usize, String> {
         match ver {
             5 => {
                 let body = data_len - 8;
@@ -340,9 +335,17 @@ impl NNUENet {
         r: &mut impl IoRead,
         hs: usize,
         flags: &VersionFlags,
-    ) -> Result<(Vec<i16>, Vec<i16>, Vec<i16>, Vec<i16>), String> {
-        let bl1 = if flags.bucketed { NNUE_OUTPUT_BUCKETS * flags.l1s } else { flags.l1s };
-        let bl2 = if flags.bucketed { NNUE_OUTPUT_BUCKETS * flags.l2s } else { flags.l2s };
+    ) -> Result<HiddenLayers, String> {
+        let bl1 = if flags.bucketed {
+            NNUE_OUTPUT_BUCKETS * flags.l1s
+        } else {
+            flags.l1s
+        };
+        let bl2 = if flags.bucketed {
+            NNUE_OUTPUT_BUCKETS * flags.l2s
+        } else {
+            flags.l2s
+        };
         let mut l1w = Vec::new();
         let mut l1b = Vec::new();
         let mut l2w_raw = Vec::new();
@@ -382,8 +385,8 @@ impl NNUENet {
         let mut outw = vec![0i16; NNUE_OUTPUT_BUCKETS * ow];
         read_i16s(r, &mut outw)?;
         let mut outb = [0i32; NNUE_OUTPUT_BUCKETS];
-        for i in 0..NNUE_OUTPUT_BUCKETS {
-            outb[i] = read_i32(r)?;
+        for bias in &mut outb {
+            *bias = read_i32(r)?;
         }
         Ok((outw, outb))
     }
@@ -414,7 +417,11 @@ impl NNUENet {
         if flags.l1s == 0 {
             return Vec::new();
         }
-        let bl1 = if flags.bucketed { NNUE_OUTPUT_BUCKETS * flags.l1s } else { flags.l1s };
+        let bl1 = if flags.bucketed {
+            NNUE_OUTPUT_BUCKETS * flags.l1s
+        } else {
+            flags.l1s
+        };
         let l1 = bl1;
         let pp = if flags.pairwise { hs / 2 } else { hs };
         let total = if flags.pairwise { hs } else { 2 * hs };
@@ -476,9 +483,7 @@ impl NNUENet {
         }
     }
 
-    fn forward_base(
-        &self, stm: &[i16], ntm: &[i16], bucket: usize, out_w: &[i16],
-    ) -> i32 {
+    fn forward_base(&self, stm: &[i16], ntm: &[i16], bucket: usize, out_w: &[i16]) -> i32 {
         let h = self.hidden_size;
         let mut output = self.output_bias[bucket] as i64;
 
@@ -510,9 +515,7 @@ impl NNUENet {
         result
     }
 
-    fn forward_v6_pairwise(
-        &self, stm: &[i16], ntm: &[i16], bucket: usize, out_w: &[i16],
-    ) -> i32 {
+    fn forward_v6_pairwise(&self, stm: &[i16], ntm: &[i16], bucket: usize, out_w: &[i16]) -> i32 {
         let pw = self.hidden_size / 2;
         let mut sum: i64 = 0;
 
@@ -537,8 +540,16 @@ impl NNUENet {
         let l1_pb = self.l1_per_bucket;
         let qa_l1 = self.l1_scale;
 
-        let l1_off = if self.bucketed_hidden { bucket * l1_pb } else { 0 };
-        let l1 = if self.bucketed_hidden { l1_pb } else { l1_total };
+        let l1_off = if self.bucketed_hidden {
+            bucket * l1_pb
+        } else {
+            0
+        };
+        let l1 = if self.bucketed_hidden {
+            l1_pb
+        } else {
+            l1_total
+        };
 
         let sp = Self::pairwise_pack(stm, pw);
         let np = Self::pairwise_pack(ntm, pw);
@@ -564,8 +575,15 @@ impl NNUENet {
         result
     }
 
+    #[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
     fn l1_matmul(
-        &self, sp: &[u8], np: &[u8], l1_total: usize, l1: usize, l1_off: usize, pw: usize,
+        &self,
+        sp: &[u8],
+        np: &[u8],
+        l1_total: usize,
+        l1: usize,
+        l1_off: usize,
+        pw: usize,
         pw_scale: i32,
     ) -> Vec<i32> {
         let mut hidden32 = vec![0i32; l1];
@@ -598,22 +616,30 @@ impl NNUENet {
     fn forward_l2(&self, l1_out: Vec<f32>, bucket: usize, _l1: usize) -> i32 {
         let l2_pb = self.l2_per_bucket;
         let l2_total = self.l2_size;
-        let l2_off = if self.bucketed_hidden { bucket * l2_pb } else { 0 };
-        let l2 = if self.bucketed_hidden { l2_pb } else { l2_total };
+        let l2_off = if self.bucketed_hidden {
+            bucket * l2_pb
+        } else {
+            0
+        };
+        let l2 = if self.bucketed_hidden {
+            l2_pb
+        } else {
+            l2_total
+        };
 
         let mut h2 = vec![0.0f32; l2];
-        for k in 0..l2 {
-            h2[k] = self.l2_biases_f[l2_off + k];
-        }
-        for i in 0..l1_out.len() {
-            if l1_out[i] == 0.0 { continue; }
-            for k in 0..l2 {
-                h2[k] += l1_out[i] * self.l2_weights_f[i * l2_total + l2_off + k];
+        h2.copy_from_slice(&self.l2_biases_f[l2_off..l2_off + l2]);
+        for (i, &l1_value) in l1_out.iter().enumerate() {
+            if l1_value == 0.0 {
+                continue;
+            }
+            for (k, h2_value) in h2.iter_mut().enumerate().take(l2) {
+                *h2_value += l1_value * self.l2_weights_f[i * l2_total + l2_off + k];
             }
         }
-        for k in 0..l2 {
-            h2[k] = h2[k].clamp(0.0, 1.0);
-            h2[k] *= h2[k];
+        for h2_value in h2.iter_mut().take(l2) {
+            *h2_value = h2_value.clamp(0.0, 1.0);
+            *h2_value *= *h2_value;
         }
 
         let ow = &self.out_weights_f[bucket * l2_pb..bucket * l2_pb + l2_pb];
@@ -655,8 +681,12 @@ impl NNUEAccumulator {
         }
     }
 
-    pub fn white(&self) -> &[i16] { &self.white }
-    pub fn black(&self) -> &[i16] { &self.black }
+    pub fn white(&self) -> &[i16] {
+        &self.white
+    }
+    pub fn black(&self) -> &[i16] {
+        &self.black
+    }
 
     #[inline(always)]
     fn add_row(acc: &mut [i16], row: &[i16]) {
@@ -720,22 +750,33 @@ impl NNUEAccumulator {
         Self::remove_row(&mut self.black, row);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn update_move(
-        &mut self, net: &NNUENet, st_before: &BoardState,
-        sr: usize, sc: usize, er: usize, ec: usize, promotion: u8,
+        &mut self,
+        net: &NNUENet,
+        st_before: &BoardState,
+        sr: usize,
+        sc: usize,
+        er: usize,
+        ec: usize,
+        promotion: u8,
     ) -> bool {
         use crate::board::{is_white_piece, piece_on, piece_type, sq, EMPTY_SQ};
 
         let from = sq(sr, sc);
         let to = sq(er, ec);
         let mover_pi = piece_on(&st_before.bb, from);
-        if mover_pi == EMPTY_SQ { return true; }
+        if mover_pi == EMPTY_SQ {
+            return true;
+        }
 
         let mover_type = piece_type(mover_pi);
         let white = is_white_piece(mover_pi);
         let color: u8 = if white { 0 } else { 1 };
 
-        if mover_type == 5 { return false; }
+        if mover_type == 5 {
+            return false;
+        }
 
         self.remove_piece(net, color, mover_type, from as u8);
 
@@ -764,7 +805,11 @@ impl NNUEAccumulator {
 
         if mover_type == 0 && (er == 0 || er == 7) {
             let promo_type = match promotion.to_ascii_uppercase() {
-                b'Q' => 4u8, b'R' => 3, b'B' => 2, b'N' => 1, _ => 4,
+                b'Q' => 4u8,
+                b'R' => 3,
+                b'B' => 2,
+                b'N' => 1,
+                _ => 4,
             };
             self.add_piece(net, color, promo_type, to as u8);
         } else {

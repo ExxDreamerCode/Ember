@@ -24,7 +24,7 @@ impl OpeningBook {
     }
 
     pub fn load_from_bytes(data: &[u8], name: &str) -> Result<Self, String> {
-        if data.len() % 16 != 0 {
+        if !data.len().is_multiple_of(16) {
             return Err(format!("book size {} not multiple of 16", data.len()));
         }
         let mut entries: HashMap<u64, Vec<BookMove>> = HashMap::new();
@@ -43,7 +43,7 @@ impl OpeningBook {
             });
         }
         for moves in entries.values_mut() {
-            moves.sort_by(|a, b| b.weight.cmp(&a.weight));
+            moves.sort_by_key(|b| std::cmp::Reverse(b.weight));
         }
         let count = entries.len();
         eprintln!("info string Book loaded: {} positions from {}", count, name);

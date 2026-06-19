@@ -65,8 +65,8 @@ pub fn promotion_piece_index(white: bool, promotion: u8) -> Option<usize> {
 #[inline(always)]
 pub fn piece_on(bbs: &[u64; 12], s: usize) -> u8 {
     let b = bit(s);
-    for i in 0..12 {
-        if bbs[i] & b != 0 {
+    for (i, bb) in bbs.iter().enumerate().take(12) {
+        if *bb & b != 0 {
             return i as u8;
         }
     }
