@@ -387,6 +387,8 @@ fn parse_go(engine: &mut Engine, parts: &[&str]) {
 
     let tl = if movetime > 0.0 {
         movetime / 1000.0
+    } else if depth < 64 {
+        1_000_000_000.0
     } else {
         let t = if engine.st.w { wtime } else { btime };
         let inc = if engine.st.w { winc } else { binc };
@@ -397,7 +399,11 @@ fn parse_go(engine: &mut Engine, parts: &[&str]) {
         };
         (t / (moves_left + 2.0) + inc * 0.8) / 1000.0
     };
-    let tl = tl.max(0.05).min(60.0);
+    let tl = if depth < 64 {
+        tl
+    } else {
+        tl.max(0.05).min(60.0)
+    };
 
     let root_state = engine.st;
     let (best_move, _, nodes, elapsed) = engine.find_best_move(tl, depth);

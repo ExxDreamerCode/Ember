@@ -2,7 +2,7 @@ pub const EMPTY_SQ: u8 = 255;
 pub const MATE: i32 = 100_000;
 pub const INF: i32 = 1_000_000;
 pub const MAX_PLY: usize = 128;
-pub const QS_DEPTH: i32 = 8;
+pub const QS_DEPTH: i32 = 0;
 
 pub const WP: usize = 0;
 pub const WN: usize = 1;

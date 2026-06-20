@@ -472,23 +472,20 @@ impl Searcher {
             return 0;
         }
 
-        if !in_check {
-            let stand = self.static_eval(st, ply);
-            if stand >= beta {
-                return stand;
+            if !in_check {
+                let stand = self.static_eval(st, ply);
+                if stand >= beta {
+                    return stand;
+                }
+                if stand > alpha {
+                    alpha = stand;
+                }
+                if depth <= 0 && alpha - 975 > stand {
+                    return alpha;
+                }
+            } else if depth <= -4 {
+                return self.static_eval(st, ply);
             }
-            if stand > alpha {
-                alpha = stand;
-            }
-            if depth <= 0 {
-                return alpha;
-            }
-            if alpha - 975 > stand {
-                return alpha;
-            }
-        } else if depth <= -8 {
-            return self.static_eval(st, ply);
-        }
 
         let moves = generate_moves(st, st.w, &st.cr, st.ep);
         if moves.is_empty() {
@@ -621,7 +618,7 @@ impl Searcher {
             return 0;
         }
 
-        let ext = if in_check { 1 } else { 0 };
+        let ext = if in_check && depth < 16 { 1 } else { 0 };
         let actual_depth = depth + ext;
 
         let tt_data = self.shared_tt.get_depth(h);
@@ -858,7 +855,7 @@ impl Searcher {
                 }
             }
 
-            let move_ext = if gives_check && !in_check && i == 0 {
+            let move_ext = if gives_check && !in_check && i == 0 && actual_depth < 16 {
                 1
             } else {
                 0
