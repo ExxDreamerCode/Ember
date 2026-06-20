@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: Rust checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check formatting
+        run: nix develop .#ci --command cargo fmt --all --check
+
+      - name: Run clippy
+        run: >
+          nix develop .#ci --command cargo clippy --locked
+          --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: nix develop .#ci --command cargo test --locked --all-features
+
+      - name: Build release binary
+        run: >
+          nix develop .#ci --command cargo build --locked --release
+          --bin ember
+
+      - name: Quick no-book NPS smoke benchmark
+        run: |
+          nix develop .#ci --command python3 tools/benchmark_search.py \
+            --binary ember=target/release/ember \
+            --depth 7 \
+            --repeats 1 \
+            --hash-mb 64 \
+            --timeout 60 \
+            --run-id ci-quick-nps \
+            --out-dir results/search-bench
+
+          nix develop .#ci --command python3 - <<'PY'
+          import json
+          import os
+
+          result_path = "results/search-bench/ci-quick-nps/result.json"
+          with open(result_path, encoding="utf-8") as f:
+              result = json.load(f)
+
+          summary = result["summaries"]["ember"]
+          samples = result["samples"]
+          median_nps = round(summary["median_nps"])
+          mean_nps = round(summary["mean_nps"])
+
+          lines = [
+              "## Quick NPS Smoke",
+              "",
+              f"- Book disabled: `{str(result['disable_book']).lower()}`",
+              f"- Depth: `{result['depth']}`",
+              f"- Repeats: `{result['repeats']}`",
+              f"- Median NPS: `{median_nps}`",
+              f"- Mean NPS: `{mean_nps}`",
+              "",
+              "| Position | Depth | Nodes | NPS |",
+              "| --- | ---: | ---: | ---: |",
+          ]
+          for sample in samples:
+              lines.append(
+                  f"| {sample['position']} | {sample['reported_depth']} | "
+                  f"{sample['nodes']} | {sample['nps']} |"
+              )
+          lines.append("")
+
+          step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if step_summary:
+              with open(step_summary, "a", encoding="utf-8") as f:
+                  f.write("\n".join(lines))
+          else:
+              print("\n".join(lines))
+
+          print(
+              "::notice title=Quick NPS::"
+              f"median={median_nps}, mean={mean_nps}, "
+              f"samples={summary['samples']}, book=disabled"
+          )
+          PY
