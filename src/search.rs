@@ -1,6 +1,6 @@
 use crate::board::{
     all_occ, attacked_by, bit, has_non_pawn, move_ec, move_promotion, piece_on, piece_type, see,
-    BoardState, Move, BK, BP, EMPTY_SQ, INF, KING_ATTACKS, MATE, MAX_PLY, QS_DEPTH, WK, WP,
+    BoardState, Move, EMPTY_SQ, INF, KING_ATTACKS, MATE, MAX_PLY, QS_DEPTH,
 };
 use crate::evaluate::{evaluate, evaluate_nnue_acc, with_nnue_net};
 use crate::movegen::{apply_move, generate_moves, is_chess960_castling_move};
@@ -131,25 +131,6 @@ fn tactical_king_pressure(st: &BoardState) -> u32 {
     king_zone_pressure(st, true).max(king_zone_pressure(st, false))
 }
 
-fn promotion_race(st: &BoardState) -> bool {
-    const WHITE_ADVANCED: u64 = 0x0000_0000_00FF_FF00;
-    const BLACK_ADVANCED: u64 = 0x00FF_FF00_0000_0000;
-    (st.bb[WP] & WHITE_ADVANCED) != 0 || (st.bb[BP] & BLACK_ADVANCED) != 0
-}
-
-fn sparse_endgame(st: &BoardState) -> bool {
-    let mut pieces = 0;
-    for idx in 0..12 {
-        if idx != WK && idx != BK {
-            pieces += st.bb[idx].count_ones();
-        }
-    }
-    pieces <= 8
-}
-
-fn selective_pruning_unsafe(st: &BoardState) -> bool {
-    promotion_race(st) || sparse_endgame(st)
-}
 
 pub struct Searcher {
     pub shared_tt: Arc<SharedTT>,
@@ -660,7 +641,6 @@ impl Searcher {
             && !is_pv
             && actual_depth <= 3
             && ply > 0
-            && !(actual_depth >= 2 && selective_pruning_unsafe(st))
         {
             let margin = 150 * actual_depth;
             if eval_score + margin <= alpha {
@@ -788,9 +768,8 @@ impl Searcher {
             && !is_pv
             && !in_check
             && actual_depth <= 8
-            && !selective_pruning_unsafe(st)
         {
-            match actual_depth {
+            let base = match actual_depth {
                 1 => 4,
                 2 => 7,
                 3 => 11,
@@ -800,7 +779,8 @@ impl Searcher {
                 7 => 44,
                 8 => 57,
                 _ => usize::MAX,
-            }
+            };
+            base
         } else {
             usize::MAX
         };
@@ -886,8 +866,7 @@ impl Searcher {
                 && actual_depth >= 3
                 && is_quiet
                 && !in_check
-                && !gives_check
-                && !selective_pruning_unsafe(st);
+                && !gives_check;
             let s = if i == 0 {
                 -self.negamax(st, new_depth, ply + 1, -beta, -alpha, true, start, tl, cnt)
             } else if lmr_eligible {
