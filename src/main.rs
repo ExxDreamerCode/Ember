@@ -46,10 +46,9 @@ fn main() {
             try_load_book(&mut engine, &exe_dir.join("book.bin"));
         }
     }
-    if engine.book.is_none() {
-        if std::path::Path::new("book.bin").exists() {
-            try_load_book(&mut engine, &std::path::Path::new("book.bin"));
-        }
+    let local_book = std::path::Path::new("book.bin");
+    if engine.book.is_none() && local_book.exists() {
+        try_load_book(&mut engine, local_book);
     }
     if engine.book.is_none() {
         eprintln!("info string Book file not found, using embedded book");
@@ -89,93 +88,91 @@ fn main() {
             "ucinewgame" => {
                 reset_engine(&mut engine);
             }
-            "setoption" => {
-                if parts.len() >= 3 && parts[1].to_lowercase() == "name" {
-                    let name = parts[2].to_lowercase();
-                    let val_start = parts
-                        .iter()
-                        .position(|part| part.eq_ignore_ascii_case("value"))
-                        .map(|idx| idx + 1)
-                        .unwrap_or(3);
-                    let val = parts[val_start..].join(" ");
+            "setoption" if parts.len() >= 3 && parts[1].to_lowercase() == "name" => {
+                let name = parts[2].to_lowercase();
+                let val_start = parts
+                    .iter()
+                    .position(|part| part.eq_ignore_ascii_case("value"))
+                    .map(|idx| idx + 1)
+                    .unwrap_or(3);
+                let val = parts[val_start..].join(" ");
 
-                    match name.as_str() {
-                        "book" => {
-                            if val.is_empty() {
-                                engine.book = None;
-                                eprintln!("info string Book disabled");
-                            } else if val.to_lowercase() == "<embedded>"
-                                || val.to_lowercase() == "<default>"
-                            {
-                                match OpeningBook::load_from_bytes(
-                                    opening_book::BOOK_DATA,
-                                    "<embedded>",
-                                ) {
-                                    Ok(book) => {
-                                        engine.book = Some(book);
-                                        eprintln!("info string Book switched to embedded");
-                                    }
-                                    Err(e) => {
-                                        eprintln!("info string Failed to load embedded book: {}", e)
-                                    }
+                match name.as_str() {
+                    "book" => {
+                        if val.is_empty() {
+                            engine.book = None;
+                            eprintln!("info string Book disabled");
+                        } else if val.to_lowercase() == "<embedded>"
+                            || val.to_lowercase() == "<default>"
+                        {
+                            match OpeningBook::load_from_bytes(
+                                opening_book::BOOK_DATA,
+                                "<embedded>",
+                            ) {
+                                Ok(book) => {
+                                    engine.book = Some(book);
+                                    eprintln!("info string Book switched to embedded");
                                 }
-                            } else {
-                                let path = std::path::Path::new(&val);
-                                if !try_load_book(&mut engine, path) {
-                                    if let Ok(exe_path) = std::env::current_exe() {
-                                        if let Some(exe_dir) = exe_path.parent() {
-                                            try_load_book(&mut engine, &exe_dir.join(&val));
-                                        }
+                                Err(e) => {
+                                    eprintln!("info string Failed to load embedded book: {}", e)
+                                }
+                            }
+                        } else {
+                            let path = std::path::Path::new(&val);
+                            if !try_load_book(&mut engine, path) {
+                                if let Ok(exe_path) = std::env::current_exe() {
+                                    if let Some(exe_dir) = exe_path.parent() {
+                                        try_load_book(&mut engine, &exe_dir.join(&val));
                                     }
                                 }
                             }
                         }
-                        "nnue" => {
-                            if val.is_empty() {
-                                match evaluate::reset_nnue() {
-                                    Ok(()) => eprintln!("info string NNUE disabled (eval will fall back to classic)"),
-                                    Err(e) => eprintln!("info string Failed to disable NNUE: {}", e),
-                                }
-                            } else if val.to_lowercase() == "<embedded>"
-                                || val.to_lowercase() == "<default>"
-                            {
-                                match evaluate::init_embedded_nnue() {
-                                    Ok(()) => eprintln!("info string NNUE switched to embedded"),
-                                    Err(e) => {
-                                        eprintln!("info string Failed to load embedded NNUE: {}", e)
-                                    }
-                                }
-                            } else {
-                                maybe_load_nnue(&val);
+                    }
+                    "nnue" => {
+                        if val.is_empty() {
+                            match evaluate::reset_nnue() {
+                                Ok(()) => eprintln!(
+                                    "info string NNUE disabled (eval will fall back to classic)"
+                                ),
+                                Err(e) => eprintln!("info string Failed to disable NNUE: {}", e),
                             }
-                        }
-                        "syzygypath" => {
-                            if val.is_empty() || val.to_lowercase() == "<empty>" {
-                                engine.searcher.syzygy = SyzygyTables::new();
-                                eprintln!("info string Syzygy tables disabled");
-                            } else {
-                                match engine.searcher.syzygy.load(&val) {
-                                    Ok(()) => {
-                                        eprintln!("info string Syzygy tables loaded: {}", val)
-                                    }
-                                    Err(e) => {
-                                        eprintln!("info string Failed to load Syzygy tables: {}", e)
-                                    }
+                        } else if val.to_lowercase() == "<embedded>"
+                            || val.to_lowercase() == "<default>"
+                        {
+                            match evaluate::init_embedded_nnue() {
+                                Ok(()) => eprintln!("info string NNUE switched to embedded"),
+                                Err(e) => {
+                                    eprintln!("info string Failed to load embedded NNUE: {}", e)
                                 }
                             }
+                        } else {
+                            maybe_load_nnue(&val);
                         }
-                        "uci_chess960" => {
-                            let enable = val == "true";
-                            engine.st.chess960 = enable;
-                            if enable {
-                                eprintln!("info string Chess960 mode enabled");
-                            } else {
-                                eprintln!("info string Chess960 mode disabled");
+                    }
+                    "syzygypath" => {
+                        if val.is_empty() || val.to_lowercase() == "<empty>" {
+                            engine.searcher.syzygy = SyzygyTables::new();
+                            eprintln!("info string Syzygy tables disabled");
+                        } else {
+                            match engine.searcher.syzygy.load(&val) {
+                                Ok(()) => eprintln!("info string Syzygy tables loaded: {}", val),
+                                Err(e) => {
+                                    eprintln!("info string Failed to load Syzygy tables: {}", e)
+                                }
                             }
                         }
-                        _ => {
-                            parse_setoption(&mut engine, &parts);
+                    }
+                    "uci_chess960" => {
+                        let enable = val == "true";
+                        engine.st.chess960 = enable;
+                        if enable {
+                            eprintln!("info string Chess960 mode enabled");
+                        } else {
+                            eprintln!("info string Chess960 mode disabled");
                         }
+                    }
+                    _ => {
+                        parse_setoption(&mut engine, &parts);
                     }
                 }
             }
@@ -224,10 +221,8 @@ fn parse_setoption(engine: &mut Engine, parts: &[&str]) {
                 }
             }
             #[cfg(feature = "decision-trace")]
-            "tracefile" => {
-                if !val.is_empty() {
-                    engine.set_trace_file(&val);
-                }
+            "tracefile" if !val.is_empty() => {
+                engine.set_trace_file(&val);
             }
             _ => {}
         }
@@ -323,6 +318,11 @@ fn parse_uci_move(mv: &str) -> Option<(usize, usize, usize, usize, u8)> {
     Some((sr, sc, er, ec, promotion))
 }
 
+#[allow(clippy::manual_clamp)]
+fn clamp_time_limit(tl: f64) -> f64 {
+    tl.max(0.05).min(60.0)
+}
+
 fn parse_go(engine: &mut Engine, parts: &[&str]) {
     let mut wtime = 300000f64;
     let mut btime = 300000f64;
@@ -335,47 +335,33 @@ fn parse_go(engine: &mut Engine, parts: &[&str]) {
     let mut i = 1;
     while i < parts.len() {
         match parts[i] {
-            "wtime" => {
-                if i + 1 < parts.len() {
-                    wtime = parts[i + 1].parse().unwrap_or(300000.0);
-                    i += 1;
-                }
+            "wtime" if i + 1 < parts.len() => {
+                wtime = parts[i + 1].parse().unwrap_or(300000.0);
+                i += 1;
             }
-            "btime" => {
-                if i + 1 < parts.len() {
-                    btime = parts[i + 1].parse().unwrap_or(300000.0);
-                    i += 1;
-                }
+            "btime" if i + 1 < parts.len() => {
+                btime = parts[i + 1].parse().unwrap_or(300000.0);
+                i += 1;
             }
-            "winc" => {
-                if i + 1 < parts.len() {
-                    winc = parts[i + 1].parse().unwrap_or(0.0);
-                    i += 1;
-                }
+            "winc" if i + 1 < parts.len() => {
+                winc = parts[i + 1].parse().unwrap_or(0.0);
+                i += 1;
             }
-            "binc" => {
-                if i + 1 < parts.len() {
-                    binc = parts[i + 1].parse().unwrap_or(0.0);
-                    i += 1;
-                }
+            "binc" if i + 1 < parts.len() => {
+                binc = parts[i + 1].parse().unwrap_or(0.0);
+                i += 1;
             }
-            "movetime" => {
-                if i + 1 < parts.len() {
-                    movetime = parts[i + 1].parse().unwrap_or(0.0);
-                    i += 1;
-                }
+            "movetime" if i + 1 < parts.len() => {
+                movetime = parts[i + 1].parse().unwrap_or(0.0);
+                i += 1;
             }
-            "depth" => {
-                if i + 1 < parts.len() {
-                    depth = parts[i + 1].parse().unwrap_or(64);
-                    i += 1;
-                }
+            "depth" if i + 1 < parts.len() => {
+                depth = parts[i + 1].parse().unwrap_or(64);
+                i += 1;
             }
-            "movestogo" => {
-                if i + 1 < parts.len() {
-                    movestogo = parts[i + 1].parse().unwrap_or(0);
-                    i += 1;
-                }
+            "movestogo" if i + 1 < parts.len() => {
+                movestogo = parts[i + 1].parse().unwrap_or(0);
+                i += 1;
             }
             "infinite" => {
                 movetime = 1_000_000.0;
@@ -399,11 +385,7 @@ fn parse_go(engine: &mut Engine, parts: &[&str]) {
         };
         (t / (moves_left + 2.0) + inc * 0.8) / 1000.0
     };
-    let tl = if depth < 64 {
-        tl
-    } else {
-        tl.max(0.05).min(60.0)
-    };
+    let tl = if depth < 64 { tl } else { clamp_time_limit(tl) };
 
     let root_state = engine.st;
     let (best_move, _, nodes, elapsed) = engine.find_best_move(tl, depth);

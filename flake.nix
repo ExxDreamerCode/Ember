@@ -43,6 +43,8 @@
               coreutils
               cargo
               rustc
+              clippy
+              rustfmt
               go
               git
               gnugrep
@@ -67,6 +69,18 @@
             shellHook = ''
               export EMBER_ELO_NIX_SHELL=1
             '';
+          };
+
+          ci = pkgs.mkShell {
+            packages = with pkgs; [
+              bash
+              coreutils
+              cargo
+              rustc
+              clippy
+              rustfmt
+              python3
+            ];
           };
 
           default = self.devShells.${pkgs.system}.elo-runner;

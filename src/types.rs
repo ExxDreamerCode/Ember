@@ -94,8 +94,8 @@ pub fn piece_at(st: &BoardState, sq: Square) -> u8 {
 
 pub fn make_mailbox(st: &BoardState) -> [u8; 64] {
     let mut mb = [NO_PIECE; 64];
-    for sq in 0..64 {
-        mb[sq] = piece_at(st, sq as u8);
+    for (sq, cell) in mb.iter_mut().enumerate() {
+        *cell = piece_at(st, sq as u8);
     }
     mb
 }

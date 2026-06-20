@@ -1,5 +1,5 @@
 use shakmaty::{
-    Board, CastlingMode, Chess, Color as SColor, FromSetup, Setup, Bitboard, ByColor, ByRole,
+    Bitboard, Board, ByColor, ByRole, CastlingMode, Chess, Color as SColor, FromSetup, Setup,
 };
 use shakmaty_syzygy::{Dtz, MaybeRounded, Tablebase, Wdl};
 use std::path::Path;
@@ -24,9 +24,9 @@ fn to_shakmaty_board(st: &BoardState) -> Board {
         for pi in 0..12 {
             if st.bb[pi] & (1u64 << sq) != 0 {
                 if pi < 6 {
-                    white_bb[pi as usize] |= b;
+                    white_bb[pi] |= b;
                 } else {
-                    black_bb[(pi - 6) as usize] |= b;
+                    black_bb[pi - 6] |= b;
                 }
                 break;
             }
@@ -38,12 +38,10 @@ fn to_shakmaty_board(st: &BoardState) -> Board {
     let rook = Bitboard(white_bb[3] | black_bb[3]);
     let queen = Bitboard(white_bb[4] | black_bb[4]);
     let king = Bitboard(white_bb[5] | black_bb[5]);
-    let white = Bitboard(
-        white_bb[0] | white_bb[1] | white_bb[2] | white_bb[3] | white_bb[4] | white_bb[5],
-    );
-    let black = Bitboard(
-        black_bb[0] | black_bb[1] | black_bb[2] | black_bb[3] | black_bb[4] | black_bb[5],
-    );
+    let white =
+        Bitboard(white_bb[0] | white_bb[1] | white_bb[2] | white_bb[3] | white_bb[4] | white_bb[5]);
+    let black =
+        Bitboard(black_bb[0] | black_bb[1] | black_bb[2] | black_bb[3] | black_bb[4] | black_bb[5]);
     Board::try_from_bitboards(
         ByRole {
             pawn,
@@ -81,6 +79,12 @@ fn board_to_chess(st: &BoardState) -> Option<Chess> {
 
 pub struct SyzygyTables {
     pub tables: Option<Tablebase<Chess>>,
+}
+
+impl Default for SyzygyTables {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SyzygyTables {

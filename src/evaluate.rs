@@ -359,7 +359,7 @@ pub fn init_nnue_from_bytes(data: &[u8]) -> Result<(), String> {
 }
 
 pub fn nnue_loaded() -> bool {
-    NNUE_NET.read().map_or(false, |lock| lock.is_some())
+    NNUE_NET.read().is_ok_and(|lock| lock.is_some())
 }
 
 pub fn get_nnue_net() -> Option<&'static NNUENet> {
@@ -371,7 +371,7 @@ where
     F: FnOnce(&NNUENet) -> R,
 {
     let lock = NNUE_NET.read().ok()?;
-    lock.as_ref().map(|net| f(net))
+    lock.as_ref().map(f)
 }
 
 pub fn evaluate_nnue_acc(net: &NNUENet, acc: &NNUEAccumulator, st: &BoardState) -> i32 {

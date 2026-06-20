@@ -39,14 +39,13 @@ fn set_castling_rook_by_side(st: &mut BoardState, white: bool, kingside: bool) {
         if pi == EMPTY_SQ || piece_type(pi) != 3 || (pi < 6) != white {
             continue;
         }
-        if kingside && col > king_col {
-            if candidate.map_or(true, |prev| col < prev) {
-                candidate = Some(col);
-            }
-        } else if !kingside && col < king_col {
-            if candidate.map_or(true, |prev| col > prev) {
-                candidate = Some(col);
-            }
+        let better_candidate = if kingside {
+            col > king_col && candidate.is_none_or(|prev| col < prev)
+        } else {
+            col < king_col && candidate.is_none_or(|prev| col > prev)
+        };
+        if better_candidate {
+            candidate = Some(col);
         }
     }
 
@@ -59,6 +58,12 @@ fn set_castling_rook_by_side(st: &mut BoardState, white: bool, kingside: bool) {
         };
         st.cr[idx] = true;
         st.castling_rooks[idx] = Some(sq(rank, col));
+    }
+}
+
+impl Default for Engine {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -443,7 +448,7 @@ impl Engine {
                             (bonus, mv)
                         })
                         .collect();
-                    with_dtz.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+                    with_dtz.sort_unstable_by_key(|b| std::cmp::Reverse(b.0));
                     if asp_best != with_dtz[0].1 {
                         if let Some(pos) = with_dtz.iter().position(|&(_, m)| m == asp_best) {
                             with_dtz.swap(0, pos);

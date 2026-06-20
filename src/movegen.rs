@@ -174,14 +174,13 @@ fn castling_rook_square(
         if st.bb[rook_pi] & bit(rs) == 0 {
             continue;
         }
-        if kingside && col > king_col {
-            if candidate.map_or(true, |prev| col < prev) {
-                candidate = Some(col);
-            }
-        } else if !kingside && col < king_col {
-            if candidate.map_or(true, |prev| col > prev) {
-                candidate = Some(col);
-            }
+        let better_candidate = if kingside {
+            col > king_col && candidate.is_none_or(|prev| col < prev)
+        } else {
+            col < king_col && candidate.is_none_or(|prev| col > prev)
+        };
+        if better_candidate {
+            candidate = Some(col);
         }
     }
     candidate.map(|col| sq(rank, col))
@@ -220,6 +219,7 @@ fn square_attacked_with_king_removed(
     is_attacked(&bb, square, by_white)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn try_chess960_castle(
     st: &BoardState,
     wturn: bool,
@@ -783,15 +783,15 @@ mod tests {
         );
         assert_eq!(
             engine.st.king_sq(false),
-            0 * 8 + 2,
+            sq(0, 2),
             "Black king should be on c8 after O-O-O"
         );
         assert!(
-            engine.st.bb[BR] & bit(0 * 8 + 3) != 0,
+            engine.st.bb[BR] & bit(sq(0, 3)) != 0,
             "Black rook should be on d8 after O-O-O"
         );
         assert!(
-            engine.st.bb[BR] & bit(0 * 8 + 0) == 0,
+            engine.st.bb[BR] & bit(sq(0, 0)) == 0,
             "Black rook should no longer be on a8 after O-O-O"
         );
     }

@@ -110,7 +110,7 @@ fn slow_bishop(sq: usize, occ: u64) -> u64 {
     let mut att = 0u64;
     for (dr, dc) in [(-1i32, -1i32), (-1, 1), (1, -1), (1, 1)] {
         let (mut rr, mut rc) = (r as i32 + dr, c as i32 + dc);
-        while rr >= 0 && rr < 8 && rc >= 0 && rc < 8 {
+        while (0..8).contains(&rr) && (0..8).contains(&rc) {
             let b = 1u64 << (rr * 8 + rc);
             att |= b;
             if occ & b != 0 {
@@ -128,7 +128,7 @@ fn slow_rook(sq: usize, occ: u64) -> u64 {
     let mut att = 0u64;
     for (dr, dc) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
         let (mut rr, mut rc) = (r as i32 + dr, c as i32 + dc);
-        while rr >= 0 && rr < 8 && rc >= 0 && rc < 8 {
+        while (0..8).contains(&rr) && (0..8).contains(&rc) {
             let b = 1u64 << (rr * 8 + rc);
             att |= b;
             if occ & b != 0 {
