@@ -2,7 +2,7 @@
 use crate::board::board_to_fen;
 use crate::board::{
     bit, is_attacked, move_ec, move_promotion, move_to_uci, piece_from_char, piece_on, piece_type,
-    sq, sq_c, BoardState, EMPTY_SQ, INF, MATE, MAX_PLY,
+    sq, sq_c, BoardState, BP, BQ, BR, EMPTY_SQ, INF, MATE, MAX_PLY, WP, WQ, WR,
 };
 use crate::book::OpeningBook;
 use crate::movegen::Move;
@@ -59,6 +59,155 @@ fn set_castling_rook_by_side(st: &mut BoardState, white: bool, kingside: bool) {
         st.cr[idx] = true;
         st.castling_rooks[idx] = Some(sq(rank, col));
     }
+}
+
+#[allow(dead_code)]
+fn root_non_king_piece_count(st: &BoardState) -> u32 {
+    (0..12)
+        .filter(|&pi| piece_type(pi as u8) != 5)
+        .map(|pi| st.bb[pi].count_ones())
+        .sum()
+}
+
+#[allow(dead_code)]
+fn root_side_has_major(st: &BoardState, white: bool) -> bool {
+    let rook = if white { WR } else { BR };
+    let queen = if white { WQ } else { BQ };
+    (st.bb[rook] | st.bb[queen]) != 0
+}
+
+#[allow(dead_code)]
+fn root_promotion_race(st: &BoardState) -> bool {
+    let mut white_pawns = st.bb[WP];
+    while white_pawns != 0 {
+        let sq = white_pawns.trailing_zeros() as usize;
+        if sq / 8 <= 2 {
+            return true;
+        }
+        white_pawns &= white_pawns - 1;
+    }
+
+    let mut black_pawns = st.bb[BP];
+    while black_pawns != 0 {
+        let sq = black_pawns.trailing_zeros() as usize;
+        if sq / 8 >= 5 {
+            return true;
+        }
+        black_pawns &= black_pawns - 1;
+    }
+
+    false
+}
+
+#[allow(dead_code)]
+fn root_move_gives_check(st: &BoardState, mv: &Move) -> bool {
+    let mut after = *st;
+    apply_move(
+        &mut after,
+        mv[0],
+        mv[1],
+        mv[2],
+        move_ec(mv),
+        move_promotion(mv),
+    );
+    let opp_ks = after.king_sq(after.w);
+    is_attacked(&after.bb, opp_ks, !after.w)
+}
+
+#[allow(dead_code)]
+fn root_move_is_capture(st: &BoardState, mv: &Move) -> bool {
+    let to = mv[2] * 8 + move_ec(mv);
+    let from = mv[0] * 8 + mv[1];
+    let fpi = piece_on(&st.bb, from);
+    let tpi = piece_on(&st.bb, to);
+    if tpi != EMPTY_SQ {
+        return fpi == EMPTY_SQ || (tpi < 6) != (fpi < 6);
+    }
+
+    fpi != EMPTY_SQ && piece_type(fpi) == 0 && Some(to) == st.ep && mv[1] != move_ec(mv)
+}
+
+#[allow(dead_code)]
+fn root_move_is_promotion(st: &BoardState, mv: &Move) -> bool {
+    if move_promotion(mv) != 0 {
+        return true;
+    }
+    let from = mv[0] * 8 + mv[1];
+    let fpi = piece_on(&st.bb, from);
+    fpi != EMPTY_SQ && piece_type(fpi) == 0 && (mv[2] == 0 || mv[2] == 7)
+}
+
+#[allow(dead_code)]
+fn root_piece_value(pi: u8) -> i32 {
+    if pi == EMPTY_SQ {
+        return 0;
+    }
+    match piece_type(pi) {
+        0 => 100,
+        1 => 325,
+        2 => 340,
+        3 => 500,
+        4 => 950,
+        _ => 0,
+    }
+}
+
+#[allow(dead_code)]
+fn root_forcing_score(st: &BoardState, mv: &Move) -> Option<i32> {
+    let gives_check = root_move_gives_check(st, mv);
+    let is_promo = root_move_is_promotion(st, mv);
+    let is_capture = root_move_is_capture(st, mv);
+    if !gives_check && !is_promo && !is_capture {
+        return None;
+    }
+
+    let from = mv[0] * 8 + mv[1];
+    let to = mv[2] * 8 + move_ec(mv);
+    let attacker = piece_on(&st.bb, from);
+    let victim = piece_on(&st.bb, to);
+    let mut score = 0;
+    if gives_check {
+        score += 4_000_000;
+    }
+    if is_promo {
+        score += 2_000_000;
+    }
+    if is_capture {
+        score += 1_000_000 + root_piece_value(victim) * 10 - root_piece_value(attacker);
+    }
+    Some(score)
+}
+
+#[allow(dead_code)]
+fn root_order_score(st: &BoardState, mv: Move, preferred: Move) -> i32 {
+    let mut score = root_forcing_score(st, &mv).unwrap_or(0);
+    if mv == preferred {
+        score += 500_000;
+    }
+    score
+}
+
+#[allow(dead_code)]
+fn sort_sparse_root_moves(st: &BoardState, moves: &[Move], preferred: Move) -> Option<Vec<Move>> {
+    if root_non_king_piece_count(st) > 8 {
+        return None;
+    }
+    if !root_side_has_major(st, st.w) && !root_promotion_race(st) {
+        return None;
+    }
+
+    let mut scored: Vec<(i32, usize, Move)> = moves
+        .iter()
+        .enumerate()
+        .map(|(idx, &mv)| (root_order_score(st, mv, preferred), idx, mv))
+        .collect();
+    let has_forcing = scored.iter().any(|(score, _, _)| *score >= 1_000_000);
+    if !has_forcing {
+        return None;
+    }
+
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    Some(scored.into_iter().map(|(_, _, mv)| mv).collect())
 }
 
 impl Default for Engine {
@@ -637,5 +786,62 @@ impl Engine {
             depth_infos: &depth_infos,
         });
         (mv_str, best_score, total_nodes, elapsed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn engine_from_fen(fen: &str) -> Engine {
+        let mut engine = Engine::new();
+        engine.book = None;
+        engine.set_fen(fen);
+        engine
+    }
+
+    fn root_moves(engine: &Engine) -> Vec<Move> {
+        generate_moves(&engine.st, engine.st.w, &engine.st.cr, engine.st.ep)
+    }
+
+    #[test]
+    fn sparse_endgame_root_ordering_prioritizes_reported_mating_check() {
+        let engine = engine_from_fen("8/5k2/3Q4/7p/8/1p6/3p1P1P/3B2K1 w - - 52 78");
+        let moves = root_moves(&engine);
+        let sorted = sort_sparse_root_moves(&engine.st, &moves, [0; 4]).expect("sparse ordering");
+        let mating_check = *moves
+            .iter()
+            .find(|mv| move_to_uci(&engine.st, mv) == "d1h5")
+            .expect("reported mating check is legal");
+        let quiet_start = sorted
+            .iter()
+            .position(|mv| root_forcing_score(&engine.st, mv).is_none())
+            .unwrap_or(sorted.len());
+        let mating_check_pos = sorted
+            .iter()
+            .position(|mv| *mv == mating_check)
+            .expect("reported mating check remains in root moves");
+
+        assert!(root_forcing_score(&engine.st, &mating_check).unwrap() >= 4_000_000);
+        assert!(mating_check_pos < quiet_start);
+    }
+
+    #[test]
+    fn sparse_root_ordering_does_not_activate_in_opening_positions() {
+        let engine = engine_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        let moves = root_moves(&engine);
+
+        assert!(sort_sparse_root_moves(&engine.st, &moves, [0; 4]).is_none());
+    }
+
+    #[test]
+    fn sparse_root_ordering_handles_promotion_race_without_major_piece() {
+        let engine = engine_from_fen("8/P4k2/8/8/8/8/8/6K1 w - - 0 1");
+        let moves = root_moves(&engine);
+        let sorted = sort_sparse_root_moves(&engine.st, &moves, [0; 4]).expect("promotion race");
+
+        assert!(sorted
+            .first()
+            .is_some_and(|mv| move_to_uci(&engine.st, mv).starts_with("a7a8")));
     }
 }
