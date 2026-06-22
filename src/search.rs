@@ -382,13 +382,9 @@ impl Searcher {
             return false;
         }
         let last = self.rep_stack[self.rep_stack_len - 1];
-        let mut count = 0;
         for i in (0..self.rep_stack_len - 1).rev() {
             if self.rep_stack[i] == last {
-                count += 1;
-                if count >= 2 {
-                    return true;
-                }
+                return true;
             }
         }
         false
