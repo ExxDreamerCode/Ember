@@ -1047,29 +1047,16 @@ pub fn lazy_smp_search(
     let stopped = Arc::new(AtomicBool::new(false));
     let all_moves = generate_moves(st, st.w, &st.cr, st.ep);
 
-    let actual_threads = if all_moves.len() < num_threads {
-        1
-    } else {
-        num_threads
-    };
-
     let results = Arc::new(std::sync::Mutex::new(Vec::new()));
     let global_best_depth: Arc<AtomicI32> = Arc::new(AtomicI32::new(0));
     let global_nodes: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
     let start = Instant::now();
     let root_hash = compute_hash(st);
 
-    let mut handles = Vec::with_capacity(actual_threads);
+    let mut handles = Vec::with_capacity(num_threads);
 
-    let moves_per_thread = all_moves.len().div_ceil(actual_threads);
-
-    for thread_id in 0..actual_threads {
-        let start_idx = thread_id * moves_per_thread;
-        let end_idx = (start_idx + moves_per_thread).min(all_moves.len());
-        if start_idx >= end_idx {
-            break;
-        }
-        let mut my_moves: Vec<Move> = all_moves[start_idx..end_idx].to_vec();
+    for thread_id in 0..num_threads {
+        let mut my_moves = all_moves.clone();
 
         let shared_tt = Arc::clone(&shared_tt);
         let stopped = Arc::clone(&stopped);
@@ -1077,7 +1064,6 @@ pub fn lazy_smp_search(
         let global_best_depth = Arc::clone(&global_best_depth);
         let global_nodes = Arc::clone(&global_nodes);
         let st = *st;
-
         let handle = std::thread::Builder::new()
             .name(format!("rts-{}", thread_id))
             .spawn(move || {
