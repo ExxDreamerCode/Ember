@@ -516,10 +516,13 @@ impl Engine {
         if self.num_threads > 1 {
             let start = Instant::now();
             self.searcher.stopped.store(false, Ordering::SeqCst);
+            let threaded_moves =
+                sort_sparse_root_moves(&self.st, &moves, [0; 4]).unwrap_or_else(|| moves.clone());
 
             let (best_move, best_score, best_depth, total_nodes) = lazy_smp_search(
                 Arc::clone(&self.shared_tt),
                 &self.st,
+                &threaded_moves,
                 time_limit,
                 depth_limit,
                 self.num_threads,
@@ -840,16 +843,19 @@ mod tests {
 
     #[test]
     fn sparse_endgame_root_ordering_is_used_by_search() {
-        let mut engine = engine_from_fen("8/5k2/3Q4/7p/8/1p6/3p1P1P/3B2K1 w - - 52 78");
-        let (best_move, _, _, _) = engine.find_best_move(2.0, 1);
-        let best = root_moves(&engine)
-            .into_iter()
-            .find(|mv| move_to_uci(&engine.st, mv) == best_move)
-            .expect("search best move remains legal");
+        for threads in [1usize, 2] {
+            let mut engine = engine_from_fen("8/5k2/3Q4/7p/8/1p6/3p1P1P/3B2K1 w - - 52 78");
+            engine.num_threads = threads;
+            let (best_move, _, _, _) = engine.find_best_move(2.0, 1);
+            let best = root_moves(&engine)
+                .into_iter()
+                .find(|mv| move_to_uci(&engine.st, mv) == best_move)
+                .expect("search best move remains legal");
 
-        assert!(
-            root_forcing_score(&engine.st, &best).is_some(),
-            "search should pick a forcing sparse-endgame root move, got {best_move}"
-        );
+            assert!(
+                root_forcing_score(&engine.st, &best).is_some(),
+                "threads={threads} should pick a forcing sparse-endgame root move, got {best_move}"
+            );
+        }
     }
 }
