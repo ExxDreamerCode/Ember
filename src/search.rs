@@ -215,6 +215,13 @@ impl Searcher {
         self.stopped.store(true, Ordering::SeqCst);
     }
 
+    fn copy_root_context_to(&self, dst: &mut Searcher) {
+        dst.rep_stack = self.rep_stack.clone();
+        dst.rep_stack_len = self.rep_stack_len;
+        dst.corr_hist = self.corr_hist;
+        dst.syzygy = self.syzygy.clone();
+    }
+
     #[cfg(feature = "search-debug")]
     fn corr_hist_enabled(&self) -> bool {
         !self.debug.disable_corr_hist
@@ -1039,6 +1046,7 @@ pub fn lazy_smp_search(
     time_limit: f64,
     depth_limit: i32,
     num_threads: usize,
+    root_searcher: &Searcher,
 ) -> (Move, i32, i32, u64) {
     let stopped = Arc::new(AtomicBool::new(false));
     let all_moves = generate_moves(st, st.w, &st.cr, st.ep);
@@ -1060,11 +1068,13 @@ pub fn lazy_smp_search(
         let global_best_depth = Arc::clone(&global_best_depth);
         let global_nodes = Arc::clone(&global_nodes);
         let st = *st;
+        let mut root_context = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
+        root_searcher.copy_root_context_to(&mut root_context);
         let handle = std::thread::Builder::new()
             .name(format!("rts-{}", thread_id))
             .spawn(move || {
                 let mut searcher = Searcher::new(shared_tt, Arc::clone(&stopped));
-                searcher.syzygy = SyzygyTables::new();
+                root_context.copy_root_context_to(&mut searcher);
                 searcher.init_nnue_stack(&st);
 
                 let mut best_move = my_moves[0];
@@ -1354,6 +1364,28 @@ mod tests {
         assert_eq!(score, 0);
         assert!(searcher.stopped.load(Ordering::Relaxed));
         assert!(searcher.shared_tt.get_depth(key).is_none());
+    }
+
+    #[test]
+    fn lazy_smp_worker_context_copies_root_search_state() {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(128));
+        let mut root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
+        let mut worker = Searcher::new(shared_tt, stopped);
+
+        root.rep_stack.extend([11, 22, 33, 44]);
+        root.rep_stack_len = 4;
+        root.corr_hist[123] = 17;
+        root.corr_hist[456] = -23;
+        root.syzygy = SyzygyTables::new();
+
+        root.copy_root_context_to(&mut worker);
+
+        assert_eq!(worker.rep_stack, root.rep_stack);
+        assert_eq!(worker.rep_stack_len, root.rep_stack_len);
+        assert_eq!(worker.corr_hist[123], 17);
+        assert_eq!(worker.corr_hist[456], -23);
+        assert_eq!(worker.syzygy.tables.is_some(), root.syzygy.tables.is_some());
     }
 
     #[test]

@@ -523,6 +523,7 @@ impl Engine {
                 time_limit,
                 depth_limit,
                 self.num_threads,
+                &self.searcher,
             );
 
             let mv_str = move_to_uci(&self.st, &best_move);
