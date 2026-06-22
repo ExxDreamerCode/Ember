@@ -97,11 +97,12 @@ def load_positions(path):
     return positions
 
 
-def uci_input(position_command, depth, hash_mb, disable_book):
+def uci_input(position_command, depth, hash_mb, threads, disable_book):
     commands = [
         "uci",
         "isready",
         f"setoption name Hash value {hash_mb}",
+        f"setoption name Threads value {threads}",
     ]
     if disable_book:
         commands.append("setoption name Book value")
@@ -115,9 +116,13 @@ def uci_input(position_command, depth, hash_mb, disable_book):
     return "\n".join(commands)
 
 
-def bench_once(binary, position, depth, hash_mb, timeout, disable_book):
+def bench_once(binary, position, depth, hash_mb, threads, timeout, disable_book):
     label, command = position
-    proc, wall = run_engine(binary, uci_input(command, depth, hash_mb, disable_book), timeout)
+    proc, wall = run_engine(
+        binary,
+        uci_input(command, depth, hash_mb, threads, disable_book),
+        timeout,
+    )
     parsed = parse_last_info(proc.stdout)
     if proc.returncode != 0 or parsed is None or "bestmove " not in proc.stdout:
         raise RuntimeError(f"benchmark failed for {binary} on {label}\n{proc.stdout}")
@@ -225,6 +230,7 @@ def main():
     parser.add_argument("--depth", type=int, default=6)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--hash-mb", type=int, default=64)
+    parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--positions", default=None, help="Optional JSON file with [{label, position}] entries.")
     parser.add_argument("--run-id", default=None)
@@ -242,6 +248,8 @@ def main():
         raise SystemExit("--depth must be >= 1")
     if args.repeats < 1:
         raise SystemExit("--repeats must be >= 1")
+    if args.threads < 1:
+        raise SystemExit("--threads must be >= 1")
 
     positions = load_positions(args.positions)
     run_id = args.run_id or now_id()
@@ -253,6 +261,7 @@ def main():
         "depth": args.depth,
         "repeats": args.repeats,
         "hash_mb": args.hash_mb,
+        "threads": args.threads,
         "disable_book": not args.keep_book,
         "baseline": baseline,
         "positions": [{"label": label, "position": command} for label, command in positions],
@@ -272,7 +281,15 @@ def main():
         print(f"benchmarking {label} ({resolved})...", flush=True)
         for repeat in range(1, args.repeats + 1):
             for position in positions:
-                sample = bench_once(resolved, position, args.depth, args.hash_mb, args.timeout, not args.keep_book)
+                sample = bench_once(
+                    resolved,
+                    position,
+                    args.depth,
+                    args.hash_mb,
+                    args.threads,
+                    args.timeout,
+                    not args.keep_book,
+                )
                 sample["label"] = label
                 sample["repeat"] = repeat
                 result["samples"].append(sample)
