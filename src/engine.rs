@@ -61,7 +61,6 @@ fn set_castling_rook_by_side(st: &mut BoardState, white: bool, kingside: bool) {
     }
 }
 
-#[allow(dead_code)]
 fn root_non_king_piece_count(st: &BoardState) -> u32 {
     (0..12)
         .filter(|&pi| piece_type(pi as u8) != 5)
@@ -69,14 +68,12 @@ fn root_non_king_piece_count(st: &BoardState) -> u32 {
         .sum()
 }
 
-#[allow(dead_code)]
 fn root_side_has_major(st: &BoardState, white: bool) -> bool {
     let rook = if white { WR } else { BR };
     let queen = if white { WQ } else { BQ };
     (st.bb[rook] | st.bb[queen]) != 0
 }
 
-#[allow(dead_code)]
 fn root_promotion_race(st: &BoardState) -> bool {
     let mut white_pawns = st.bb[WP];
     while white_pawns != 0 {
@@ -99,7 +96,6 @@ fn root_promotion_race(st: &BoardState) -> bool {
     false
 }
 
-#[allow(dead_code)]
 fn root_move_gives_check(st: &BoardState, mv: &Move) -> bool {
     let mut after = *st;
     apply_move(
@@ -114,7 +110,6 @@ fn root_move_gives_check(st: &BoardState, mv: &Move) -> bool {
     is_attacked(&after.bb, opp_ks, !after.w)
 }
 
-#[allow(dead_code)]
 fn root_move_is_capture(st: &BoardState, mv: &Move) -> bool {
     let to = mv[2] * 8 + move_ec(mv);
     let from = mv[0] * 8 + mv[1];
@@ -127,7 +122,6 @@ fn root_move_is_capture(st: &BoardState, mv: &Move) -> bool {
     fpi != EMPTY_SQ && piece_type(fpi) == 0 && Some(to) == st.ep && mv[1] != move_ec(mv)
 }
 
-#[allow(dead_code)]
 fn root_move_is_promotion(st: &BoardState, mv: &Move) -> bool {
     if move_promotion(mv) != 0 {
         return true;
@@ -137,7 +131,6 @@ fn root_move_is_promotion(st: &BoardState, mv: &Move) -> bool {
     fpi != EMPTY_SQ && piece_type(fpi) == 0 && (mv[2] == 0 || mv[2] == 7)
 }
 
-#[allow(dead_code)]
 fn root_piece_value(pi: u8) -> i32 {
     if pi == EMPTY_SQ {
         return 0;
@@ -152,7 +145,6 @@ fn root_piece_value(pi: u8) -> i32 {
     }
 }
 
-#[allow(dead_code)]
 fn root_forcing_score(st: &BoardState, mv: &Move) -> Option<i32> {
     let gives_check = root_move_gives_check(st, mv);
     let is_promo = root_move_is_promotion(st, mv);
@@ -178,7 +170,6 @@ fn root_forcing_score(st: &BoardState, mv: &Move) -> Option<i32> {
     Some(score)
 }
 
-#[allow(dead_code)]
 fn root_order_score(st: &BoardState, mv: Move, preferred: Move) -> i32 {
     let mut score = root_forcing_score(st, &mv).unwrap_or(0);
     if mv == preferred {
@@ -187,7 +178,6 @@ fn root_order_score(st: &BoardState, mv: Move, preferred: Move) -> i32 {
     score
 }
 
-#[allow(dead_code)]
 fn sort_sparse_root_moves(st: &BoardState, moves: &[Move], preferred: Move) -> Option<Vec<Move>> {
     if root_non_king_piece_count(st) > 8 {
         return None;
@@ -526,13 +516,17 @@ impl Engine {
         if self.num_threads > 1 {
             let start = Instant::now();
             self.searcher.stopped.store(false, Ordering::SeqCst);
+            let threaded_moves =
+                sort_sparse_root_moves(&self.st, &moves, [0; 4]).unwrap_or_else(|| moves.clone());
 
             let (best_move, best_score, best_depth, total_nodes) = lazy_smp_search(
                 Arc::clone(&self.shared_tt),
                 &self.st,
+                &threaded_moves,
                 time_limit,
                 depth_limit,
                 self.num_threads,
+                &self.searcher,
             );
 
             let mv_str = move_to_uci(&self.st, &best_move);
@@ -604,6 +598,8 @@ impl Engine {
                         }
                     }
                     with_dtz.into_iter().map(|(_, mv)| mv).collect()
+                } else if let Some(s) = sort_sparse_root_moves(&self.st, &moves, asp_best) {
+                    s
                 } else {
                     let mut s = moves.clone();
                     if asp_best != moves[0] {
@@ -843,5 +839,23 @@ mod tests {
         assert!(sorted
             .first()
             .is_some_and(|mv| move_to_uci(&engine.st, mv).starts_with("a7a8")));
+    }
+
+    #[test]
+    fn sparse_endgame_root_ordering_is_used_by_search() {
+        for threads in [1usize, 2] {
+            let mut engine = engine_from_fen("8/5k2/3Q4/7p/8/1p6/3p1P1P/3B2K1 w - - 52 78");
+            engine.num_threads = threads;
+            let (best_move, _, _, _) = engine.find_best_move(2.0, 1);
+            let best = root_moves(&engine)
+                .into_iter()
+                .find(|mv| move_to_uci(&engine.st, mv) == best_move)
+                .expect("search best move remains legal");
+
+            assert!(
+                root_forcing_score(&engine.st, &best).is_some(),
+                "threads={threads} should pick a forcing sparse-endgame root move, got {best_move}"
+            );
+        }
     }
 }

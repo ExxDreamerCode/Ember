@@ -3,6 +3,7 @@ use shakmaty::{
 };
 use shakmaty_syzygy::{Dtz, MaybeRounded, Tablebase, Wdl};
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::board::BoardState;
 
@@ -77,8 +78,9 @@ fn board_to_chess(st: &BoardState) -> Option<Chess> {
     Chess::from_setup(setup, CastlingMode::Standard).ok()
 }
 
+#[derive(Clone)]
 pub struct SyzygyTables {
-    pub tables: Option<Tablebase<Chess>>,
+    pub tables: Option<Arc<Tablebase<Chess>>>,
 }
 
 impl Default for SyzygyTables {
@@ -103,7 +105,7 @@ impl SyzygyTables {
         let mut tb = Tablebase::new();
         tb.add_directory(path)
             .map_err(|e| format!("Failed to load Syzygy tables: {}", e))?;
-        self.tables = Some(tb);
+        self.tables = Some(Arc::new(tb));
         Ok(())
     }
 
