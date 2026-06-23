@@ -30,7 +30,24 @@ jobs:
           --all-targets --all-features -- -D warnings
 
       - name: Run tests
-        run: nix develop .#ci --command cargo test --locked --all-features
+        run: |
+          nix develop .#ci --command bash -c "
+            ulimit -s 65536
+            export RUST_MIN_STACK=16777216
+            cargo test --locked --all-features -- --test-threads=1
+          "
+        env:
+          RUST_BACKTRACE: 1
+
+      - name: Retry failed tests with backtrace
+        if: failure()
+        run: |
+          nix develop .#ci --command bash -c "
+            ulimit -s 65536
+            export RUST_MIN_STACK=16777216
+            export RUST_BACKTRACE=full
+            cargo test --locked --all-features -- --test-threads=1 --nocapture
+          "
 
       - name: Build release binary
         run: >
@@ -93,3 +110,13 @@ jobs:
               f"samples={summary['samples']}, book=disabled"
           )
           PY
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs
+          path: |
+            target/debug/deps/*.stdout
+            target/debug/deps/*.stderr
+          retention-days: 7
