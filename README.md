@@ -127,7 +127,7 @@ setoption option name TraceFile value Trace.jsonl
 матчей через Cute Chess:
 
 ```bash
-nix develop .#elo-runner
+nix develop . #elo-runner
 python3 tools/measure_elo.py all --config configs/elo/default.toml
 ```
 
@@ -162,7 +162,7 @@ CCRL-оценка.
 | ±7.5 Elo | 15 Elo | ~8 250 | ~6-9 ч |
 | ±5 Elo | 10 Elo | ~18 550 | ~13-20 ч |
 
-По нашим данным рейтинг новейшей версии Ember **2727** +- 30 elo (В однопоточном режиме)
+По нашим данным рейтинг новейшей версии Ember **2852** +- 30 elo (В однопоточном режиме)
 
 ## 🛠️ Разработка
 
