@@ -746,10 +746,15 @@ impl Engine {
                 } else {
                     format!("cp {}", best_score)
                 };
-                let pv = move_to_uci(&self.st, &best_move);
+                let pv_line = crate::search::extract_pv_line(&self.searcher.shared_tt, &self.st, best_move);
+                let pv_str = pv_line
+                    .iter()
+                    .map(|m| move_to_uci(&self.st, m))
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 println!(
                     "info depth {} score {} nodes {} nps {} time {} pv {}",
-                    depth, score_str, total_nodes, nps, time_ms, pv
+                    depth, score_str, total_nodes, nps, time_ms, pv_str
                 );
                 #[cfg(feature = "decision-trace")]
                 depth_infos.push(DepthInfo {
@@ -757,7 +762,7 @@ impl Engine {
                     score_cp: best_score,
                     nodes: total_nodes,
                     elapsed_ms: (elapsed * 1000.0) as u128,
-                    pv,
+                    pv: pv_str,
                 });
             } else {
                 break;

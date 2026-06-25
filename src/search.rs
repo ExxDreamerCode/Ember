@@ -1060,6 +1060,41 @@ fn diversify_lazy_smp_root_moves(moves: &mut [Move], thread_id: usize) {
     moves.rotate_left(offset);
 }
 
+pub fn extract_pv_line(shared_tt: &SharedTT, st: &BoardState, first_move: Move) -> Vec<Move> {
+    let mut pv = vec![first_move];
+    let mut prev_st = *st;
+    apply_move(
+        &mut prev_st,
+        first_move[0],
+        first_move[1],
+        first_move[2],
+        move_ec(&first_move),
+        move_promotion(&first_move),
+    );
+
+    for _ in 0..MAX_PLY.saturating_sub(1) {
+        let h = compute_hash(&prev_st);
+        if let Some((_, _, _, Some(best))) = shared_tt.get_depth(h) {
+            let moves = generate_moves(&prev_st, prev_st.w, &prev_st.cr, prev_st.ep);
+            if !moves.contains(&best) {
+                break;
+            }
+            pv.push(best);
+            apply_move(
+                &mut prev_st,
+                best[0],
+                best[1],
+                best[2],
+                move_ec(&best),
+                move_promotion(&best),
+            );
+        } else {
+            break;
+        }
+    }
+    pv
+}
+
 pub fn lazy_smp_search(
     shared_tt: Arc<SharedTT>,
     st: &BoardState,
@@ -1268,7 +1303,12 @@ pub fn lazy_smp_search(
                             } else {
                                 format!("cp {}", asp_score)
                             };
-                            let mv_str = crate::board::move_to_uci(&st, &asp_best);
+                            let pv_line = extract_pv_line(&searcher.shared_tt, &st, asp_best);
+                            let pv_str = pv_line
+                                .iter()
+                                .map(|m| crate::board::move_to_uci(&st, m))
+                                .collect::<Vec<_>>()
+                                .join(" ");
                             let g_nodes = global_nodes.load(Ordering::Relaxed);
                             let nps = if elapsed > 0.0 {
                                 (g_nodes as f64 / elapsed) as i64
@@ -1282,7 +1322,7 @@ pub fn lazy_smp_search(
                                 g_nodes,
                                 nps,
                                 (elapsed * 1000.0) as u64,
-                                mv_str
+                                pv_str
                             );
                         }
                         best_move = asp_best;
