@@ -182,28 +182,30 @@ pub fn sq_to_str(s: usize) -> String {
 pub fn move_to_uci(st: &BoardState, mv: &Move) -> String {
     let from = sq(mv[0], mv[1]);
     let to = sq(mv[2], move_ec(mv));
-    let pi = piece_on(&st.bb, from);
     let promo = move_promotion(mv);
-    if st.chess960 && pi != EMPTY_SQ && piece_type(pi) == 5 {
-        let target_pi = piece_on(&st.bb, to);
-        if target_pi != EMPTY_SQ
-            && piece_type(target_pi) == 3
-            && is_white_piece(target_pi) == is_white_piece(pi)
-        {
-            let king_dst_col = if move_ec(mv) > mv[1] { 6usize } else { 2usize };
-            if king_dst_col != mv[1] {
-                return format!("{}{}", sq_to_str(from), sq_to_str(to));
+    let pi = piece_on(&st.bb, from);
+    
+    if st.chess960 {
+        if pi != EMPTY_SQ && piece_type(pi) == 5 {
+            let target_pi = piece_on(&st.bb, to);
+            if target_pi != EMPTY_SQ
+                && piece_type(target_pi) == 3
+                && is_white_piece(target_pi) == is_white_piece(pi)
+            {
+                let king_dst_col = if move_ec(mv) > mv[1] { 6usize } else { 2usize };
+                if king_dst_col != mv[1] {
+                    return format!("{}{}", sq_to_str(from), sq_to_str(to));
+                }
             }
         }
     }
-    if promo != 0 && pi != EMPTY_SQ && piece_type(pi) == 0 {
+    
+    if promo != 0 {
         let mut out = format!("{}{}", sq_to_str(from), sq_to_str(to));
         out.push(promo.to_ascii_lowercase() as char);
         return out;
     }
-    if pi != EMPTY_SQ && piece_type(pi) == 0 && (mv[2] == 0 || mv[2] == 7) {
-        return format!("{}{}q", sq_to_str(from), sq_to_str(to));
-    }
+    
     format!("{}{}", sq_to_str(from), sq_to_str(to))
 }
 

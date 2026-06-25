@@ -1206,7 +1206,11 @@ pub fn lazy_smp_search(
                     if let Some((tt_d, _, _, Some(tt_mv))) = searcher.shared_tt.get_depth(root_hash)
                     {
                         if tt_d >= 1 && !my_moves.contains(&tt_mv) {
-                            my_moves.push(tt_mv);
+                            let legal_root =
+                                generate_moves(&st, st.w, &st.cr, st.ep);
+                            if legal_root.contains(&tt_mv) {
+                                my_moves.push(tt_mv);
+                            }
                         }
                     }
 
@@ -1562,5 +1566,56 @@ mod tests {
             engine.searcher.is_repetition(),
             "Threefold repetition should be detected even after 20+ moves of history"
         );
+    }
+
+    #[test]
+    fn extract_pv_rejects_illegal_first_move_without_promotion() {
+        let st = state_from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
+        let _stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(128));
+
+        let bogus = [1, 2, 0, 0];
+        let pv = extract_pv_line(&shared_tt, &st, bogus);
+        assert_eq!(pv.len(), 1);
+    }
+
+    #[test]
+    fn extract_pv_rejects_illegal_tt_move_during_extraction() {
+        let st = state_from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(128));
+
+        let first_move = [7, 4, 6, 4];
+        let bogus_tt_move = [0, 0, 0, 7];
+        let after_st = {
+            let mut s = st;
+            apply_move(&mut s, 7, 4, 6, 4, 0);
+            s
+        };
+        let after_hash = compute_hash(&after_st);
+        shared_tt.store(after_hash, 5, 100, TT_EXACT, Some(bogus_tt_move));
+
+        let pv = extract_pv_line(&shared_tt, &st, first_move);
+        assert_eq!(pv.len(), 1, "extract_pv must reject illegal TT moves");
+    }
+
+    #[test]
+    fn extract_pv_validates_takes_back_king_in_check() {
+        let st = state_from_fen("4k3/4r3/8/8/8/8/8/4K3 w - - 0 1");
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(128));
+
+        let first_move = [7, 4, 6, 4];
+        let after_st = {
+            let mut s = st;
+            apply_move(&mut s, 7, 4, 6, 4, 0);
+            s
+        };
+        let after_hash = compute_hash(&after_st);
+        let check_move = [6, 4, 6, 5];
+        shared_tt.store(after_hash, 5, 100, TT_EXACT, Some(check_move));
+
+        let pv = extract_pv_line(&shared_tt, &st, first_move);
+        assert_eq!(pv.len(), 1, "extract_pv must pop moves that leave king in check");
     }
 }
