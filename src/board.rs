@@ -185,8 +185,8 @@ pub fn move_to_uci(st: &BoardState, mv: &Move) -> String {
     let promo = move_promotion(mv);
     let pi = piece_on(&st.bb, from);
 
-    if st.chess960 {
-        if pi != EMPTY_SQ && piece_type(pi) == 5 {
+    if st.chess960
+        && pi != EMPTY_SQ && piece_type(pi) == 5 {
             let target_pi = piece_on(&st.bb, to);
             if target_pi != EMPTY_SQ
                 && piece_type(target_pi) == 3
@@ -197,7 +197,6 @@ pub fn move_to_uci(st: &BoardState, mv: &Move) -> String {
                     return format!("{}{}", sq_to_str(from), sq_to_str(to));
                 }
             }
-        }
     }
 
     if promo != 0 {

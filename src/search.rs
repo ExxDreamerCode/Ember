@@ -1075,15 +1075,13 @@ pub fn extract_pv_line(shared_tt: &SharedTT, st: &BoardState, first_move: Move) 
     if first_fpi != EMPTY_SQ
         && piece_type(first_fpi) == 0
         && (first_move[2] == 0 || first_move[2] == 7)
-    {
-        if first_promo == 0
+        && (first_promo == 0
             || (first_promo != b'Q'
                 && first_promo != b'R'
                 && first_promo != b'B'
-                && first_promo != b'N')
-        {
-            return vec![];
-        }
+                && first_promo != b'N'))
+    {
+        return vec![];
     }
 
     let mut pv = vec![first_move];
@@ -1111,11 +1109,10 @@ pub fn extract_pv_line(shared_tt: &SharedTT, st: &BoardState, first_move: Move) 
             }
             let promo = move_promotion(&best);
             let fpi = piece_on(&prev_st.bb, best[0] * 8 + best[1]);
-            if fpi != EMPTY_SQ && piece_type(fpi) == 0 && (best[2] == 0 || best[2] == 7) {
-                if promo == 0 || (promo != b'Q' && promo != b'R' && promo != b'B' && promo != b'N')
-                {
-                    break;
-                }
+            if fpi != EMPTY_SQ && piece_type(fpi) == 0 && (best[2] == 0 || best[2] == 7)
+                && (promo == 0 || (promo != b'Q' && promo != b'R' && promo != b'B' && promo != b'N'))
+            {
+                break;
             }
             pv.push(best);
             apply_move(
@@ -1428,7 +1425,7 @@ mod tests {
     #[test]
     fn qsearch_searches_en_passant_captures() {
         let mut st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
-        let stopped = Arc::new(AtomicBool::new(false));
+        let _stopped = Arc::new(AtomicBool::new(false));
         let shared_tt = Arc::new(SharedTT::new(128));
         let mut searcher = Searcher::new(shared_tt, stopped);
         let stand_pat = searcher.corrected_eval(&st);
@@ -1454,7 +1451,7 @@ mod tests {
     #[test]
     fn negamax_timeout_sets_stopped_without_storing_tt() {
         let mut st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
-        let stopped = Arc::new(AtomicBool::new(false));
+        let _stopped = Arc::new(AtomicBool::new(false));
         let shared_tt = Arc::new(SharedTT::new(128));
         let mut searcher = Searcher::new(shared_tt.clone(), stopped);
         let key = compute_hash(&st);
