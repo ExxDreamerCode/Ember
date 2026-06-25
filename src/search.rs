@@ -1077,7 +1077,10 @@ pub fn extract_pv_line(shared_tt: &SharedTT, st: &BoardState, first_move: Move) 
         && (first_move[2] == 0 || first_move[2] == 7)
     {
         if first_promo == 0
-            || (first_promo != b'Q' && first_promo != b'R' && first_promo != b'B' && first_promo != b'N')
+            || (first_promo != b'Q'
+                && first_promo != b'R'
+                && first_promo != b'B'
+                && first_promo != b'N')
         {
             return vec![];
         }
@@ -1095,9 +1098,7 @@ pub fn extract_pv_line(shared_tt: &SharedTT, st: &BoardState, first_move: Move) 
     );
 
     let moved_king_sq = prev_st.king_sq(!prev_st.w);
-    if moved_king_sq == 0
-        || crate::board::is_attacked(&prev_st.bb, moved_king_sq, prev_st.w)
-    {
+    if moved_king_sq == 0 || crate::board::is_attacked(&prev_st.bb, moved_king_sq, prev_st.w) {
         return pv;
     }
 
@@ -1111,7 +1112,8 @@ pub fn extract_pv_line(shared_tt: &SharedTT, st: &BoardState, first_move: Move) 
             let promo = move_promotion(&best);
             let fpi = piece_on(&prev_st.bb, best[0] * 8 + best[1]);
             if fpi != EMPTY_SQ && piece_type(fpi) == 0 && (best[2] == 0 || best[2] == 7) {
-                if promo == 0 || (promo != b'Q' && promo != b'R' && promo != b'B' && promo != b'N') {
+                if promo == 0 || (promo != b'Q' && promo != b'R' && promo != b'B' && promo != b'N')
+                {
                     break;
                 }
             }
@@ -1206,8 +1208,7 @@ pub fn lazy_smp_search(
                     if let Some((tt_d, _, _, Some(tt_mv))) = searcher.shared_tt.get_depth(root_hash)
                     {
                         if tt_d >= 1 && !my_moves.contains(&tt_mv) {
-                            let legal_root =
-                                generate_moves(&st, st.w, &st.cr, st.ep);
+                            let legal_root = generate_moves(&st, st.w, &st.cr, st.ep);
                             if legal_root.contains(&tt_mv) {
                                 my_moves.push(tt_mv);
                             }
@@ -1616,6 +1617,10 @@ mod tests {
         shared_tt.store(after_hash, 5, 100, TT_EXACT, Some(check_move));
 
         let pv = extract_pv_line(&shared_tt, &st, first_move);
-        assert_eq!(pv.len(), 1, "extract_pv must pop moves that leave king in check");
+        assert_eq!(
+            pv.len(),
+            1,
+            "extract_pv must pop moves that leave king in check"
+        );
     }
 }

@@ -184,7 +184,7 @@ pub fn move_to_uci(st: &BoardState, mv: &Move) -> String {
     let to = sq(mv[2], move_ec(mv));
     let promo = move_promotion(mv);
     let pi = piece_on(&st.bb, from);
-    
+
     if st.chess960 {
         if pi != EMPTY_SQ && piece_type(pi) == 5 {
             let target_pi = piece_on(&st.bb, to);
@@ -199,13 +199,13 @@ pub fn move_to_uci(st: &BoardState, mv: &Move) -> String {
             }
         }
     }
-    
+
     if promo != 0 {
         let mut out = format!("{}{}", sq_to_str(from), sq_to_str(to));
         out.push(promo.to_ascii_lowercase() as char);
         return out;
     }
-    
+
     format!("{}{}", sq_to_str(from), sq_to_str(to))
 }
 
