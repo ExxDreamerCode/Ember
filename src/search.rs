@@ -802,13 +802,19 @@ impl Searcher {
                 let gc_from = mv[0] * 8 + mv[1];
                 let gc_to = mv[2] * 8 + move_ec(&mv);
                 let gc_fpi = piece_on(&bb, gc_from);
-                if gc_fpi == EMPTY_SQ { false } else {
+                if gc_fpi == EMPTY_SQ {
+                    false
+                } else {
                     bb[gc_fpi as usize] &= !(1u64 << gc_from);
                     let gc_tpi = piece_on(&bb, gc_to);
-                    if gc_tpi != EMPTY_SQ { bb[gc_tpi as usize] &= !(1u64 << gc_to); }
+                    if gc_tpi != EMPTY_SQ {
+                        bb[gc_tpi as usize] &= !(1u64 << gc_to);
+                    }
                     let gc_pt = piece_type(gc_fpi);
                     if gc_pt == 0 && (mv[2] == 0 || mv[2] == 7) {
-                        if let Some(ppi) = promotion_piece_index(is_white_piece(gc_fpi), move_promotion(&mv)) {
+                        if let Some(ppi) =
+                            promotion_piece_index(is_white_piece(gc_fpi), move_promotion(&mv))
+                        {
                             bb[ppi] |= 1u64 << gc_to;
                         } else {
                             bb[gc_fpi as usize] |= 1u64 << gc_to;
@@ -817,8 +823,11 @@ impl Searcher {
                         bb[gc_fpi as usize] |= 1u64 << gc_to;
                     }
                     let opp_ks = if !st.w { st.bb[BK] } else { st.bb[WK] };
-                    if opp_ks == 0 { false }
-                    else { is_attacked(&bb, opp_ks.trailing_zeros() as usize, !st.w) }
+                    if opp_ks == 0 {
+                        false
+                    } else {
+                        is_attacked(&bb, opp_ks.trailing_zeros() as usize, !st.w)
+                    }
                 }
             };
 

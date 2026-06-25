@@ -746,7 +746,8 @@ impl Engine {
                 } else {
                     format!("cp {}", best_score)
                 };
-                let pv_line = crate::search::extract_pv_line(&self.searcher.shared_tt, &self.st, best_move);
+                let pv_line =
+                    crate::search::extract_pv_line(&self.searcher.shared_tt, &self.st, best_move);
                 let pv_str = pv_line
                     .iter()
                     .map(|m| move_to_uci(&self.st, m))
