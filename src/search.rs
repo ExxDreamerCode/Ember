@@ -1070,6 +1070,19 @@ fn diversify_lazy_smp_root_moves(moves: &mut [Move], thread_id: usize) {
 }
 
 pub fn extract_pv_line(shared_tt: &SharedTT, st: &BoardState, first_move: Move) -> Vec<Move> {
+    let first_promo = move_promotion(&first_move);
+    let first_fpi = piece_on(&st.bb, first_move[0] * 8 + first_move[1]);
+    if first_fpi != EMPTY_SQ
+        && piece_type(first_fpi) == 0
+        && (first_move[2] == 0 || first_move[2] == 7)
+    {
+        if first_promo == 0
+            || (first_promo != b'Q' && first_promo != b'R' && first_promo != b'B' && first_promo != b'N')
+        {
+            return vec![];
+        }
+    }
+
     let mut pv = vec![first_move];
     let mut prev_st = *st;
     apply_move(
@@ -1081,12 +1094,26 @@ pub fn extract_pv_line(shared_tt: &SharedTT, st: &BoardState, first_move: Move) 
         move_promotion(&first_move),
     );
 
+    let moved_king_sq = prev_st.king_sq(!prev_st.w);
+    if moved_king_sq == 0
+        || crate::board::is_attacked(&prev_st.bb, moved_king_sq, prev_st.w)
+    {
+        return pv;
+    }
+
     for _ in 0..MAX_PLY.saturating_sub(1) {
         let h = compute_hash(&prev_st);
         if let Some((_, _, _, Some(best))) = shared_tt.get_depth(h) {
             let moves = generate_moves(&prev_st, prev_st.w, &prev_st.cr, prev_st.ep);
             if !moves.contains(&best) {
                 break;
+            }
+            let promo = move_promotion(&best);
+            let fpi = piece_on(&prev_st.bb, best[0] * 8 + best[1]);
+            if fpi != EMPTY_SQ && piece_type(fpi) == 0 && (best[2] == 0 || best[2] == 7) {
+                if promo == 0 || (promo != b'Q' && promo != b'R' && promo != b'B' && promo != b'N') {
+                    break;
+                }
             }
             pv.push(best);
             apply_move(
@@ -1095,8 +1122,15 @@ pub fn extract_pv_line(shared_tt: &SharedTT, st: &BoardState, first_move: Move) 
                 best[1],
                 best[2],
                 move_ec(&best),
-                move_promotion(&best),
+                promo,
             );
+            let moved_king_sq = prev_st.king_sq(!prev_st.w);
+            if moved_king_sq == 0
+                || crate::board::is_attacked(&prev_st.bb, moved_king_sq, prev_st.w)
+            {
+                pv.pop();
+                break;
+            }
         } else {
             break;
         }

@@ -196,7 +196,7 @@ pub fn move_to_uci(st: &BoardState, mv: &Move) -> String {
             }
         }
     }
-    if promo != 0 {
+    if promo != 0 && pi != EMPTY_SQ && piece_type(pi) == 0 {
         let mut out = format!("{}{}", sq_to_str(from), sq_to_str(to));
         out.push(promo.to_ascii_lowercase() as char);
         return out;
