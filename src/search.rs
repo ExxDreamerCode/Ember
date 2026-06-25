@@ -1082,6 +1082,7 @@ pub fn lazy_smp_search(
         root_searcher.copy_root_context_to(&mut root_context);
         let handle = std::thread::Builder::new()
             .name(format!("rts-{}", thread_id))
+            .stack_size(8 * 1024 * 1024)
             .spawn(move || {
                 let mut searcher = Searcher::new(shared_tt, Arc::clone(&stopped));
                 root_context.copy_root_context_to(&mut searcher);
