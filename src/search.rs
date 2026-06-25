@@ -1109,8 +1109,11 @@ pub fn extract_pv_line(shared_tt: &SharedTT, st: &BoardState, first_move: Move) 
             }
             let promo = move_promotion(&best);
             let fpi = piece_on(&prev_st.bb, best[0] * 8 + best[1]);
-            if fpi != EMPTY_SQ && piece_type(fpi) == 0 && (best[2] == 0 || best[2] == 7)
-                && (promo == 0 || (promo != b'Q' && promo != b'R' && promo != b'B' && promo != b'N'))
+            if fpi != EMPTY_SQ
+                && piece_type(fpi) == 0
+                && (best[2] == 0 || best[2] == 7)
+                && (promo == 0
+                    || (promo != b'Q' && promo != b'R' && promo != b'B' && promo != b'N'))
             {
                 break;
             }
@@ -1425,7 +1428,7 @@ mod tests {
     #[test]
     fn qsearch_searches_en_passant_captures() {
         let mut st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
-        let _stopped = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::new(AtomicBool::new(false));
         let shared_tt = Arc::new(SharedTT::new(128));
         let mut searcher = Searcher::new(shared_tt, stopped);
         let stand_pat = searcher.corrected_eval(&st);
@@ -1451,7 +1454,7 @@ mod tests {
     #[test]
     fn negamax_timeout_sets_stopped_without_storing_tt() {
         let mut st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
-        let _stopped = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::new(AtomicBool::new(false));
         let shared_tt = Arc::new(SharedTT::new(128));
         let mut searcher = Searcher::new(shared_tt.clone(), stopped);
         let key = compute_hash(&st);
@@ -1580,7 +1583,7 @@ mod tests {
     #[test]
     fn extract_pv_rejects_illegal_tt_move_during_extraction() {
         let st = state_from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
-        let stopped = Arc::new(AtomicBool::new(false));
+        let _stopped = Arc::new(AtomicBool::new(false));
         let shared_tt = Arc::new(SharedTT::new(128));
 
         let first_move = [7, 4, 6, 4];
@@ -1600,7 +1603,7 @@ mod tests {
     #[test]
     fn extract_pv_validates_takes_back_king_in_check() {
         let st = state_from_fen("4k3/4r3/8/8/8/8/8/4K3 w - - 0 1");
-        let stopped = Arc::new(AtomicBool::new(false));
+        let _stopped = Arc::new(AtomicBool::new(false));
         let shared_tt = Arc::new(SharedTT::new(128));
 
         let first_move = [7, 4, 6, 4];

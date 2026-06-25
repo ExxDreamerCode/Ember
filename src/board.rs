@@ -185,18 +185,17 @@ pub fn move_to_uci(st: &BoardState, mv: &Move) -> String {
     let promo = move_promotion(mv);
     let pi = piece_on(&st.bb, from);
 
-    if st.chess960
-        && pi != EMPTY_SQ && piece_type(pi) == 5 {
-            let target_pi = piece_on(&st.bb, to);
-            if target_pi != EMPTY_SQ
-                && piece_type(target_pi) == 3
-                && is_white_piece(target_pi) == is_white_piece(pi)
-            {
-                let king_dst_col = if move_ec(mv) > mv[1] { 6usize } else { 2usize };
-                if king_dst_col != mv[1] {
-                    return format!("{}{}", sq_to_str(from), sq_to_str(to));
-                }
+    if st.chess960 && pi != EMPTY_SQ && piece_type(pi) == 5 {
+        let target_pi = piece_on(&st.bb, to);
+        if target_pi != EMPTY_SQ
+            && piece_type(target_pi) == 3
+            && is_white_piece(target_pi) == is_white_piece(pi)
+        {
+            let king_dst_col = if move_ec(mv) > mv[1] { 6usize } else { 2usize };
+            if king_dst_col != mv[1] {
+                return format!("{}{}", sq_to_str(from), sq_to_str(to));
             }
+        }
     }
 
     if promo != 0 {
