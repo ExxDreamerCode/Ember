@@ -1,6 +1,7 @@
 use crate::board::{
-    all_occ, attacked_by, bit, has_non_pawn, move_ec, move_promotion, piece_on, piece_type, see,
-    BoardState, Move, EMPTY_SQ, INF, KING_ATTACKS, MATE, MAX_PLY, QS_DEPTH,
+    all_occ, attacked_by, bit, has_non_pawn, is_attacked, is_white_piece, move_ec, move_promotion,
+    piece_on, piece_type, promotion_piece_index, see, BoardState, Move, BK, EMPTY_SQ, INF,
+    KING_ATTACKS, MATE, MAX_PLY, QS_DEPTH, WK,
 };
 use crate::evaluate::{evaluate, evaluate_nnue_acc, with_nnue_net};
 use crate::movegen::{apply_move, generate_moves, is_chess960_castling_move};
@@ -797,17 +798,28 @@ impl Searcher {
             let is_quiet = !capture && !is_promo;
 
             let gives_check = {
-                let mut after = *st;
-                apply_move(
-                    &mut after,
-                    mv[0],
-                    mv[1],
-                    mv[2],
-                    move_ec(&mv),
-                    move_promotion(&mv),
-                );
-                let opp_ks = after.king_sq(after.w);
-                crate::board::is_attacked(&after.bb, opp_ks, !after.w)
+                let mut bb = st.bb;
+                let gc_from = mv[0] * 8 + mv[1];
+                let gc_to = mv[2] * 8 + move_ec(&mv);
+                let gc_fpi = piece_on(&bb, gc_from);
+                if gc_fpi == EMPTY_SQ { false } else {
+                    bb[gc_fpi as usize] &= !(1u64 << gc_from);
+                    let gc_tpi = piece_on(&bb, gc_to);
+                    if gc_tpi != EMPTY_SQ { bb[gc_tpi as usize] &= !(1u64 << gc_to); }
+                    let gc_pt = piece_type(gc_fpi);
+                    if gc_pt == 0 && (mv[2] == 0 || mv[2] == 7) {
+                        if let Some(ppi) = promotion_piece_index(is_white_piece(gc_fpi), move_promotion(&mv)) {
+                            bb[ppi] |= 1u64 << gc_to;
+                        } else {
+                            bb[gc_fpi as usize] |= 1u64 << gc_to;
+                        }
+                    } else {
+                        bb[gc_fpi as usize] |= 1u64 << gc_to;
+                    }
+                    let opp_ks = if !st.w { st.bb[BK] } else { st.bb[WK] };
+                    if opp_ks == 0 { false }
+                    else { is_attacked(&bb, opp_ks.trailing_zeros() as usize, !st.w) }
+                }
             };
 
             if !is_pv && !in_check && is_quiet && i >= lmp_count {
