@@ -1,7 +1,7 @@
 use crate::board::{
     all_occ, attacked_by, bit, has_non_pawn, is_attacked, is_white_piece, move_ec, move_promotion,
-    piece_on, piece_type, promotion_piece_index, see, BoardState, Move, BK, EMPTY_SQ, INF,
-    KING_ATTACKS, MATE, MAX_PLY, QS_DEPTH, WK,
+    piece_on, piece_type, promotion_piece_index, see, BoardState, Move, BK, BR, EMPTY_SQ, INF,
+    KING_ATTACKS, MATE, MAX_PLY, QS_DEPTH, WK, WR,
 };
 use crate::evaluate::{evaluate, evaluate_nnue_acc, with_nnue_net};
 use crate::movegen::{apply_move, generate_moves, is_chess960_castling_move};
@@ -114,37 +114,72 @@ fn move_see(st: &BoardState, mv: &Move, from: usize, to: usize, fpi: u8, tpi: u8
 }
 
 fn move_gives_check(st: &BoardState, mv: &Move) -> bool {
-    let mut bb = st.bb;
-    let gc_from = mv[0] * 8 + mv[1];
-    let gc_to = mv[2] * 8 + move_ec(mv);
-    let gc_fpi = piece_on(&bb, gc_from);
-    if gc_fpi == EMPTY_SQ {
+    let from = mv[0] * 8 + mv[1];
+    let to = mv[2] * 8 + move_ec(mv);
+    let fpi = piece_on(&st.bb, from);
+    if fpi == EMPTY_SQ {
         return false;
     }
 
-    bb[gc_fpi as usize] &= !(1u64 << gc_from);
-    let gc_tpi = piece_on(&bb, gc_to);
-    if gc_tpi != EMPTY_SQ {
-        bb[gc_tpi as usize] &= !(1u64 << gc_to);
-    }
+    let mut bb = st.bb;
+    let mover_is_white = is_white_piece(fpi);
+    let mover_type = piece_type(fpi);
+    let is_chess960_castle = is_chess960_castling_move(st, mv);
 
-    let gc_pt = piece_type(gc_fpi);
-    if gc_pt == 0 && (mv[2] == 0 || mv[2] == 7) {
-        if let Some(ppi) = promotion_piece_index(is_white_piece(gc_fpi), move_promotion(mv)) {
-            bb[ppi] |= 1u64 << gc_to;
-        } else {
-            bb[gc_fpi as usize] |= 1u64 << gc_to;
+    if !is_chess960_castle {
+        let tpi = piece_on(&bb, to);
+        if tpi != EMPTY_SQ {
+            bb[tpi as usize] &= !bit(to);
         }
-    } else {
-        bb[gc_fpi as usize] |= 1u64 << gc_to;
     }
 
-    let opp_ks = if !st.w { st.bb[BK] } else { st.bb[WK] };
-    if opp_ks == 0 {
-        false
-    } else {
-        is_attacked(&bb, opp_ks.trailing_zeros() as usize, !st.w)
+    if mover_type == 0 && Some(to) == st.ep && mv[1] != move_ec(mv) {
+        let cap_sq = if mover_is_white { to + 8 } else { to - 8 };
+        let ep_pi = piece_on(&bb, cap_sq);
+        if ep_pi != EMPTY_SQ {
+            bb[ep_pi as usize] &= !bit(cap_sq);
+        }
     }
+
+    if mover_type == 5 && is_chess960_castle {
+        let rook_pi = if mover_is_white { WR } else { BR };
+        let rook_col = move_ec(mv);
+        let (king_dst_col, rook_dst_col) = if rook_col > mv[1] {
+            (6usize, 5usize)
+        } else {
+            (2usize, 3usize)
+        };
+        bb[rook_pi] &= !bit(mv[2] * 8 + rook_col);
+        bb[rook_pi] |= bit(mv[0] * 8 + rook_dst_col);
+        bb[fpi as usize] &= !bit(from);
+        bb[fpi as usize] |= bit(mv[0] * 8 + king_dst_col);
+    } else {
+        bb[fpi as usize] &= !bit(from);
+
+        if mover_type == 5 && !st.chess960 && mv[1] == 4 && (move_ec(mv) == 6 || move_ec(mv) == 2) {
+            let rook_pi = if mover_is_white { WR } else { BR };
+            let (rook_from, rook_to) = if move_ec(mv) == 6 {
+                (mv[0] * 8 + 7, mv[0] * 8 + 5)
+            } else {
+                (mv[0] * 8, mv[0] * 8 + 3)
+            };
+            bb[rook_pi] &= !bit(rook_from);
+            bb[rook_pi] |= bit(rook_to);
+        }
+
+        if mover_type == 0 && (mv[2] == 0 || mv[2] == 7) {
+            if let Some(ppi) = promotion_piece_index(mover_is_white, move_promotion(mv)) {
+                bb[ppi] |= bit(to);
+            } else {
+                bb[fpi as usize] |= bit(to);
+            }
+        } else {
+            bb[fpi as usize] |= bit(to);
+        }
+    }
+
+    let opponent_king = if st.w { bb[BK] } else { bb[WK] };
+    opponent_king != 0 && is_attacked(&bb, opponent_king.trailing_zeros() as usize, st.w)
 }
 
 const CORR_HIST_SIZE: usize = 16384;
