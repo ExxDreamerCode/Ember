@@ -15,7 +15,8 @@ const FT_SHIFT: i32 = 9;
 const NNUE_NUM_PIECE_TYPES: usize = 12;
 const NNUE_MAGIC: u32 = 0x4E4E5545;
 const COMPACT_NNUE_MAGIC: u32 = 0x314E4345; // "ECN1"
-const COMPACT_NNUE_VERSION: u32 = 1;
+const COMPACT_NNUE_VERSION_ROWS: u32 = 1;
+const COMPACT_NNUE_VERSION_PACKED: u32 = 2;
 const COMPACT_ZERO_ROW: u16 = u16::MAX;
 
 pub fn convert(sq: u8) -> u8 {
@@ -361,7 +362,10 @@ impl NNUENet {
             return Err("bad compact NNUE magic".into());
         }
         let version = read_u32(&mut r)?;
-        if version != COMPACT_NNUE_VERSION {
+        if !matches!(
+            version,
+            COMPACT_NNUE_VERSION_ROWS | COMPACT_NNUE_VERSION_PACKED
+        ) {
             return Err(format!("unsupported compact NNUE v{}", version));
         }
 
@@ -412,11 +416,16 @@ impl NNUENet {
             }
         }
 
-        let compact_values = physical_rows
-            .checked_mul(hidden_size)
-            .ok_or("compact NNUE physical feature size overflow")?;
-        let mut input_weights = vec![0i16; compact_values];
-        read_i16s(&mut r, &mut input_weights)?;
+        let input_weights = if version == COMPACT_NNUE_VERSION_ROWS {
+            let compact_values = physical_rows
+                .checked_mul(hidden_size)
+                .ok_or("compact NNUE physical feature size overflow")?;
+            let mut input_weights = vec![0i16; compact_values];
+            read_i16s(&mut r, &mut input_weights)?;
+            input_weights
+        } else {
+            Self::read_packed_feature_weights(&mut r, physical_rows, hidden_size)?
+        };
 
         let mut tail = vec![0u8; tail_len];
         r.read_exact(&mut tail).map_err(|e| e.to_string())?;
@@ -435,6 +444,58 @@ impl NNUENet {
             virtual_rows,
             hidden_size,
         })
+    }
+
+    fn read_packed_feature_weights(
+        r: &mut impl IoRead,
+        physical_rows: usize,
+        hidden_size: usize,
+    ) -> Result<Vec<i16>, String> {
+        let compact_values = physical_rows
+            .checked_mul(hidden_size)
+            .ok_or("compact NNUE physical feature size overflow")?;
+
+        let mut base_weights = vec![0u8; compact_values];
+        r.read_exact(&mut base_weights).map_err(|e| e.to_string())?;
+
+        let mut correction_offsets = vec![0u32; physical_rows + 1];
+        for offset in &mut correction_offsets {
+            *offset = read_u32(r)?;
+        }
+        validate_correction_offsets(&correction_offsets)?;
+
+        let correction_count = *correction_offsets
+            .last()
+            .ok_or("compact NNUE correction offsets are empty")?
+            as usize;
+        let mut correction_indices = vec![0u16; correction_count];
+        for index in &mut correction_indices {
+            *index = read_u16(r)?;
+            if *index as usize >= hidden_size {
+                return Err(format!("compact NNUE correction index {} invalid", *index));
+            }
+        }
+
+        let mut correction_deltas = vec![0i16; correction_count];
+        read_i16s(r, &mut correction_deltas)?;
+
+        let mut input_weights = Vec::with_capacity(compact_values);
+        input_weights.extend(base_weights.into_iter().map(|weight| weight as i8 as i16));
+
+        for row in 0..physical_rows {
+            let row_start = row * hidden_size;
+            let begin = correction_offsets[row] as usize;
+            let end = correction_offsets[row + 1] as usize;
+            for correction in begin..end {
+                let lane = correction_indices[correction] as usize;
+                let value = input_weights[row_start + lane]
+                    .checked_add(correction_deltas[correction])
+                    .ok_or("compact NNUE correction overflow")?;
+                input_weights[row_start + lane] = value;
+            }
+        }
+
+        Ok(input_weights)
     }
 
     fn read_header(r: &mut impl IoRead) -> Result<u32, String> {
@@ -1109,6 +1170,20 @@ fn read_i16s(r: &mut impl IoRead, buf: &mut [i16]) -> Result<(), String> {
     let bytes =
         unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, buf.len() * 2) };
     r.read_exact(bytes).map_err(|e| format!("i16s: {}", e))?;
+    Ok(())
+}
+
+fn validate_correction_offsets(offsets: &[u32]) -> Result<(), String> {
+    let mut prev = 0;
+    for (idx, &offset) in offsets.iter().enumerate() {
+        if idx == 0 && offset != 0 {
+            return Err("compact NNUE correction offsets must start at zero".into());
+        }
+        if offset < prev {
+            return Err("compact NNUE correction offsets must be sorted".into());
+        }
+        prev = offset;
+    }
     Ok(())
 }
 

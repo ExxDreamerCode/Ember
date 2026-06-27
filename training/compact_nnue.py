@@ -3,7 +3,8 @@
 
 The compact format is intended for the embedded network. It keeps the dense
 NNUE header and dense tail unchanged, stores a virtual-row to physical-row
-u16 table, then stores only nonzero feature-transformer rows.
+u16 table, then stores nonzero feature-transformer rows as i8 low bytes plus
+sparse i16 corrections.
 """
 
 import struct
@@ -12,6 +13,7 @@ from pathlib import Path
 
 NNUE_MAGIC = 0x4E4E5545
 COMPACT_MAGIC = b"ECN1"
+COMPACT_VERSION = 2
 UINT16_MAX = 0xFFFF
 PSQ_INPUTS_PER_BUCKET = 768
 
@@ -65,6 +67,8 @@ def get_header(data):
 
     if rows > UINT16_MAX:
         raise ValueError(f"virtual row count {rows} does not fit in u16")
+    if hidden_size > UINT16_MAX:
+        raise ValueError(f"hidden size {hidden_size} does not fit in correction indices")
     if hidden_size == 0:
         raise ValueError("hidden size must be nonzero")
 
@@ -85,41 +89,70 @@ def compact(in_path, out_path):
     zero_row = b"\0" * row_bytes
 
     row_map = []
-    rows = []
+    base_rows = []
+    correction_offsets = [0]
+    correction_indices = []
+    correction_deltas = []
     for row in range(virtual_rows):
         start = feature_start + row * row_bytes
         payload = data[start : start + row_bytes]
         if payload == zero_row:
             row_map.append(UINT16_MAX)
         else:
-            physical = len(rows)
+            physical = len(base_rows)
             if physical >= UINT16_MAX:
                 raise ValueError(f"physical row count {physical + 1} does not fit in u16")
             row_map.append(physical)
-            rows.append(payload)
+            values = struct.unpack(f"<{hidden_size}h", payload)
+            base = bytearray()
+            for lane, value in enumerate(values):
+                low_byte = value & 0xFF
+                base.append(low_byte)
+                base_value = low_byte if low_byte < 128 else low_byte - 256
+                delta = value - base_value
+                if delta != 0:
+                    if not -32768 <= delta <= 32767:
+                        raise ValueError(
+                            f"correction delta {delta} for value {value} does not fit in i16"
+                        )
+                    correction_indices.append(lane)
+                    correction_deltas.append(delta)
+            base_rows.append(bytes(base))
+            correction_offsets.append(len(correction_indices))
 
-    physical_rows = len(rows)
+    physical_rows = len(base_rows)
     if physical_rows > UINT16_MAX:
         raise ValueError(f"physical row count {physical_rows} does not fit in u16")
+    if len(correction_indices) > 0xFFFFFFFF:
+        raise ValueError("correction count does not fit in u32")
 
     header = bytearray()
     header += COMPACT_MAGIC
-    header += struct.pack("<I", 1)
+    header += struct.pack("<I", COMPACT_VERSION)
     header += struct.pack("<Q", len(data))
     header += struct.pack("<IIII", header_size, virtual_rows, physical_rows, hidden_size)
 
     out = bytearray(header)
     out += data[:header_size]
     out += struct.pack(f"<{virtual_rows}H", *row_map)
-    out += b"".join(rows)
+    out += b"".join(base_rows)
+    out += struct.pack(f"<{physical_rows + 1}I", *correction_offsets)
+    out += struct.pack(f"<{len(correction_indices)}H", *correction_indices)
+    out += struct.pack(f"<{len(correction_deltas)}h", *correction_deltas)
     out += data[feature_end:]
     Path(out_path).write_bytes(out)
 
     dense_feature_bytes = virtual_rows * row_bytes
-    compact_feature_bytes = physical_rows * row_bytes + virtual_rows * 2
+    compact_feature_bytes = (
+        physical_rows * hidden_size
+        + virtual_rows * 2
+        + (physical_rows + 1) * 4
+        + len(correction_indices) * 4
+    )
     print(f"Input: {in_path} ({len(data)} bytes)")
     print(f"Output: {out_path} ({len(out)} bytes)")
     print(f"Rows: {physical_rows}/{virtual_rows} nonzero")
+    print(f"Corrections: {len(correction_indices)}")
     print(f"Feature bytes: {dense_feature_bytes} -> {compact_feature_bytes}")
     print(f"Saved: {len(data) - len(out)} bytes")
 
