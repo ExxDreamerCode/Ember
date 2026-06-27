@@ -91,8 +91,26 @@ def has_magic(data):
 
 
 def get_header_size(data):
+    if len(data) < 8:
+        raise ValueError("NNUE header too small")
     ver = struct.unpack('<I', data[4:8])[0]
-    return 15 if ver >= 7 else (9 if ver == 6 else 8)
+    if ver == 5:
+        return 8
+    if ver == 6:
+        return 9
+    if ver >= 7:
+        if len(data) < 15:
+            raise ValueError("NNUE v7+ header too small")
+        flags = data[8]
+        size = 15
+        if flags & 0x80:
+            size += 2
+        if ver >= 10:
+            size += 1
+        if len(data) < size:
+            raise ValueError(f"NNUE v{ver} header too small for flags {flags:#04x}")
+        return size
+    raise ValueError(f"Unsupported NNUE version: {ver}")
 
 
 def dump_header(data, label=""):
