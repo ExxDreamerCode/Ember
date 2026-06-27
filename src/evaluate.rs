@@ -332,7 +332,7 @@ fn king_safety(bb: &[u64; 12], white: bool, phase: i32) -> i32 {
 
 static NNUE_NET: RwLock<Option<NNUENet>> = RwLock::new(None);
 
-pub const EMBEDDED_NNUE: &[u8] = include_bytes!("net.nnue");
+pub const EMBEDDED_NNUE: &[u8] = include_bytes!("net.compact.nnue");
 
 pub fn init_nnue(path: &str) -> Result<(), String> {
     let net = NNUENet::load(path)?;
@@ -348,7 +348,10 @@ pub fn reset_nnue() -> Result<(), String> {
 }
 
 pub fn init_embedded_nnue() -> Result<(), String> {
-    init_nnue_from_bytes(EMBEDDED_NNUE)
+    let net = NNUENet::load_compact_from_bytes(EMBEDDED_NNUE, "<embedded>")?;
+    let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
+    *lock = Some(net);
+    Ok(())
 }
 
 pub fn init_nnue_from_bytes(data: &[u8]) -> Result<(), String> {

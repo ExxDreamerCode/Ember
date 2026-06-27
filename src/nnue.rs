@@ -14,6 +14,9 @@ const EVAL_SCALE: i32 = 400;
 const FT_SHIFT: i32 = 9;
 const NNUE_NUM_PIECE_TYPES: usize = 12;
 const NNUE_MAGIC: u32 = 0x4E4E5545;
+const COMPACT_NNUE_MAGIC: u32 = 0x314E4345; // "ECN1"
+const COMPACT_NNUE_VERSION: u32 = 1;
+const COMPACT_ZERO_ROW: u16 = u16::MAX;
 
 pub fn convert(sq: u8) -> u8 {
     sq ^ 56
@@ -173,6 +176,109 @@ impl NNUENet {
         let len = data.len() as u64;
         let mut r = std::io::Cursor::new(data);
         Self::load_reader(&mut r, len, name)
+    }
+
+    pub fn load_compact_from_bytes(data: &[u8], name: &str) -> Result<Self, String> {
+        let dense = Self::expand_compact_bytes(data)?;
+        Self::load_from_bytes(&dense, name)
+    }
+
+    fn expand_compact_bytes(data: &[u8]) -> Result<Vec<u8>, String> {
+        let mut r = std::io::Cursor::new(data);
+        let magic = read_u32(&mut r)?;
+        if magic != COMPACT_NNUE_MAGIC {
+            return Err("bad compact NNUE magic".into());
+        }
+        let version = read_u32(&mut r)?;
+        if version != COMPACT_NNUE_VERSION {
+            return Err(format!("unsupported compact NNUE v{}", version));
+        }
+
+        let dense_len = usize::try_from(read_u64(&mut r)?)
+            .map_err(|_| "compact NNUE dense length too large".to_string())?;
+        let header_len = read_u32(&mut r)? as usize;
+        let virtual_rows = read_u32(&mut r)? as usize;
+        let physical_rows = read_u32(&mut r)? as usize;
+        let hidden_size = read_u32(&mut r)? as usize;
+
+        if virtual_rows > COMPACT_ZERO_ROW as usize {
+            return Err(format!(
+                "compact NNUE virtual row count {} does not fit in u16",
+                virtual_rows
+            ));
+        }
+        if physical_rows >= COMPACT_ZERO_ROW as usize {
+            return Err(format!(
+                "compact NNUE physical row count {} does not fit in u16",
+                physical_rows
+            ));
+        }
+        if hidden_size == 0 || hidden_size > MAX_HIDDEN_SIZE {
+            return Err(format!("compact NNUE hidden size {} invalid", hidden_size));
+        }
+
+        let row_bytes = hidden_size
+            .checked_mul(2)
+            .ok_or("compact NNUE row size overflow")?;
+        let dense_feature_bytes = virtual_rows
+            .checked_mul(row_bytes)
+            .ok_or("compact NNUE feature size overflow")?;
+        let dense_prefix_len = header_len
+            .checked_add(dense_feature_bytes)
+            .ok_or("compact NNUE dense prefix overflow")?;
+        let tail_len = dense_len
+            .checked_sub(dense_prefix_len)
+            .ok_or("compact NNUE dense length is too small")?;
+
+        let mut dense_header = vec![0u8; header_len];
+        r.read_exact(&mut dense_header).map_err(|e| e.to_string())?;
+
+        let mut row_map = vec![0u16; virtual_rows];
+        for row in &mut row_map {
+            *row = read_u16(&mut r)?;
+        }
+
+        let compact_feature_bytes = physical_rows
+            .checked_mul(row_bytes)
+            .ok_or("compact NNUE physical feature size overflow")?;
+        let mut compact_rows = vec![0u8; compact_feature_bytes];
+        r.read_exact(&mut compact_rows).map_err(|e| e.to_string())?;
+
+        let mut tail = vec![0u8; tail_len];
+        r.read_exact(&mut tail).map_err(|e| e.to_string())?;
+
+        let mut trailing = [0u8; 1];
+        if r.read(&mut trailing).map_err(|e| e.to_string())? != 0 {
+            return Err("compact NNUE has trailing bytes".into());
+        }
+
+        let mut dense = Vec::with_capacity(dense_len);
+        dense.extend_from_slice(&dense_header);
+        for &physical_row in &row_map {
+            if physical_row == COMPACT_ZERO_ROW {
+                dense.resize(dense.len() + row_bytes, 0);
+                continue;
+            }
+            let physical_row = physical_row as usize;
+            if physical_row >= physical_rows {
+                return Err(format!(
+                    "compact NNUE row map points past row {}",
+                    physical_row
+                ));
+            }
+            let start = physical_row * row_bytes;
+            dense.extend_from_slice(&compact_rows[start..start + row_bytes]);
+        }
+        dense.extend_from_slice(&tail);
+
+        if dense.len() != dense_len {
+            return Err(format!(
+                "compact NNUE expanded to {} bytes, expected {}",
+                dense.len(),
+                dense_len
+            ));
+        }
+        Ok(dense)
     }
 
     fn load_reader(r: &mut impl IoRead, data_len: u64, name: &str) -> Result<Self, String> {
@@ -820,6 +926,56 @@ impl NNUEAccumulator {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Engine;
+
+    fn nnue_score(net: &NNUENet, fen: &str) -> i32 {
+        let mut engine = Engine::new();
+        engine.set_fen(fen);
+
+        let mut acc = NNUEAccumulator::new(net.hidden_size);
+        acc.refresh(net, &engine.st);
+        let stm = if engine.st.w { WHITE } else { BLACK };
+        let piece_count = (0..12).map(|i| engine.st.bb[i].count_ones()).sum();
+        let score = net.forward(&acc, stm, piece_count);
+        if stm == WHITE {
+            score
+        } else {
+            -score
+        }
+    }
+
+    #[test]
+    fn compact_embedded_nnue_matches_dense_scores() {
+        let dense = NNUENet::load_from_bytes(include_bytes!("net.nnue"), "<dense test>")
+            .expect("dense NNUE should load");
+        let compact =
+            NNUENet::load_compact_from_bytes(include_bytes!("net.compact.nnue"), "<compact test>")
+                .expect("compact NNUE should load");
+
+        assert!(
+            include_bytes!("net.compact.nnue").len() + 3_000_000 < include_bytes!("net.nnue").len(),
+            "compact embedded NNUE should remove the zero feature rows"
+        );
+
+        for fen in [
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/2P5/1p2P3/2N2N2/PP1PBPPP/R2Q1RK1 w kq - 0 1",
+            "8/8/8/R2pP1k/8/8/6Q1/4K3 w - d6 0 1",
+            "4k3/8/8/3pP3/8/8/8/4K3 b - - 0 1",
+            "8/P4k2/8/8/8/8/8/6K1 w - - 0 1",
+        ] {
+            assert_eq!(
+                nnue_score(&dense, fen),
+                nnue_score(&compact, fen),
+                "compact NNUE score mismatch for {fen}"
+            );
+        }
+    }
+}
+
 fn read_u8(r: &mut impl IoRead) -> Result<u8, String> {
     let mut b = [0u8; 1];
     r.read_exact(&mut b).map_err(|e| e.to_string())?;
@@ -836,6 +992,12 @@ fn read_u32(r: &mut impl IoRead) -> Result<u32, String> {
     let mut b = [0u8; 4];
     r.read_exact(&mut b).map_err(|e| e.to_string())?;
     Ok(u32::from_le_bytes(b))
+}
+
+fn read_u64(r: &mut impl IoRead) -> Result<u64, String> {
+    let mut b = [0u8; 8];
+    r.read_exact(&mut b).map_err(|e| e.to_string())?;
+    Ok(u64::from_le_bytes(b))
 }
 
 fn read_i32(r: &mut impl IoRead) -> Result<i32, String> {
