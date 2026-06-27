@@ -182,6 +182,23 @@ impl NNUENet {
         Some(&self.input_weights[start..start + self.hidden_size])
     }
 
+    #[inline(always)]
+    fn input_row_fast(&self, idx: usize) -> Option<&[i16]> {
+        debug_assert!(idx < self.input_row_map.len());
+        // Loaders validate the compact row map; debug assertions catch format drift.
+        let physical_row = unsafe { *self.input_row_map.get_unchecked(idx) };
+        if physical_row == COMPACT_ZERO_ROW {
+            return None;
+        }
+
+        let start = physical_row as usize * self.hidden_size;
+        debug_assert!(start + self.hidden_size <= self.input_weights.len());
+        let row = unsafe {
+            std::slice::from_raw_parts(self.input_weights.as_ptr().add(start), self.hidden_size)
+        };
+        Some(row)
+    }
+
     pub fn load(path: &str) -> Result<Self, String> {
         let len = std::fs::metadata(path)
             .map_err(|e| format!("stat: {}", e))?
@@ -937,14 +954,14 @@ impl NNUEAccumulator {
 
     #[inline(always)]
     fn add_feature(acc: &mut [i16], net: &NNUENet, idx: usize) {
-        if let Some(row) = net.input_row(idx) {
+        if let Some(row) = net.input_row_fast(idx) {
             Self::add_row(acc, row);
         }
     }
 
     #[inline(always)]
     fn remove_feature(acc: &mut [i16], net: &NNUENet, idx: usize) {
-        if let Some(row) = net.input_row(idx) {
+        if let Some(row) = net.input_row_fast(idx) {
             Self::remove_row(acc, row);
         }
     }
