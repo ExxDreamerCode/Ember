@@ -105,6 +105,7 @@ pub fn output_bucket(pc: u32) -> usize {
 pub struct NNUENet {
     pub hidden_size: usize,
     pub input_weights: Vec<i16>,
+    pub input_row_map: Vec<u16>,
     pub input_biases: Vec<i16>,
     pub output_weights: Vec<i16>,
     pub output_bias: [i32; NNUE_OUTPUT_BUCKETS],
@@ -142,7 +143,18 @@ struct VersionFlags {
     ft: usize,
 }
 
+type FeatureWeights = (Vec<i16>, Vec<u16>, Vec<i16>);
 type HiddenLayers = (Vec<i16>, Vec<i16>, Vec<i16>, Vec<i16>);
+
+struct CompactFeaturePayload {
+    dense_len: usize,
+    dense_header: Vec<u8>,
+    input_weights: Vec<i16>,
+    input_row_map: Vec<u16>,
+    tail: Vec<u8>,
+    virtual_rows: usize,
+    hidden_size: usize,
+}
 
 impl VersionFlags {
     fn l1_scale_f32(&self) -> f32 {
@@ -159,8 +171,15 @@ impl NNUENet {
         halfka_idx(&self.king_bucket, &self.king_mirror, persp, ks, pc, pt, ps)
     }
 
-    pub fn input_row(&self, idx: usize) -> &[i16] {
-        &self.input_weights[idx * self.hidden_size..(idx + 1) * self.hidden_size]
+    pub fn input_row(&self, idx: usize) -> Option<&[i16]> {
+        let physical_row = *self.input_row_map.get(idx)?;
+        if physical_row == COMPACT_ZERO_ROW {
+            return None;
+        }
+
+        let physical_row = physical_row as usize;
+        let start = physical_row * self.hidden_size;
+        Some(&self.input_weights[start..start + self.hidden_size])
     }
 
     pub fn load(path: &str) -> Result<Self, String> {
@@ -179,11 +198,146 @@ impl NNUENet {
     }
 
     pub fn load_compact_from_bytes(data: &[u8], name: &str) -> Result<Self, String> {
-        let dense = Self::expand_compact_bytes(data)?;
-        Self::load_from_bytes(&dense, name)
+        let compact = Self::read_compact_payload(data)?;
+        Self::load_compact_payload(compact, name)
     }
 
-    fn expand_compact_bytes(data: &[u8]) -> Result<Vec<u8>, String> {
+    fn load_reader(r: &mut impl IoRead, data_len: u64, name: &str) -> Result<Self, String> {
+        let ver = Self::read_header(r)?;
+        let flags = Self::read_version_flags(r, ver)?;
+        let hs = Self::infer_hidden_size(ver, &flags, data_len)?;
+        if hs > MAX_HIDDEN_SIZE {
+            return Err(format!("hs {} too large", hs));
+        }
+
+        let (iw, input_row_map, ib) = Self::read_feature_weights(r, hs, &flags)?;
+        let (l1w, l1b, l2w_raw, l2b_raw) = Self::read_hidden_layers(r, hs, &flags)?;
+        let (outw, outb) = Self::read_output_weights(r, hs, &flags)?;
+
+        Self::finish_load(
+            ver,
+            name,
+            hs,
+            flags,
+            iw,
+            input_row_map,
+            ib,
+            l1w,
+            l1b,
+            l2w_raw,
+            l2b_raw,
+            outw,
+            outb,
+        )
+    }
+
+    fn load_compact_payload(compact: CompactFeaturePayload, name: &str) -> Result<Self, String> {
+        let mut header = std::io::Cursor::new(compact.dense_header);
+        let ver = Self::read_header(&mut header)?;
+        let flags = Self::read_version_flags(&mut header, ver)?;
+        let hs = Self::infer_hidden_size(ver, &flags, compact.dense_len as u64)?;
+        if hs != compact.hidden_size {
+            return Err(format!(
+                "compact NNUE hidden size {} does not match dense header {}",
+                compact.hidden_size, hs
+            ));
+        }
+        let psq = flags.nkb * PSQ_INPUTS_PER_BUCKET;
+        if psq != compact.virtual_rows {
+            return Err(format!(
+                "compact NNUE row count {} does not match dense header {}",
+                compact.virtual_rows, psq
+            ));
+        }
+
+        let mut tail = std::io::Cursor::new(compact.tail);
+        let mut ib = vec![0i16; hs];
+        read_i16s(&mut tail, &mut ib)?;
+        let (l1w, l1b, l2w_raw, l2b_raw) = Self::read_hidden_layers(&mut tail, hs, &flags)?;
+        let (outw, outb) = Self::read_output_weights(&mut tail, hs, &flags)?;
+
+        let mut trailing = [0u8; 1];
+        if tail.read(&mut trailing).map_err(|e| e.to_string())? != 0 {
+            return Err("compact NNUE dense tail has trailing bytes".into());
+        }
+
+        Self::finish_load(
+            ver,
+            name,
+            hs,
+            flags,
+            compact.input_weights,
+            compact.input_row_map,
+            ib,
+            l1w,
+            l1b,
+            l2w_raw,
+            l2b_raw,
+            outw,
+            outb,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_load(
+        ver: u32,
+        name: &str,
+        hs: usize,
+        flags: VersionFlags,
+        input_weights: Vec<i16>,
+        input_row_map: Vec<u16>,
+        input_biases: Vec<i16>,
+        l1w: Vec<i16>,
+        l1b: Vec<i16>,
+        l2w_raw: Vec<i16>,
+        l2b_raw: Vec<i16>,
+        outw: Vec<i16>,
+        outb: [i32; NNUE_OUTPUT_BUCKETS],
+    ) -> Result<Self, String> {
+        let (kbt, kmt) = compute_king_buckets(flags.layout);
+
+        Self::print_load_info(ver, name, hs, &flags);
+
+        let l2w_f = Self::convert_to_f32(&l2w_raw, flags.l1_scale_f32());
+        let l2b_f = Self::convert_to_f32(&l2b_raw, flags.l1_scale_f32());
+        let ow_f = Self::convert_to_f32(&outw, QB as f32);
+        let ob_f: Vec<f32> = outb
+            .iter()
+            .map(|&b| b as f32 / (flags.l1_scale_f32() * QB as f32))
+            .collect();
+
+        let _l1t = Self::transpose_l1_weights(hs, &flags, &l1w);
+
+        Ok(NNUENet {
+            hidden_size: hs,
+            input_weights,
+            input_row_map,
+            input_biases,
+            output_weights: outw,
+            output_bias: outb,
+            use_screlu: flags.screlu,
+            use_pairwise: flags.pairwise,
+            l1_size: flags.l1s,
+            l1_per_bucket: flags.l1s,
+            bucketed_hidden: flags.bucketed,
+            l1_scale: flags.l1sc,
+            l2_size: flags.l2s,
+            l2_per_bucket: flags.l2s,
+            l1_weights: l1w,
+            l1_biases: l1b,
+            l2_weights_f: l2w_f,
+            l2_biases_f: l2b_f,
+            out_weights_f: ow_f,
+            out_bias_f: ob_f,
+            dual_l1: flags.dual,
+            num_king_buckets: flags.nkb,
+            kb_layout: flags.layout,
+            king_bucket: kbt,
+            king_mirror: kmt,
+        })
+    }
+
+    fn read_compact_payload(data: &[u8]) -> Result<CompactFeaturePayload, String> {
         let mut r = std::io::Cursor::new(data);
         let magic = read_u32(&mut r)?;
         if magic != COMPACT_NNUE_MAGIC {
@@ -207,7 +361,7 @@ impl NNUENet {
                 virtual_rows
             ));
         }
-        if physical_rows >= COMPACT_ZERO_ROW as usize {
+        if physical_rows > COMPACT_ZERO_ROW as usize {
             return Err(format!(
                 "compact NNUE physical row count {} does not fit in u16",
                 physical_rows
@@ -233,16 +387,19 @@ impl NNUENet {
         let mut dense_header = vec![0u8; header_len];
         r.read_exact(&mut dense_header).map_err(|e| e.to_string())?;
 
-        let mut row_map = vec![0u16; virtual_rows];
-        for row in &mut row_map {
+        let mut input_row_map = vec![0u16; virtual_rows];
+        for row in &mut input_row_map {
             *row = read_u16(&mut r)?;
+            if *row != COMPACT_ZERO_ROW && *row as usize >= physical_rows {
+                return Err(format!("compact NNUE row map points past row {}", *row));
+            }
         }
 
-        let compact_feature_bytes = physical_rows
-            .checked_mul(row_bytes)
+        let compact_values = physical_rows
+            .checked_mul(hidden_size)
             .ok_or("compact NNUE physical feature size overflow")?;
-        let mut compact_rows = vec![0u8; compact_feature_bytes];
-        r.read_exact(&mut compact_rows).map_err(|e| e.to_string())?;
+        let mut input_weights = vec![0i16; compact_values];
+        read_i16s(&mut r, &mut input_weights)?;
 
         let mut tail = vec![0u8; tail_len];
         r.read_exact(&mut tail).map_err(|e| e.to_string())?;
@@ -252,85 +409,14 @@ impl NNUENet {
             return Err("compact NNUE has trailing bytes".into());
         }
 
-        let mut dense = Vec::with_capacity(dense_len);
-        dense.extend_from_slice(&dense_header);
-        for &physical_row in &row_map {
-            if physical_row == COMPACT_ZERO_ROW {
-                dense.resize(dense.len() + row_bytes, 0);
-                continue;
-            }
-            let physical_row = physical_row as usize;
-            if physical_row >= physical_rows {
-                return Err(format!(
-                    "compact NNUE row map points past row {}",
-                    physical_row
-                ));
-            }
-            let start = physical_row * row_bytes;
-            dense.extend_from_slice(&compact_rows[start..start + row_bytes]);
-        }
-        dense.extend_from_slice(&tail);
-
-        if dense.len() != dense_len {
-            return Err(format!(
-                "compact NNUE expanded to {} bytes, expected {}",
-                dense.len(),
-                dense_len
-            ));
-        }
-        Ok(dense)
-    }
-
-    fn load_reader(r: &mut impl IoRead, data_len: u64, name: &str) -> Result<Self, String> {
-        let ver = Self::read_header(r)?;
-        let flags = Self::read_version_flags(r, ver)?;
-        let hs = Self::infer_hidden_size(ver, &flags, data_len)?;
-        if hs > MAX_HIDDEN_SIZE {
-            return Err(format!("hs {} too large", hs));
-        }
-
-        let (iw, ib) = Self::read_feature_weights(r, hs, &flags)?;
-        let (l1w, l1b, l2w_raw, l2b_raw) = Self::read_hidden_layers(r, hs, &flags)?;
-        let (outw, outb) = Self::read_output_weights(r, hs, &flags)?;
-        let (kbt, kmt) = compute_king_buckets(flags.layout);
-
-        Self::print_load_info(ver, name, hs, &flags);
-
-        let l2w_f = Self::convert_to_f32(&l2w_raw, flags.l1_scale_f32());
-        let l2b_f = Self::convert_to_f32(&l2b_raw, flags.l1_scale_f32());
-        let ow_f = Self::convert_to_f32(&outw, QB as f32);
-        let ob_f: Vec<f32> = outb
-            .iter()
-            .map(|&b| b as f32 / (flags.l1_scale_f32() * QB as f32))
-            .collect();
-
-        let _l1t = Self::transpose_l1_weights(hs, &flags, &l1w);
-
-        Ok(NNUENet {
-            hidden_size: hs,
-            input_weights: iw,
-            input_biases: ib,
-            output_weights: outw,
-            output_bias: outb,
-            use_screlu: flags.screlu,
-            use_pairwise: flags.pairwise,
-            l1_size: flags.l1s,
-            l1_per_bucket: flags.l1s,
-            bucketed_hidden: flags.bucketed,
-            l1_scale: flags.l1sc,
-            l2_size: flags.l2s,
-            l2_per_bucket: flags.l2s,
-            l1_weights: l1w,
-            l1_biases: l1b,
-            l2_weights_f: l2w_f,
-            l2_biases_f: l2b_f,
-            out_weights_f: ow_f,
-            out_bias_f: ob_f,
-            dual_l1: flags.dual,
-            num_king_buckets: flags.nkb,
-            kb_layout: flags.layout,
-            king_bucket: kbt,
-            king_mirror: kmt,
+        Ok(CompactFeaturePayload {
+            dense_len,
+            dense_header,
+            input_weights,
+            input_row_map,
+            tail,
+            virtual_rows,
+            hidden_size,
         })
     }
 
@@ -428,13 +514,54 @@ impl NNUENet {
         r: &mut impl IoRead,
         hs: usize,
         flags: &VersionFlags,
-    ) -> Result<(Vec<i16>, Vec<i16>), String> {
+    ) -> Result<FeatureWeights, String> {
         let psq = flags.nkb * PSQ_INPUTS_PER_BUCKET;
-        let mut iw = vec![0i16; psq * hs];
-        read_i16s(r, &mut iw)?;
+        let mut dense_weights = vec![0i16; psq * hs];
+        read_i16s(r, &mut dense_weights)?;
+        let (iw, input_row_map) = Self::compact_input_weights(dense_weights, hs, psq)?;
         let mut ib = vec![0i16; hs];
         read_i16s(r, &mut ib)?;
-        Ok((iw, ib))
+        Ok((iw, input_row_map, ib))
+    }
+
+    fn compact_input_weights(
+        dense_weights: Vec<i16>,
+        hs: usize,
+        virtual_rows: usize,
+    ) -> Result<(Vec<i16>, Vec<u16>), String> {
+        if virtual_rows > COMPACT_ZERO_ROW as usize {
+            return Err(format!(
+                "NNUE virtual row count {} does not fit in u16",
+                virtual_rows
+            ));
+        }
+        if hs == 0 {
+            return Err("NNUE hidden size must be nonzero".into());
+        }
+        if dense_weights.len() != virtual_rows * hs {
+            return Err("NNUE feature matrix size mismatch".into());
+        }
+
+        let mut compact_weights = Vec::with_capacity(dense_weights.len());
+        let mut input_row_map = Vec::with_capacity(virtual_rows);
+        for row in dense_weights.chunks_exact(hs) {
+            if row.iter().all(|&value| value == 0) {
+                input_row_map.push(COMPACT_ZERO_ROW);
+                continue;
+            }
+
+            let physical_row = compact_weights.len() / hs;
+            if physical_row >= COMPACT_ZERO_ROW as usize {
+                return Err(format!(
+                    "NNUE physical row count {} does not fit in u16",
+                    physical_row + 1
+                ));
+            }
+            input_row_map.push(physical_row as u16);
+            compact_weights.extend_from_slice(row);
+        }
+
+        Ok((compact_weights, input_row_map))
     }
 
     fn read_hidden_layers(
@@ -808,6 +935,20 @@ impl NNUEAccumulator {
         }
     }
 
+    #[inline(always)]
+    fn add_feature(acc: &mut [i16], net: &NNUENet, idx: usize) {
+        if let Some(row) = net.input_row(idx) {
+            Self::add_row(acc, row);
+        }
+    }
+
+    #[inline(always)]
+    fn remove_feature(acc: &mut [i16], net: &NNUENet, idx: usize) {
+        if let Some(row) = net.input_row(idx) {
+            Self::remove_row(acc, row);
+        }
+    }
+
     pub fn refresh(&mut self, net: &NNUENet, st: &BoardState) {
         let h = self.hs;
         let wk = convert(st.king_sq(true) as u8);
@@ -826,11 +967,8 @@ impl NNUEAccumulator {
                     bb &= bb - 1;
                     let csq = convert(sq);
 
-                    let row = net.input_row(net.halfka(0, wk, color, pt, csq));
-                    Self::add_row(&mut self.white, row);
-
-                    let row = net.input_row(net.halfka(1, bk, color, pt, csq));
-                    Self::add_row(&mut self.black, row);
+                    Self::add_feature(&mut self.white, net, net.halfka(0, wk, color, pt, csq));
+                    Self::add_feature(&mut self.black, net, net.halfka(1, bk, color, pt, csq));
                 }
             }
         }
@@ -839,21 +977,15 @@ impl NNUEAccumulator {
     fn add_piece(&mut self, net: &NNUENet, color: u8, pt: u8, sq: u8) {
         let csq = convert(sq);
 
-        let row = net.input_row(net.halfka(0, self.wk, color, pt, csq));
-        Self::add_row(&mut self.white, row);
-
-        let row = net.input_row(net.halfka(1, self.bk, color, pt, csq));
-        Self::add_row(&mut self.black, row);
+        Self::add_feature(&mut self.white, net, net.halfka(0, self.wk, color, pt, csq));
+        Self::add_feature(&mut self.black, net, net.halfka(1, self.bk, color, pt, csq));
     }
 
     fn remove_piece(&mut self, net: &NNUENet, color: u8, pt: u8, sq: u8) {
         let csq = convert(sq);
 
-        let row = net.input_row(net.halfka(0, self.wk, color, pt, csq));
-        Self::remove_row(&mut self.white, row);
-
-        let row = net.input_row(net.halfka(1, self.bk, color, pt, csq));
-        Self::remove_row(&mut self.black, row);
+        Self::remove_feature(&mut self.white, net, net.halfka(0, self.wk, color, pt, csq));
+        Self::remove_feature(&mut self.black, net, net.halfka(1, self.bk, color, pt, csq));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -926,56 +1058,6 @@ impl NNUEAccumulator {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::Engine;
-
-    fn nnue_score(net: &NNUENet, fen: &str) -> i32 {
-        let mut engine = Engine::new();
-        engine.set_fen(fen);
-
-        let mut acc = NNUEAccumulator::new(net.hidden_size);
-        acc.refresh(net, &engine.st);
-        let stm = if engine.st.w { WHITE } else { BLACK };
-        let piece_count = (0..12).map(|i| engine.st.bb[i].count_ones()).sum();
-        let score = net.forward(&acc, stm, piece_count);
-        if stm == WHITE {
-            score
-        } else {
-            -score
-        }
-    }
-
-    #[test]
-    fn compact_embedded_nnue_matches_dense_scores() {
-        let dense = NNUENet::load_from_bytes(include_bytes!("net.nnue"), "<dense test>")
-            .expect("dense NNUE should load");
-        let compact =
-            NNUENet::load_compact_from_bytes(include_bytes!("net.compact.nnue"), "<compact test>")
-                .expect("compact NNUE should load");
-
-        assert!(
-            include_bytes!("net.compact.nnue").len() + 3_000_000 < include_bytes!("net.nnue").len(),
-            "compact embedded NNUE should remove the zero feature rows"
-        );
-
-        for fen in [
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-            "r3k2r/p1ppqpb1/bn2pnp1/2P5/1p2P3/2N2N2/PP1PBPPP/R2Q1RK1 w kq - 0 1",
-            "8/8/8/R2pP1k/8/8/6Q1/4K3 w - d6 0 1",
-            "4k3/8/8/3pP3/8/8/8/4K3 b - - 0 1",
-            "8/P4k2/8/8/8/8/8/6K1 w - - 0 1",
-        ] {
-            assert_eq!(
-                nnue_score(&dense, fen),
-                nnue_score(&compact, fen),
-                "compact NNUE score mismatch for {fen}"
-            );
-        }
-    }
-}
-
 fn read_u8(r: &mut impl IoRead) -> Result<u8, String> {
     let mut b = [0u8; 1];
     r.read_exact(&mut b).map_err(|e| e.to_string())?;
@@ -1011,4 +1093,65 @@ fn read_i16s(r: &mut impl IoRead, buf: &mut [i16]) -> Result<(), String> {
         unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, buf.len() * 2) };
     r.read_exact(bytes).map_err(|e| format!("i16s: {}", e))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Engine;
+
+    fn nnue_score(net: &NNUENet, fen: &str) -> i32 {
+        let mut engine = Engine::new();
+        engine.set_fen(fen);
+
+        let mut acc = NNUEAccumulator::new(net.hidden_size);
+        acc.refresh(net, &engine.st);
+        let stm = if engine.st.w { WHITE } else { BLACK };
+        let piece_count = (0..12).map(|i| engine.st.bb[i].count_ones()).sum();
+        let score = net.forward(&acc, stm, piece_count);
+        if stm == WHITE {
+            score
+        } else {
+            -score
+        }
+    }
+
+    #[test]
+    fn compact_embedded_nnue_matches_dense_scores() {
+        let dense = NNUENet::load_from_bytes(include_bytes!("net.nnue"), "<dense test>")
+            .expect("dense NNUE should load");
+        let compact =
+            NNUENet::load_compact_from_bytes(include_bytes!("net.compact.nnue"), "<compact test>")
+                .expect("compact NNUE should load");
+
+        assert!(
+            include_bytes!("net.compact.nnue").len() + 3_000_000 < include_bytes!("net.nnue").len(),
+            "compact embedded NNUE should remove the zero feature rows"
+        );
+        assert_eq!(dense.input_row_map, compact.input_row_map);
+        assert_eq!(dense.input_weights, compact.input_weights);
+        assert_eq!(
+            compact
+                .input_row_map
+                .iter()
+                .filter(|&&row| row == COMPACT_ZERO_ROW)
+                .count(),
+            1712
+        );
+        assert_eq!(compact.input_weights.len() / compact.hidden_size, 10576);
+
+        for fen in [
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/2P5/1p2P3/2N2N2/PP1PBPPP/R2Q1RK1 w kq - 0 1",
+            "8/8/8/R2pP1k/8/8/6Q1/4K3 w - d6 0 1",
+            "4k3/8/8/3pP3/8/8/8/4K3 b - - 0 1",
+            "8/P4k2/8/8/8/8/8/6K1 w - - 0 1",
+        ] {
+            assert_eq!(
+                nnue_score(&dense, fen),
+                nnue_score(&compact, fen),
+                "compact NNUE score mismatch for {fen}"
+            );
+        }
+    }
 }

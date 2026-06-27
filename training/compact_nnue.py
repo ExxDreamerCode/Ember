@@ -99,7 +99,7 @@ def compact(in_path, out_path):
             rows.append(payload)
 
     physical_rows = len(rows)
-    if physical_rows >= UINT16_MAX:
+    if physical_rows > UINT16_MAX:
         raise ValueError(f"physical row count {physical_rows} does not fit in u16")
 
     header = bytearray()
