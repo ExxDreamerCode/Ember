@@ -127,7 +127,7 @@ setoption option name TraceFile value Trace.jsonl
 матчей через Cute Chess:
 
 ```bash
-nix develop . #elo-runner
+nix develop .#elo-runner
 python3 tools/measure_elo.py all --config configs/elo/default.toml
 ```
 
