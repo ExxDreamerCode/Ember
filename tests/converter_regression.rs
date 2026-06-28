@@ -28,7 +28,11 @@ assert got == expected, (
 )
 "#;
 
-    let output = Command::new("python3")
+    let output = if cfg!(target_os = "windows") {
+        Command::new("python")
+    } else {
+        Command::new("python3")
+    }
         .arg("-c")
         .arg(python)
         .env("CONVERTER_SCRIPT", script)
