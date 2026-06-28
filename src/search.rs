@@ -1,7 +1,7 @@
 use crate::board::{
     all_occ, attacked_by, bit, has_non_pawn, is_attacked, is_white_piece, move_ec, move_promotion,
-    piece_on, piece_type, promotion_piece_index, see, BoardState, Move, BK, EMPTY_SQ, INF,
-    KING_ATTACKS, MATE, MAX_PLY, QS_DEPTH, WK,
+    piece_on, piece_type, promotion_piece_index, see, BoardState, Move, BK, BR, EMPTY_SQ, INF,
+    KING_ATTACKS, MATE, MAX_PLY, QS_DEPTH, WK, WR,
 };
 use crate::evaluate::{evaluate, evaluate_nnue_acc, with_nnue_net};
 use crate::movegen::{apply_move, generate_moves, is_chess960_castling_move};
@@ -111,6 +111,83 @@ fn move_see(st: &BoardState, mv: &Move, from: usize, to: usize, fpi: u8, tpi: u8
     } else {
         see(&st.bb, from, to)
     }
+}
+
+#[inline(always)]
+fn special_move_gives_check(st: &BoardState, mv: &Move) -> bool {
+    let from = mv[0] * 8 + mv[1];
+    let to = mv[2] * 8 + move_ec(mv);
+    let fpi = piece_on(&st.bb, from);
+    if fpi == EMPTY_SQ {
+        return false;
+    }
+
+    let mut bb = st.bb;
+    let mover_is_white = is_white_piece(fpi);
+    let mover_type = piece_type(fpi);
+    let is_chess960_castle = is_chess960_castling_move(st, mv);
+    let is_en_passant = mover_type == 0 && Some(to) == st.ep && mv[1] != move_ec(mv);
+    let is_standard_castle =
+        mover_type == 5 && !st.chess960 && mv[1] == 4 && (move_ec(mv) == 6 || move_ec(mv) == 2);
+
+    if !is_en_passant && !is_chess960_castle && !is_standard_castle {
+        return false;
+    }
+
+    if !is_chess960_castle {
+        let tpi = piece_on(&bb, to);
+        if tpi != EMPTY_SQ {
+            bb[tpi as usize] &= !bit(to);
+        }
+    }
+
+    if is_en_passant {
+        let cap_sq = if mover_is_white { to + 8 } else { to - 8 };
+        let ep_pi = piece_on(&bb, cap_sq);
+        if ep_pi != EMPTY_SQ {
+            bb[ep_pi as usize] &= !bit(cap_sq);
+        }
+    }
+
+    if mover_type == 5 && is_chess960_castle {
+        let rook_pi = if mover_is_white { WR } else { BR };
+        let rook_col = move_ec(mv);
+        let (king_dst_col, rook_dst_col) = if rook_col > mv[1] {
+            (6usize, 5usize)
+        } else {
+            (2usize, 3usize)
+        };
+        bb[rook_pi] &= !bit(mv[2] * 8 + rook_col);
+        bb[rook_pi] |= bit(mv[0] * 8 + rook_dst_col);
+        bb[fpi as usize] &= !bit(from);
+        bb[fpi as usize] |= bit(mv[0] * 8 + king_dst_col);
+    } else {
+        bb[fpi as usize] &= !bit(from);
+
+        if mover_type == 5 && !st.chess960 && mv[1] == 4 && (move_ec(mv) == 6 || move_ec(mv) == 2) {
+            let rook_pi = if mover_is_white { WR } else { BR };
+            let (rook_from, rook_to) = if move_ec(mv) == 6 {
+                (mv[0] * 8 + 7, mv[0] * 8 + 5)
+            } else {
+                (mv[0] * 8, mv[0] * 8 + 3)
+            };
+            bb[rook_pi] &= !bit(rook_from);
+            bb[rook_pi] |= bit(rook_to);
+        }
+
+        if mover_type == 0 && (mv[2] == 0 || mv[2] == 7) {
+            if let Some(ppi) = promotion_piece_index(mover_is_white, move_promotion(mv)) {
+                bb[ppi] |= bit(to);
+            } else {
+                bb[fpi as usize] |= bit(to);
+            }
+        } else {
+            bb[fpi as usize] |= bit(to);
+        }
+    }
+
+    let opponent_king = if st.w { bb[BK] } else { bb[WK] };
+    opponent_king != 0 && is_attacked(&bb, opponent_king.trailing_zeros() as usize, st.w)
 }
 
 const CORR_HIST_SIZE: usize = 16384;
@@ -797,39 +874,7 @@ impl Searcher {
             let is_promo = is_promotion_move(fpi, &mv);
             let is_quiet = !capture && !is_promo;
 
-            let gives_check = {
-                let mut bb = st.bb;
-                let gc_from = mv[0] * 8 + mv[1];
-                let gc_to = mv[2] * 8 + move_ec(&mv);
-                let gc_fpi = piece_on(&bb, gc_from);
-                if gc_fpi == EMPTY_SQ {
-                    false
-                } else {
-                    bb[gc_fpi as usize] &= !(1u64 << gc_from);
-                    let gc_tpi = piece_on(&bb, gc_to);
-                    if gc_tpi != EMPTY_SQ {
-                        bb[gc_tpi as usize] &= !(1u64 << gc_to);
-                    }
-                    let gc_pt = piece_type(gc_fpi);
-                    if gc_pt == 0 && (mv[2] == 0 || mv[2] == 7) {
-                        if let Some(ppi) =
-                            promotion_piece_index(is_white_piece(gc_fpi), move_promotion(&mv))
-                        {
-                            bb[ppi] |= 1u64 << gc_to;
-                        } else {
-                            bb[gc_fpi as usize] |= 1u64 << gc_to;
-                        }
-                    } else {
-                        bb[gc_fpi as usize] |= 1u64 << gc_to;
-                    }
-                    let opp_ks = if !st.w { st.bb[BK] } else { st.bb[WK] };
-                    if opp_ks == 0 {
-                        false
-                    } else {
-                        is_attacked(&bb, opp_ks.trailing_zeros() as usize, !st.w)
-                    }
-                }
-            };
+            let gives_check = special_move_gives_check(st, &mv);
 
             if !is_pv && !in_check && is_quiet && i >= lmp_count {
                 break;
@@ -849,7 +894,7 @@ impl Searcher {
                 }
             }
 
-            let move_ext = if gives_check && !in_check && i == 0 && actual_depth < 16 {
+            let move_ext = if gives_check && !in_check && i == 0 && !is_quiet && actual_depth <= 2 {
                 1
             } else {
                 0
@@ -875,12 +920,8 @@ impl Searcher {
 
             let new_depth = actual_depth - 1 + move_ext;
 
-            let lmr_eligible = self.lmr_enabled()
-                && i >= 2
-                && actual_depth >= 3
-                && is_quiet
-                && !in_check
-                && !gives_check;
+            let lmr_eligible =
+                self.lmr_enabled() && i >= 2 && actual_depth >= 3 && is_quiet && !in_check;
             let s = if i == 0 {
                 -self.negamax(st, new_depth, ply + 1, -beta, -alpha, true, start, tl, cnt)
             } else if lmr_eligible {
@@ -1425,6 +1466,61 @@ mod tests {
         engine.st
     }
 
+    fn legal_move(st: &BoardState, uci: &str) -> Move {
+        generate_moves(st, st.w, &st.cr, st.ep)
+            .into_iter()
+            .find(|mv| crate::board::move_to_uci(st, mv) == uci)
+            .unwrap_or_else(|| panic!("expected legal move {uci}"))
+    }
+
+    #[test]
+    fn special_move_gives_check_rejects_empty_from_square() {
+        let st = state_from_fen("7k/8/8/8/8/8/8/R3K3 w - - 0 1");
+        let mv = [7, 1, 7, 2];
+
+        assert!(!special_move_gives_check(&st, &mv));
+    }
+
+    #[test]
+    fn special_move_gives_check_ignores_normal_rook_check() {
+        let st = state_from_fen("7k/8/8/8/8/8/8/R3K3 w - - 0 1");
+        let mv = legal_move(&st, "a1a8");
+
+        assert!(!special_move_gives_check(&st, &mv));
+    }
+
+    #[test]
+    fn special_move_gives_check_rejects_quiet_non_check() {
+        let st = state_from_fen("7k/8/8/8/8/8/8/R3K3 w - - 0 1");
+        let mv = legal_move(&st, "a1a2");
+
+        assert!(!special_move_gives_check(&st, &mv));
+    }
+
+    #[test]
+    fn special_move_gives_check_detects_en_passant_discovery() {
+        let st = state_from_fen("8/6pp/8/R2pP1k1/6B1/8/6PP/6K1 w - d6 0 1");
+        let mv = legal_move(&st, "e5d6");
+
+        assert!(special_move_gives_check(&st, &mv));
+    }
+
+    #[test]
+    fn special_move_gives_check_rejects_non_check_en_passant() {
+        let st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
+        let mv = legal_move(&st, "e5d6");
+
+        assert!(!special_move_gives_check(&st, &mv));
+    }
+
+    #[test]
+    fn special_move_gives_check_detects_castling_rook_discovery() {
+        let st = state_from_fen("5k2/8/8/8/8/8/8/4K2R w K - 0 1");
+        let mv = legal_move(&st, "e1g1");
+
+        assert!(special_move_gives_check(&st, &mv));
+    }
+
     #[test]
     fn qsearch_searches_en_passant_captures() {
         let mut st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
@@ -1448,6 +1544,39 @@ mod tests {
         assert!(
             score > stand_pat + 50,
             "qsearch should improve on stand-pat by searching e5xd6 en passant: stand_pat={stand_pat}, score={score}"
+        );
+    }
+
+    #[test]
+    fn negamax_prefers_en_passant_discovered_check() {
+        let mut st = state_from_fen("8/6pp/8/R2pP1k1/6B1/8/6PP/6K1 w - d6 0 1");
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(128));
+        let mut searcher = Searcher::new(shared_tt.clone(), stopped);
+        searcher.init_nnue_stack(&st);
+        let root_key = compute_hash(&st);
+        let mut nodes = 0u64;
+
+        let score = searcher.negamax(
+            &mut st,
+            2,
+            0,
+            -INF,
+            INF,
+            true,
+            Instant::now(),
+            10.0,
+            &mut nodes,
+        );
+
+        let best_move = shared_tt
+            .get_depth(root_key)
+            .and_then(|(_, _, _, best_move)| best_move)
+            .expect("negamax should store the root best move");
+        let best_uci = crate::board::move_to_uci(&st, &best_move);
+        assert_eq!(
+            best_uci, "e5d6",
+            "search chose {best_uci} instead of the checking en-passant discovery e5d6; score={score}, nodes={nodes}"
         );
     }
 
