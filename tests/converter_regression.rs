@@ -33,11 +33,11 @@ assert got == expected, (
     } else {
         Command::new("python3")
     }
-        .arg("-c")
-        .arg(python)
-        .env("CONVERTER_SCRIPT", script)
-        .output()
-        .expect("python3 should run converter regression");
+    .arg("-c")
+    .arg(python)
+    .env("CONVERTER_SCRIPT", script)
+    .output()
+    .expect("python3 should run converter regression");
 
     assert!(
         output.status.success(),
