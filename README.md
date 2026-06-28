@@ -164,6 +164,32 @@ CCRL-оценка.
 
 По нашим данным рейтинг новейшей версии Ember **2852** +- 30 elo (В однопоточном режиме)
 
+## 📈 Замер формы поиска
+
+Для проверки регрессий, где важны не только NPS, но и достигнутая глубина,
+число узлов и форма дерева, есть отдельный UCI-бенч:
+
+```bash
+cargo build --release
+nix run .#search-shape-benchmark -- \
+  current=./target/release/ember \
+  --repeats 3
+```
+
+Можно сравнивать несколько бинарников одним запуском:
+
+```bash
+nix run .#search-shape-benchmark -- \
+  good=/path/to/good-ember \
+  bad=/path/to/bad-ember \
+  --repeats 3 \
+  --go-command "go depth 20"
+```
+
+По умолчанию скрипт отключает книгу через `setoption name Book value`,
+использует стартовую позицию, `Hash=64` и `Threads=1`. Для своего набора
+позиций можно передать JSON-файл через `--positions`.
+
 ## 🛠️ Разработка
 
 ```bash

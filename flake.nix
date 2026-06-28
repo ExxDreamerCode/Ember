@@ -15,6 +15,25 @@
           }));
     in
     {
+      apps = forAllSystems (pkgs:
+        let
+          search-shape-benchmark = pkgs.writeShellApplication {
+            name = "search-shape-benchmark";
+            runtimeInputs = with pkgs; [
+              python3
+            ];
+            text = ''
+              exec python3 tools/benchmark_search_shape.py "$@"
+            '';
+          };
+        in
+        {
+          search-shape-benchmark = {
+            type = "app";
+            program = "${search-shape-benchmark}/bin/search-shape-benchmark";
+          };
+        });
+
       devShells = forAllSystems (pkgs:
         let
           blunder-7-2-0 = pkgs.buildGoModule {
