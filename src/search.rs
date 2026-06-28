@@ -113,6 +113,40 @@ fn move_see(st: &BoardState, mv: &Move, from: usize, to: usize, fpi: u8, tpi: u8
     }
 }
 
+#[inline(always)]
+fn move_gives_check(st: &BoardState, mv: &Move) -> bool {
+    let mut bb = st.bb;
+    let gc_from = mv[0] * 8 + mv[1];
+    let gc_to = mv[2] * 8 + move_ec(mv);
+    let gc_fpi = piece_on(&bb, gc_from);
+    if gc_fpi == EMPTY_SQ {
+        return false;
+    }
+
+    bb[gc_fpi as usize] &= !(1u64 << gc_from);
+    let gc_tpi = piece_on(&bb, gc_to);
+    if gc_tpi != EMPTY_SQ {
+        bb[gc_tpi as usize] &= !(1u64 << gc_to);
+    }
+    let gc_pt = piece_type(gc_fpi);
+    if gc_pt == 0 && (mv[2] == 0 || mv[2] == 7) {
+        if let Some(ppi) = promotion_piece_index(is_white_piece(gc_fpi), move_promotion(mv)) {
+            bb[ppi] |= 1u64 << gc_to;
+        } else {
+            bb[gc_fpi as usize] |= 1u64 << gc_to;
+        }
+    } else {
+        bb[gc_fpi as usize] |= 1u64 << gc_to;
+    }
+
+    let opp_ks = if !st.w { st.bb[BK] } else { st.bb[WK] };
+    if opp_ks == 0 {
+        false
+    } else {
+        is_attacked(&bb, opp_ks.trailing_zeros() as usize, !st.w)
+    }
+}
+
 const CORR_HIST_SIZE: usize = 16384;
 fn corr_idx(h: u64, side: bool) -> usize {
     let k = h
@@ -797,39 +831,7 @@ impl Searcher {
             let is_promo = is_promotion_move(fpi, &mv);
             let is_quiet = !capture && !is_promo;
 
-            let gives_check = {
-                let mut bb = st.bb;
-                let gc_from = mv[0] * 8 + mv[1];
-                let gc_to = mv[2] * 8 + move_ec(&mv);
-                let gc_fpi = piece_on(&bb, gc_from);
-                if gc_fpi == EMPTY_SQ {
-                    false
-                } else {
-                    bb[gc_fpi as usize] &= !(1u64 << gc_from);
-                    let gc_tpi = piece_on(&bb, gc_to);
-                    if gc_tpi != EMPTY_SQ {
-                        bb[gc_tpi as usize] &= !(1u64 << gc_to);
-                    }
-                    let gc_pt = piece_type(gc_fpi);
-                    if gc_pt == 0 && (mv[2] == 0 || mv[2] == 7) {
-                        if let Some(ppi) =
-                            promotion_piece_index(is_white_piece(gc_fpi), move_promotion(&mv))
-                        {
-                            bb[ppi] |= 1u64 << gc_to;
-                        } else {
-                            bb[gc_fpi as usize] |= 1u64 << gc_to;
-                        }
-                    } else {
-                        bb[gc_fpi as usize] |= 1u64 << gc_to;
-                    }
-                    let opp_ks = if !st.w { st.bb[BK] } else { st.bb[WK] };
-                    if opp_ks == 0 {
-                        false
-                    } else {
-                        is_attacked(&bb, opp_ks.trailing_zeros() as usize, !st.w)
-                    }
-                }
-            };
+            let gives_check = move_gives_check(st, &mv);
 
             if !is_pv && !in_check && is_quiet && i >= lmp_count {
                 break;
@@ -1423,6 +1425,29 @@ mod tests {
         let mut engine = Engine::new();
         engine.set_fen(fen);
         engine.st
+    }
+
+    fn legal_move(st: &BoardState, uci: &str) -> Move {
+        generate_moves(st, st.w, &st.cr, st.ep)
+            .into_iter()
+            .find(|mv| crate::board::move_to_uci(st, mv) == uci)
+            .unwrap_or_else(|| panic!("expected legal move {uci}"))
+    }
+
+    #[test]
+    fn move_gives_check_rejects_empty_from_square() {
+        let st = state_from_fen("7k/8/8/8/8/8/8/R3K3 w - - 0 1");
+        let mv = [7, 1, 7, 2];
+
+        assert!(!move_gives_check(&st, &mv));
+    }
+
+    #[test]
+    fn move_gives_check_rejects_quiet_non_check() {
+        let st = state_from_fen("7k/8/8/8/8/8/8/R3K3 w - - 0 1");
+        let mv = legal_move(&st, "a1a2");
+
+        assert!(!move_gives_check(&st, &mv));
     }
 
     #[test]
