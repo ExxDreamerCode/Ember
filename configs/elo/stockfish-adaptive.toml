@@ -39,7 +39,7 @@ ember_prior_sigma = 10000
 [stockfish_adaptive]
 cmd = "stockfish"
 proto = "uci"
-levels = [2500, 2600, 2750, 2850, 2950]
+levels = [2600, 2750, 2900, 3050, 3190]
 pilot_games_per_level = 24
 main_level_offsets = [0]
 target_step = 10
