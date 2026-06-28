@@ -561,7 +561,7 @@ def run_stockfish_adaptive_matches(
     max_games, max_games_source = effective_max_games(cfg, explicit_max_games)
     ember = ember_engine(cfg)
     sf_cfg = cfg.get("stockfish_adaptive", {})
-    levels = [int(level) for level in sf_cfg.get("levels", [1900, 2050, 2200, 2350])]
+    levels = [int(level) for level in sf_cfg.get("levels", [2500, 2600, 2750, 2850, 2950])]
     if not levels:
         raise RuntimeError("stockfish adaptive mode needs at least one level")
 
