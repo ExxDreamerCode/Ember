@@ -1548,6 +1548,39 @@ mod tests {
     }
 
     #[test]
+    fn negamax_prefers_en_passant_discovered_check() {
+        let mut st = state_from_fen("8/6pp/8/R2pP1k1/6B1/8/6PP/6K1 w - d6 0 1");
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(128));
+        let mut searcher = Searcher::new(shared_tt.clone(), stopped);
+        searcher.init_nnue_stack(&st);
+        let root_key = compute_hash(&st);
+        let mut nodes = 0u64;
+
+        let score = searcher.negamax(
+            &mut st,
+            2,
+            0,
+            -INF,
+            INF,
+            true,
+            Instant::now(),
+            10.0,
+            &mut nodes,
+        );
+
+        let best_move = shared_tt
+            .get_depth(root_key)
+            .and_then(|(_, _, _, best_move)| best_move)
+            .expect("negamax should store the root best move");
+        let best_uci = crate::board::move_to_uci(&st, &best_move);
+        assert_eq!(
+            best_uci, "e5d6",
+            "search chose {best_uci} instead of the checking en-passant discovery e5d6; score={score}, nodes={nodes}"
+        );
+    }
+
+    #[test]
     fn negamax_timeout_sets_stopped_without_storing_tt() {
         let mut st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
         let stopped = Arc::new(AtomicBool::new(false));
