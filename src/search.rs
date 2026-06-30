@@ -1,7 +1,7 @@
 use crate::board::{
     all_occ, attacked_by, bit, has_non_pawn, is_attacked, is_white_piece, move_ec, move_promotion,
     piece_on, piece_type, promotion_piece_index, see, BoardState, Move, BK, BR, EMPTY_SQ, INF,
-    KING_ATTACKS, MATE, MAX_PLY, QS_DEPTH, WK, WR,
+    KING_ATTACKS, MATE, MAX_PLY, WK, WR,
 };
 use crate::evaluate::{evaluate, evaluate_nnue_acc, with_nnue_net};
 use crate::movegen::{apply_move, generate_moves, is_chess960_castling_move};
@@ -657,42 +657,14 @@ impl Searcher {
         let ks = st.king_sq(st.w);
         let in_check = crate::board::is_attacked(&st.bb, ks, !st.w);
         let is_pv = beta - alpha > 1;
-        let is_root = ply == 0;
-        let king_pressure = if in_check {
-            8
-        } else {
-            tactical_king_pressure(st)
-        };
-
-        let tb_available = !in_check && self.syzygy.tables.is_some() && SyzygyTables::pieces_ok(st);
-
-        let eval_score = if tb_available {
-            self.probe_syzygy(st)
-                .unwrap_or_else(|| self.static_eval(st, ply))
-        } else {
-            self.static_eval(st, ply)
-        };
-
-        if tb_available && !is_pv && !is_root {
-            if let Some(cutoff) = self.syzygy.probe_cutoff(st, beta, alpha) {
-                return cutoff;
-            }
-        }
-
-        if ply > 0 && self.is_repetition() {
-            return 0;
-        }
-
-        let ext = if in_check && depth < 16 { 1 } else { 0 };
-        let actual_depth = depth + ext;
 
         let tt_data = self.shared_tt.get_depth(h);
         let tt_move = tt_data.and_then(|(_, _, _, best)| best);
         let tt_score = tt_data.map(|(_, s, _, _)| score_from_tt(s, ply));
-        let tt_depth = tt_data.map(|(d, _, _, _)| d).unwrap_or(-1);
+        let tt_depth = tt_data.map(|(_, d, _, _)| d).unwrap_or(-1);
         let tt_flag = tt_data.map(|(_, _, f, _)| f);
 
-        if !is_pv && tt_depth >= actual_depth {
+        if !is_pv && tt_depth >= depth {
             if let (Some(flag), Some(s)) = (tt_flag, tt_score) {
                 match flag {
                     TT_EXACT => return s,
@@ -703,45 +675,56 @@ impl Searcher {
             }
         }
 
-        if actual_depth <= 0 {
-            return self.qsearch(st, alpha, beta, QS_DEPTH, start, tl, cnt, ply);
+        if depth <= 0 {
+            return self.qsearch(st, alpha, beta, 0, start, tl, cnt, ply);
         }
 
-        if self.reverse_futility_enabled() && !in_check && !is_pv && actual_depth <= 8 && ply > 0 {
-            let margin = 80 + 65 * actual_depth;
+        if ply > 0 && self.is_repetition() {
+            return 0;
+        }
+
+        let king_pressure = if in_check { 8 } else { tactical_king_pressure(st) };
+
+        let eval_score = if self.syzygy.tables.is_some() && SyzygyTables::pieces_ok(st) {
+            self.probe_syzygy(st).unwrap_or_else(|| self.static_eval(st, ply))
+        } else {
+            self.static_eval(st, ply)
+        };
+
+        if self.syzygy.tables.is_some() && !is_pv && SyzygyTables::pieces_ok(st) {
+            if let Some(cutoff) = self.syzygy.probe_cutoff(st, beta, alpha) {
+                return cutoff;
+            }
+        }
+
+        if self.reverse_futility_enabled() && !in_check && !is_pv && depth <= 8 && ply > 0 {
+            let margin = 80 + 65 * depth;
             if eval_score - margin >= beta {
                 return eval_score - margin;
             }
         }
-        if self.futility_enabled() && !in_check && !is_pv && actual_depth <= 3 && ply > 0 {
-            let margin = 150 * actual_depth;
+
+        if self.futility_enabled() && !in_check && !is_pv && depth <= 3 && ply > 0 {
+            let margin = 150 * depth;
             if eval_score + margin <= alpha {
-                let q = self.qsearch(
-                    st,
-                    alpha - margin,
-                    beta - margin,
-                    QS_DEPTH,
-                    start,
-                    tl,
-                    cnt,
-                    ply,
-                );
+                let q = self.qsearch(st, alpha - margin, beta - margin, 0, start, tl, cnt, ply);
                 if q + margin <= alpha {
                     return alpha;
                 }
             }
         }
+
         if self.null_move_enabled()
             && king_pressure < 3
             && !in_check
             && can_null
             && !is_pv
             && ply > 0
-            && actual_depth >= 3
+            && depth >= 3
             && has_non_pawn(&st.bb, st.w)
             && eval_score >= beta
         {
-            let r = 3 + actual_depth / 4 + ((eval_score - beta) / 200).min(3);
+            let r = 3 + depth / 4 + ((eval_score - beta) / 200).min(3);
             let ow = st.w;
             let oe = st.ep;
             st.w = !st.w;
@@ -751,7 +734,7 @@ impl Searcher {
             self.rep_stack_len += 1;
             let s = -self.negamax(
                 st,
-                actual_depth - r - 1,
+                depth - r - 1,
                 ply + 1,
                 -beta,
                 -beta + 1,
@@ -777,12 +760,11 @@ impl Searcher {
             return if in_check { -MATE + ply as i32 } else { 0 };
         }
 
-        let actual_depth =
-            if self.iid_reduction_enabled() && tt_move.is_none() && actual_depth >= 4 && is_pv {
-                actual_depth - 1
-            } else {
-                actual_depth
-            };
+        let actual_depth = if self.iid_reduction_enabled() && tt_move.is_none() && depth >= 4 && is_pv {
+            depth - 1
+        } else {
+            depth
+        };
 
         let mut scored: Vec<(i32, Move)> = moves
             .into_iter()
@@ -861,6 +843,10 @@ impl Searcher {
         let mut best_move = scored.first().map(|&(_, mv)| mv);
         let mut quiets_tried: Vec<Move> = Vec::new();
 
+        let improving = best_score > -INF && best_score >= eval_score;
+        let _correction_value = 0;
+        let cut_node = !is_pv && best_score > -INF / 2;
+
         for (i, &(_, mv)) in scored.iter().enumerate() {
             if self.time_up(start, tl) {
                 return 0;
@@ -874,11 +860,10 @@ impl Searcher {
             let is_promo = is_promotion_move(fpi, &mv);
             let is_quiet = !capture && !is_promo;
 
-            let gives_check = special_move_gives_check(st, &mv);
-
             if !is_pv && !in_check && is_quiet && i >= lmp_count {
                 break;
             }
+
             if !is_pv && !in_check && i > 0 && best_score > -MATE / 2 {
                 if capture {
                     if self.see_pruning_enabled()
@@ -894,6 +879,7 @@ impl Searcher {
                 }
             }
 
+            let gives_check = special_move_gives_check(st, &mv);
             let move_ext = if gives_check && !in_check && i == 0 && !is_quiet && actual_depth <= 2 {
                 1
             } else {
@@ -919,21 +905,53 @@ impl Searcher {
             self.rep_stack_len += 1;
 
             let new_depth = actual_depth - 1 + move_ext;
-
-            let lmr_eligible =
-                self.lmr_enabled() && i >= 2 && actual_depth >= 3 && is_quiet && !in_check;
+            let history_score = if is_quiet {
+                let (fk, tk) = from_to_key(mv[0], mv[1], mv[2], move_ec(&mv));
+                self.history[fk][tk]
+            } else {
+                0
+            };
             let s = if i == 0 {
                 -self.negamax(st, new_depth, ply + 1, -beta, -alpha, true, start, tl, cnt)
-            } else if lmr_eligible {
-                let r = {
-                    let base = (0.5 + (i as f64).ln() * (actual_depth as f64).ln() / 1.8) as i32;
-                    let r = base.min(actual_depth - 1).max(1);
-                    if !is_pv {
-                        (r + 1).min(actual_depth - 1)
-                    } else {
-                        r
-                    }
+            } else if self.lmr_enabled() && actual_depth >= 3 && is_quiet && !in_check {
+                let mut r = if actual_depth >= 12 {
+                    (0.6 + (i as f64).ln() * (new_depth as f64).ln() / 1.3) as i32
+                } else {
+                    (0.8 + (i as f64).ln() * (new_depth as f64).ln() / 1.7) as i32
                 };
+                
+                r = r.min(new_depth - 1).max(1);
+                
+                if is_pv {
+                    r = r.saturating_sub(1);
+                }
+                
+                if gives_check {
+                    r = r.saturating_sub(1);
+                }
+                
+                if history_score > 0 {
+                    r = r.saturating_sub((history_score / 4096).min(2));
+                }
+                
+                if history_score < 0 {
+                    r = r.saturating_add((-history_score / 4096).min(2));
+                }
+                
+                if improving {
+                    r = r.saturating_sub(1);
+                }
+                
+                if i >= 8 {
+                    r += 1;
+                }
+                
+                if cut_node {
+                    r += 1;
+                }
+                
+                r = r.clamp(0, new_depth - 1);
+                
                 let s2 = -self.negamax(
                     st,
                     new_depth - r,
@@ -945,6 +963,7 @@ impl Searcher {
                     tl,
                     cnt,
                 );
+                
                 if s2 > alpha {
                     let s3 = -self.negamax(
                         st,
@@ -1010,7 +1029,7 @@ impl Searcher {
                                 self.killers[ply][0] = Some(mv);
                             }
                             let (fk, tk) = from_to_key(mv[0], mv[1], mv[2], move_ec(&mv));
-                            let bonus = (actual_depth * actual_depth).min(512);
+                            let bonus = (depth * depth + depth * 2).min(512);
                             self.history[fk][tk] += bonus;
                             if self.history[fk][tk] > 16384 {
                                 for a in 0..64 {
@@ -1534,7 +1553,7 @@ mod tests {
             &mut st,
             -INF,
             INF,
-            QS_DEPTH,
+            0,
             Instant::now(),
             10.0,
             &mut nodes,
