@@ -227,6 +227,8 @@ fn lmr_reduction(ctx: LmrContext) -> Option<i32> {
         return None;
     }
 
+    let _unsupported_node_modifiers = (ctx.improving, ctx.cut_node);
+
     let mut r = if ctx.actual_depth >= 12 {
         (0.6 + (ctx.move_index as f64).ln() * (ctx.new_depth as f64).ln() / 1.3) as i32
     } else {
@@ -251,15 +253,7 @@ fn lmr_reduction(ctx: LmrContext) -> Option<i32> {
         r = r.saturating_add((-ctx.history_score / 4096).min(2));
     }
 
-    if ctx.improving {
-        r = r.saturating_sub(1);
-    }
-
     if ctx.move_index >= 8 {
-        r += 1;
-    }
-
-    if ctx.cut_node {
         r += 1;
     }
 
@@ -901,10 +895,6 @@ impl Searcher {
         let mut best_move = scored.first().map(|&(_, mv)| mv);
         let mut quiets_tried: Vec<Move> = Vec::new();
 
-        let improving = best_score > -INF && best_score >= eval_score;
-        let _correction_value = 0;
-        let cut_node = !is_pv && best_score > -INF / 2;
-
         for (i, &(_, mv)) in scored.iter().enumerate() {
             if self.time_up(start, tl) {
                 return 0;
@@ -978,8 +968,8 @@ impl Searcher {
                     in_check,
                     gives_check,
                     history_score,
-                    improving,
-                    cut_node,
+                    improving: false,
+                    cut_node: false,
                 })
             } else {
                 None
