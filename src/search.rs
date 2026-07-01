@@ -1700,6 +1700,24 @@ mod tests {
     }
 
     #[test]
+    fn sparse_endgame_static_pruning_keeps_quiet_mate_visible() {
+        let mut engine = Engine::new();
+        engine.book = None;
+        engine.set_fen("7R/1P4p1/4Kpk1/3N4/4P3/7P/8/1r6 w - - 1 73");
+
+        let (best_move, score, nodes, _) = engine.find_best_move(10.0, 5);
+
+        assert_eq!(
+            best_move, "h3h4",
+            "search chose {best_move} instead of the quiet mate move h3h4; score={score}, nodes={nodes}"
+        );
+        assert!(
+            score > MATE / 2,
+            "h3h4 should be scored as mate, not as a static centipawn bound; score={score}, nodes={nodes}"
+        );
+    }
+
+    #[test]
     fn checked_node_stores_extended_depth() {
         let mut st = state_from_fen("8/6pp/8/R2pP1k1/6B1/8/6PP/6K1 w - d6 0 1");
         let check = legal_move(&st, "e5d6");
