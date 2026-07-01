@@ -662,7 +662,7 @@ impl Searcher {
         let tt_data = self.shared_tt.get_depth(h);
         let tt_move = tt_data.and_then(|(_, _, _, best)| best);
         let tt_score = tt_data.map(|(_, s, _, _)| score_from_tt(s, ply));
-        let tt_depth = tt_data.map(|(_, d, _, _)| d).unwrap_or(-1);
+        let tt_depth = tt_data.map(|(d, _, _, _)| d).unwrap_or(-1);
         let tt_flag = tt_data.map(|(_, _, f, _)| f);
 
         if !is_pv && tt_depth >= extended_depth {
