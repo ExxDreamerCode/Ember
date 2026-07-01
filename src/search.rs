@@ -1592,6 +1592,26 @@ mod tests {
     }
 
     #[test]
+    fn lmr_reduction_ignores_unbacked_node_modifiers() {
+        let base = quiet_lmr_context(4);
+        let mut improving = base;
+        improving.improving = true;
+        let mut cut_node = base;
+        cut_node.cut_node = true;
+
+        assert_eq!(
+            lmr_reduction(improving),
+            lmr_reduction(base),
+            "improving must not change LMR until it is backed by real node-state data"
+        );
+        assert_eq!(
+            lmr_reduction(cut_node),
+            lmr_reduction(base),
+            "cut_node must not change LMR until it is backed by real node-state data"
+        );
+    }
+
+    #[test]
     fn qsearch_searches_en_passant_captures() {
         let mut st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
         let stopped = Arc::new(AtomicBool::new(false));
