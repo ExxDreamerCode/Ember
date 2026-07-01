@@ -1526,6 +1526,20 @@ mod tests {
             .unwrap_or_else(|| panic!("expected legal move {uci}"))
     }
 
+    fn quiet_lmr_context(move_index: usize) -> LmrContext {
+        LmrContext {
+            actual_depth: 5,
+            new_depth: 4,
+            move_index,
+            is_pv: false,
+            in_check: false,
+            gives_check: false,
+            history_score: 0,
+            improving: false,
+            cut_node: false,
+        }
+    }
+
     #[test]
     fn special_move_gives_check_rejects_empty_from_square() {
         let st = state_from_fen("7k/8/8/8/8/8/8/R3K3 w - - 0 1");
@@ -1572,6 +1586,19 @@ mod tests {
         let mv = legal_move(&st, "e1g1");
 
         assert!(special_move_gives_check(&st, &mv));
+    }
+
+    #[test]
+    fn lmr_transition_table_keeps_second_quiet_full_depth() {
+        assert_eq!(
+            lmr_reduction(quiet_lmr_context(1)),
+            None,
+            "the second quiet move is still early in move ordering and must not be LMR-reduced"
+        );
+        assert!(
+            lmr_reduction(quiet_lmr_context(2)).is_some(),
+            "the third quiet move should remain the first LMR-eligible transition"
+        );
     }
 
     #[test]
