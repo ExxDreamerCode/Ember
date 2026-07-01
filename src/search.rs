@@ -1,7 +1,7 @@
 use crate::board::{
     all_occ, attacked_by, bit, has_non_pawn, is_attacked, is_white_piece, move_ec, move_promotion,
-    piece_on, piece_type, promotion_piece_index, see, BoardState, Move, BK, BR, EMPTY_SQ, INF,
-    KING_ATTACKS, MATE, MAX_PLY, WK, WR,
+    piece_on, piece_type, promotion_piece_index, see, BoardState, Move, BK, BP, BR, EMPTY_SQ, INF,
+    KING_ATTACKS, MATE, MAX_PLY, WK, WP, WR,
 };
 use crate::evaluate::{evaluate, evaluate_nnue_acc, with_nnue_net};
 use crate::movegen::{apply_move, generate_moves, is_chess960_castling_move};
@@ -207,6 +207,26 @@ fn king_zone_pressure(st: &BoardState, white: bool) -> u32 {
 
 fn tactical_king_pressure(st: &BoardState) -> u32 {
     king_zone_pressure(st, true).max(king_zone_pressure(st, false))
+}
+
+fn promotion_race(st: &BoardState) -> bool {
+    const WHITE_ADVANCED: u64 = 0x0000_0000_00FF_FF00;
+    const BLACK_ADVANCED: u64 = 0x00FF_FF00_0000_0000;
+    (st.bb[WP] & WHITE_ADVANCED) != 0 || (st.bb[BP] & BLACK_ADVANCED) != 0
+}
+
+fn sparse_endgame(st: &BoardState) -> bool {
+    let mut pieces = 0;
+    for idx in 0..12 {
+        if idx != WK && idx != BK {
+            pieces += st.bb[idx].count_ones();
+        }
+    }
+    pieces <= 8
+}
+
+fn static_pruning_unsafe(st: &BoardState) -> bool {
+    promotion_race(st) || sparse_endgame(st)
 }
 
 #[derive(Clone, Copy)]
@@ -754,7 +774,12 @@ impl Searcher {
             }
         }
 
-        if self.reverse_futility_enabled() && !in_check && !is_pv && extended_depth <= 8 && ply > 0
+        if self.reverse_futility_enabled()
+            && !in_check
+            && !is_pv
+            && extended_depth <= 8
+            && ply > 0
+            && !static_pruning_unsafe(st)
         {
             let margin = 80 + 65 * extended_depth;
             if eval_score - margin >= beta {
@@ -762,7 +787,13 @@ impl Searcher {
             }
         }
 
-        if self.futility_enabled() && !in_check && !is_pv && extended_depth <= 3 && ply > 0 {
+        if self.futility_enabled()
+            && !in_check
+            && !is_pv
+            && extended_depth <= 3
+            && ply > 0
+            && !static_pruning_unsafe(st)
+        {
             let margin = 150 * extended_depth;
             if eval_score + margin <= alpha {
                 let q = self.qsearch(st, alpha - margin, beta - margin, 0, start, tl, cnt, ply);
