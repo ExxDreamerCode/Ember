@@ -657,6 +657,7 @@ impl Searcher {
         let ks = st.king_sq(st.w);
         let in_check = crate::board::is_attacked(&st.bb, ks, !st.w);
         let is_pv = beta - alpha > 1;
+        let extended_depth = depth + if in_check && depth < 16 { 1 } else { 0 };
 
         let tt_data = self.shared_tt.get_depth(h);
         let tt_move = tt_data.and_then(|(_, _, _, best)| best);
@@ -664,7 +665,7 @@ impl Searcher {
         let tt_depth = tt_data.map(|(_, d, _, _)| d).unwrap_or(-1);
         let tt_flag = tt_data.map(|(_, _, f, _)| f);
 
-        if !is_pv && tt_depth >= depth {
+        if !is_pv && tt_depth >= extended_depth {
             if let (Some(flag), Some(s)) = (tt_flag, tt_score) {
                 match flag {
                     TT_EXACT => return s,
@@ -675,7 +676,7 @@ impl Searcher {
             }
         }
 
-        if depth <= 0 {
+        if extended_depth <= 0 {
             return self.qsearch(st, alpha, beta, 0, start, tl, cnt, ply);
         }
 
@@ -697,15 +698,15 @@ impl Searcher {
             }
         }
 
-        if self.reverse_futility_enabled() && !in_check && !is_pv && depth <= 8 && ply > 0 {
-            let margin = 80 + 65 * depth;
+        if self.reverse_futility_enabled() && !in_check && !is_pv && extended_depth <= 8 && ply > 0 {
+            let margin = 80 + 65 * extended_depth;
             if eval_score - margin >= beta {
                 return eval_score - margin;
             }
         }
 
-        if self.futility_enabled() && !in_check && !is_pv && depth <= 3 && ply > 0 {
-            let margin = 150 * depth;
+        if self.futility_enabled() && !in_check && !is_pv && extended_depth <= 3 && ply > 0 {
+            let margin = 150 * extended_depth;
             if eval_score + margin <= alpha {
                 let q = self.qsearch(st, alpha - margin, beta - margin, 0, start, tl, cnt, ply);
                 if q + margin <= alpha {
@@ -720,11 +721,11 @@ impl Searcher {
             && can_null
             && !is_pv
             && ply > 0
-            && depth >= 3
+            && extended_depth >= 3
             && has_non_pawn(&st.bb, st.w)
             && eval_score >= beta
         {
-            let r = 3 + depth / 4 + ((eval_score - beta) / 200).min(3);
+            let r = 3 + extended_depth / 4 + ((eval_score - beta) / 200).min(3);
             let ow = st.w;
             let oe = st.ep;
             st.w = !st.w;
@@ -734,7 +735,7 @@ impl Searcher {
             self.rep_stack_len += 1;
             let s = -self.negamax(
                 st,
-                depth - r - 1,
+                extended_depth - r - 1,
                 ply + 1,
                 -beta,
                 -beta + 1,
@@ -760,10 +761,10 @@ impl Searcher {
             return if in_check { -MATE + ply as i32 } else { 0 };
         }
 
-        let actual_depth = if self.iid_reduction_enabled() && tt_move.is_none() && depth >= 4 && is_pv {
-            depth - 1
+        let actual_depth = if self.iid_reduction_enabled() && tt_move.is_none() && extended_depth >= 4 && is_pv {
+            extended_depth - 1
         } else {
-            depth
+            extended_depth
         };
 
         let mut scored: Vec<(i32, Move)> = moves
