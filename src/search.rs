@@ -1601,6 +1601,47 @@ mod tests {
     }
 
     #[test]
+    fn checked_node_stores_extended_depth() {
+        let mut st = state_from_fen("8/6pp/8/R2pP1k1/6B1/8/6PP/6K1 w - d6 0 1");
+        let check = legal_move(&st, "e5d6");
+        apply_move(
+            &mut st,
+            check[0],
+            check[1],
+            check[2],
+            move_ec(&check),
+            move_promotion(&check),
+        );
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(128));
+        let mut searcher = Searcher::new(shared_tt.clone(), stopped);
+        searcher.init_nnue_stack(&st);
+        let key = compute_hash(&st);
+        let mut nodes = 0u64;
+
+        let _score = searcher.negamax(
+            &mut st,
+            1,
+            0,
+            -INF,
+            INF,
+            true,
+            Instant::now(),
+            10.0,
+            &mut nodes,
+        );
+
+        let stored_depth = shared_tt
+            .get_depth(key)
+            .map(|(depth, _, _, _)| depth)
+            .expect("checked node should store a TT entry");
+        assert_eq!(
+            stored_depth, 2,
+            "checked node searched at nominal depth 1 must store extended depth 2; got {stored_depth}"
+        );
+    }
+
+    #[test]
     fn negamax_timeout_sets_stopped_without_storing_tt() {
         let mut st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
         let stopped = Arc::new(AtomicBool::new(false));
