@@ -54,6 +54,13 @@ jobs:
           nix develop .#ci --command cargo build --locked --release
           --bin ember
 
+      - name: Replay stupidity regression cases
+        run: >
+          nix develop .#ci --command python3 tools/check_stupidity_cases.py
+          --binary target/release/ember
+          --timeout 120
+          stupidities/cases/S-*/case.json
+
       - name: Quick no-book NPS smoke benchmark
         run: |
           nix develop .#ci --command python3 tools/benchmark_search.py \
