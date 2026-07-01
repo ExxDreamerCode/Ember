@@ -735,10 +735,15 @@ impl Searcher {
             return 0;
         }
 
-        let king_pressure = if in_check { 8 } else { tactical_king_pressure(st) };
+        let king_pressure = if in_check {
+            8
+        } else {
+            tactical_king_pressure(st)
+        };
 
         let eval_score = if self.syzygy.tables.is_some() && SyzygyTables::pieces_ok(st) {
-            self.probe_syzygy(st).unwrap_or_else(|| self.static_eval(st, ply))
+            self.probe_syzygy(st)
+                .unwrap_or_else(|| self.static_eval(st, ply))
         } else {
             self.static_eval(st, ply)
         };
@@ -749,7 +754,8 @@ impl Searcher {
             }
         }
 
-        if self.reverse_futility_enabled() && !in_check && !is_pv && extended_depth <= 8 && ply > 0 {
+        if self.reverse_futility_enabled() && !in_check && !is_pv && extended_depth <= 8 && ply > 0
+        {
             let margin = 80 + 65 * extended_depth;
             if eval_score - margin >= beta {
                 return eval_score - margin;
@@ -812,11 +818,12 @@ impl Searcher {
             return if in_check { -MATE + ply as i32 } else { 0 };
         }
 
-        let actual_depth = if self.iid_reduction_enabled() && tt_move.is_none() && extended_depth >= 4 && is_pv {
-            extended_depth - 1
-        } else {
-            extended_depth
-        };
+        let actual_depth =
+            if self.iid_reduction_enabled() && tt_move.is_none() && extended_depth >= 4 && is_pv {
+                extended_depth - 1
+            } else {
+                extended_depth
+            };
 
         let mut scored: Vec<(i32, Move)> = moves
             .into_iter()
@@ -1620,16 +1627,7 @@ mod tests {
         let stand_pat = searcher.corrected_eval(&st);
         let mut nodes = 0u64;
 
-        let score = searcher.qsearch(
-            &mut st,
-            -INF,
-            INF,
-            0,
-            Instant::now(),
-            10.0,
-            &mut nodes,
-            0,
-        );
+        let score = searcher.qsearch(&mut st, -INF, INF, 0, Instant::now(), 10.0, &mut nodes, 0);
 
         assert!(
             score > stand_pat + 50,
@@ -1722,17 +1720,7 @@ mod tests {
         shared_tt.store(key, 1, 1234, TT_EXACT, None);
         let mut nodes = 0u64;
 
-        let score = searcher.negamax(
-            &mut st,
-            3,
-            0,
-            0,
-            1,
-            true,
-            Instant::now(),
-            10.0,
-            &mut nodes,
-        );
+        let score = searcher.negamax(&mut st, 3, 0, 0, 1, true, Instant::now(), 10.0, &mut nodes);
 
         assert!(
             nodes > 1,
