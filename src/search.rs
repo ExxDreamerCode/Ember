@@ -223,7 +223,7 @@ struct LmrContext {
 }
 
 fn lmr_reduction(ctx: LmrContext) -> Option<i32> {
-    if ctx.move_index == 0 || ctx.actual_depth < 3 || ctx.in_check {
+    if ctx.move_index < 2 || ctx.actual_depth < 3 || ctx.in_check {
         return None;
     }
 
