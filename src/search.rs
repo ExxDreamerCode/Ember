@@ -209,6 +209,63 @@ fn tactical_king_pressure(st: &BoardState) -> u32 {
     king_zone_pressure(st, true).max(king_zone_pressure(st, false))
 }
 
+#[derive(Clone, Copy)]
+struct LmrContext {
+    actual_depth: i32,
+    new_depth: i32,
+    move_index: usize,
+    is_pv: bool,
+    in_check: bool,
+    gives_check: bool,
+    history_score: i32,
+    improving: bool,
+    cut_node: bool,
+}
+
+fn lmr_reduction(ctx: LmrContext) -> Option<i32> {
+    if ctx.move_index == 0 || ctx.actual_depth < 3 || ctx.in_check {
+        return None;
+    }
+
+    let mut r = if ctx.actual_depth >= 12 {
+        (0.6 + (ctx.move_index as f64).ln() * (ctx.new_depth as f64).ln() / 1.3) as i32
+    } else {
+        (0.8 + (ctx.move_index as f64).ln() * (ctx.new_depth as f64).ln() / 1.7) as i32
+    };
+
+    r = r.min(ctx.new_depth - 1).max(1);
+
+    if ctx.is_pv {
+        r = r.saturating_sub(1);
+    }
+
+    if ctx.gives_check {
+        r = r.saturating_sub(1);
+    }
+
+    if ctx.history_score > 0 {
+        r = r.saturating_sub((ctx.history_score / 4096).min(2));
+    }
+
+    if ctx.history_score < 0 {
+        r = r.saturating_add((-ctx.history_score / 4096).min(2));
+    }
+
+    if ctx.improving {
+        r = r.saturating_sub(1);
+    }
+
+    if ctx.move_index >= 8 {
+        r += 1;
+    }
+
+    if ctx.cut_node {
+        r += 1;
+    }
+
+    Some(r.clamp(0, ctx.new_depth - 1))
+}
+
 pub struct Searcher {
     pub shared_tt: Arc<SharedTT>,
     pub killers: [[Option<Move>; 2]; MAX_PLY],
@@ -912,47 +969,24 @@ impl Searcher {
             } else {
                 0
             };
+            let lmr_reduction = if self.lmr_enabled() && is_quiet {
+                lmr_reduction(LmrContext {
+                    actual_depth,
+                    new_depth,
+                    move_index: i,
+                    is_pv,
+                    in_check,
+                    gives_check,
+                    history_score,
+                    improving,
+                    cut_node,
+                })
+            } else {
+                None
+            };
             let s = if i == 0 {
                 -self.negamax(st, new_depth, ply + 1, -beta, -alpha, true, start, tl, cnt)
-            } else if self.lmr_enabled() && actual_depth >= 3 && is_quiet && !in_check {
-                let mut r = if actual_depth >= 12 {
-                    (0.6 + (i as f64).ln() * (new_depth as f64).ln() / 1.3) as i32
-                } else {
-                    (0.8 + (i as f64).ln() * (new_depth as f64).ln() / 1.7) as i32
-                };
-                
-                r = r.min(new_depth - 1).max(1);
-                
-                if is_pv {
-                    r = r.saturating_sub(1);
-                }
-                
-                if gives_check {
-                    r = r.saturating_sub(1);
-                }
-                
-                if history_score > 0 {
-                    r = r.saturating_sub((history_score / 4096).min(2));
-                }
-                
-                if history_score < 0 {
-                    r = r.saturating_add((-history_score / 4096).min(2));
-                }
-                
-                if improving {
-                    r = r.saturating_sub(1);
-                }
-                
-                if i >= 8 {
-                    r += 1;
-                }
-                
-                if cut_node {
-                    r += 1;
-                }
-                
-                r = r.clamp(0, new_depth - 1);
-                
+            } else if let Some(r) = lmr_reduction {
                 let s2 = -self.negamax(
                     st,
                     new_depth - r,
@@ -964,7 +998,6 @@ impl Searcher {
                     tl,
                     cnt,
                 );
-                
                 if s2 > alpha {
                     let s3 = -self.negamax(
                         st,
