@@ -1642,6 +1642,35 @@ mod tests {
     }
 
     #[test]
+    fn tt_cutoff_uses_stored_depth_not_score() {
+        let mut st = state_from_fen("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1");
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(128));
+        let mut searcher = Searcher::new(shared_tt.clone(), stopped);
+        searcher.init_nnue_stack(&st);
+        let key = compute_hash(&st);
+        shared_tt.store(key, 1, 1234, TT_EXACT, None);
+        let mut nodes = 0u64;
+
+        let score = searcher.negamax(
+            &mut st,
+            3,
+            0,
+            0,
+            1,
+            true,
+            Instant::now(),
+            10.0,
+            &mut nodes,
+        );
+
+        assert!(
+            nodes > 1,
+            "deeper non-PV search incorrectly cut off from shallow TT score {score}; nodes={nodes}"
+        );
+    }
+
+    #[test]
     fn negamax_timeout_sets_stopped_without_storing_tt() {
         let mut st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
         let stopped = Arc::new(AtomicBool::new(false));
