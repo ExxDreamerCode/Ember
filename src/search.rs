@@ -570,8 +570,8 @@ impl Searcher {
                 .filter(|mv| {
                     let to = mv[2] * 8 + move_ec(mv);
                     let from = mv[0] * 8 + mv[1];
-                    let fpi = piece_on(&st.bb, from);
-                    let tpi = piece_on(&st.bb, to);
+                    let fpi = st.mailbox[from];
+                    let tpi = st.mailbox[to];
                     move_is_capture(st, fpi, mv, to, tpi) || is_promotion_move(fpi, mv)
                 })
                 .collect()
