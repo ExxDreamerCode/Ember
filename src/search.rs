@@ -1,7 +1,7 @@
 use crate::board::{
     all_occ, attacked_by, bit, has_non_pawn, is_attacked, is_white_piece, move_ec, move_promotion,
-    piece_on, piece_type, promotion_piece_index, see, BoardState, Move, BK, BR, EMPTY_SQ, INF,
-    KING_ATTACKS, MATE, MAX_PLY, QS_DEPTH, WK, WR,
+    piece_on, piece_type, promotion_piece_index, see, BoardState, Move, BK, BP, BR, EMPTY_SQ,
+    INF, KING_ATTACKS, MATE, MAX_PLY, QS_DEPTH, WK, WP, WR,
 };
 use crate::evaluate::{evaluate, evaluate_nnue_acc, with_nnue_net};
 use crate::movegen::{apply_move, generate_moves, is_chess960_castling_move};
@@ -756,38 +756,41 @@ impl Searcher {
             && has_non_pawn(&st.bb, st.w)
             && eval_score >= beta
         {
-            let r = 3 + actual_depth / 4 + ((eval_score - beta) / 200).min(3);
-            let ow = st.w;
-            let oe = st.ep;
-            st.w = !st.w;
-            st.ep = None;
-            if ply + 1 < self.nnue_stack.len() {
-                let (left, right) = self.nnue_stack.split_at_mut(ply + 1);
-                right[0].clone_from(&left[ply]);
-            }
-            let null_h = compute_hash(st);
-            self.rep_stack.push(null_h);
-            self.rep_stack_len += 1;
-            let s = -self.negamax(
-                st,
-                actual_depth - r - 1,
-                ply + 1,
-                -beta,
-                -beta + 1,
-                false,
-                start,
-                tl,
-                cnt,
-            );
-            self.rep_stack.pop();
-            self.rep_stack_len -= 1;
-            st.w = ow;
-            st.ep = oe;
-            if self.time_up(start, tl) {
-                return 0;
-            }
-            if s >= beta {
-                return beta;
+            let total_non_pawn = (all_occ(&st.bb) & !(st.bb[WP] | st.bb[BP])).count_ones();
+            if total_non_pawn > 4 {
+                let r = 3 + actual_depth / 4 + ((eval_score - beta) / 200).min(3);
+                let ow = st.w;
+                let oe = st.ep;
+                st.w = !st.w;
+                st.ep = None;
+                if ply + 1 < self.nnue_stack.len() {
+                    let (left, right) = self.nnue_stack.split_at_mut(ply + 1);
+                    right[0].clone_from(&left[ply]);
+                }
+                let null_h = compute_hash(st);
+                self.rep_stack.push(null_h);
+                self.rep_stack_len += 1;
+                let s = -self.negamax(
+                    st,
+                    actual_depth - r - 1,
+                    ply + 1,
+                    -beta,
+                    -beta + 1,
+                    false,
+                    start,
+                    tl,
+                    cnt,
+                );
+                self.rep_stack.pop();
+                self.rep_stack_len -= 1;
+                st.w = ow;
+                st.ep = oe;
+                if self.time_up(start, tl) {
+                    return 0;
+                }
+                if s >= beta {
+                    return beta;
+                }
             }
         }
 
