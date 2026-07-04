@@ -653,6 +653,21 @@ impl Searcher {
             return self.static_eval(st, ply);
         }
 
+        let mut beta = beta;
+        if ply > 0 {
+            let mate_alpha = -MATE + ply as i32;
+            let mate_beta = MATE - ply as i32;
+            if alpha < mate_alpha {
+                alpha = mate_alpha;
+            }
+            if beta > mate_beta {
+                beta = mate_beta;
+            }
+            if alpha >= beta {
+                return alpha;
+            }
+        }
+
         let h = compute_hash(st);
         let ks = st.king_sq(st.w);
         let in_check = crate::board::is_attacked(&st.bb, ks, !st.w);
@@ -746,6 +761,10 @@ impl Searcher {
             let oe = st.ep;
             st.w = !st.w;
             st.ep = None;
+            if ply + 1 < self.nnue_stack.len() {
+                let (left, right) = self.nnue_stack.split_at_mut(ply + 1);
+                right[0].clone_from(&left[ply]);
+            }
             let null_h = compute_hash(st);
             self.rep_stack.push(null_h);
             self.rep_stack_len += 1;
@@ -1145,6 +1164,10 @@ pub fn extract_pv_line(shared_tt: &SharedTT, st: &BoardState, first_move: Move) 
         return pv;
     }
 
+    let mut seen_hashes = std::collections::HashSet::new();
+    seen_hashes.insert(compute_hash(st));
+    seen_hashes.insert(compute_hash(&prev_st));
+
     for _ in 0..MAX_PLY.saturating_sub(1) {
         let h = compute_hash(&prev_st);
         if let Some((_, _, _, Some(best))) = shared_tt.get_depth(h) {
@@ -1175,6 +1198,11 @@ pub fn extract_pv_line(shared_tt: &SharedTT, st: &BoardState, first_move: Move) 
             if moved_king_sq == 0
                 || crate::board::is_attacked(&prev_st.bb, moved_king_sq, prev_st.w)
             {
+                pv.pop();
+                break;
+            }
+            let h_after = compute_hash(&prev_st);
+            if !seen_hashes.insert(h_after) {
                 pv.pop();
                 break;
             }

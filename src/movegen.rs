@@ -57,7 +57,13 @@ fn ray_between(a: usize, b: usize) -> u64 {
     mask
 }
 
-fn compute_pins(bb: &[u64; 12], occ: u64, own: u64, king_sq: usize, wturn: bool) -> (u64, [u64; 64]) {
+fn compute_pins(
+    bb: &[u64; 12],
+    occ: u64,
+    own: u64,
+    king_sq: usize,
+    wturn: bool,
+) -> (u64, [u64; 64]) {
     let (opp_rook_like, opp_bishop_like) = if wturn {
         (bb[BR] | bb[BQ], bb[BB] | bb[BQ])
     } else {
@@ -71,7 +77,11 @@ fn compute_pins(bb: &[u64; 12], occ: u64, own: u64, king_sq: usize, wturn: bool)
     let kc = (king_sq % 8) as i32;
 
     for (idx, &(dr, dc)) in ROOK_DIRS.iter().chain(BISHOP_DIRS.iter()).enumerate() {
-        let slider_bb = if idx < 4 { opp_rook_like } else { opp_bishop_like };
+        let slider_bb = if idx < 4 {
+            opp_rook_like
+        } else {
+            opp_bishop_like
+        };
 
         let mut ray = 0u64;
         let mut r = kr + dr;
@@ -298,9 +308,9 @@ fn castling_rook_square(
             continue;
         }
         let better_candidate = if kingside {
-            col > king_col && candidate.map_or(true, |prev| col < prev)
+            col > king_col && candidate.is_none_or(|prev| col < prev)
         } else {
-            col < king_col && candidate.map_or(true, |prev| col > prev)
+            col < king_col && candidate.is_none_or(|prev| col > prev)
         };
         if better_candidate {
             candidate = Some(col);
@@ -431,7 +441,7 @@ pub fn generate_moves(
     } else if num_checkers == 1 {
         let checker_sq = checkers_bb.trailing_zeros() as usize;
         let checker_pi = st.mailbox[checker_sq];
-        let is_slider = checker_pi != EMPTY_SQ && matches!(piece_type(checker_pi), 2 | 3 | 4);
+        let is_slider = checker_pi != EMPTY_SQ && matches!(piece_type(checker_pi), 2..=4);
         if is_slider {
             ray_between(king_sq_own, checker_sq) | bit(checker_sq)
         } else {
@@ -801,7 +811,8 @@ mod tests {
 
     #[test]
     fn temp_perft_kiwipete() {
-        let st = state_from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+        let st =
+            state_from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
         assert_eq!(perft(&st, 1), 48);
         assert_eq!(perft(&st, 2), 2039);
         assert_eq!(perft(&st, 3), 97862);
@@ -836,11 +847,11 @@ mod tests {
         assert_eq!(perft(&st, 4), 2103487);
     }
 
-
     #[test]
     #[ignore]
     fn temp_perft_kiwipete_depth5_stress() {
-        let st = state_from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+        let st =
+            state_from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
         assert_eq!(perft(&st, 5), 193690690);
     }
 
