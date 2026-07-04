@@ -15,7 +15,7 @@ fn main() {
 
     let args: Vec<String> = std::env::args().collect();
     let dataset_dir = get_arg(&args, "--dataset-dir", "/content/data");
-    let superbatches: usize = get_arg(&args, "--superbatches", "800").parse().unwrap();
+    let superbatches: usize = get_arg(&args, "--superbatches", "150").parse().unwrap();
     let wdl_proportion: f32 = get_arg(&args, "--wdl", "0.07").parse().unwrap();
     let initial_lr: f32 = get_arg(&args, "--lr", "0.001").parse().unwrap();
     let final_lr: f32 = get_arg(&args, "--final-lr",
