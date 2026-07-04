@@ -868,8 +868,12 @@ impl Searcher {
 
             let from = mv[0] * 8 + mv[1];
             let to = mv[2] * 8 + move_ec(&mv);
-            let fpi = piece_on(&st.bb, from);
-            let tpi = piece_on(&st.bb, to);
+            let fpi = st.mailbox[from];
+            let tpi = if fpi != EMPTY_SQ && piece_type(fpi) == 0 && (mv[2] == 0 || mv[2] == 7) {
+                piece_on(&st.bb, to)
+            } else {
+                st.mailbox[to]
+            };
             let capture = move_is_capture(st, fpi, &mv, to, tpi);
             let is_promo = is_promotion_move(fpi, &mv);
             let is_quiet = !capture && !is_promo;

@@ -14,7 +14,7 @@ const EVAL_SCALE: i32 = 400;
 const FT_SHIFT: i32 = 9;
 const NNUE_NUM_PIECE_TYPES: usize = 12;
 const NNUE_MAGIC: u32 = 0x4E4E5545;
-const COMPACT_NNUE_MAGIC: u32 = 0x314E4345; // "ECN1"
+const COMPACT_NNUE_MAGIC: u32 = 0x314E4345;
 const COMPACT_NNUE_VERSION_ROWS: u32 = 1;
 const COMPACT_NNUE_VERSION_PACKED: u32 = 2;
 const COMPACT_ZERO_ROW: u16 = u16::MAX;
@@ -186,7 +186,6 @@ impl NNUENet {
     #[inline(always)]
     fn input_row_fast(&self, idx: usize) -> Option<&[i16]> {
         debug_assert!(idx < self.input_row_map.len());
-        // Loaders validate the compact row map; debug assertions catch format drift.
         let physical_row = unsafe { *self.input_row_map.get_unchecked(idx) };
         if physical_row == COMPACT_ZERO_ROW {
             return None;
@@ -1001,15 +1000,45 @@ impl NNUEAccumulator {
 
     #[inline(always)]
     fn add_row(acc: &mut [i16], row: &[i16]) {
-        for (dst, &weight) in acc.iter_mut().zip(row) {
-            *dst += weight;
+        let len = acc.len();
+        debug_assert_eq!(len, row.len());
+        let mut i = 0;
+        while i + 4 <= len {
+            unsafe {
+                *acc.get_unchecked_mut(i) += *row.get_unchecked(i);
+                *acc.get_unchecked_mut(i + 1) += *row.get_unchecked(i + 1);
+                *acc.get_unchecked_mut(i + 2) += *row.get_unchecked(i + 2);
+                *acc.get_unchecked_mut(i + 3) += *row.get_unchecked(i + 3);
+            }
+            i += 4;
+        }
+        while i < len {
+            unsafe {
+                *acc.get_unchecked_mut(i) += *row.get_unchecked(i);
+            }
+            i += 1;
         }
     }
 
     #[inline(always)]
     fn remove_row(acc: &mut [i16], row: &[i16]) {
-        for (dst, &weight) in acc.iter_mut().zip(row) {
-            *dst -= weight;
+        let len = acc.len();
+        debug_assert_eq!(len, row.len());
+        let mut i = 0;
+        while i + 4 <= len {
+            unsafe {
+                *acc.get_unchecked_mut(i) -= *row.get_unchecked(i);
+                *acc.get_unchecked_mut(i + 1) -= *row.get_unchecked(i + 1);
+                *acc.get_unchecked_mut(i + 2) -= *row.get_unchecked(i + 2);
+                *acc.get_unchecked_mut(i + 3) -= *row.get_unchecked(i + 3);
+            }
+            i += 4;
+        }
+        while i < len {
+            unsafe {
+                *acc.get_unchecked_mut(i) -= *row.get_unchecked(i);
+            }
+            i += 1;
         }
     }
 

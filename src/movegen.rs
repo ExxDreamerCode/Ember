@@ -324,9 +324,9 @@ pub fn generate_moves(
             let f = $from;
             let t = $to;
             let mut bb2 = st.bb;
-            let pi = piece_on(&bb2, f);
+            let pi = st.mailbox[f];
             if pi != EMPTY_SQ {
-                let cap = piece_on(&bb2, t);
+                let cap = st.mailbox[t];
                 if cap != EMPTY_SQ && piece_type(cap) != 5 {
                     bb2[cap as usize] &= !bit(t);
                     bb2[pi as usize] &= !bit(f);
