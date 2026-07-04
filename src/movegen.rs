@@ -7,6 +7,115 @@ use crate::magic::{bishop_attacks, rook_attacks};
 
 pub use crate::board::Move;
 
+const ROOK_DIRS: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
+const BISHOP_DIRS: [(i32, i32); 4] = [(-1, -1), (-1, 1), (1, -1), (1, 1)];
+
+#[inline]
+fn attackers_to(bb: &[u64; 12], occ: u64, sq: usize, by_white: bool) -> u64 {
+    let (p, n, b, r, q, k) = if by_white {
+        (bb[WP], bb[WN], bb[WB], bb[WR], bb[WQ], bb[WK])
+    } else {
+        (bb[BP], bb[BN], bb[BB], bb[BR], bb[BQ], bb[BK])
+    };
+    let bit_s = bit(sq);
+    let mut att = 0u64;
+    if by_white {
+        att |= p & ((bit_s & !0x0101010101010101u64) << 7 | (bit_s & !0x8080808080808080u64) << 9);
+    } else {
+        att |= p & ((bit_s & !0x0101010101010101u64) >> 9 | (bit_s & !0x8080808080808080u64) >> 7);
+    }
+    att |= n & KNIGHT_ATTACKS[sq];
+    att |= k & KING_ATTACKS[sq];
+    att |= (b | q) & bishop_attacks(sq, occ);
+    att |= (r | q) & rook_attacks(sq, occ);
+    att
+}
+
+#[inline]
+fn ray_between(a: usize, b: usize) -> u64 {
+    let ar = (a / 8) as i32;
+    let ac = (a % 8) as i32;
+    let br = (b / 8) as i32;
+    let bc = (b % 8) as i32;
+    if ar == br && ac == bc {
+        return 0;
+    }
+    let aligned = ar == br || ac == bc || (br - ar).abs() == (bc - ac).abs();
+    if !aligned {
+        return 0;
+    }
+    let dr = (br - ar).signum();
+    let dc = (bc - ac).signum();
+    let mut mask = 0u64;
+    let mut r = ar + dr;
+    let mut c = ac + dc;
+    while r != br || c != bc {
+        mask |= bit((r * 8 + c) as usize);
+        r += dr;
+        c += dc;
+    }
+    mask
+}
+
+fn compute_pins(bb: &[u64; 12], occ: u64, own: u64, king_sq: usize, wturn: bool) -> (u64, [u64; 64]) {
+    let (opp_rook_like, opp_bishop_like) = if wturn {
+        (bb[BR] | bb[BQ], bb[BB] | bb[BQ])
+    } else {
+        (bb[WR] | bb[WQ], bb[WB] | bb[WQ])
+    };
+
+    let mut pinned = 0u64;
+    let mut pin_mask = [0u64; 64];
+
+    let kr = (king_sq / 8) as i32;
+    let kc = (king_sq % 8) as i32;
+
+    for (idx, &(dr, dc)) in ROOK_DIRS.iter().chain(BISHOP_DIRS.iter()).enumerate() {
+        let slider_bb = if idx < 4 { opp_rook_like } else { opp_bishop_like };
+
+        let mut ray = 0u64;
+        let mut r = kr + dr;
+        let mut c = kc + dc;
+        let mut first_blocker: Option<usize> = None;
+        while (0..8).contains(&r) && (0..8).contains(&c) {
+            let s = (r * 8 + c) as usize;
+            ray |= bit(s);
+            if occ & bit(s) != 0 {
+                first_blocker = Some(s);
+                break;
+            }
+            r += dr;
+            c += dc;
+        }
+
+        let Some(b1) = first_blocker else {
+            continue;
+        };
+        if own & bit(b1) == 0 {
+            continue;
+        }
+
+        let mut ray2 = ray;
+        let mut r2 = r + dr;
+        let mut c2 = c + dc;
+        while (0..8).contains(&r2) && (0..8).contains(&c2) {
+            let s2 = (r2 * 8 + c2) as usize;
+            ray2 |= bit(s2);
+            if occ & bit(s2) != 0 {
+                if slider_bb & bit(s2) != 0 {
+                    pinned |= bit(b1);
+                    pin_mask[b1] = ray2;
+                }
+                break;
+            }
+            r2 += dr;
+            c2 += dc;
+        }
+    }
+
+    (pinned, pin_mask)
+}
+
 #[inline]
 pub fn is_chess960_castling_move(st: &BoardState, mv: &Move) -> bool {
     if !st.chess960 {
@@ -189,9 +298,9 @@ fn castling_rook_square(
             continue;
         }
         let better_candidate = if kingside {
-            col > king_col && candidate.is_none_or(|prev| col < prev)
+            col > king_col && candidate.map_or(true, |prev| col < prev)
         } else {
-            col < king_col && candidate.is_none_or(|prev| col > prev)
+            col < king_col && candidate.map_or(true, |prev| col > prev)
         };
         if better_candidate {
             candidate = Some(col);
@@ -314,7 +423,24 @@ pub fn generate_moves(
     let opp = occ ^ own;
     let free = !occ;
     let king_sq_own = st.king_sq(wturn);
-    let in_check = is_attacked(&st.bb, king_sq_own, !wturn);
+    let checkers_bb = attackers_to(&st.bb, occ, king_sq_own, !wturn);
+    let in_check = checkers_bb != 0;
+    let num_checkers = checkers_bb.count_ones();
+    let check_mask: u64 = if num_checkers == 0 {
+        !0u64
+    } else if num_checkers == 1 {
+        let checker_sq = checkers_bb.trailing_zeros() as usize;
+        let checker_pi = st.mailbox[checker_sq];
+        let is_slider = checker_pi != EMPTY_SQ && matches!(piece_type(checker_pi), 2 | 3 | 4);
+        if is_slider {
+            ray_between(king_sq_own, checker_sq) | bit(checker_sq)
+        } else {
+            bit(checker_sq)
+        }
+    } else {
+        0u64
+    };
+    let (pinned_bb, pin_mask) = compute_pins(&st.bb, occ, own, king_sq_own, wturn);
     let _back = if wturn { 7usize } else { 0usize };
 
     let mut result: Vec<Move> = Vec::with_capacity(48);
@@ -323,25 +449,14 @@ pub fn generate_moves(
         ($from:expr, $to:expr) => {{
             let f = $from;
             let t = $to;
-            let mut bb2 = st.bb;
-            let pi = st.mailbox[f];
-            if pi != EMPTY_SQ {
-                let cap = st.mailbox[t];
-                if cap != EMPTY_SQ && piece_type(cap) != 5 {
-                    bb2[cap as usize] &= !bit(t);
-                    bb2[pi as usize] &= !bit(f);
-                    bb2[pi as usize] |= bit(t);
-                    let ks = if piece_type(pi) == 5 { t } else { king_sq_own };
-                    if !is_attacked(&bb2, ks, !wturn) {
-                        result.push(encode_move(sq_r(f), sq_c(f), sq_r(t), sq_c(t), 0));
-                    }
-                } else if cap == EMPTY_SQ {
-                    bb2[pi as usize] &= !bit(f);
-                    bb2[pi as usize] |= bit(t);
-                    let ks = if piece_type(pi) == 5 { t } else { king_sq_own };
-                    if !is_attacked(&bb2, ks, !wturn) {
-                        result.push(encode_move(sq_r(f), sq_c(f), sq_r(t), sq_c(t), 0));
-                    }
+            if check_mask & bit(t) != 0 {
+                let allowed = if pinned_bb & bit(f) != 0 {
+                    pin_mask[f]
+                } else {
+                    !0u64
+                };
+                if allowed & bit(t) != 0 {
+                    result.push(encode_move(sq_r(f), sq_c(f), sq_r(t), sq_c(t), 0));
                 }
             }
         }};
@@ -373,27 +488,14 @@ pub fn generate_moves(
         ($from:expr, $to:expr, $promotion:expr) => {{
             let f = $from;
             let t = $to;
-            let mut bb2 = st.bb;
-            let pi = piece_on(&bb2, f);
-            if pi != EMPTY_SQ {
-                let cap = piece_on(&bb2, t);
-                if cap != EMPTY_SQ && piece_type(cap) != 5 {
-                    bb2[cap as usize] &= !bit(t);
-                    bb2[pi as usize] &= !bit(f);
-                    if let Some(promo_pi) = promotion_piece_index(wturn, $promotion) {
-                        bb2[promo_pi] |= bit(t);
-                    }
-                    if !is_attacked(&bb2, king_sq_own, !wturn) {
-                        result.push(encode_move(sq_r(f), sq_c(f), sq_r(t), sq_c(t), $promotion));
-                    }
-                } else if cap == EMPTY_SQ {
-                    bb2[pi as usize] &= !bit(f);
-                    if let Some(promo_pi) = promotion_piece_index(wturn, $promotion) {
-                        bb2[promo_pi] |= bit(t);
-                    }
-                    if !is_attacked(&bb2, king_sq_own, !wturn) {
-                        result.push(encode_move(sq_r(f), sq_c(f), sq_r(t), sq_c(t), $promotion));
-                    }
+            if check_mask & bit(t) != 0 {
+                let allowed = if pinned_bb & bit(f) != 0 {
+                    pin_mask[f]
+                } else {
+                    !0u64
+                };
+                if allowed & bit(t) != 0 {
+                    result.push(encode_move(sq_r(f), sq_c(f), sq_r(t), sq_c(t), $promotion));
                 }
             }
         }};
@@ -688,6 +790,75 @@ mod tests {
         assert_eq!(perft(&st, 1), 20);
         assert_eq!(perft(&st, 2), 400);
         assert_eq!(perft(&st, 3), 8902);
+    }
+
+    #[test]
+    fn temp_perft_startpos_deep() {
+        let st = state_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        assert_eq!(perft(&st, 4), 197281);
+        assert_eq!(perft(&st, 5), 4865609);
+    }
+
+    #[test]
+    fn temp_perft_kiwipete() {
+        let st = state_from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+        assert_eq!(perft(&st, 1), 48);
+        assert_eq!(perft(&st, 2), 2039);
+        assert_eq!(perft(&st, 3), 97862);
+        assert_eq!(perft(&st, 4), 4085603);
+    }
+
+    #[test]
+    fn temp_perft_position3() {
+        let st = state_from_fen("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1");
+        assert_eq!(perft(&st, 1), 14);
+        assert_eq!(perft(&st, 2), 191);
+        assert_eq!(perft(&st, 3), 2812);
+        assert_eq!(perft(&st, 4), 43238);
+        assert_eq!(perft(&st, 5), 674624);
+    }
+
+    #[test]
+    fn temp_perft_position4() {
+        let st = state_from_fen("r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1");
+        assert_eq!(perft(&st, 1), 6);
+        assert_eq!(perft(&st, 2), 264);
+        assert_eq!(perft(&st, 3), 9467);
+        assert_eq!(perft(&st, 4), 422333);
+    }
+
+    #[test]
+    fn temp_perft_position5() {
+        let st = state_from_fen("rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8");
+        assert_eq!(perft(&st, 1), 44);
+        assert_eq!(perft(&st, 2), 1486);
+        assert_eq!(perft(&st, 3), 62379);
+        assert_eq!(perft(&st, 4), 2103487);
+    }
+
+
+    #[test]
+    #[ignore]
+    fn temp_perft_kiwipete_depth5_stress() {
+        let st = state_from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+        assert_eq!(perft(&st, 5), 193690690);
+    }
+
+    #[test]
+    #[ignore]
+    fn temp_perft_position3_depth6_stress() {
+        let st = state_from_fen("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1");
+        assert_eq!(perft(&st, 6), 11030083);
+    }
+
+    #[test]
+    fn temp_perft_position6() {
+        let st = state_from_fen(
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+        );
+        assert_eq!(perft(&st, 1), 46);
+        assert_eq!(perft(&st, 2), 2079);
+        assert_eq!(perft(&st, 3), 89890);
     }
 
     #[test]
