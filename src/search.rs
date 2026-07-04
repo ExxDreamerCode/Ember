@@ -1,7 +1,7 @@
 use crate::board::{
     all_occ, attacked_by, bit, has_non_pawn, is_attacked, is_white_piece, move_ec, move_promotion,
-    piece_on, piece_type, promotion_piece_index, see, BoardState, Move, BK, BP, BR, EMPTY_SQ,
-    INF, KING_ATTACKS, MATE, MAX_PLY, QS_DEPTH, WK, WP, WR,
+    piece_on, piece_type, promotion_piece_index, see, BoardState, Move, BK, BP, BR, EMPTY_SQ, INF,
+    KING_ATTACKS, MATE, MAX_PLY, QS_DEPTH, WK, WP, WR,
 };
 use crate::evaluate::{evaluate, evaluate_nnue_acc, with_nnue_net};
 use crate::movegen::{apply_move, generate_moves, is_chess960_castling_move};
