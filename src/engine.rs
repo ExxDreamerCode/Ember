@@ -247,6 +247,7 @@ impl Engine {
                 }
             }
         }
+        self.st.refresh_mailbox();
 
         self.st.w = parts.len() > 1 && parts[1] == "w";
 

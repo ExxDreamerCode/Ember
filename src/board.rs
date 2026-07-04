@@ -136,6 +136,7 @@ pub fn all_occ(bbs: &[u64; 12]) -> u64 {
 #[derive(Clone, Copy)]
 pub struct BoardState {
     pub bb: [u64; 12],
+    pub mailbox: [u8; 64],
     pub w: bool,
     pub cr: [bool; 4],
     pub castling_rooks: [Option<usize>; 4],
@@ -148,6 +149,7 @@ impl BoardState {
     pub fn empty() -> Self {
         BoardState {
             bb: [0u64; 12],
+            mailbox: [EMPTY_SQ; 64],
             w: true,
             cr: [false; 4],
             castling_rooks: [None; 4],
@@ -157,9 +159,15 @@ impl BoardState {
         }
     }
 
+    pub fn refresh_mailbox(&mut self) {
+        for s in 0..64 {
+            self.mailbox[s] = piece_on(&self.bb, s);
+        }
+    }
+
     #[inline(always)]
     pub fn piece_at(&self, s: usize) -> u8 {
-        piece_on(&self.bb, s)
+        self.mailbox[s]
     }
 
     #[inline(always)]

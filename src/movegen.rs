@@ -35,7 +35,7 @@ fn revoke_castling_rights_for_square(st: &mut BoardState, square: usize) {
 pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usize, promotion: u8) {
     let from = sq(sr, sc);
     let to = sq(er, ec);
-    let mover_pi = piece_on(&st.bb, from);
+    let mover_pi = st.mailbox[from];
     if mover_pi == EMPTY_SQ {
         return;
     }
@@ -43,30 +43,32 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
     let white = is_white_piece(mover_pi);
 
     let is_chess960_castle = if mover_type == 5 && st.chess960 {
-        let target_pi = piece_on(&st.bb, to);
+        let target_pi = st.mailbox[to];
         target_pi != EMPTY_SQ && piece_type(target_pi) == 3 && is_white_piece(target_pi) == white
     } else {
         false
     };
 
     if !is_chess960_castle {
-        let cap_pi = piece_on(&st.bb, to);
+        let cap_pi = st.mailbox[to];
         if cap_pi != EMPTY_SQ {
             st.bb[cap_pi as usize] &= !bit(to);
+            st.mailbox[to] = EMPTY_SQ;
         }
     }
 
     if mover_type == 0 && Some(to) == st.ep {
         let cap_sq = if white { to + 8 } else { to - 8 };
-        let ep_pi = piece_on(&st.bb, cap_sq);
+        let ep_pi = st.mailbox[cap_sq];
         if ep_pi != EMPTY_SQ {
             st.bb[ep_pi as usize] &= !bit(cap_sq);
+            st.mailbox[cap_sq] = EMPTY_SQ;
         }
     }
 
     if mover_type == 5 {
         if st.chess960 {
-            let target_pi = piece_on(&st.bb, to);
+            let target_pi = st.mailbox[to];
             if target_pi != EMPTY_SQ
                 && piece_type(target_pi) == 3
                 && is_white_piece(target_pi) == white
@@ -78,10 +80,17 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
                 } else {
                     (2usize, 3usize)
                 };
-                st.bb[rook_pi] &= !bit(sq(sr, rook_col));
-                st.bb[rook_pi] |= bit(sq(sr, rook_dst_col));
-                st.bb[mover_pi as usize] &= !bit(sq(sr, sc));
-                st.bb[mover_pi as usize] |= bit(sq(sr, king_dst_col));
+                let rook_from = sq(sr, rook_col);
+                let rook_to = sq(sr, rook_dst_col);
+                let king_to = sq(sr, king_dst_col);
+                st.bb[rook_pi] &= !bit(rook_from);
+                st.bb[rook_pi] |= bit(rook_to);
+                st.bb[mover_pi as usize] &= !bit(from);
+                st.bb[mover_pi as usize] |= bit(king_to);
+                st.mailbox[from] = EMPTY_SQ;
+                st.mailbox[rook_from] = EMPTY_SQ;
+                st.mailbox[king_to] = mover_pi;
+                st.mailbox[rook_to] = rook_pi as u8;
             }
         } else if sc == 4 && (ec == 6 || ec == 2) {
             let rook_pi = if white { WR } else { BR };
@@ -92,18 +101,23 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
             };
             st.bb[rook_pi] &= !bit(r_from);
             st.bb[rook_pi] |= bit(r_to);
+            st.mailbox[r_from] = EMPTY_SQ;
+            st.mailbox[r_to] = rook_pi as u8;
         }
     }
 
     if !is_chess960_castle {
         st.bb[mover_pi as usize] &= !bit(from);
+        st.mailbox[from] = EMPTY_SQ;
 
         if mover_type == 0 && (er == 0 || er == 7) {
             let promo_pi =
                 promotion_piece_index(white, promotion).unwrap_or(if white { WQ } else { BQ });
             st.bb[promo_pi] |= bit(to);
+            st.mailbox[to] = promo_pi as u8;
         } else {
             st.bb[mover_pi as usize] |= bit(to);
+            st.mailbox[to] = mover_pi;
         }
     }
 
