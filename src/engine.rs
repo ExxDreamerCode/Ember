@@ -209,7 +209,7 @@ impl Default for Engine {
 impl Engine {
     pub fn new() -> Self {
         let stopped = Arc::new(AtomicBool::new(false));
-        let shared_tt = Arc::new(SharedTT::new(128));
+        let shared_tt = Arc::new(SharedTT::new(256));
         let mut e = Engine {
             st: BoardState::empty(),
             searcher: Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped)),

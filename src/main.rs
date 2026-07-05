@@ -72,7 +72,7 @@ fn main() {
             "uci" => {
                 println!("id name Ember 1.1.1");
                 println!("id author ExxDreamerCode");
-                println!("option name Hash type spin default 128 min 1 max 4096");
+                println!("option name Hash type spin default 256 min 1 max 4096");
                 println!("option name Threads type spin default 1 min 1 max 256");
                 println!("option name Book type string default <embedded>");
                 println!("option name NNUE type string default <embedded>");
