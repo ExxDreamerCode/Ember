@@ -308,9 +308,9 @@ fn castling_rook_square(
             continue;
         }
         let better_candidate = if kingside {
-            col > king_col && candidate.is_none_or(|prev| col < prev)
+            col > king_col && candidate.map_or(true, |prev| col < prev)
         } else {
-            col < king_col && candidate.is_none_or(|prev| col > prev)
+            col < king_col && candidate.map_or(true, |prev| col > prev)
         };
         if better_candidate {
             candidate = Some(col);
@@ -418,12 +418,20 @@ fn try_chess960_castle(
     result.push(encode_move(kr, king_col, kr, rook_col, 0));
 }
 
-pub fn generate_moves(
+pub fn generate_moves(st: &BoardState, wturn: bool, cr: &[bool; 4], ep: Option<usize>) -> Vec<Move> {
+    let mut out = Vec::with_capacity(48);
+    generate_moves_into(st, wturn, cr, ep, &mut out);
+    out
+}
+
+pub fn generate_moves_into(
     st: &BoardState,
     wturn: bool,
     cr: &[bool; 4],
     ep: Option<usize>,
-) -> Vec<Move> {
+    out: &mut Vec<Move>,
+) {
+    out.clear();
     let occ = all_occ(&st.bb);
     let own = if wturn {
         white_occ(&st.bb)
@@ -453,7 +461,7 @@ pub fn generate_moves(
     let (pinned_bb, pin_mask) = compute_pins(&st.bb, occ, own, king_sq_own, wturn);
     let _back = if wturn { 7usize } else { 0usize };
 
-    let mut result: Vec<Move> = Vec::with_capacity(48);
+    let result = out;
 
     macro_rules! try_push {
         ($from:expr, $to:expr) => {{
@@ -723,8 +731,8 @@ pub fn generate_moves(
         if !in_check && st.chess960 {
             let kr = if wturn { 7usize } else { 0usize };
             let king_col = sq_c(kf);
-            try_chess960_castle(st, wturn, cr, &mut result, true, kf, kr, king_col);
-            try_chess960_castle(st, wturn, cr, &mut result, false, kf, kr, king_col);
+            try_chess960_castle(st, wturn, cr, result, true, kf, kr, king_col);
+            try_chess960_castle(st, wturn, cr, result, false, kf, kr, king_col);
         } else if !in_check {
             let rook_pi = if wturn { WR } else { BR };
             let kr = if wturn { 7usize } else { 0usize };
@@ -751,8 +759,6 @@ pub fn generate_moves(
             }
         }
     }
-
-    result
 }
 
 #[cfg(test)]

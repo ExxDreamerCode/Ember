@@ -5,7 +5,7 @@ use crate::board::{
     MAX_PLY, QS_DEPTH, WK, WP, WR,
 };
 use crate::evaluate::{evaluate, evaluate_nnue_acc, with_nnue_net};
-use crate::movegen::{apply_move, generate_moves, is_chess960_castling_move};
+use crate::movegen::{apply_move, generate_moves, generate_moves_into, is_chess960_castling_move};
 use crate::nnue::NNUEAccumulator;
 use crate::syzygy::SyzygyTables;
 use crate::tt::{SharedTT, TT_ALPHA, TT_BETA, TT_EXACT};
@@ -228,6 +228,10 @@ pub struct Searcher {
     pub stopped: Arc<AtomicBool>,
     pub nnue_stack: Vec<NNUEAccumulator>,
     pub syzygy: SyzygyTables,
+    move_bufs: Vec<Vec<Move>>,
+    scored_bufs: Vec<Vec<(i32, Move)>>,
+    quiets_bufs: Vec<Vec<Move>>,
+    caps_bufs: Vec<Vec<Move>>,
     #[cfg(feature = "search-debug")]
     pub debug: SearchDebug,
 }
@@ -259,6 +263,10 @@ impl Searcher {
             stopped,
             nnue_stack: Vec::new(),
             syzygy: SyzygyTables::new(),
+            move_bufs: Vec::new(),
+            scored_bufs: Vec::new(),
+            quiets_bufs: Vec::new(),
+            caps_bufs: Vec::new(),
             #[cfg(feature = "search-debug")]
             debug: SearchDebug::from_env(),
         }
@@ -298,6 +306,34 @@ impl Searcher {
 
     pub fn set_stopped(&self) {
         self.stopped.store(true, Ordering::SeqCst);
+    }
+
+    const BUF_POOL_CAP: usize = MAX_PLY + 64;
+
+    fn ensure_buf_pools(&mut self, ply: usize) {
+        let need = (ply + 1).min(Self::BUF_POOL_CAP);
+        if self.move_bufs.len() < need {
+            self.move_bufs.resize_with(need, Vec::new);
+            self.scored_bufs.resize_with(need, Vec::new);
+            self.quiets_bufs.resize_with(need, Vec::new);
+            self.caps_bufs.resize_with(need, Vec::new);
+        }
+    }
+
+    #[inline]
+    fn take_buf<T>(pool: &mut [Vec<T>], ply: usize) -> Vec<T> {
+        if ply < pool.len() {
+            std::mem::take(&mut pool[ply])
+        } else {
+            Vec::new()
+        }
+    }
+
+    #[inline]
+    fn return_buf<T>(pool: &mut [Vec<T>], ply: usize, buf: Vec<T>) {
+        if ply < pool.len() {
+            pool[ply] = buf;
+        }
     }
 
     fn copy_root_context_to(&self, dst: &mut Searcher) {
@@ -557,8 +593,11 @@ impl Searcher {
             return self.static_eval(st, ply);
         }
 
-        let moves = generate_moves(st, st.w, &st.cr, st.ep);
-        if moves.is_empty() {
+        self.ensure_buf_pools(ply);
+        let mut moves_buf = Self::take_buf(&mut self.move_bufs, ply);
+        generate_moves_into(st, st.w, &st.cr, st.ep, &mut moves_buf);
+        if moves_buf.is_empty() {
+            Self::return_buf(&mut self.move_bufs, ply, moves_buf);
             return if in_check { -MATE + 1000 } else { alpha };
         }
         if with_nnue_net(|_| true).unwrap_or(false)
@@ -570,20 +609,28 @@ impl Searcher {
         }
 
         let mut caps: Vec<Move> = if in_check {
-            moves
+            moves_buf
         } else {
-            moves
-                .into_iter()
-                .filter(|mv| {
-                    let to = move_to(*mv);
-                    let from = move_from(*mv);
-                    let fpi = st.mailbox[from];
-                    let tpi = st.mailbox[to];
-                    move_is_capture(st, fpi, *mv, to, tpi) || is_promotion_move(fpi, *mv)
-                })
-                .collect()
+            let mut c = Self::take_buf(&mut self.caps_bufs, ply);
+            c.clear();
+            for &mv in moves_buf.iter() {
+                let to = move_to(mv);
+                let from = move_from(mv);
+                let fpi = st.mailbox[from];
+                let tpi = st.mailbox[to];
+                if move_is_capture(st, fpi, mv, to, tpi) || is_promotion_move(fpi, mv) {
+                    c.push(mv);
+                }
+            }
+            Self::return_buf(&mut self.move_bufs, ply, moves_buf);
+            c
         };
         if caps.is_empty() {
+            if in_check {
+                Self::return_buf(&mut self.move_bufs, ply, caps);
+            } else {
+                Self::return_buf(&mut self.caps_bufs, ply, caps);
+            }
             return alpha;
         }
 
@@ -601,7 +648,10 @@ impl Searcher {
             -(victim * 10 - attacker + promotion_value(*mv))
         });
 
-        for mv in caps {
+        let mut cap_idx = 0usize;
+        while cap_idx < caps.len() {
+            let mv = caps[cap_idx];
+            cap_idx += 1;
             if self.time_up(start, tl) {
                 return 0;
             }
@@ -637,11 +687,21 @@ impl Searcher {
                 return 0;
             }
             if score >= beta {
+                if in_check {
+                    Self::return_buf(&mut self.move_bufs, ply, caps);
+                } else {
+                    Self::return_buf(&mut self.caps_bufs, ply, caps);
+                }
                 return score;
             }
             if score > alpha {
                 alpha = score;
             }
+        }
+        if in_check {
+            Self::return_buf(&mut self.move_bufs, ply, caps);
+        } else {
+            Self::return_buf(&mut self.caps_bufs, ply, caps);
         }
         alpha
     }
@@ -808,8 +868,11 @@ impl Searcher {
             }
         }
 
-        let moves = generate_moves(st, st.w, &st.cr, st.ep);
-        if moves.is_empty() {
+        self.ensure_buf_pools(ply);
+        let mut moves_buf = Self::take_buf(&mut self.move_bufs, ply);
+        generate_moves_into(st, st.w, &st.cr, st.ep, &mut moves_buf);
+        if moves_buf.is_empty() {
+            Self::return_buf(&mut self.move_bufs, ply, moves_buf);
             return if in_check { -MATE + ply as i32 } else { 0 };
         }
 
@@ -820,56 +883,57 @@ impl Searcher {
                 actual_depth
             };
 
-        let mut scored: Vec<(i32, Move)> = moves
-            .into_iter()
-            .map(|mv| {
-                let mut s = 0i32;
-                if Some(mv) == tt_move {
-                    s = 10_000_000;
-                } else {
-                    let from = move_from(mv);
-                    let to = move_to(mv);
-                    let tpi = piece_on(&st.bb, to);
-                    let fpi = piece_on(&st.bb, from);
-                    let is_promo = is_promotion_move(fpi, mv);
-                    if move_is_capture(st, fpi, mv, to, tpi) || is_promo {
-                        let v = capture_victim_value(st, fpi, mv, to, tpi);
-                        let a = if fpi != EMPTY_SQ {
-                            piece_val(piece_type(fpi))
-                        } else {
-                            0
-                        };
-                        let see_sc = move_see(st, mv, from, to, fpi, tpi);
-                        if see_sc >= 0 {
-                            s += 2_000_000 + v * 10 - a + see_sc;
-                        } else {
-                            s += 500_000 + v * 10 - a;
-                        }
-                        if is_promo {
-                            s += 1_500_000 + promotion_value(mv);
-                        }
+        let mut scored = Self::take_buf(&mut self.scored_bufs, ply);
+        scored.clear();
+        scored.reserve(moves_buf.len());
+        for &mv in moves_buf.iter() {
+            let mut s = 0i32;
+            if Some(mv) == tt_move {
+                s = 10_000_000;
+            } else {
+                let from = move_from(mv);
+                let to = move_to(mv);
+                let tpi = piece_on(&st.bb, to);
+                let fpi = piece_on(&st.bb, from);
+                let is_promo = is_promotion_move(fpi, mv);
+                if move_is_capture(st, fpi, mv, to, tpi) || is_promo {
+                    let v = capture_victim_value(st, fpi, mv, to, tpi);
+                    let a = if fpi != EMPTY_SQ {
+                        piece_val(piece_type(fpi))
                     } else {
-                        if self.killers[ply][0] == Some(mv) {
-                            s += 900_000;
-                        } else if self.killers[ply][1] == Some(mv) {
-                            s += 800_000;
-                        }
-                        let p_idx = if fpi != EMPTY_SQ {
-                            piece_to_idx(piece_type(fpi))
-                        } else {
-                            0
-                        };
-                        if self.counter_move[p_idx][to] == Some(mv) {
-                            s += 700_000;
-                        }
-                        let (fk, tk) =
-                            from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
-                        s += self.history[fk][tk].clamp(-32768, 32768);
+                        0
+                    };
+                    let see_sc = move_see(st, mv, from, to, fpi, tpi);
+                    if see_sc >= 0 {
+                        s += 2_000_000 + v * 10 - a + see_sc;
+                    } else {
+                        s += 500_000 + v * 10 - a;
                     }
+                    if is_promo {
+                        s += 1_500_000 + promotion_value(mv);
+                    }
+                } else {
+                    if self.killers[ply][0] == Some(mv) {
+                        s += 900_000;
+                    } else if self.killers[ply][1] == Some(mv) {
+                        s += 800_000;
+                    }
+                    let p_idx = if fpi != EMPTY_SQ {
+                        piece_to_idx(piece_type(fpi))
+                    } else {
+                        0
+                    };
+                    if self.counter_move[p_idx][to] == Some(mv) {
+                        s += 700_000;
+                    }
+                    let (fk, tk) =
+                        from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
+                    s += self.history[fk][tk].clamp(-32768, 32768);
                 }
-                (s, mv)
-            })
-            .collect();
+            }
+            scored.push((s, mv));
+        }
+        Self::return_buf(&mut self.move_bufs, ply, moves_buf);
         scored.sort_unstable_by_key(|b| std::cmp::Reverse(b.0));
 
         let lmp_count = if self.lmp_enabled()
@@ -896,7 +960,8 @@ impl Searcher {
         let orig_alpha = alpha;
         let mut best_score = -INF;
         let mut best_move = scored.first().map(|&(_, mv)| mv);
-        let mut quiets_tried: Vec<Move> = Vec::new();
+        let mut quiets_tried = Self::take_buf(&mut self.quiets_bufs, ply);
+        quiets_tried.clear();
 
         for (i, &(_, mv)) in scored.iter().enumerate() {
             if self.time_up(start, tl) {
@@ -1102,6 +1167,9 @@ impl Searcher {
                 }
             }
         }
+
+        Self::return_buf(&mut self.scored_bufs, ply, scored);
+        Self::return_buf(&mut self.quiets_bufs, ply, quiets_tried);
 
         if self.stopped.load(Ordering::Relaxed) {
             return 0;
