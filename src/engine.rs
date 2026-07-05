@@ -2,8 +2,8 @@
 use crate::board::board_to_fen;
 use crate::board::{
     bit, is_attacked, move_ec, move_er, move_from, move_promotion, move_sc, move_sr, move_to,
-    move_to_uci, piece_from_char, piece_on, piece_type, sq, sq_c, BoardState, Move, BP, BQ, BR,
-    EMPTY_SQ, INF, MATE, MAX_PLY, NO_MOVE, WP, WQ, WR,
+    move_to_uci, piece_from_char, piece_type, sq, sq_c, BoardState, Move, BP, BQ, BR, EMPTY_SQ,
+    INF, MATE, MAX_PLY, NO_MOVE, WP, WQ, WR,
 };
 use crate::book::OpeningBook;
 use crate::movegen::{apply_move, generate_moves};
@@ -35,7 +35,7 @@ fn set_castling_rook_by_side(st: &mut BoardState, white: bool, kingside: bool) {
 
     for col in 0..8 {
         let rook_sq = sq(rank, col);
-        let pi = piece_on(&st.bb, rook_sq);
+        let pi = st.mailbox[rook_sq];
         if pi == EMPTY_SQ || piece_type(pi) != 3 || (pi < 6) != white {
             continue;
         }
@@ -113,8 +113,8 @@ fn root_move_gives_check(st: &BoardState, mv: Move) -> bool {
 fn root_move_is_capture(st: &BoardState, mv: Move) -> bool {
     let to = move_to(mv);
     let from = move_from(mv);
-    let fpi = piece_on(&st.bb, from);
-    let tpi = piece_on(&st.bb, to);
+    let fpi = st.mailbox[from];
+    let tpi = st.mailbox[to];
     if tpi != EMPTY_SQ {
         return fpi == EMPTY_SQ || (tpi < 6) != (fpi < 6);
     }
@@ -127,7 +127,7 @@ fn root_move_is_promotion(st: &BoardState, mv: Move) -> bool {
         return true;
     }
     let from = move_from(mv);
-    let fpi = piece_on(&st.bb, from);
+    let fpi = st.mailbox[from];
     fpi != EMPTY_SQ && piece_type(fpi) == 0 && (move_er(mv) == 0 || move_er(mv) == 7)
 }
 
@@ -155,8 +155,8 @@ fn root_forcing_score(st: &BoardState, mv: Move) -> Option<i32> {
 
     let from = move_from(mv);
     let to = move_to(mv);
-    let attacker = piece_on(&st.bb, from);
-    let victim = piece_on(&st.bb, to);
+    let attacker = st.mailbox[from];
+    let victim = st.mailbox[to];
     let mut score = 0;
     if gives_check {
         score += 4_000_000;
@@ -272,7 +272,7 @@ impl Engine {
                         let white = ch.is_uppercase();
                         let rank = if white { 7usize } else { 0usize };
                         let rook_sq = sq(rank, col);
-                        let pi = piece_on(&self.st.bb, rook_sq);
+                        let pi = self.st.mailbox[rook_sq];
                         if pi != EMPTY_SQ && piece_type(pi) == 3 && (pi < 6) == white {
                             let king_sq = self.st.king_sq(white);
                             let idx = if white {
@@ -408,8 +408,8 @@ impl Engine {
 
             let from = move_from(*mv);
             let to = move_to(*mv);
-            let pi = piece_on(&self.st.bb, from);
-            let target = piece_on(&self.st.bb, to);
+            let pi = self.st.mailbox[from];
+            let target = self.st.mailbox[to];
             if !self.st.chess960
                 || pi == EMPTY_SQ
                 || piece_type(pi) != 5

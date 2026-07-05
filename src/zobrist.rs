@@ -2,7 +2,7 @@ use rand::Rng;
 use rand::SeedableRng;
 use std::sync::OnceLock;
 
-use crate::board::{bit, is_attacked, piece_on, sq_c, BoardState, BK, BP, EMPTY_SQ, WK, WP};
+use crate::board::{bit, is_attacked, sq_c, BoardState, BK, BP, EMPTY_SQ, WK, WP};
 
 static ZOBRIST: OnceLock<ZobristKeys> = OnceLock::new();
 fn zobrist() -> &'static ZobristKeys {
@@ -114,15 +114,15 @@ fn ep_is_legal(st: &BoardState, ep_sq: usize) -> bool {
         (candidates, ep_sq - 8, BP, WP, BK)
     };
 
-    if captured_sq >= 64 || piece_on(&st.bb, captured_sq) != captured_pi as u8 {
+    if captured_sq >= 64 || st.mailbox[captured_sq] != captured_pi as u8 {
         return false;
     }
-    if piece_on(&st.bb, ep_sq) != EMPTY_SQ {
+    if st.mailbox[ep_sq] != EMPTY_SQ {
         return false;
     }
 
     for from in candidates.into_iter().flatten() {
-        if piece_on(&st.bb, from) != pawn_pi as u8 {
+        if st.mailbox[from] != pawn_pi as u8 {
             continue;
         }
         let from_col = sq_c(from);

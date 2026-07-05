@@ -1,7 +1,7 @@
 use crate::board::{
     all_occ, bit, black_occ, encode_move, is_attacked, is_white_piece, move_from, move_to,
-    piece_on, piece_type, promotion_piece_index, sq, sq_c, sq_r, white_occ, BoardState, BB, BK, BN,
-    BP, BQ, BR, EMPTY_SQ, KING_ATTACKS, KNIGHT_ATTACKS, WB, WK, WN, WP, WQ, WR,
+    piece_type, promotion_piece_index, sq, sq_c, sq_r, white_occ, BoardState, BB, BK, BN, BP, BQ,
+    BR, EMPTY_SQ, KING_ATTACKS, KNIGHT_ATTACKS, WB, WK, WN, WP, WQ, WR,
 };
 use crate::magic::{bishop_attacks, rook_attacks};
 
@@ -133,8 +133,8 @@ pub fn is_chess960_castling_move(st: &BoardState, mv: Move) -> bool {
     }
     let from = move_from(mv);
     let to = move_to(mv);
-    let mover_pi = piece_on(&st.bb, from);
-    let target_pi = piece_on(&st.bb, to);
+    let mover_pi = st.mailbox[from];
+    let target_pi = st.mailbox[to];
     mover_pi != EMPTY_SQ
         && target_pi != EMPTY_SQ
         && piece_type(mover_pi) == 5
@@ -308,9 +308,9 @@ fn castling_rook_square(
             continue;
         }
         let better_candidate = if kingside {
-            col > king_col && candidate.map_or(true, |prev| col < prev)
+            col > king_col && candidate.is_none_or(|prev| col < prev)
         } else {
-            col < king_col && candidate.map_or(true, |prev| col > prev)
+            col < king_col && candidate.is_none_or(|prev| col > prev)
         };
         if better_candidate {
             candidate = Some(col);
@@ -418,7 +418,12 @@ fn try_chess960_castle(
     result.push(encode_move(kr, king_col, kr, rook_col, 0));
 }
 
-pub fn generate_moves(st: &BoardState, wturn: bool, cr: &[bool; 4], ep: Option<usize>) -> Vec<Move> {
+pub fn generate_moves(
+    st: &BoardState,
+    wturn: bool,
+    cr: &[bool; 4],
+    ep: Option<usize>,
+) -> Vec<Move> {
     let mut out = Vec::with_capacity(48);
     generate_moves_into(st, wturn, cr, ep, &mut out);
     out
@@ -485,12 +490,12 @@ pub fn generate_moves_into(
             let f = $from;
             let t = $to;
             let mut bb2 = st.bb;
-            let pi = piece_on(&bb2, f);
+            let pi = st.mailbox[f];
             if pi != EMPTY_SQ {
                 let cap_sq = if wturn { t + 8 } else { t - 8 };
-                let cap = piece_on(&bb2, cap_sq);
+                let cap = st.mailbox[cap_sq];
                 let expected_cap = if wturn { BP as u8 } else { WP as u8 };
-                if cap == expected_cap && piece_on(&bb2, t) == EMPTY_SQ {
+                if cap == expected_cap && st.mailbox[t] == EMPTY_SQ {
                     bb2[cap as usize] &= !bit(cap_sq);
                     bb2[pi as usize] &= !bit(f);
                     bb2[pi as usize] |= bit(t);
@@ -712,7 +717,7 @@ pub fn generate_moves_into(
         let mut att = KING_ATTACKS[kf] & !own;
         while att != 0 {
             let t = att.trailing_zeros() as usize;
-            let cap = piece_on(&st.bb, t);
+            let cap = st.mailbox[t];
             if cap != EMPTY_SQ && piece_type(cap) == 5 {
                 att &= att - 1;
                 continue;
@@ -764,7 +769,7 @@ pub fn generate_moves_into(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::{move_ec, move_er, move_promotion, move_sc, move_sr, move_to_uci};
+    use crate::board::{move_ec, move_er, move_promotion, move_sc, move_sr, move_to_uci, piece_on};
     use crate::engine::Engine;
 
     fn state_from_fen(fen: &str) -> BoardState {

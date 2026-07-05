@@ -118,7 +118,7 @@ fn move_see(st: &BoardState, mv: Move, from: usize, to: usize, fpi: u8, tpi: u8)
 fn special_move_gives_check(st: &BoardState, mv: Move) -> bool {
     let from = move_from(mv);
     let to = move_to(mv);
-    let fpi = piece_on(&st.bb, from);
+    let fpi = st.mailbox[from];
     if fpi == EMPTY_SQ {
         return false;
     }
@@ -637,8 +637,8 @@ impl Searcher {
         caps.sort_by_key(|mv| {
             let to = move_to(*mv);
             let from = move_from(*mv);
-            let vpi = piece_on(&st.bb, to);
-            let api = piece_on(&st.bb, from);
+            let vpi = st.mailbox[to];
+            let api = st.mailbox[from];
             let victim = capture_victim_value(st, api, *mv, to, vpi);
             let attacker = if api != EMPTY_SQ {
                 piece_val(piece_type(api))
@@ -657,8 +657,8 @@ impl Searcher {
             }
             let from = move_from(mv);
             let to = move_to(mv);
-            let fpi = piece_on(&st.bb, from);
-            let tpi = piece_on(&st.bb, to);
+            let fpi = st.mailbox[from];
+            let tpi = st.mailbox[to];
             if !in_check && move_see(st, mv, from, to, fpi, tpi) < 0 {
                 continue;
             }
@@ -893,8 +893,8 @@ impl Searcher {
             } else {
                 let from = move_from(mv);
                 let to = move_to(mv);
-                let tpi = piece_on(&st.bb, to);
-                let fpi = piece_on(&st.bb, from);
+                let tpi = st.mailbox[to];
+                let fpi = st.mailbox[from];
                 let is_promo = is_promotion_move(fpi, mv);
                 if move_is_capture(st, fpi, mv, to, tpi) || is_promo {
                     let v = capture_victim_value(st, fpi, mv, to, tpi);
@@ -926,8 +926,7 @@ impl Searcher {
                     if self.counter_move[p_idx][to] == Some(mv) {
                         s += 700_000;
                     }
-                    let (fk, tk) =
-                        from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
+                    let (fk, tk) = from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
                     s += self.history[fk][tk].clamp(-32768, 32768);
                 }
             }
@@ -971,14 +970,7 @@ impl Searcher {
             let from = move_from(mv);
             let to = move_to(mv);
             let fpi = st.mailbox[from];
-            let tpi = if fpi != EMPTY_SQ
-                && piece_type(fpi) == 0
-                && (move_er(mv) == 0 || move_er(mv) == 7)
-            {
-                piece_on(&st.bb, to)
-            } else {
-                st.mailbox[to]
-            };
+            let tpi = st.mailbox[to];
             let capture = move_is_capture(st, fpi, mv, to, tpi);
             let is_promo = is_promotion_move(fpi, mv);
             let is_quiet = !capture && !is_promo;
@@ -1237,7 +1229,7 @@ fn diversify_lazy_smp_root_moves(moves: &mut [Move], thread_id: usize) {
 
 pub fn extract_pv_line(shared_tt: &SharedTT, st: &BoardState, first_move: Move) -> Vec<Move> {
     let first_promo = move_promotion(first_move);
-    let first_fpi = piece_on(&st.bb, move_from(first_move));
+    let first_fpi = st.mailbox[move_from(first_move)];
     if first_fpi != EMPTY_SQ
         && piece_type(first_fpi) == 0
         && (move_er(first_move) == 0 || move_er(first_move) == 7)
@@ -1278,7 +1270,7 @@ pub fn extract_pv_line(shared_tt: &SharedTT, st: &BoardState, first_move: Move) 
                 break;
             }
             let promo = move_promotion(best);
-            let fpi = piece_on(&prev_st.bb, move_from(best));
+            let fpi = prev_st.mailbox[move_from(best)];
             if fpi != EMPTY_SQ
                 && piece_type(fpi) == 0
                 && (move_er(best) == 0 || move_er(best) == 7)

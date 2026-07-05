@@ -233,10 +233,10 @@ pub fn move_to_uci(st: &BoardState, mv: Move) -> String {
     let from = move_from(mv);
     let to = move_to(mv);
     let promo = move_promotion(mv);
-    let pi = piece_on(&st.bb, from);
+    let pi = st.mailbox[from];
 
     if st.chess960 && pi != EMPTY_SQ && piece_type(pi) == 5 {
-        let target_pi = piece_on(&st.bb, to);
+        let target_pi = st.mailbox[to];
         if target_pi != EMPTY_SQ
             && piece_type(target_pi) == 3
             && is_white_piece(target_pi) == is_white_piece(pi)
@@ -269,7 +269,7 @@ pub fn board_to_fen(st: &BoardState) -> String {
         }
         let mut empty = 0usize;
         for c in 0..8 {
-            let pi = piece_on(&st.bb, sq(r, c));
+            let pi = st.mailbox[sq(r, c)];
             if pi == EMPTY_SQ {
                 empty += 1;
             } else {
