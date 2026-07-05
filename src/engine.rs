@@ -1,11 +1,11 @@
 #[cfg(feature = "decision-trace")]
 use crate::board::board_to_fen;
 use crate::board::{
-    bit, is_attacked, move_ec, move_promotion, move_to_uci, piece_from_char, piece_on, piece_type,
-    sq, sq_c, BoardState, BP, BQ, BR, EMPTY_SQ, INF, MATE, MAX_PLY, WP, WQ, WR,
+    bit, is_attacked, move_ec, move_er, move_from, move_promotion, move_sc, move_sr, move_to,
+    move_to_uci, piece_from_char, piece_on, piece_type, sq, sq_c, BoardState, Move, BP, BQ, BR,
+    EMPTY_SQ, INF, MATE, MAX_PLY, NO_MOVE, WP, WQ, WR,
 };
 use crate::book::OpeningBook;
-use crate::movegen::Move;
 use crate::movegen::{apply_move, generate_moves};
 use crate::search::{lazy_smp_search, Searcher};
 use crate::syzygy::SyzygyTables;
@@ -96,13 +96,13 @@ fn root_promotion_race(st: &BoardState) -> bool {
     false
 }
 
-fn root_move_gives_check(st: &BoardState, mv: &Move) -> bool {
+fn root_move_gives_check(st: &BoardState, mv: Move) -> bool {
     let mut after = *st;
     apply_move(
         &mut after,
-        mv[0],
-        mv[1],
-        mv[2],
+        move_sr(mv),
+        move_sc(mv),
+        move_er(mv),
         move_ec(mv),
         move_promotion(mv),
     );
@@ -110,25 +110,25 @@ fn root_move_gives_check(st: &BoardState, mv: &Move) -> bool {
     is_attacked(&after.bb, opp_ks, !after.w)
 }
 
-fn root_move_is_capture(st: &BoardState, mv: &Move) -> bool {
-    let to = mv[2] * 8 + move_ec(mv);
-    let from = mv[0] * 8 + mv[1];
+fn root_move_is_capture(st: &BoardState, mv: Move) -> bool {
+    let to = move_to(mv);
+    let from = move_from(mv);
     let fpi = piece_on(&st.bb, from);
     let tpi = piece_on(&st.bb, to);
     if tpi != EMPTY_SQ {
         return fpi == EMPTY_SQ || (tpi < 6) != (fpi < 6);
     }
 
-    fpi != EMPTY_SQ && piece_type(fpi) == 0 && Some(to) == st.ep && mv[1] != move_ec(mv)
+    fpi != EMPTY_SQ && piece_type(fpi) == 0 && Some(to) == st.ep && move_sc(mv) != move_ec(mv)
 }
 
-fn root_move_is_promotion(st: &BoardState, mv: &Move) -> bool {
+fn root_move_is_promotion(st: &BoardState, mv: Move) -> bool {
     if move_promotion(mv) != 0 {
         return true;
     }
-    let from = mv[0] * 8 + mv[1];
+    let from = move_from(mv);
     let fpi = piece_on(&st.bb, from);
-    fpi != EMPTY_SQ && piece_type(fpi) == 0 && (mv[2] == 0 || mv[2] == 7)
+    fpi != EMPTY_SQ && piece_type(fpi) == 0 && (move_er(mv) == 0 || move_er(mv) == 7)
 }
 
 fn root_piece_value(pi: u8) -> i32 {
@@ -145,7 +145,7 @@ fn root_piece_value(pi: u8) -> i32 {
     }
 }
 
-fn root_forcing_score(st: &BoardState, mv: &Move) -> Option<i32> {
+fn root_forcing_score(st: &BoardState, mv: Move) -> Option<i32> {
     let gives_check = root_move_gives_check(st, mv);
     let is_promo = root_move_is_promotion(st, mv);
     let is_capture = root_move_is_capture(st, mv);
@@ -153,8 +153,8 @@ fn root_forcing_score(st: &BoardState, mv: &Move) -> Option<i32> {
         return None;
     }
 
-    let from = mv[0] * 8 + mv[1];
-    let to = mv[2] * 8 + move_ec(mv);
+    let from = move_from(mv);
+    let to = move_to(mv);
     let attacker = piece_on(&st.bb, from);
     let victim = piece_on(&st.bb, to);
     let mut score = 0;
@@ -171,7 +171,7 @@ fn root_forcing_score(st: &BoardState, mv: &Move) -> Option<i32> {
 }
 
 fn root_order_score(st: &BoardState, mv: Move, preferred: Move) -> i32 {
-    let mut score = root_forcing_score(st, &mv).unwrap_or(0);
+    let mut score = root_forcing_score(st, mv).unwrap_or(0);
     if mv == preferred {
         score += 500_000;
     }
@@ -368,11 +368,11 @@ impl Engine {
         };
         apply_move(
             &mut self.st,
-            mv[0],
-            mv[1],
-            mv[2],
-            move_ec(&mv),
-            move_promotion(&mv),
+            move_sr(mv),
+            move_sc(mv),
+            move_er(mv),
+            move_ec(mv),
+            move_promotion(mv),
         );
         let h = compute_hash(&self.st);
         self.searcher.rep_stack.push(h);
@@ -390,11 +390,11 @@ impl Engine {
     ) -> Option<Move> {
         let moves = generate_moves(&self.st, self.st.w, &self.st.cr, self.st.ep);
         moves.into_iter().find(|mv| {
-            if mv[0] != sr || mv[1] != sc {
+            if move_sr(*mv) != sr || move_sc(*mv) != sc {
                 return false;
             }
 
-            let move_promo = move_promotion(mv).to_ascii_uppercase();
+            let move_promo = move_promotion(*mv).to_ascii_uppercase();
             let input_promo = promotion.to_ascii_uppercase();
             let promo_matches =
                 move_promo == input_promo || (input_promo == 0 && move_promo == b'Q');
@@ -402,12 +402,12 @@ impl Engine {
                 return false;
             }
 
-            if mv[2] == er && move_ec(mv) == ec {
+            if move_er(*mv) == er && move_ec(*mv) == ec {
                 return true;
             }
 
-            let from = sq(mv[0], mv[1]);
-            let to = sq(mv[2], move_ec(mv));
+            let from = move_from(*mv);
+            let to = move_to(*mv);
             let pi = piece_on(&self.st.bb, from);
             let target = piece_on(&self.st.bb, to);
             if !self.st.chess960
@@ -416,12 +416,16 @@ impl Engine {
                 || target == EMPTY_SQ
                 || piece_type(target) != 3
                 || (target < 6) != (pi < 6)
-                || er != mv[0]
+                || move_er(*mv) != move_sr(*mv)
             {
                 return false;
             }
 
-            let king_dst_col = if move_ec(mv) > mv[1] { 6usize } else { 2usize };
+            let king_dst_col = if move_ec(*mv) > move_sc(*mv) {
+                6usize
+            } else {
+                2usize
+            };
             ec == king_dst_col
         })
     }
@@ -446,7 +450,7 @@ impl Engine {
         #[cfg(feature = "decision-trace")]
         let root_fen = board_to_fen(&self.st);
         #[cfg(feature = "decision-trace")]
-        let legal_moves: Vec<String> = moves.iter().map(|mv| move_to_uci(&self.st, mv)).collect();
+        let legal_moves: Vec<String> = moves.iter().map(|mv| move_to_uci(&self.st, *mv)).collect();
         #[cfg(feature = "decision-trace")]
         let side = if self.st.w { "white" } else { "black" };
         if moves.is_empty() {
@@ -490,7 +494,7 @@ impl Engine {
         if !self.st.chess960 {
             if let Some(ref book) = self.book {
                 if let Some(bm) = book.pick_move(&self.st, &moves) {
-                    let mv_str = move_to_uci(&self.st, &bm);
+                    let mv_str = move_to_uci(&self.st, bm);
                     let eval_score = self.searcher.corrected_eval(&self.st);
                     println!(
                         "info depth 1 score cp {} nodes 0 nps 0 time 0 pv {}",
@@ -518,7 +522,7 @@ impl Engine {
             let start = Instant::now();
             self.searcher.stopped.store(false, Ordering::SeqCst);
             let threaded_moves =
-                sort_sparse_root_moves(&self.st, &moves, [0; 4]).unwrap_or_else(|| moves.clone());
+                sort_sparse_root_moves(&self.st, &moves, NO_MOVE).unwrap_or_else(|| moves.clone());
 
             let (best_move, best_score, best_depth, total_nodes) = lazy_smp_search(
                 Arc::clone(&self.shared_tt),
@@ -530,7 +534,7 @@ impl Engine {
                 &self.searcher,
             );
 
-            let mv_str = move_to_uci(&self.st, &best_move);
+            let mv_str = move_to_uci(&self.st, best_move);
             let elapsed = start.elapsed().as_secs_f64();
             self.searcher
                 .update_correction_history(&self.st, best_score, best_depth);
@@ -581,11 +585,11 @@ impl Engine {
                             let old = self.st;
                             apply_move(
                                 &mut self.st,
-                                mv[0],
-                                mv[1],
-                                mv[2],
-                                move_ec(&mv),
-                                move_promotion(&mv),
+                                move_sr(mv),
+                                move_sc(mv),
+                                move_er(mv),
+                                move_ec(mv),
+                                move_promotion(mv),
                             );
                             let bonus = self.searcher.syzygy.dtz_bonus(&self.st).unwrap_or(0);
                             self.st = old;
@@ -622,11 +626,11 @@ impl Engine {
                     let old = self.st;
                     apply_move(
                         &mut self.st,
-                        mv[0],
-                        mv[1],
-                        mv[2],
-                        move_ec(&mv),
-                        move_promotion(&mv),
+                        move_sr(mv),
+                        move_sc(mv),
+                        move_er(mv),
+                        move_ec(mv),
+                        move_promotion(mv),
                     );
                     crate::evaluate::with_nnue_net(|net| {
                         if !self.searcher.nnue_stack.is_empty() {
@@ -751,7 +755,7 @@ impl Engine {
                     crate::search::extract_pv_line(&self.searcher.shared_tt, &self.st, best_move);
                 let pv_str = pv_line
                     .iter()
-                    .map(|m| move_to_uci(&self.st, m))
+                    .map(|m| move_to_uci(&self.st, *m))
                     .collect::<Vec<_>>()
                     .join(" ");
                 println!(
@@ -771,7 +775,7 @@ impl Engine {
             }
         }
 
-        let mv_str = move_to_uci(&self.st, &best_move);
+        let mv_str = move_to_uci(&self.st, best_move);
         let elapsed = start.elapsed().as_secs_f64();
         self.searcher
             .update_correction_history(&self.st, best_score, best_depth);
@@ -811,21 +815,21 @@ mod tests {
     fn sparse_endgame_root_ordering_prioritizes_reported_mating_check() {
         let engine = engine_from_fen("8/5k2/3Q4/7p/8/1p6/3p1P1P/3B2K1 w - - 52 78");
         let moves = root_moves(&engine);
-        let sorted = sort_sparse_root_moves(&engine.st, &moves, [0; 4]).expect("sparse ordering");
+        let sorted = sort_sparse_root_moves(&engine.st, &moves, NO_MOVE).expect("sparse ordering");
         let mating_check = *moves
             .iter()
-            .find(|mv| move_to_uci(&engine.st, mv) == "d1h5")
+            .find(|mv| move_to_uci(&engine.st, **mv) == "d1h5")
             .expect("reported mating check is legal");
         let quiet_start = sorted
             .iter()
-            .position(|mv| root_forcing_score(&engine.st, mv).is_none())
+            .position(|mv| root_forcing_score(&engine.st, *mv).is_none())
             .unwrap_or(sorted.len());
         let mating_check_pos = sorted
             .iter()
             .position(|mv| *mv == mating_check)
             .expect("reported mating check remains in root moves");
 
-        assert!(root_forcing_score(&engine.st, &mating_check).unwrap() >= 4_000_000);
+        assert!(root_forcing_score(&engine.st, mating_check).unwrap() >= 4_000_000);
         assert!(mating_check_pos < quiet_start);
     }
 
@@ -834,18 +838,18 @@ mod tests {
         let engine = engine_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
         let moves = root_moves(&engine);
 
-        assert!(sort_sparse_root_moves(&engine.st, &moves, [0; 4]).is_none());
+        assert!(sort_sparse_root_moves(&engine.st, &moves, NO_MOVE).is_none());
     }
 
     #[test]
     fn sparse_root_ordering_handles_promotion_race_without_major_piece() {
         let engine = engine_from_fen("8/P4k2/8/8/8/8/8/6K1 w - - 0 1");
         let moves = root_moves(&engine);
-        let sorted = sort_sparse_root_moves(&engine.st, &moves, [0; 4]).expect("promotion race");
+        let sorted = sort_sparse_root_moves(&engine.st, &moves, NO_MOVE).expect("promotion race");
 
         assert!(sorted
             .first()
-            .is_some_and(|mv| move_to_uci(&engine.st, mv).starts_with("a7a8")));
+            .is_some_and(|mv| move_to_uci(&engine.st, *mv).starts_with("a7a8")));
     }
 
     #[test]
@@ -856,11 +860,11 @@ mod tests {
             let (best_move, _, _, _) = engine.find_best_move(2.0, 1);
             let best = root_moves(&engine)
                 .into_iter()
-                .find(|mv| move_to_uci(&engine.st, mv) == best_move)
+                .find(|mv| move_to_uci(&engine.st, *mv) == best_move)
                 .expect("search best move remains legal");
 
             assert!(
-                root_forcing_score(&engine.st, &best).is_some(),
+                root_forcing_score(&engine.st, best).is_some(),
                 "threads={threads} should pick a forcing sparse-endgame root move, got {best_move}"
             );
         }

@@ -1,7 +1,8 @@
 use crate::board::{
-    all_occ, attacked_by, bit, has_non_pawn, is_attacked, is_white_piece, move_ec, move_promotion,
-    piece_on, piece_type, promotion_piece_index, see, BoardState, Move, BK, BP, BR, EMPTY_SQ, INF,
-    KING_ATTACKS, MATE, MAX_PLY, QS_DEPTH, WK, WP, WR,
+    all_occ, attacked_by, bit, has_non_pawn, is_attacked, is_white_piece, move_ec, move_er,
+    move_from, move_promotion, move_sc, move_sr, move_to, piece_on, piece_type,
+    promotion_piece_index, see, BoardState, Move, BK, BP, BR, EMPTY_SQ, INF, KING_ATTACKS, MATE,
+    MAX_PLY, QS_DEPTH, WK, WP, WR,
 };
 use crate::evaluate::{evaluate, evaluate_nnue_acc, with_nnue_net};
 use crate::movegen::{apply_move, generate_moves, is_chess960_castling_move};
@@ -61,12 +62,12 @@ fn score_from_tt(score: i32, ply: usize) -> i32 {
 }
 
 #[inline]
-fn is_promotion_move(fpi: u8, mv: &Move) -> bool {
+fn is_promotion_move(fpi: u8, mv: Move) -> bool {
     move_promotion(mv) != 0
-        || (fpi != EMPTY_SQ && piece_type(fpi) == 0 && (mv[2] == 0 || mv[2] == 7))
+        || (fpi != EMPTY_SQ && piece_type(fpi) == 0 && (move_er(mv) == 0 || move_er(mv) == 7))
 }
 
-fn promotion_value(mv: &Move) -> i32 {
+fn promotion_value(mv: Move) -> i32 {
     match move_promotion(mv).to_ascii_uppercase() {
         b'N' => piece_val(1),
         b'B' => piece_val(2),
@@ -77,16 +78,16 @@ fn promotion_value(mv: &Move) -> i32 {
 }
 
 #[inline]
-fn is_en_passant_capture(st: &BoardState, fpi: u8, mv: &Move, to: usize, tpi: u8) -> bool {
+fn is_en_passant_capture(st: &BoardState, fpi: u8, mv: Move, to: usize, tpi: u8) -> bool {
     fpi != EMPTY_SQ
         && tpi == EMPTY_SQ
         && piece_type(fpi) == 0
         && Some(to) == st.ep
-        && mv[1] != move_ec(mv)
+        && move_sc(mv) != move_ec(mv)
 }
 
 #[inline]
-fn capture_victim_value(st: &BoardState, fpi: u8, mv: &Move, to: usize, tpi: u8) -> i32 {
+fn capture_victim_value(st: &BoardState, fpi: u8, mv: Move, to: usize, tpi: u8) -> i32 {
     if is_chess960_castling_move(st, mv) {
         0
     } else if tpi != EMPTY_SQ {
@@ -99,13 +100,13 @@ fn capture_victim_value(st: &BoardState, fpi: u8, mv: &Move, to: usize, tpi: u8)
 }
 
 #[inline]
-fn move_is_capture(st: &BoardState, fpi: u8, mv: &Move, to: usize, tpi: u8) -> bool {
+fn move_is_capture(st: &BoardState, fpi: u8, mv: Move, to: usize, tpi: u8) -> bool {
     !is_chess960_castling_move(st, mv)
         && (tpi != EMPTY_SQ || is_en_passant_capture(st, fpi, mv, to, tpi))
 }
 
 #[inline]
-fn move_see(st: &BoardState, mv: &Move, from: usize, to: usize, fpi: u8, tpi: u8) -> i32 {
+fn move_see(st: &BoardState, mv: Move, from: usize, to: usize, fpi: u8, tpi: u8) -> i32 {
     if is_chess960_castling_move(st, mv) || is_en_passant_capture(st, fpi, mv, to, tpi) {
         0
     } else {
@@ -114,9 +115,9 @@ fn move_see(st: &BoardState, mv: &Move, from: usize, to: usize, fpi: u8, tpi: u8
 }
 
 #[inline(always)]
-fn special_move_gives_check(st: &BoardState, mv: &Move) -> bool {
-    let from = mv[0] * 8 + mv[1];
-    let to = mv[2] * 8 + move_ec(mv);
+fn special_move_gives_check(st: &BoardState, mv: Move) -> bool {
+    let from = move_from(mv);
+    let to = move_to(mv);
     let fpi = piece_on(&st.bb, from);
     if fpi == EMPTY_SQ {
         return false;
@@ -126,9 +127,11 @@ fn special_move_gives_check(st: &BoardState, mv: &Move) -> bool {
     let mover_is_white = is_white_piece(fpi);
     let mover_type = piece_type(fpi);
     let is_chess960_castle = is_chess960_castling_move(st, mv);
-    let is_en_passant = mover_type == 0 && Some(to) == st.ep && mv[1] != move_ec(mv);
-    let is_standard_castle =
-        mover_type == 5 && !st.chess960 && mv[1] == 4 && (move_ec(mv) == 6 || move_ec(mv) == 2);
+    let is_en_passant = mover_type == 0 && Some(to) == st.ep && move_sc(mv) != move_ec(mv);
+    let is_standard_castle = mover_type == 5
+        && !st.chess960
+        && move_sc(mv) == 4
+        && (move_ec(mv) == 6 || move_ec(mv) == 2);
 
     if !is_en_passant && !is_chess960_castle && !is_standard_castle {
         return false;
@@ -152,30 +155,34 @@ fn special_move_gives_check(st: &BoardState, mv: &Move) -> bool {
     if mover_type == 5 && is_chess960_castle {
         let rook_pi = if mover_is_white { WR } else { BR };
         let rook_col = move_ec(mv);
-        let (king_dst_col, rook_dst_col) = if rook_col > mv[1] {
+        let (king_dst_col, rook_dst_col) = if rook_col > move_sc(mv) {
             (6usize, 5usize)
         } else {
             (2usize, 3usize)
         };
-        bb[rook_pi] &= !bit(mv[2] * 8 + rook_col);
-        bb[rook_pi] |= bit(mv[0] * 8 + rook_dst_col);
+        bb[rook_pi] &= !bit(move_er(mv) * 8 + rook_col);
+        bb[rook_pi] |= bit(move_sr(mv) * 8 + rook_dst_col);
         bb[fpi as usize] &= !bit(from);
-        bb[fpi as usize] |= bit(mv[0] * 8 + king_dst_col);
+        bb[fpi as usize] |= bit(move_sr(mv) * 8 + king_dst_col);
     } else {
         bb[fpi as usize] &= !bit(from);
 
-        if mover_type == 5 && !st.chess960 && mv[1] == 4 && (move_ec(mv) == 6 || move_ec(mv) == 2) {
+        if mover_type == 5
+            && !st.chess960
+            && move_sc(mv) == 4
+            && (move_ec(mv) == 6 || move_ec(mv) == 2)
+        {
             let rook_pi = if mover_is_white { WR } else { BR };
             let (rook_from, rook_to) = if move_ec(mv) == 6 {
-                (mv[0] * 8 + 7, mv[0] * 8 + 5)
+                (move_sr(mv) * 8 + 7, move_sr(mv) * 8 + 5)
             } else {
-                (mv[0] * 8, mv[0] * 8 + 3)
+                (move_sr(mv) * 8, move_sr(mv) * 8 + 3)
             };
             bb[rook_pi] &= !bit(rook_from);
             bb[rook_pi] |= bit(rook_to);
         }
 
-        if mover_type == 0 && (mv[2] == 0 || mv[2] == 7) {
+        if mover_type == 0 && (move_er(mv) == 0 || move_er(mv) == 7) {
             if let Some(ppi) = promotion_piece_index(mover_is_white, move_promotion(mv)) {
                 bb[ppi] |= bit(to);
             } else {
@@ -568,11 +575,11 @@ impl Searcher {
             moves
                 .into_iter()
                 .filter(|mv| {
-                    let to = mv[2] * 8 + move_ec(mv);
-                    let from = mv[0] * 8 + mv[1];
+                    let to = move_to(*mv);
+                    let from = move_from(*mv);
                     let fpi = st.mailbox[from];
                     let tpi = st.mailbox[to];
-                    move_is_capture(st, fpi, mv, to, tpi) || is_promotion_move(fpi, mv)
+                    move_is_capture(st, fpi, *mv, to, tpi) || is_promotion_move(fpi, *mv)
                 })
                 .collect()
         };
@@ -581,40 +588,47 @@ impl Searcher {
         }
 
         caps.sort_by_key(|mv| {
-            let to = mv[2] * 8 + move_ec(mv);
-            let from = mv[0] * 8 + mv[1];
+            let to = move_to(*mv);
+            let from = move_from(*mv);
             let vpi = piece_on(&st.bb, to);
             let api = piece_on(&st.bb, from);
-            let victim = capture_victim_value(st, api, mv, to, vpi);
+            let victim = capture_victim_value(st, api, *mv, to, vpi);
             let attacker = if api != EMPTY_SQ {
                 piece_val(piece_type(api))
             } else {
                 0
             };
-            -(victim * 10 - attacker + promotion_value(mv))
+            -(victim * 10 - attacker + promotion_value(*mv))
         });
 
         for mv in caps {
             if self.time_up(start, tl) {
                 return 0;
             }
-            let from = mv[0] * 8 + mv[1];
-            let to = mv[2] * 8 + move_ec(&mv);
+            let from = move_from(mv);
+            let to = move_to(mv);
             let fpi = piece_on(&st.bb, from);
             let tpi = piece_on(&st.bb, to);
-            if !in_check && move_see(st, &mv, from, to, fpi, tpi) < 0 {
+            if !in_check && move_see(st, mv, from, to, fpi, tpi) < 0 {
                 continue;
             }
             let st_before = *st;
-            apply_move(st, mv[0], mv[1], mv[2], move_ec(&mv), move_promotion(&mv));
+            apply_move(
+                st,
+                move_sr(mv),
+                move_sc(mv),
+                move_er(mv),
+                move_ec(mv),
+                move_promotion(mv),
+            );
             self.push_nnue_acc(
                 &st_before,
                 st,
-                mv[0],
-                mv[1],
-                mv[2],
-                move_ec(&mv),
-                move_promotion(&mv),
+                move_sr(mv),
+                move_sc(mv),
+                move_er(mv),
+                move_ec(mv),
+                move_promotion(mv),
                 ply,
             );
             let score = -self.qsearch(st, -beta, -alpha, depth - 1, start, tl, cnt, ply + 1);
@@ -813,26 +827,26 @@ impl Searcher {
                 if Some(mv) == tt_move {
                     s = 10_000_000;
                 } else {
-                    let from = mv[0] * 8 + mv[1];
-                    let to = mv[2] * 8 + move_ec(&mv);
+                    let from = move_from(mv);
+                    let to = move_to(mv);
                     let tpi = piece_on(&st.bb, to);
                     let fpi = piece_on(&st.bb, from);
-                    let is_promo = is_promotion_move(fpi, &mv);
-                    if move_is_capture(st, fpi, &mv, to, tpi) || is_promo {
-                        let v = capture_victim_value(st, fpi, &mv, to, tpi);
+                    let is_promo = is_promotion_move(fpi, mv);
+                    if move_is_capture(st, fpi, mv, to, tpi) || is_promo {
+                        let v = capture_victim_value(st, fpi, mv, to, tpi);
                         let a = if fpi != EMPTY_SQ {
                             piece_val(piece_type(fpi))
                         } else {
                             0
                         };
-                        let see_sc = move_see(st, &mv, from, to, fpi, tpi);
+                        let see_sc = move_see(st, mv, from, to, fpi, tpi);
                         if see_sc >= 0 {
                             s += 2_000_000 + v * 10 - a + see_sc;
                         } else {
                             s += 500_000 + v * 10 - a;
                         }
                         if is_promo {
-                            s += 1_500_000 + promotion_value(&mv);
+                            s += 1_500_000 + promotion_value(mv);
                         }
                     } else {
                         if self.killers[ply][0] == Some(mv) {
@@ -848,7 +862,8 @@ impl Searcher {
                         if self.counter_move[p_idx][to] == Some(mv) {
                             s += 700_000;
                         }
-                        let (fk, tk) = from_to_key(mv[0], mv[1], mv[2], move_ec(&mv));
+                        let (fk, tk) =
+                            from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
                         s += self.history[fk][tk].clamp(-32768, 32768);
                     }
                 }
@@ -888,19 +903,22 @@ impl Searcher {
                 return 0;
             }
 
-            let from = mv[0] * 8 + mv[1];
-            let to = mv[2] * 8 + move_ec(&mv);
+            let from = move_from(mv);
+            let to = move_to(mv);
             let fpi = st.mailbox[from];
-            let tpi = if fpi != EMPTY_SQ && piece_type(fpi) == 0 && (mv[2] == 0 || mv[2] == 7) {
+            let tpi = if fpi != EMPTY_SQ
+                && piece_type(fpi) == 0
+                && (move_er(mv) == 0 || move_er(mv) == 7)
+            {
                 piece_on(&st.bb, to)
             } else {
                 st.mailbox[to]
             };
-            let capture = move_is_capture(st, fpi, &mv, to, tpi);
-            let is_promo = is_promotion_move(fpi, &mv);
+            let capture = move_is_capture(st, fpi, mv, to, tpi);
+            let is_promo = is_promotion_move(fpi, mv);
             let is_quiet = !capture && !is_promo;
 
-            let gives_check = special_move_gives_check(st, &mv);
+            let gives_check = special_move_gives_check(st, mv);
 
             if !is_pv && !in_check && is_quiet && i >= lmp_count {
                 break;
@@ -908,12 +926,12 @@ impl Searcher {
             if !is_pv && !in_check && i > 0 && best_score > -MATE / 2 {
                 if capture {
                     if self.see_pruning_enabled()
-                        && move_see(st, &mv, from, to, fpi, tpi) < -80 * actual_depth
+                        && move_see(st, mv, from, to, fpi, tpi) < -80 * actual_depth
                     {
                         continue;
                     }
                 } else if is_quiet && self.history_pruning_enabled() {
-                    let (fk, tk) = from_to_key(mv[0], mv[1], mv[2], move_ec(&mv));
+                    let (fk, tk) = from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
                     if actual_depth <= 5 && self.history[fk][tk] < -1024 * actual_depth {
                         continue;
                     }
@@ -927,16 +945,23 @@ impl Searcher {
             };
 
             let st_before = *st;
-            apply_move(st, mv[0], mv[1], mv[2], move_ec(&mv), move_promotion(&mv));
+            apply_move(
+                st,
+                move_sr(mv),
+                move_sc(mv),
+                move_er(mv),
+                move_ec(mv),
+                move_promotion(mv),
+            );
 
             self.push_nnue_acc(
                 &st_before,
                 st,
-                mv[0],
-                mv[1],
-                mv[2],
-                move_ec(&mv),
-                move_promotion(&mv),
+                move_sr(mv),
+                move_sc(mv),
+                move_er(mv),
+                move_ec(mv),
+                move_promotion(mv),
                 ply,
             );
 
@@ -1035,7 +1060,8 @@ impl Searcher {
                                 self.killers[ply][1] = self.killers[ply][0];
                                 self.killers[ply][0] = Some(mv);
                             }
-                            let (fk, tk) = from_to_key(mv[0], mv[1], mv[2], move_ec(&mv));
+                            let (fk, tk) =
+                                from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
                             let bonus = (actual_depth * actual_depth).min(512);
                             self.history[fk][tk] += bonus;
                             if self.history[fk][tk] > 16384 {
@@ -1049,7 +1075,12 @@ impl Searcher {
                                 if qmv == mv {
                                     continue;
                                 }
-                                let (qfk, qtk) = from_to_key(qmv[0], qmv[1], qmv[2], move_ec(&qmv));
+                                let (qfk, qtk) = from_to_key(
+                                    move_sr(qmv),
+                                    move_sc(qmv),
+                                    move_er(qmv),
+                                    move_ec(qmv),
+                                );
                                 self.history[qfk][qtk] -= bonus;
                                 if self.history[qfk][qtk] < -16384 {
                                     for a in 0..64 {
@@ -1137,11 +1168,11 @@ fn diversify_lazy_smp_root_moves(moves: &mut [Move], thread_id: usize) {
 }
 
 pub fn extract_pv_line(shared_tt: &SharedTT, st: &BoardState, first_move: Move) -> Vec<Move> {
-    let first_promo = move_promotion(&first_move);
-    let first_fpi = piece_on(&st.bb, first_move[0] * 8 + first_move[1]);
+    let first_promo = move_promotion(first_move);
+    let first_fpi = piece_on(&st.bb, move_from(first_move));
     if first_fpi != EMPTY_SQ
         && piece_type(first_fpi) == 0
-        && (first_move[2] == 0 || first_move[2] == 7)
+        && (move_er(first_move) == 0 || move_er(first_move) == 7)
         && (first_promo == 0
             || (first_promo != b'Q'
                 && first_promo != b'R'
@@ -1155,11 +1186,11 @@ pub fn extract_pv_line(shared_tt: &SharedTT, st: &BoardState, first_move: Move) 
     let mut prev_st = *st;
     apply_move(
         &mut prev_st,
-        first_move[0],
-        first_move[1],
-        first_move[2],
-        move_ec(&first_move),
-        move_promotion(&first_move),
+        move_sr(first_move),
+        move_sc(first_move),
+        move_er(first_move),
+        move_ec(first_move),
+        move_promotion(first_move),
     );
 
     let moved_king_sq = prev_st.king_sq(!prev_st.w);
@@ -1178,11 +1209,11 @@ pub fn extract_pv_line(shared_tt: &SharedTT, st: &BoardState, first_move: Move) 
             if !moves.contains(&best) {
                 break;
             }
-            let promo = move_promotion(&best);
-            let fpi = piece_on(&prev_st.bb, best[0] * 8 + best[1]);
+            let promo = move_promotion(best);
+            let fpi = piece_on(&prev_st.bb, move_from(best));
             if fpi != EMPTY_SQ
                 && piece_type(fpi) == 0
-                && (best[2] == 0 || best[2] == 7)
+                && (move_er(best) == 0 || move_er(best) == 7)
                 && (promo == 0
                     || (promo != b'Q' && promo != b'R' && promo != b'B' && promo != b'N'))
             {
@@ -1191,10 +1222,10 @@ pub fn extract_pv_line(shared_tt: &SharedTT, st: &BoardState, first_move: Move) 
             pv.push(best);
             apply_move(
                 &mut prev_st,
-                best[0],
-                best[1],
-                best[2],
-                move_ec(&best),
+                move_sr(best),
+                move_sc(best),
+                move_er(best),
+                move_ec(best),
                 promo,
             );
             let moved_king_sq = prev_st.king_sq(!prev_st.w);
@@ -1310,11 +1341,11 @@ pub fn lazy_smp_search(
                             let mut s = st;
                             apply_move(
                                 &mut s,
-                                mv[0],
-                                mv[1],
-                                mv[2],
-                                move_ec(&mv),
-                                move_promotion(&mv),
+                                move_sr(mv),
+                                move_sc(mv),
+                                move_er(mv),
+                                move_ec(mv),
+                                move_promotion(mv),
                             );
                             crate::evaluate::with_nnue_net(|net| {
                                 if !searcher.nnue_stack.is_empty() {
@@ -1430,7 +1461,7 @@ pub fn lazy_smp_search(
                             let pv_line = extract_pv_line(&searcher.shared_tt, &st, asp_best);
                             let pv_str = pv_line
                                 .iter()
-                                .map(|m| crate::board::move_to_uci(&st, m))
+                                .map(|m| crate::board::move_to_uci(&st, *m))
                                 .collect::<Vec<_>>()
                                 .join(" ");
                             let g_nodes = global_nodes.load(Ordering::Relaxed);
@@ -1492,6 +1523,7 @@ pub fn lazy_smp_search(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::board::encode_move;
     use crate::engine::Engine;
     use std::time::Duration;
 
@@ -1504,16 +1536,16 @@ mod tests {
     fn legal_move(st: &BoardState, uci: &str) -> Move {
         generate_moves(st, st.w, &st.cr, st.ep)
             .into_iter()
-            .find(|mv| crate::board::move_to_uci(st, mv) == uci)
+            .find(|mv| crate::board::move_to_uci(st, *mv) == uci)
             .unwrap_or_else(|| panic!("expected legal move {uci}"))
     }
 
     #[test]
     fn special_move_gives_check_rejects_empty_from_square() {
         let st = state_from_fen("7k/8/8/8/8/8/8/R3K3 w - - 0 1");
-        let mv = [7, 1, 7, 2];
+        let mv = encode_move(7, 1, 7, 2, 0);
 
-        assert!(!special_move_gives_check(&st, &mv));
+        assert!(!special_move_gives_check(&st, mv));
     }
 
     #[test]
@@ -1521,7 +1553,7 @@ mod tests {
         let st = state_from_fen("7k/8/8/8/8/8/8/R3K3 w - - 0 1");
         let mv = legal_move(&st, "a1a8");
 
-        assert!(!special_move_gives_check(&st, &mv));
+        assert!(!special_move_gives_check(&st, mv));
     }
 
     #[test]
@@ -1529,7 +1561,7 @@ mod tests {
         let st = state_from_fen("7k/8/8/8/8/8/8/R3K3 w - - 0 1");
         let mv = legal_move(&st, "a1a2");
 
-        assert!(!special_move_gives_check(&st, &mv));
+        assert!(!special_move_gives_check(&st, mv));
     }
 
     #[test]
@@ -1537,7 +1569,7 @@ mod tests {
         let st = state_from_fen("8/6pp/8/R2pP1k1/6B1/8/6PP/6K1 w - d6 0 1");
         let mv = legal_move(&st, "e5d6");
 
-        assert!(special_move_gives_check(&st, &mv));
+        assert!(special_move_gives_check(&st, mv));
     }
 
     #[test]
@@ -1545,7 +1577,7 @@ mod tests {
         let st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
         let mv = legal_move(&st, "e5d6");
 
-        assert!(!special_move_gives_check(&st, &mv));
+        assert!(!special_move_gives_check(&st, mv));
     }
 
     #[test]
@@ -1553,7 +1585,7 @@ mod tests {
         let st = state_from_fen("5k2/8/8/8/8/8/8/4K2R w K - 0 1");
         let mv = legal_move(&st, "e1g1");
 
-        assert!(special_move_gives_check(&st, &mv));
+        assert!(special_move_gives_check(&st, mv));
     }
 
     #[test]
@@ -1608,7 +1640,7 @@ mod tests {
             .get_depth(root_key)
             .and_then(|(_, _, _, best_move)| best_move)
             .expect("negamax should store the root best move");
-        let best_uci = crate::board::move_to_uci(&st, &best_move);
+        let best_uci = crate::board::move_to_uci(&st, best_move);
         assert_eq!(
             best_uci, "e5d6",
             "search chose {best_uci} instead of the checking en-passant discovery e5d6; score={score}, nodes={nodes}"
@@ -1665,7 +1697,12 @@ mod tests {
 
     #[test]
     fn lazy_smp_root_diversification_changes_nonzero_worker_order() {
-        let original = vec![[0, 0, 0, 0], [0, 1, 0, 1], [0, 2, 0, 2], [0, 3, 0, 3]];
+        let original = vec![
+            encode_move(0, 0, 0, 0, 0),
+            encode_move(0, 1, 0, 1, 0),
+            encode_move(0, 2, 0, 2, 0),
+            encode_move(0, 3, 0, 3, 0),
+        ];
         let mut thread_zero = original.clone();
         let mut thread_one = original.clone();
 
@@ -1739,7 +1776,7 @@ mod tests {
         let _stopped = Arc::new(AtomicBool::new(false));
         let shared_tt = Arc::new(SharedTT::new(128));
 
-        let bogus = [1, 2, 0, 0];
+        let bogus = encode_move(1, 2, 0, 0, 0);
         let pv = extract_pv_line(&shared_tt, &st, bogus);
         assert_eq!(pv.len(), 1);
     }
@@ -1750,8 +1787,8 @@ mod tests {
         let _stopped = Arc::new(AtomicBool::new(false));
         let shared_tt = Arc::new(SharedTT::new(128));
 
-        let first_move = [7, 4, 6, 4];
-        let bogus_tt_move = [0, 0, 0, 7];
+        let first_move = encode_move(7, 4, 6, 4, 0);
+        let bogus_tt_move = encode_move(0, 0, 0, 7, 0);
         let after_st = {
             let mut s = st;
             apply_move(&mut s, 7, 4, 6, 4, 0);
@@ -1770,14 +1807,14 @@ mod tests {
         let _stopped = Arc::new(AtomicBool::new(false));
         let shared_tt = Arc::new(SharedTT::new(128));
 
-        let first_move = [7, 4, 6, 4];
+        let first_move = encode_move(7, 4, 6, 4, 0);
         let after_st = {
             let mut s = st;
             apply_move(&mut s, 7, 4, 6, 4, 0);
             s
         };
         let after_hash = compute_hash(&after_st);
-        let check_move = [6, 4, 6, 5];
+        let check_move = encode_move(6, 4, 6, 5, 0);
         shared_tt.store(after_hash, 5, 100, TT_EXACT, Some(check_move));
 
         let pv = extract_pv_line(&shared_tt, &st, first_move);

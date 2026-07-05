@@ -118,30 +118,3 @@ pub fn piece_count(st: &BoardState) -> u32 {
 pub fn occupancy(bbs: &[u64; 12]) -> u64 {
     (0..12).map(|i| bbs[i]).fold(0, |a, b| a | b)
 }
-
-pub type CodaMove = u16;
-pub const NO_MOVE: CodaMove = 0;
-
-#[inline(always)]
-pub fn ember_move_sq(mv: &[usize; 4]) -> usize {
-    mv[2] * 8 + (mv[3] & 7)
-}
-
-#[inline(always)]
-pub fn ember_move_from(mv: &[usize; 4]) -> usize {
-    mv[0] * 8 + mv[1]
-}
-
-#[inline(always)]
-pub fn ember_move_pt(mv: &[usize; 4], st: &BoardState) -> u8 {
-    let s = ember_move_from(mv);
-    if s < 64 {
-        let b = 1u64 << s;
-        for i in 0..12 {
-            if st.bb[i] & b != 0 {
-                return (i % 6) as u8;
-            }
-        }
-    }
-    NO_PIECE_TYPE
-}

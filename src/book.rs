@@ -3,8 +3,8 @@ use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::board::{
-    is_white_piece, move_ec, move_promotion, piece_on, piece_type, sq, sq_c, sq_r, BoardState,
-    Move, BP, EMPTY_SQ, WP,
+    is_white_piece, move_ec, move_er, move_from, move_promotion, move_sc, move_sr, piece_on,
+    piece_type, sq, sq_c, sq_r, BoardState, Move, BP, EMPTY_SQ, WP,
 };
 use crate::polyglot_randoms::POLYGLOT_RANDOMS;
 
@@ -120,11 +120,15 @@ fn match_polyglot_move(pm: u16, legal: &[Move], st: &BoardState) -> Option<Move>
     }
 
     for &mv in legal {
-        if mv[0] == from_r && mv[1] == from_c && mv[2] == to_r && move_ec(&mv) == to_c {
-            let from_s = sq(mv[0], mv[1]);
+        if move_sr(mv) == from_r
+            && move_sc(mv) == from_c
+            && move_er(mv) == to_r
+            && move_ec(mv) == to_c
+        {
+            let from_s = move_from(mv);
             let pi = piece_on(&st.bb, from_s);
-            if pi != EMPTY_SQ && piece_type(pi) == 0 && (mv[2] == 0 || mv[2] == 7) {
-                let move_promo = move_promotion(&mv).to_ascii_uppercase();
+            if pi != EMPTY_SQ && piece_type(pi) == 0 && (move_er(mv) == 0 || move_er(mv) == 7) {
+                let move_promo = move_promotion(mv).to_ascii_uppercase();
                 if (promo == 0 && move_promo == b'Q') || promo == move_promo {
                     return Some(mv);
                 }

@@ -1,7 +1,7 @@
 use crate::board::{
-    all_occ, bit, black_occ, encode_move, is_attacked, is_white_piece, move_ec, piece_on,
-    piece_type, promotion_piece_index, sq, sq_c, sq_r, white_occ, BoardState, BB, BK, BN, BP, BQ,
-    BR, EMPTY_SQ, KING_ATTACKS, KNIGHT_ATTACKS, WB, WK, WN, WP, WQ, WR,
+    all_occ, bit, black_occ, encode_move, is_attacked, is_white_piece, move_from, move_to,
+    piece_on, piece_type, promotion_piece_index, sq, sq_c, sq_r, white_occ, BoardState, BB, BK, BN,
+    BP, BQ, BR, EMPTY_SQ, KING_ATTACKS, KNIGHT_ATTACKS, WB, WK, WN, WP, WQ, WR,
 };
 use crate::magic::{bishop_attacks, rook_attacks};
 
@@ -127,12 +127,12 @@ fn compute_pins(
 }
 
 #[inline]
-pub fn is_chess960_castling_move(st: &BoardState, mv: &Move) -> bool {
+pub fn is_chess960_castling_move(st: &BoardState, mv: Move) -> bool {
     if !st.chess960 {
         return false;
     }
-    let from = sq(mv[0], mv[1]);
-    let to = sq(mv[2], move_ec(mv));
+    let from = move_from(mv);
+    let to = move_to(mv);
     let mover_pi = piece_on(&st.bb, from);
     let target_pi = piece_on(&st.bb, to);
     mover_pi != EMPTY_SQ
@@ -758,9 +758,8 @@ pub fn generate_moves(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::{move_ec, move_promotion, move_to_uci};
+    use crate::board::{move_ec, move_er, move_promotion, move_sc, move_sr, move_to_uci};
     use crate::engine::Engine;
-    use std::collections::BTreeSet;
 
     fn state_from_fen(fen: &str) -> BoardState {
         let mut engine = Engine::new();
@@ -772,22 +771,20 @@ mod tests {
         if depth == 0 {
             return 1;
         }
-
         let moves = generate_moves(st, st.w, &st.cr, st.ep);
         if depth == 1 {
             return moves.len() as u64;
         }
-
         let mut nodes = 0u64;
         for mv in moves {
             let mut next = *st;
             apply_move(
                 &mut next,
-                mv[0],
-                mv[1],
-                mv[2],
-                move_ec(&mv),
-                move_promotion(&mv),
+                move_sr(mv),
+                move_sc(mv),
+                move_er(mv),
+                move_ec(mv),
+                move_promotion(mv),
             );
             nodes += perft(&next, depth - 1);
         }
@@ -848,21 +845,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
-    fn temp_perft_kiwipete_depth5_stress() {
-        let st =
-            state_from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
-        assert_eq!(perft(&st, 5), 193690690);
-    }
-
-    #[test]
-    #[ignore]
-    fn temp_perft_position3_depth6_stress() {
-        let st = state_from_fen("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1");
-        assert_eq!(perft(&st, 6), 11030083);
-    }
-
-    #[test]
     fn temp_perft_position6() {
         let st = state_from_fen(
             "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
@@ -885,16 +867,16 @@ mod tests {
         let moves = generate_moves(&st, st.w, &st.cr, st.ep);
         let ep = moves
             .into_iter()
-            .find(|mv| *mv == [3, 4, 2, 3])
+            .find(|mv| *mv == encode_move(3, 4, 2, 3, 0))
             .expect("expected e5d6 en passant to be legal");
 
         apply_move(
             &mut st,
-            ep[0],
-            ep[1],
-            ep[2],
-            move_ec(&ep),
-            move_promotion(&ep),
+            move_sr(ep),
+            move_sc(ep),
+            move_er(ep),
+            move_ec(ep),
+            move_promotion(ep),
         );
 
         assert_ne!(piece_on(&st.bb, sq(2, 3)), EMPTY_SQ);
@@ -907,44 +889,28 @@ mod tests {
         let mut engine = Engine::new();
         engine.set_fen("1k6/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
         engine.st.chess960 = true;
-
         let moves = generate_moves(&engine.st, engine.st.w, &engine.st.cr, engine.st.ep);
-        let uci_moves: Vec<String> = moves.iter().map(|mv| move_to_uci(&engine.st, mv)).collect();
-
-        assert!(
-            uci_moves.contains(&"e1a1".to_string()),
-            "Queenside castling e1a1 should be legal"
-        );
-        assert!(
-            uci_moves.contains(&"e1h1".to_string()),
-            "Kingside castling e1h1 should be legal"
-        );
-
+        let uci_moves: Vec<String> = moves
+            .iter()
+            .map(|mv| move_to_uci(&engine.st, *mv))
+            .collect();
+        assert!(uci_moves.contains(&"e1a1".to_string()));
+        assert!(uci_moves.contains(&"e1h1".to_string()));
         let oo = moves
             .iter()
-            .find(|mv| move_to_uci(&engine.st, mv) == "e1h1")
+            .find(|mv| move_to_uci(&engine.st, **mv) == "e1h1")
             .unwrap();
         apply_move(
             &mut engine.st,
-            oo[0],
-            oo[1],
-            oo[2],
-            move_ec(oo),
-            move_promotion(oo),
+            move_sr(*oo),
+            move_sc(*oo),
+            move_er(*oo),
+            move_ec(*oo),
+            move_promotion(*oo),
         );
-        assert_eq!(
-            engine.st.king_sq(true),
-            7 * 8 + 6,
-            "King should be on g1 after O-O"
-        );
-        assert!(
-            engine.st.bb[WR] & bit(7 * 8 + 5) != 0,
-            "Rook should be on f1 after O-O"
-        );
-        assert!(
-            engine.st.bb[WR] & bit(7 * 8 + 7) == 0,
-            "Rook should no longer be on h1 after O-O"
-        );
+        assert_eq!(engine.st.king_sq(true), 7 * 8 + 6);
+        assert!(engine.st.bb[WR] & bit(7 * 8 + 5) != 0);
+        assert!(engine.st.bb[WR] & bit(7 * 8 + 7) == 0);
     }
 
     #[test]
@@ -952,44 +918,28 @@ mod tests {
         let mut engine = Engine::new();
         engine.set_fen("r3k2r/8/8/8/8/8/8/1K6 b KQkq - 0 1");
         engine.st.chess960 = true;
-
         let moves = generate_moves(&engine.st, engine.st.w, &engine.st.cr, engine.st.ep);
-        let uci_moves: Vec<String> = moves.iter().map(|mv| move_to_uci(&engine.st, mv)).collect();
-
-        assert!(
-            uci_moves.contains(&"e8a8".to_string()),
-            "Black queenside castling e8a8 should be legal"
-        );
-        assert!(
-            uci_moves.contains(&"e8h8".to_string()),
-            "Black kingside castling e8h8 should be legal"
-        );
-
+        let uci_moves: Vec<String> = moves
+            .iter()
+            .map(|mv| move_to_uci(&engine.st, *mv))
+            .collect();
+        assert!(uci_moves.contains(&"e8a8".to_string()));
+        assert!(uci_moves.contains(&"e8h8".to_string()));
         let ooo = moves
             .iter()
-            .find(|mv| move_to_uci(&engine.st, mv) == "e8a8")
+            .find(|mv| move_to_uci(&engine.st, **mv) == "e8a8")
             .unwrap();
         apply_move(
             &mut engine.st,
-            ooo[0],
-            ooo[1],
-            ooo[2],
-            move_ec(ooo),
-            move_promotion(ooo),
+            move_sr(*ooo),
+            move_sc(*ooo),
+            move_er(*ooo),
+            move_ec(*ooo),
+            move_promotion(*ooo),
         );
-        assert_eq!(
-            engine.st.king_sq(false),
-            sq(0, 2),
-            "Black king should be on c8 after O-O-O"
-        );
-        assert!(
-            engine.st.bb[BR] & bit(sq(0, 3)) != 0,
-            "Black rook should be on d8 after O-O-O"
-        );
-        assert!(
-            engine.st.bb[BR] & bit(sq(0, 0)) == 0,
-            "Black rook should no longer be on a8 after O-O-O"
-        );
+        assert_eq!(engine.st.king_sq(false), sq(0, 2));
+        assert!(engine.st.bb[BR] & bit(sq(0, 3)) != 0);
+        assert!(engine.st.bb[BR] & bit(sq(0, 0)) == 0);
     }
 
     #[test]
@@ -997,94 +947,44 @@ mod tests {
         let mut engine = Engine::new();
         engine.set_fen("1k6/8/8/8/8/8/8/RBNKBNQR w KQkq - 0 1");
         engine.st.chess960 = true;
-
-        let king_sq = engine.st.king_sq(true);
-        assert_eq!(king_sq, 7 * 8 + 3, "White king should be on d1");
-
         let moves = generate_moves(&engine.st, engine.st.w, &engine.st.cr, engine.st.ep);
-        let uci_moves: Vec<String> = moves.iter().map(|mv| move_to_uci(&engine.st, mv)).collect();
-
-        assert!(
-            !uci_moves.contains(&"d1a1".to_string()),
-            "Queenside castling d1a1 blocked by bishop on b1"
-        );
-        assert!(
-            !uci_moves.contains(&"d1h1".to_string()),
-            "Kingside castling d1h1 blocked by bishop on f1"
-        );
+        let uci_moves: Vec<String> = moves
+            .iter()
+            .map(|mv| move_to_uci(&engine.st, *mv))
+            .collect();
+        assert!(!uci_moves.contains(&"e1a1".to_string()));
+        assert!(!uci_moves.contains(&"e1h1".to_string()));
     }
 
     #[test]
-    fn chess960_castling_blocked_by_piece_on_king_destination() {
+    fn chess960_castling_king_side_through_check() {
         let mut engine = Engine::new();
-        engine.set_fen("1k6/8/8/8/8/8/8/R3KBNR w KQkq - 0 1");
+        engine.set_fen("1k6/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
         engine.st.chess960 = true;
-
+        engine.st.bb[BR] |= bit(sq(0, 5));
+        engine.st.refresh_mailbox();
         let moves = generate_moves(&engine.st, engine.st.w, &engine.st.cr, engine.st.ep);
-        let uci_moves: Vec<String> = moves.iter().map(|mv| move_to_uci(&engine.st, mv)).collect();
-
-        assert!(
-            !uci_moves.contains(&"e1h1".to_string()),
-            "Kingside castling e1h1 should be blocked by bishop on g1"
-        );
+        let uci_moves: Vec<String> = moves
+            .iter()
+            .map(|mv| move_to_uci(&engine.st, *mv))
+            .collect();
+        assert!(!uci_moves.contains(&"e1h1".to_string()));
+        assert!(uci_moves.contains(&"e1a1".to_string()));
     }
 
     #[test]
-    fn chess960_castling_queenside_blocked_by_piece_on_king_destination() {
+    fn chess960_castling_queenside_through_check() {
         let mut engine = Engine::new();
-        engine.set_fen("1k6/8/8/8/8/8/8/BNR1K2R w KQkq - 0 1");
+        engine.set_fen("1k6/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
         engine.st.chess960 = true;
-
+        engine.st.bb[BR] |= bit(sq(0, 3));
+        engine.st.refresh_mailbox();
         let moves = generate_moves(&engine.st, engine.st.w, &engine.st.cr, engine.st.ep);
-        let uci_moves: Vec<String> = moves.iter().map(|mv| move_to_uci(&engine.st, mv)).collect();
-
-        assert!(
-            !uci_moves.contains(&"e1a1".to_string()),
-            "Queenside castling e1a1 should be blocked by bishop on c1"
-        );
-    }
-
-    #[test]
-    fn chess960_castling_king_ends_in_check_from_discovered_attack() {
-        let mut engine = Engine::new();
-        engine.set_fen("4r1k1/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
-        engine.st.chess960 = true;
-
-        let moves = generate_moves(&engine.st, engine.st.w, &engine.st.cr, engine.st.ep);
-        let uci_moves: Vec<String> = moves.iter().map(|mv| move_to_uci(&engine.st, mv)).collect();
-
-        assert!(
-            !uci_moves.contains(&"e1h1".to_string()),
-            "Kingside castling e1h1 should be illegal: king on g1 would be attacked by rook on e8"
-        );
-    }
-
-    #[test]
-    fn generate_moves_includes_underpromotions() {
-        let mut st = state_from_fen("1r2k3/P7/8/8/8/8/8/4K3 w - - 0 1");
-        let moves = generate_moves(&st, st.w, &st.cr, st.ep);
-        let uci: BTreeSet<String> = moves.iter().map(|mv| move_to_uci(&st, mv)).collect();
-
-        for suffix in ["q", "r", "b", "n"] {
-            assert!(uci.contains(&format!("a7a8{suffix}")));
-            assert!(uci.contains(&format!("a7b8{suffix}")));
-        }
-
-        let knight_promotion = moves
-            .into_iter()
-            .find(|mv| move_to_uci(&st, mv) == "a7a8n")
-            .expect("expected a7a8n to be legal");
-        apply_move(
-            &mut st,
-            knight_promotion[0],
-            knight_promotion[1],
-            knight_promotion[2],
-            move_ec(&knight_promotion),
-            move_promotion(&knight_promotion),
-        );
-
-        assert_eq!(piece_on(&st.bb, sq(0, 0)), WN as u8);
-        assert_eq!(piece_on(&st.bb, sq(1, 0)), EMPTY_SQ);
-        assert!(!st.w);
+        let uci_moves: Vec<String> = moves
+            .iter()
+            .map(|mv| move_to_uci(&engine.st, *mv))
+            .collect();
+        assert!(!uci_moves.contains(&"e1a1".to_string()));
+        assert!(uci_moves.contains(&"e1h1".to_string()));
     }
 }

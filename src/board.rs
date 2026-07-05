@@ -17,7 +17,8 @@ pub const BR: usize = 9;
 pub const BQ: usize = 10;
 pub const BK: usize = 11;
 
-pub type Move = [usize; 4];
+pub type Move = u16;
+pub const NO_MOVE: Move = 0;
 
 #[inline(always)]
 pub fn sq(r: usize, c: usize) -> usize {
@@ -38,16 +39,57 @@ pub fn bit(s: usize) -> u64 {
 
 #[inline(always)]
 pub fn encode_move(sr: usize, sc: usize, er: usize, ec: usize, promotion: u8) -> Move {
-    [sr, sc, er, ec | ((promotion as usize) << 3)]
+    let from = (sr * 8 + sc) as u16;
+    let to = (er * 8 + ec) as u16;
+    let promo_code = match promotion.to_ascii_uppercase() {
+        b'N' => 1u16,
+        b'B' => 2,
+        b'R' => 3,
+        b'Q' => 4,
+        _ => 0,
+    };
+    from | (to << 6) | (promo_code << 12)
 }
 
 #[inline(always)]
-pub fn move_ec(mv: &Move) -> usize {
-    mv[3] & 7
+pub fn move_from(mv: Move) -> usize {
+    (mv & 0x3F) as usize
 }
+
 #[inline(always)]
-pub fn move_promotion(mv: &Move) -> u8 {
-    (mv[3] >> 3) as u8
+pub fn move_to(mv: Move) -> usize {
+    ((mv >> 6) & 0x3F) as usize
+}
+
+#[inline(always)]
+pub fn move_sr(mv: Move) -> usize {
+    move_from(mv) >> 3
+}
+
+#[inline(always)]
+pub fn move_sc(mv: Move) -> usize {
+    move_from(mv) & 7
+}
+
+#[inline(always)]
+pub fn move_er(mv: Move) -> usize {
+    move_to(mv) >> 3
+}
+
+#[inline(always)]
+pub fn move_ec(mv: Move) -> usize {
+    move_to(mv) & 7
+}
+
+#[inline(always)]
+pub fn move_promotion(mv: Move) -> u8 {
+    match (mv >> 12) & 0x7 {
+        1 => b'N',
+        2 => b'B',
+        3 => b'R',
+        4 => b'Q',
+        _ => 0,
+    }
 }
 
 #[inline(always)]
@@ -187,9 +229,9 @@ pub fn sq_to_str(s: usize) -> String {
     coord_to_square(sq_r(s), sq_c(s))
 }
 
-pub fn move_to_uci(st: &BoardState, mv: &Move) -> String {
-    let from = sq(mv[0], mv[1]);
-    let to = sq(mv[2], move_ec(mv));
+pub fn move_to_uci(st: &BoardState, mv: Move) -> String {
+    let from = move_from(mv);
+    let to = move_to(mv);
     let promo = move_promotion(mv);
     let pi = piece_on(&st.bb, from);
 
@@ -199,8 +241,12 @@ pub fn move_to_uci(st: &BoardState, mv: &Move) -> String {
             && piece_type(target_pi) == 3
             && is_white_piece(target_pi) == is_white_piece(pi)
         {
-            let king_dst_col = if move_ec(mv) > mv[1] { 6usize } else { 2usize };
-            if king_dst_col != mv[1] {
+            let king_dst_col = if move_ec(mv) > move_sc(mv) {
+                6usize
+            } else {
+                2usize
+            };
+            if king_dst_col != move_sc(mv) {
                 return format!("{}{}", sq_to_str(from), sq_to_str(to));
             }
         }

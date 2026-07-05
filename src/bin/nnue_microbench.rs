@@ -1,4 +1,4 @@
-use chess_rs_lib::board::{move_ec, move_promotion};
+use chess_rs_lib::board::{move_ec, move_er, move_promotion, move_sc, move_sr};
 use chess_rs_lib::evaluate::evaluate_nnue_acc;
 use chess_rs_lib::movegen::{apply_move, generate_moves};
 use chess_rs_lib::nnue::{NNUEAccumulator, NNUENet};
@@ -67,14 +67,14 @@ fn bench_incremental(
             let mut base_acc = NNUEAccumulator::new(net.hidden_size);
             base_acc.refresh(net, st);
 
-            for mv in &moves {
+            for &mv in &moves {
                 let mut next_acc = base_acc.clone();
                 if !next_acc.update_move(
                     net,
                     st,
-                    mv[0],
-                    mv[1],
-                    mv[2],
+                    move_sr(mv),
+                    move_sc(mv),
+                    move_er(mv),
                     move_ec(mv),
                     move_promotion(mv),
                 ) {
@@ -84,9 +84,9 @@ fn bench_incremental(
                 let mut next = *st;
                 apply_move(
                     &mut next,
-                    mv[0],
-                    mv[1],
-                    mv[2],
+                    move_sr(mv),
+                    move_sc(mv),
+                    move_er(mv),
                     move_ec(mv),
                     move_promotion(mv),
                 );

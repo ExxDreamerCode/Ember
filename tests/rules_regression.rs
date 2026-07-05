@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
 
 use chess_rs_lib::board::{
-    bit, move_ec, move_promotion, move_to_uci, piece_on, sq, EMPTY_SQ, WK, WR,
+    bit, move_ec, move_er, move_promotion, move_sc, move_sr, move_to_uci, piece_on, sq, EMPTY_SQ,
+    WK, WR,
 };
 use chess_rs_lib::movegen::{apply_move, generate_moves};
 use chess_rs_lib::syzygy::SyzygyTables;
@@ -21,7 +22,7 @@ fn ember_legal_moves(fen: &str, chess960: bool) -> BTreeSet<String> {
     let engine = engine_from_fen(fen, chess960);
     generate_moves(&engine.st, engine.st.w, &engine.st.cr, engine.st.ep)
         .iter()
-        .map(|mv| move_to_uci(&engine.st, mv))
+        .map(|&mv| move_to_uci(&engine.st, mv))
         .collect()
 }
 
@@ -66,11 +67,11 @@ fn ember_perft_state(st: &chess_rs_lib::board::BoardState, depth: u32) -> u64 {
             let mut next = *st;
             apply_move(
                 &mut next,
-                mv[0],
-                mv[1],
-                mv[2],
-                move_ec(&mv),
-                move_promotion(&mv),
+                move_sr(mv),
+                move_sc(mv),
+                move_er(mv),
+                move_ec(mv),
+                move_promotion(mv),
             );
             ember_perft_state(&next, depth - 1)
         })
@@ -175,7 +176,7 @@ fn chess960_castling_right_is_revoked_when_non_corner_rook_moves() {
     let moves: BTreeSet<String> =
         generate_moves(&engine.st, engine.st.w, &engine.st.cr, engine.st.ep)
             .iter()
-            .map(|mv| move_to_uci(&engine.st, mv))
+            .map(|&mv| move_to_uci(&engine.st, mv))
             .collect();
     assert!(
         !moves.contains("e1f1"),
@@ -204,7 +205,7 @@ fn standard_castling_right_is_revoked_when_corner_rook_moves() {
     let moves: BTreeSet<String> =
         generate_moves(&engine.st, engine.st.w, &engine.st.cr, engine.st.ep)
             .iter()
-            .map(|mv| move_to_uci(&engine.st, mv))
+            .map(|&mv| move_to_uci(&engine.st, mv))
             .collect();
     assert!(!moves.contains("e1g1"));
     assert!(
