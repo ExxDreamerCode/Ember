@@ -244,6 +244,29 @@ fn illegal_uci_move_is_rejected_without_mutating_state() {
 }
 
 #[test]
+fn default_position_move_keeps_repetition_stack_aligned() {
+    let mut engine = Engine::new();
+    assert_eq!(
+        engine.searcher.rep_stack_len, 1,
+        "new engine should expose one active repetition hash"
+    );
+    assert_eq!(
+        engine.searcher.rep_stack.len(),
+        engine.searcher.rep_stack_len,
+        "new engine should not keep inactive hashes ahead of rep_stack_len"
+    );
+    assert_eq!(engine.searcher.rep_stack[0], compute_hash(&engine.st));
+
+    assert!(engine.make_move_uci(6, 4, 4, 4, 0), "e2e4 is legal");
+    let current_hash = compute_hash(&engine.st);
+    assert_eq!(
+        engine.searcher.rep_stack[engine.searcher.rep_stack_len - 1],
+        current_hash,
+        "latest repetition hash must describe the current board"
+    );
+}
+
+#[test]
 fn repetition_hash_only_includes_legal_en_passant_rights() {
     let legal_ep = engine_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", false);
     let same_without_ep = engine_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - - 0 1", false);
