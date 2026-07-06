@@ -408,3 +408,24 @@ fn parse_go(engine: &mut Engine, parts: &[&str]) {
         println!("bestmove 0000");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chess_rs_lib::board::board_to_fen;
+
+    #[test]
+    fn position_command_stops_after_illegal_move() {
+        let mut engine = Engine::new();
+        parse_position(
+            &mut engine,
+            &["position", "startpos", "moves", "e2e5", "g1f3"],
+        );
+
+        assert_eq!(
+            board_to_fen(&engine.st),
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "g1f3 must not be applied after the illegal e2e5 prefix"
+        );
+    }
+}
