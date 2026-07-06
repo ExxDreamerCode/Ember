@@ -256,17 +256,7 @@ fn parse_position(engine: &mut Engine, parts: &[&str]) {
         let mut i = 2;
         if i < parts.len() && parts[i] == "moves" {
             i += 1;
-            while i < parts.len() {
-                if let Some(m) = parse_uci_move(parts[i]) {
-                    if !engine.make_move_uci(m.0, m.1, m.2, m.3, m.4) {
-                        eprintln!(
-                            "info string Ignoring illegal move in position command: {}",
-                            parts[i]
-                        );
-                    }
-                }
-                i += 1;
-            }
+            apply_position_moves(engine, &parts[i..]);
         }
     } else if parts[1] == "fen" && parts.len() >= 8 {
         let fen = format!(
@@ -277,17 +267,21 @@ fn parse_position(engine: &mut Engine, parts: &[&str]) {
         let mut idx = 8;
         if idx < parts.len() && parts[idx] == "moves" {
             idx += 1;
-            while idx < parts.len() {
-                if let Some(m) = parse_uci_move(parts[idx]) {
-                    if !engine.make_move_uci(m.0, m.1, m.2, m.3, m.4) {
-                        eprintln!(
-                            "info string Ignoring illegal move in position command: {}",
-                            parts[idx]
-                        );
-                    }
-                }
-                idx += 1;
-            }
+            apply_position_moves(engine, &parts[idx..]);
+        }
+    }
+}
+
+fn apply_position_moves(engine: &mut Engine, moves: &[&str]) {
+    for mv_text in moves {
+        let legal =
+            parse_uci_move(mv_text).is_some_and(|m| engine.make_move_uci(m.0, m.1, m.2, m.3, m.4));
+        if !legal {
+            eprintln!(
+                "info string Stopping position move list at illegal move: {}",
+                mv_text
+            );
+            break;
         }
     }
 }
