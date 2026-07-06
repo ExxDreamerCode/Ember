@@ -4,6 +4,11 @@ use chess_rs_lib::syzygy::SyzygyTables;
 use chess_rs_lib::{opening_book, Engine, OpeningBook};
 use std::io::{self, BufRead};
 
+const MIN_HASH_MB: usize = 1;
+const MAX_HASH_MB: usize = 4096;
+const MIN_THREADS: usize = 1;
+const MAX_THREADS: usize = 256;
+
 fn try_load_book(engine: &mut Engine, path: &std::path::Path) -> bool {
     let display = path.display();
     if path.exists() {
@@ -72,8 +77,14 @@ fn main() {
             "uci" => {
                 println!("id name Ember 1.1.1");
                 println!("id author ExxDreamerCode");
-                println!("option name Hash type spin default 256 min 1 max 4096");
-                println!("option name Threads type spin default 1 min 1 max 256");
+                println!(
+                    "option name Hash type spin default 256 min {} max {}",
+                    MIN_HASH_MB, MAX_HASH_MB
+                );
+                println!(
+                    "option name Threads type spin default 1 min {} max {}",
+                    MIN_THREADS, MAX_THREADS
+                );
                 println!("option name Book type string default <embedded>");
                 println!("option name NNUE type string default <embedded>");
                 println!("option name SyzygyPath type string default <empty>");
@@ -211,13 +222,21 @@ fn parse_setoption(engine: &mut Engine, parts: &[&str]) {
         match name.as_str() {
             "hash" => {
                 if let Ok(mb) = val.parse::<usize>() {
-                    engine.searcher.resize_tt(mb);
+                    if (MIN_HASH_MB..=MAX_HASH_MB).contains(&mb) {
+                        engine.searcher.resize_tt(mb);
+                    } else {
+                        eprintln!("info string Ignoring out-of-range Hash value: {}", mb);
+                    }
                 }
             }
             "threads" => {
                 if let Ok(n) = val.parse::<usize>() {
-                    engine.num_threads = n.max(1);
-                    eprintln!("info string Set threads to {}", engine.num_threads);
+                    if (MIN_THREADS..=MAX_THREADS).contains(&n) {
+                        engine.num_threads = n;
+                        eprintln!("info string Set threads to {}", engine.num_threads);
+                    } else {
+                        eprintln!("info string Ignoring out-of-range Threads value: {}", n);
+                    }
                 }
             }
             #[cfg(feature = "decision-trace")]
@@ -256,17 +275,7 @@ fn parse_position(engine: &mut Engine, parts: &[&str]) {
         let mut i = 2;
         if i < parts.len() && parts[i] == "moves" {
             i += 1;
-            while i < parts.len() {
-                if let Some(m) = parse_uci_move(parts[i]) {
-                    if !engine.make_move_uci(m.0, m.1, m.2, m.3, m.4) {
-                        eprintln!(
-                            "info string Ignoring illegal move in position command: {}",
-                            parts[i]
-                        );
-                    }
-                }
-                i += 1;
-            }
+            apply_position_moves(engine, &parts[i..]);
         }
     } else if parts[1] == "fen" && parts.len() >= 8 {
         let fen = format!(
@@ -277,17 +286,21 @@ fn parse_position(engine: &mut Engine, parts: &[&str]) {
         let mut idx = 8;
         if idx < parts.len() && parts[idx] == "moves" {
             idx += 1;
-            while idx < parts.len() {
-                if let Some(m) = parse_uci_move(parts[idx]) {
-                    if !engine.make_move_uci(m.0, m.1, m.2, m.3, m.4) {
-                        eprintln!(
-                            "info string Ignoring illegal move in position command: {}",
-                            parts[idx]
-                        );
-                    }
-                }
-                idx += 1;
-            }
+            apply_position_moves(engine, &parts[idx..]);
+        }
+    }
+}
+
+fn apply_position_moves(engine: &mut Engine, moves: &[&str]) {
+    for mv_text in moves {
+        let legal =
+            parse_uci_move(mv_text).is_some_and(|m| engine.make_move_uci(m.0, m.1, m.2, m.3, m.4));
+        if !legal {
+            eprintln!(
+                "info string Stopping position move list at illegal move: {}",
+                mv_text
+            );
+            break;
         }
     }
 }
@@ -412,5 +425,48 @@ fn parse_go(engine: &mut Engine, parts: &[&str]) {
         println!("bestmove {}", best_move);
     } else {
         println!("bestmove 0000");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chess_rs_lib::board::board_to_fen;
+
+    #[test]
+    fn position_command_stops_after_illegal_move() {
+        let mut engine = Engine::new();
+        parse_position(
+            &mut engine,
+            &["position", "startpos", "moves", "e2e5", "g1f3"],
+        );
+
+        assert_eq!(
+            board_to_fen(&engine.st),
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "g1f3 must not be applied after the illegal e2e5 prefix"
+        );
+    }
+
+    #[test]
+    fn setoption_rejects_out_of_range_resources() {
+        let mut engine = Engine::new();
+        let hash_mb = engine.searcher.tt_mb;
+        let threads = engine.num_threads;
+
+        parse_setoption(&mut engine, &["setoption", "name", "Hash", "value", "0"]);
+        parse_setoption(
+            &mut engine,
+            &["setoption", "name", "Threads", "value", "1000000"],
+        );
+
+        assert_eq!(
+            engine.searcher.tt_mb, hash_mb,
+            "invalid Hash must not change the active hash setting"
+        );
+        assert_eq!(
+            engine.num_threads, threads,
+            "invalid Threads must not change the worker count"
+        );
     }
 }

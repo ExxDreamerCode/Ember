@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use chess_rs_lib::board::{
-    bit, move_ec, move_er, move_promotion, move_sc, move_sr, move_to_uci, piece_on, sq, EMPTY_SQ,
-    WK, WR,
+    bit, board_to_fen, move_ec, move_er, move_promotion, move_sc, move_sr, move_to_uci, piece_on,
+    sq, EMPTY_SQ, WK, WR,
 };
 use chess_rs_lib::movegen::{apply_move, generate_moves};
 use chess_rs_lib::syzygy::SyzygyTables;
@@ -241,6 +241,56 @@ fn illegal_uci_move_is_rejected_without_mutating_state() {
     assert_eq!(engine.searcher.rep_stack_len, before_rep_len);
     assert_eq!(engine.st.bb, before_state.bb);
     assert_eq!(engine.st.w, before_state.w);
+}
+
+#[test]
+fn default_position_move_keeps_repetition_stack_aligned() {
+    let mut engine = Engine::new();
+    assert_eq!(
+        engine.searcher.rep_stack_len, 1,
+        "new engine should expose one active repetition hash"
+    );
+    assert_eq!(
+        engine.searcher.rep_stack.len(),
+        engine.searcher.rep_stack_len,
+        "new engine should not keep inactive hashes ahead of rep_stack_len"
+    );
+    assert_eq!(engine.searcher.rep_stack[0], compute_hash(&engine.st));
+
+    assert!(engine.make_move_uci(6, 4, 4, 4, 0), "e2e4 is legal");
+    let current_hash = compute_hash(&engine.st);
+    assert_eq!(
+        engine.searcher.rep_stack[engine.searcher.rep_stack_len - 1],
+        current_hash,
+        "latest repetition hash must describe the current board"
+    );
+}
+
+#[test]
+fn new_engine_reports_default_hash_size() {
+    let engine = Engine::new();
+    assert_eq!(
+        engine.searcher.tt_mb, 256,
+        "recorded hash size should match the engine default"
+    );
+}
+
+#[test]
+fn invalid_fen_does_not_replace_current_position() {
+    let mut engine = Engine::new();
+    let before_fen = board_to_fen(&engine.st);
+    let before_hash = compute_hash(&engine.st);
+    let before_rep_len = engine.searcher.rep_stack_len;
+
+    engine.set_fen("8/8/8/8/8/8/8/8 w - - 0 1");
+
+    assert_eq!(
+        board_to_fen(&engine.st),
+        before_fen,
+        "invalid FEN must not replace the current board"
+    );
+    assert_eq!(compute_hash(&engine.st), before_hash);
+    assert_eq!(engine.searcher.rep_stack_len, before_rep_len);
 }
 
 #[test]

@@ -2,8 +2,8 @@
 use crate::board::board_to_fen;
 use crate::board::{
     bit, is_attacked, move_ec, move_er, move_from, move_promotion, move_sc, move_sr, move_to,
-    move_to_uci, piece_from_char, piece_type, sq, sq_c, BoardState, Move, BP, BQ, BR, EMPTY_SQ,
-    INF, MATE, MAX_PLY, NO_MOVE, WP, WQ, WR,
+    move_to_uci, piece_from_char, piece_type, sq, sq_c, BoardState, Move, BK, BP, BQ, BR, EMPTY_SQ,
+    INF, MATE, MAX_PLY, NO_MOVE, WK, WP, WQ, WR,
 };
 use crate::book::OpeningBook;
 use crate::movegen::{apply_move, generate_moves};
@@ -16,6 +16,8 @@ use crate::zobrist::compute_hash;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
+
+const DEFAULT_HASH_MB: usize = 256;
 
 pub struct Engine {
     pub st: BoardState,
@@ -209,7 +211,7 @@ impl Default for Engine {
 impl Engine {
     pub fn new() -> Self {
         let stopped = Arc::new(AtomicBool::new(false));
-        let shared_tt = Arc::new(SharedTT::new(256));
+        let shared_tt = Arc::new(SharedTT::new(DEFAULT_HASH_MB));
         let mut e = Engine {
             st: BoardState::empty(),
             searcher: Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped)),
@@ -220,39 +222,67 @@ impl Engine {
             #[cfg(feature = "decision-trace")]
             trace: TraceLogger::from_env(),
         };
+        e.searcher.tt_mb = DEFAULT_HASH_MB;
         e.set_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-        let h = compute_hash(&e.st);
-        e.searcher.rep_stack.push(h);
-        e.searcher.rep_stack_len = 1;
         e
     }
 
     pub fn set_fen(&mut self, fen: &str) {
-        let chess960_mode = self.st.chess960;
-        self.st = BoardState::empty();
-        self.st.chess960 = chess960_mode;
-        let parts: Vec<&str> = fen.split(' ').collect();
+        if let Err(e) = self.try_set_fen(fen) {
+            eprintln!("info string Ignoring invalid FEN: {}", e);
+        }
+    }
 
-        for (ri, rs) in parts[0].split('/').enumerate() {
+    pub fn try_set_fen(&mut self, fen: &str) -> Result<(), String> {
+        let chess960_mode = self.st.chess960;
+        let mut next = BoardState::empty();
+        next.chess960 = chess960_mode;
+        let parts: Vec<&str> = fen.split(' ').collect();
+        if parts.len() < 4 {
+            return Err(
+                "expected at least board, side, castling and en-passant fields".to_string(),
+            );
+        }
+
+        let ranks: Vec<&str> = parts[0].split('/').collect();
+        if ranks.len() != 8 {
+            return Err("board must contain exactly 8 ranks".to_string());
+        }
+        for (ri, rs) in ranks.iter().enumerate() {
             let mut ci = 0usize;
             for ch in rs.chars() {
                 if ch.is_ascii_digit() {
-                    ci += ch.to_digit(10).unwrap() as usize;
+                    let empty = ch.to_digit(10).unwrap() as usize;
+                    if empty == 0 || ci + empty > 8 {
+                        return Err("rank has invalid empty-square count".to_string());
+                    }
+                    ci += empty;
                 } else {
                     let pi = piece_from_char(ch as u8);
-                    if pi != EMPTY_SQ {
-                        self.st.bb[pi as usize] |= bit(ri * 8 + ci);
+                    if pi == EMPTY_SQ || ci >= 8 {
+                        return Err("board contains an invalid piece placement".to_string());
                     }
+                    next.bb[pi as usize] |= bit(ri * 8 + ci);
                     ci += 1;
                 }
             }
+            if ci != 8 {
+                return Err("rank does not contain exactly 8 squares".to_string());
+            }
         }
-        self.st.refresh_mailbox();
+        if next.bb[WK].count_ones() != 1 || next.bb[BK].count_ones() != 1 {
+            return Err("position must contain exactly one king per side".to_string());
+        }
+        next.refresh_mailbox();
 
-        self.st.w = parts.len() > 1 && parts[1] == "w";
+        next.w = match parts[1] {
+            "w" => true,
+            "b" => false,
+            _ => return Err("side-to-move must be 'w' or 'b'".to_string()),
+        };
 
-        self.st.cr = [false; 4];
-        self.st.castling_rooks = [None; 4];
+        next.cr = [false; 4];
+        next.castling_rooks = [None; 4];
         if parts.len() > 2 {
             let r = parts[2];
             if r == "-" {
@@ -262,19 +292,19 @@ impl Engine {
                     (b'A'..=b'H').contains(&b) || (b'a'..=b'h').contains(&b)
                 });
                 if has_file_rights {
-                    self.st.chess960 = true;
+                    next.chess960 = true;
                     for ch in r.chars() {
                         let b = ch as u8;
                         if !(b'A'..=b'H').contains(&b) && !(b'a'..=b'h').contains(&b) {
-                            continue;
+                            return Err("invalid Chess960 castling rights".to_string());
                         }
                         let col = (b.to_ascii_lowercase() - b'a') as usize;
                         let white = ch.is_uppercase();
                         let rank = if white { 7usize } else { 0usize };
                         let rook_sq = sq(rank, col);
-                        let pi = self.st.mailbox[rook_sq];
+                        let pi = next.mailbox[rook_sq];
                         if pi != EMPTY_SQ && piece_type(pi) == 3 && (pi < 6) == white {
-                            let king_sq = self.st.king_sq(white);
+                            let king_sq = next.king_sq(white);
                             let idx = if white {
                                 if col > sq_c(king_sq) {
                                     0
@@ -286,73 +316,74 @@ impl Engine {
                             } else {
                                 3
                             };
-                            self.st.cr[idx] = true;
-                            self.st.castling_rooks[idx] = Some(rook_sq);
+                            next.cr[idx] = true;
+                            next.castling_rooks[idx] = Some(rook_sq);
                         }
                     }
-                } else if self.st.chess960 {
-                    if r.contains('K') {
-                        set_castling_rook_by_side(&mut self.st, true, true);
-                    }
-                    if r.contains('Q') {
-                        set_castling_rook_by_side(&mut self.st, true, false);
-                    }
-                    if r.contains('k') {
-                        set_castling_rook_by_side(&mut self.st, false, true);
-                    }
-                    if r.contains('q') {
-                        set_castling_rook_by_side(&mut self.st, false, false);
+                } else if r.chars().all(|ch| matches!(ch, 'K' | 'Q' | 'k' | 'q')) {
+                    if next.chess960 {
+                        if r.contains('K') {
+                            set_castling_rook_by_side(&mut next, true, true);
+                        }
+                        if r.contains('Q') {
+                            set_castling_rook_by_side(&mut next, true, false);
+                        }
+                        if r.contains('k') {
+                            set_castling_rook_by_side(&mut next, false, true);
+                        }
+                        if r.contains('q') {
+                            set_castling_rook_by_side(&mut next, false, false);
+                        }
+                    } else {
+                        if r.contains('K') {
+                            next.cr[0] = true;
+                            next.castling_rooks[0] = Some(sq(7, 7));
+                        }
+                        if r.contains('Q') {
+                            next.cr[1] = true;
+                            next.castling_rooks[1] = Some(sq(7, 0));
+                        }
+                        if r.contains('k') {
+                            next.cr[2] = true;
+                            next.castling_rooks[2] = Some(sq(0, 7));
+                        }
+                        if r.contains('q') {
+                            next.cr[3] = true;
+                            next.castling_rooks[3] = Some(sq(0, 0));
+                        }
                     }
                 } else {
-                    if r.contains('K') {
-                        self.st.cr[0] = true;
-                        self.st.castling_rooks[0] = Some(sq(7, 7));
-                    }
-                    if r.contains('Q') {
-                        self.st.cr[1] = true;
-                        self.st.castling_rooks[1] = Some(sq(7, 0));
-                    }
-                    if r.contains('k') {
-                        self.st.cr[2] = true;
-                        self.st.castling_rooks[2] = Some(sq(0, 7));
-                    }
-                    if r.contains('q') {
-                        self.st.cr[3] = true;
-                        self.st.castling_rooks[3] = Some(sq(0, 0));
-                    }
+                    return Err("invalid castling rights".to_string());
                 }
             }
         }
 
-        self.st.ep = if parts.len() > 3 && parts[3] != "-" {
+        next.ep = if parts.len() > 3 && parts[3] != "-" {
             let b = parts[3].as_bytes();
-            if b.len() >= 2 {
-                let col = (b[0] - b'a') as usize;
-                let row = 8usize.wrapping_sub((b[1] - b'0') as usize);
-                if row < 8 {
-                    Some(row * 8 + col)
-                } else {
-                    None
-                }
-            } else {
-                None
+            if b.len() != 2 || !(b'a'..=b'h').contains(&b[0]) || !(b'1'..=b'8').contains(&b[1]) {
+                return Err("invalid en-passant square".to_string());
             }
+            let col = (b[0] - b'a') as usize;
+            let row = 8usize - (b[1] - b'0') as usize;
+            Some(row * 8 + col)
         } else {
             None
         };
 
-        self.st.mc = if parts.len() > 5 {
+        next.mc = if parts.len() > 5 {
             let fullmove = parts[5].parse::<usize>().unwrap_or(1).saturating_sub(1);
-            fullmove * 2 + usize::from(!self.st.w)
+            fullmove * 2 + usize::from(!next.w)
         } else {
             0
         };
 
+        self.st = next;
         self.searcher.rep_stack.clear();
         self.searcher.rep_stack_len = 0;
         let h = compute_hash(&self.st);
         self.searcher.rep_stack.push(h);
         self.searcher.rep_stack_len = 1;
+        Ok(())
     }
 
     pub fn make_move_uci(
