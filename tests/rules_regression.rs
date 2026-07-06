@@ -267,6 +267,15 @@ fn default_position_move_keeps_repetition_stack_aligned() {
 }
 
 #[test]
+fn new_engine_reports_default_hash_size() {
+    let engine = Engine::new();
+    assert_eq!(
+        engine.searcher.tt_mb, 256,
+        "recorded hash size should match the engine default"
+    );
+}
+
+#[test]
 fn repetition_hash_only_includes_legal_en_passant_rights() {
     let legal_ep = engine_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", false);
     let same_without_ep = engine_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - - 0 1", false);
