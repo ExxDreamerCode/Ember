@@ -447,4 +447,26 @@ mod tests {
             "g1f3 must not be applied after the illegal e2e5 prefix"
         );
     }
+
+    #[test]
+    fn setoption_rejects_out_of_range_resources() {
+        let mut engine = Engine::new();
+        let hash_mb = engine.searcher.tt_mb;
+        let threads = engine.num_threads;
+
+        parse_setoption(&mut engine, &["setoption", "name", "Hash", "value", "0"]);
+        parse_setoption(
+            &mut engine,
+            &["setoption", "name", "Threads", "value", "1000000"],
+        );
+
+        assert_eq!(
+            engine.searcher.tt_mb, hash_mb,
+            "invalid Hash must not change the active hash setting"
+        );
+        assert_eq!(
+            engine.num_threads, threads,
+            "invalid Threads must not change the worker count"
+        );
+    }
 }
