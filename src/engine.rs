@@ -17,6 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+const DEFAULT_HASH_MB: usize = 256;
+
 pub struct Engine {
     pub st: BoardState,
     pub searcher: Searcher,
@@ -209,7 +211,7 @@ impl Default for Engine {
 impl Engine {
     pub fn new() -> Self {
         let stopped = Arc::new(AtomicBool::new(false));
-        let shared_tt = Arc::new(SharedTT::new(256));
+        let shared_tt = Arc::new(SharedTT::new(DEFAULT_HASH_MB));
         let mut e = Engine {
             st: BoardState::empty(),
             searcher: Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped)),
@@ -220,6 +222,7 @@ impl Engine {
             #[cfg(feature = "decision-trace")]
             trace: TraceLogger::from_env(),
         };
+        e.searcher.tt_mb = DEFAULT_HASH_MB;
         e.set_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
         e
     }
