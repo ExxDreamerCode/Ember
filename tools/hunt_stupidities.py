@@ -781,3 +781,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+#python3 tools/hunt_stupidities.py all --config configs/stupidity/default.toml --max-games 500 --workers 6

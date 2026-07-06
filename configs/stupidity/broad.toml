@@ -23,17 +23,17 @@ Threads = "1"
 Book = ""
 
 [stockfish]
-name = "Stockfish-UCI-1800"
+name = "Stockfish-UCI-2750"
 cmd = "stockfish"
 proto = "uci"
-uci_elo = 1800
+uci_elo = 2750
 analysis_depth = 10
 multipv = 5
 verify_depth = 8
 
 [stockfish.options]
 UCI_LimitStrength = "true"
-UCI_Elo = "1800"
+UCI_Elo = "2750"
 Threads = "1"
 Hash = "64"
 
