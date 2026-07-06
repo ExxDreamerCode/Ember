@@ -221,9 +221,6 @@ impl Engine {
             trace: TraceLogger::from_env(),
         };
         e.set_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-        let h = compute_hash(&e.st);
-        e.searcher.rep_stack.push(h);
-        e.searcher.rep_stack_len = 1;
         e
     }
 
