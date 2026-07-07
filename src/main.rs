@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 const MIN_HASH_MB: usize = 1;
 const MAX_HASH_MB: usize = 4096;
@@ -47,7 +48,6 @@ fn maybe_load_nnue(path: &str) -> bool {
 }
 
 fn main() {
-    let stdin = io::stdin();
     let mut engine = Engine::new();
     let mut search_task: Option<SearchTask> = None;
 
@@ -74,16 +74,57 @@ fn main() {
         }
     }
 
-    for line in stdin.lock().lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
+    let (cmd_tx, cmd_rx) = mpsc::channel::<String>();
+
+    thread::Builder::new()
+        .name("stdin".into())
+        .spawn(move || {
+            let stdin = io::stdin();
+            for line in stdin.lock().lines() {
+                let line = match line {
+                    Ok(l) => l,
+                    Err(_) => break,
+                };
+                let trimmed = line.trim().to_string();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if cmd_tx.send(trimmed).is_err() {
+                    break;
+                }
+            }
+        })
+        .expect("failed to spawn stdin thread");
+
+    loop {
+        let cmd = if let Some(ref task) = search_task {
+            match cmd_rx.recv_timeout(Duration::from_millis(10)) {
+                Ok(cmd) => Some(cmd),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if let Ok(result) = task.rx.try_recv() {
+                        let task = search_task.take().unwrap();
+                        task.handle.join().ok();
+                        print_bestmove(&engine, &result.0);
+                    }
+                    continue;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        } else {
+            match cmd_rx.recv() {
+                Ok(cmd) => Some(cmd),
+                Err(_) => break,
+            }
         };
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+
+        let Some(trimmed) = cmd else {
+            break;
+        };
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if parts.is_empty() {
             continue;
         }
-        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+
         match parts[0] {
             "uci" => {
                 println!("id name Ember 1.1.1");
@@ -278,6 +319,9 @@ fn main() {
                 if let Some(task) = search_task.take() {
                     task.stopped.store(true, Ordering::SeqCst);
                     task.handle.join().ok();
+                    if let Ok((best_move, _, _, _)) = task.rx.recv() {
+                        print_bestmove(&engine, &best_move);
+                    }
                 }
                 break;
             }
