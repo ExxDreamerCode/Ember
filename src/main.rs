@@ -3,11 +3,21 @@ use chess_rs_lib::evaluate;
 use chess_rs_lib::syzygy::SyzygyTables;
 use chess_rs_lib::{opening_book, Engine, OpeningBook};
 use std::io::{self, BufRead};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::sync::Arc;
+use std::thread;
 
 const MIN_HASH_MB: usize = 1;
 const MAX_HASH_MB: usize = 4096;
 const MIN_THREADS: usize = 1;
 const MAX_THREADS: usize = 256;
+
+struct SearchTask {
+    handle: thread::JoinHandle<()>,
+    stopped: Arc<AtomicBool>,
+    rx: mpsc::Receiver<(String, i32, u64, f64)>,
+}
 
 fn try_load_book(engine: &mut Engine, path: &std::path::Path) -> bool {
     let display = path.display();
@@ -39,6 +49,7 @@ fn maybe_load_nnue(path: &str) -> bool {
 fn main() {
     let stdin = io::stdin();
     let mut engine = Engine::new();
+    let mut search_task: Option<SearchTask> = None;
 
     eprintln!("info string Loading embedded NNUE...");
     match evaluate::init_embedded_nnue() {
@@ -199,15 +210,97 @@ fn main() {
                 );
             }
             "position" => {
+                if let Some(task) = search_task.take() {
+                    task.stopped.store(true, Ordering::SeqCst);
+                    task.handle.join().ok();
+                }
                 parse_position(&mut engine, &parts);
             }
             "go" => {
-                parse_go(&mut engine, &parts);
+                if search_task.is_some() {
+                    continue;
+                }
+
+                let (tl, depth) = parse_go_params(&parts, &engine);
+
+                let st = engine.st;
+                let shared_tt = Arc::clone(&engine.shared_tt);
+                let stopped = Arc::new(AtomicBool::new(false));
+                let num_threads = engine.num_threads;
+
+                let mut search_searcher = chess_rs_lib::search::Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
+                engine.searcher.copy_root_context_to(&mut search_searcher);
+                search_searcher.tt_mb = engine.searcher.tt_mb;
+                #[cfg(feature = "decision-trace")]
+                let trace_path = engine.trace.path().map(|p| p.to_string());
+
+                let stopped_for_search = Arc::clone(&stopped);
+                let (tx, rx) = mpsc::channel();
+
+                let handle = thread::Builder::new()
+                    .name("search".into())
+                    .spawn(move || {
+                        let mut search_engine = Engine::new_with(
+                            st,
+                            search_searcher,
+                            shared_tt,
+                            num_threads,
+                            stopped_for_search,
+                        );
+                        #[cfg(feature = "decision-trace")]
+                        if let Some(ref tp) = trace_path {
+                            search_engine.set_trace_file(tp);
+                        }
+                        let result = search_engine.find_best_move(tl, depth);
+                        tx.send(result).ok();
+                    })
+                    .expect("failed to spawn search thread");
+
+                search_task = Some(SearchTask {
+                    handle,
+                    stopped,
+                    rx,
+                });
             }
-            "quit" => break,
-            "stop" => {}
+            "stop" => {
+                if let Some(task) = search_task.take() {
+                    task.stopped.store(true, Ordering::SeqCst);
+                    task.handle.join().ok();
+                    if let Ok((best_move, _, _, _)) = task.rx.recv() {
+                        print_bestmove(&engine, &best_move);
+                    }
+                }
+            }
+            "quit" => {
+                if let Some(task) = search_task.take() {
+                    task.stopped.store(true, Ordering::SeqCst);
+                    task.handle.join().ok();
+                }
+                break;
+            }
             _ => {}
         }
+    }
+}
+
+fn print_bestmove(engine: &Engine, best_move: &str) {
+    if best_move.len() >= 4 && best_move != "0000" {
+        if best_move.len() == 4 {
+            let b = best_move.as_bytes();
+            let sc = (b[0] - b'a') as usize;
+            let sr = 8 - (b[1] - b'0') as usize;
+            let er = 8 - (b[3] - b'0') as usize;
+            if sr < 8 && sc < 8 && er < 8 {
+                let piece_idx = piece_on(&engine.st.bb, sr * 8 + sc);
+                if piece_idx != EMPTY_SQ && piece_type(piece_idx) == 0 && (er == 0 || er == 7) {
+                    println!("bestmove {}q", best_move);
+                    return;
+                }
+            }
+        }
+        println!("bestmove {}", best_move);
+    } else {
+        println!("bestmove 0000");
     }
 }
 
@@ -336,7 +429,7 @@ fn clamp_time_limit(tl: f64) -> f64 {
     tl.max(0.05).min(60.0)
 }
 
-fn parse_go(engine: &mut Engine, parts: &[&str]) {
+fn parse_go_params(parts: &[&str], engine: &Engine) -> (f64, i32) {
     let mut wtime = 300000f64;
     let mut btime = 300000f64;
     let mut winc = 0f64;
@@ -400,32 +493,7 @@ fn parse_go(engine: &mut Engine, parts: &[&str]) {
     };
     let tl = if depth < 64 { tl } else { clamp_time_limit(tl) };
 
-    let root_state = engine.st;
-    let (best_move, _, nodes, elapsed) = engine.find_best_move(tl, depth);
-    let _nps = if elapsed > 0.0 {
-        (nodes as f64 / elapsed) as i64
-    } else {
-        0
-    };
-
-    if best_move.len() >= 4 && best_move != "0000" {
-        if best_move.len() == 4 {
-            let b = best_move.as_bytes();
-            let sc = (b[0] - b'a') as usize;
-            let sr = 8 - (b[1] - b'0') as usize;
-            let er = 8 - (b[3] - b'0') as usize;
-            if sr < 8 && sc < 8 && er < 8 {
-                let piece_idx = piece_on(&root_state.bb, sr * 8 + sc);
-                if piece_idx != EMPTY_SQ && piece_type(piece_idx) == 0 && (er == 0 || er == 7) {
-                    println!("bestmove {}q", best_move);
-                    return;
-                }
-            }
-        }
-        println!("bestmove {}", best_move);
-    } else {
-        println!("bestmove 0000");
-    }
+    (tl, depth)
 }
 
 #[cfg(test)]

@@ -227,6 +227,25 @@ impl Engine {
         e
     }
 
+    pub fn new_with(
+        st: BoardState,
+        searcher: Searcher,
+        shared_tt: Arc<SharedTT>,
+        num_threads: usize,
+        stopped: Arc<AtomicBool>,
+    ) -> Self {
+        Engine {
+            st,
+            searcher,
+            shared_tt,
+            num_threads,
+            stopped,
+            book: None,
+            #[cfg(feature = "decision-trace")]
+            trace: TraceLogger::default(),
+        }
+    }
+
     pub fn set_fen(&mut self, fen: &str) {
         if let Err(e) = self.try_set_fen(fen) {
             eprintln!("info string Ignoring invalid FEN: {}", e);

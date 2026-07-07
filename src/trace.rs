@@ -28,6 +28,7 @@ pub struct DecisionTrace<'a> {
 pub struct TraceLogger {
     file: Option<File>,
     seq: u64,
+    path: Option<PathBuf>,
 }
 
 impl TraceLogger {
@@ -45,12 +46,16 @@ impl TraceLogger {
     }
 
     pub fn from_path(path: impl Into<PathBuf>) -> Self {
-        let path = path.into();
-        if let Some(parent) = path.parent() {
+        let path_buf = path.into();
+        if let Some(parent) = path_buf.parent() {
             let _ = create_dir_all(parent);
         }
-        let file = OpenOptions::new().create(true).append(true).open(path).ok();
-        Self { file, seq: 0 }
+        let file = OpenOptions::new().create(true).append(true).open(&path_buf).ok();
+        Self { file, seq: 0, path: Some(path_buf) }
+    }
+
+    pub fn path(&self) -> Option<&std::path::Path> {
+        self.path.as_deref()
     }
 
     pub fn set_path(&mut self, path: impl Into<PathBuf>) {

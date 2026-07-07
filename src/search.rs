@@ -339,7 +339,7 @@ impl Searcher {
         }
     }
 
-    fn copy_root_context_to(&self, dst: &mut Searcher) {
+    pub fn copy_root_context_to(&self, dst: &mut Searcher) {
         dst.rep_stack = self.rep_stack.clone();
         dst.rep_stack_len = self.rep_stack_len;
         dst.corr_hist = self.corr_hist;
