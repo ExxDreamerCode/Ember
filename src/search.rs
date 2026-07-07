@@ -5,7 +5,10 @@ use crate::board::{
     MAX_PLY, QS_DEPTH, WK, WP, WR,
 };
 use crate::evaluate::{evaluate, evaluate_nnue_acc, with_nnue_net};
-use crate::movegen::{apply_move, generate_moves, generate_moves_into, is_chess960_castling_move};
+use crate::movegen::{
+    apply_move, generate_moves, generate_moves_into, generate_pseudo_captures_promotions_into,
+    generate_pseudo_moves_into, is_chess960_castling_move, try_apply_move,
+};
 use crate::nnue::NNUEAccumulator;
 use crate::syzygy::SyzygyTables;
 use crate::tt::{SharedTT, TT_ALPHA, TT_BETA, TT_EXACT};
@@ -594,10 +597,14 @@ impl Searcher {
         }
 
         self.ensure_buf_pools(ply);
-        let mut moves_buf = Self::take_buf(&mut self.move_bufs, ply);
-        generate_moves_into(st, st.w, &st.cr, st.ep, &mut moves_buf);
-        if moves_buf.is_empty() {
-            Self::return_buf(&mut self.move_bufs, ply, moves_buf);
+        let mut caps = Self::take_buf(&mut self.move_bufs, ply);
+        if in_check {
+            generate_moves_into(st, st.w, &st.cr, st.ep, &mut caps);
+        } else {
+            generate_pseudo_captures_promotions_into(st, st.w, &st.cr, st.ep, &mut caps);
+        }
+        if caps.is_empty() {
+            Self::return_buf(&mut self.move_bufs, ply, caps);
             return if in_check { -MATE + 1000 } else { alpha };
         }
         if with_nnue_net(|_| true).unwrap_or(false)
@@ -606,32 +613,6 @@ impl Searcher {
         {
             self.nnue_stack
                 .resize(ply + 2, NNUEAccumulator::new(self.nnue_stack[0].hs));
-        }
-
-        let mut caps: Vec<Move> = if in_check {
-            moves_buf
-        } else {
-            let mut c = Self::take_buf(&mut self.caps_bufs, ply);
-            c.clear();
-            for &mv in moves_buf.iter() {
-                let to = move_to(mv);
-                let from = move_from(mv);
-                let fpi = st.mailbox[from];
-                let tpi = st.mailbox[to];
-                if move_is_capture(st, fpi, mv, to, tpi) || is_promotion_move(fpi, mv) {
-                    c.push(mv);
-                }
-            }
-            Self::return_buf(&mut self.move_bufs, ply, moves_buf);
-            c
-        };
-        if caps.is_empty() {
-            if in_check {
-                Self::return_buf(&mut self.move_bufs, ply, caps);
-            } else {
-                Self::return_buf(&mut self.caps_bufs, ply, caps);
-            }
-            return alpha;
         }
 
         caps.sort_by_key(|mv| {
@@ -663,14 +644,22 @@ impl Searcher {
                 continue;
             }
             let st_before = *st;
-            apply_move(
-                st,
-                move_sr(mv),
-                move_sc(mv),
-                move_er(mv),
-                move_ec(mv),
-                move_promotion(mv),
-            );
+            let legal = if in_check {
+                apply_move(
+                    st,
+                    move_sr(mv),
+                    move_sc(mv),
+                    move_er(mv),
+                    move_ec(mv),
+                    move_promotion(mv),
+                );
+                true
+            } else {
+                try_apply_move(st, mv)
+            };
+            if !legal {
+                continue;
+            }
             self.push_nnue_acc(
                 &st_before,
                 st,
@@ -687,22 +676,14 @@ impl Searcher {
                 return 0;
             }
             if score >= beta {
-                if in_check {
-                    Self::return_buf(&mut self.move_bufs, ply, caps);
-                } else {
-                    Self::return_buf(&mut self.caps_bufs, ply, caps);
-                }
+                Self::return_buf(&mut self.move_bufs, ply, caps);
                 return score;
             }
             if score > alpha {
                 alpha = score;
             }
         }
-        if in_check {
-            Self::return_buf(&mut self.move_bufs, ply, caps);
-        } else {
-            Self::return_buf(&mut self.caps_bufs, ply, caps);
-        }
+        Self::return_buf(&mut self.move_bufs, ply, caps);
         alpha
     }
 
@@ -870,7 +851,12 @@ impl Searcher {
 
         self.ensure_buf_pools(ply);
         let mut moves_buf = Self::take_buf(&mut self.move_bufs, ply);
-        generate_moves_into(st, st.w, &st.cr, st.ep, &mut moves_buf);
+        let pseudo_moves = !in_check;
+        if pseudo_moves {
+            generate_pseudo_moves_into(st, st.w, &st.cr, st.ep, &mut moves_buf);
+        } else {
+            generate_moves_into(st, st.w, &st.cr, st.ep, &mut moves_buf);
+        }
         if moves_buf.is_empty() {
             Self::return_buf(&mut self.move_bufs, ply, moves_buf);
             return if in_check { -MATE + ply as i32 } else { 0 };
@@ -958,11 +944,12 @@ impl Searcher {
 
         let orig_alpha = alpha;
         let mut best_score = -INF;
-        let mut best_move = scored.first().map(|&(_, mv)| mv);
+        let mut best_move = None;
+        let mut legal_moves_seen = 0usize;
         let mut quiets_tried = Self::take_buf(&mut self.quiets_bufs, ply);
         quiets_tried.clear();
 
-        for (i, &(_, mv)) in scored.iter().enumerate() {
+        for &(_, mv) in scored.iter() {
             if self.time_up(start, tl) {
                 return 0;
             }
@@ -977,10 +964,10 @@ impl Searcher {
 
             let gives_check = special_move_gives_check(st, mv);
 
-            if !is_pv && !in_check && is_quiet && i >= lmp_count {
+            if !is_pv && !in_check && is_quiet && legal_moves_seen >= lmp_count {
                 break;
             }
-            if !is_pv && !in_check && i > 0 && best_score > -MATE / 2 {
+            if !is_pv && !in_check && legal_moves_seen > 0 && best_score > -MATE / 2 {
                 if capture {
                     if self.see_pruning_enabled()
                         && move_see(st, mv, from, to, fpi, tpi) < -80 * actual_depth
@@ -995,21 +982,36 @@ impl Searcher {
                 }
             }
 
-            let move_ext = if gives_check && !in_check && i == 0 && !is_quiet && actual_depth <= 2 {
+            let move_ext = if gives_check
+                && !in_check
+                && legal_moves_seen == 0
+                && !is_quiet
+                && actual_depth <= 2
+            {
                 1
             } else {
                 0
             };
 
             let st_before = *st;
-            apply_move(
-                st,
-                move_sr(mv),
-                move_sc(mv),
-                move_er(mv),
-                move_ec(mv),
-                move_promotion(mv),
-            );
+            let legal = if pseudo_moves {
+                try_apply_move(st, mv)
+            } else {
+                apply_move(
+                    st,
+                    move_sr(mv),
+                    move_sc(mv),
+                    move_er(mv),
+                    move_ec(mv),
+                    move_promotion(mv),
+                );
+                true
+            };
+            if !legal {
+                continue;
+            }
+            let move_index = legal_moves_seen;
+            legal_moves_seen += 1;
 
             self.push_nnue_acc(
                 &st_before,
@@ -1029,12 +1031,13 @@ impl Searcher {
             let new_depth = actual_depth - 1 + move_ext;
 
             let lmr_eligible =
-                self.lmr_enabled() && i >= 2 && actual_depth >= 3 && is_quiet && !in_check;
-            let s = if i == 0 {
+                self.lmr_enabled() && move_index >= 2 && actual_depth >= 3 && is_quiet && !in_check;
+            let s = if move_index == 0 {
                 -self.negamax(st, new_depth, ply + 1, -beta, -alpha, true, start, tl, cnt)
             } else if lmr_eligible {
                 let r = {
-                    let base = (0.5 + (i as f64).ln() * (actual_depth as f64).ln() / 1.8) as i32;
+                    let base =
+                        (0.5 + (move_index as f64).ln() * (actual_depth as f64).ln() / 1.8) as i32;
                     let r = base.min(actual_depth - 1).max(1);
                     if !is_pv {
                         (r + 1).min(actual_depth - 1)
@@ -1108,9 +1111,9 @@ impl Searcher {
 
             if s > best_score {
                 best_score = s;
+                best_move = Some(mv);
                 if s > alpha {
                     alpha = s;
-                    best_move = Some(mv);
                     if alpha >= beta {
                         if is_quiet {
                             if self.killers[ply][0] != Some(mv) {
@@ -1165,6 +1168,9 @@ impl Searcher {
 
         if self.stopped.load(Ordering::Relaxed) {
             return 0;
+        }
+        if legal_moves_seen == 0 {
+            return if in_check { -MATE + ply as i32 } else { 0 };
         }
 
         let flag = if best_score <= orig_alpha {
@@ -1598,6 +1604,39 @@ mod tests {
             .into_iter()
             .find(|mv| crate::board::move_to_uci(st, *mv) == uci)
             .unwrap_or_else(|| panic!("expected legal move {uci}"))
+    }
+
+    #[test]
+    fn negamax_handles_stalemate_with_only_pseudo_king_moves() {
+        let mut st = state_from_fen("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1");
+        assert!(generate_moves(&st, st.w, &st.cr, st.ep).is_empty());
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(128));
+        let mut searcher = Searcher::new(shared_tt.clone(), stopped);
+        searcher.init_nnue_stack(&st);
+        let root_key = compute_hash(&st);
+        let mut nodes = 0u64;
+
+        let score = searcher.negamax(
+            &mut st,
+            2,
+            0,
+            -INF,
+            INF,
+            true,
+            Instant::now(),
+            10.0,
+            &mut nodes,
+        );
+
+        assert_eq!(score, 0);
+        assert!(
+            shared_tt
+                .get_depth(root_key)
+                .and_then(|(_, _, _, best)| best)
+                .is_none(),
+            "stalemate must not store a pseudo-legal best move"
+        );
     }
 
     #[test]

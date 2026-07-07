@@ -1,7 +1,7 @@
 use crate::board::{
-    all_occ, bit, black_occ, encode_move, is_attacked, is_white_piece, move_from, move_to,
-    piece_type, promotion_piece_index, sq, sq_c, sq_r, white_occ, BoardState, BB, BK, BN, BP, BQ,
-    BR, EMPTY_SQ, KING_ATTACKS, KNIGHT_ATTACKS, WB, WK, WN, WP, WQ, WR,
+    all_occ, bit, black_occ, encode_move, is_attacked, is_white_piece, move_from, move_promotion,
+    move_to, piece_type, promotion_piece_index, sq, sq_c, sq_r, white_occ, BoardState, BB, BK, BN,
+    BP, BQ, BR, EMPTY_SQ, KING_ATTACKS, KNIGHT_ATTACKS, WB, WK, WN, WP, WQ, WR,
 };
 use crate::magic::{bishop_attacks, rook_attacks};
 
@@ -283,6 +283,65 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
     st.mc += 1;
 }
 
+#[inline]
+fn is_standard_castling_move(st: &BoardState, mv: Move) -> bool {
+    if st.chess960 {
+        return false;
+    }
+    let from = move_from(mv);
+    let to = move_to(mv);
+    let mover_pi = st.mailbox[from];
+    mover_pi != EMPTY_SQ
+        && piece_type(mover_pi) == 5
+        && sq_r(from) == sq_r(to)
+        && sq_c(from) == 4
+        && (sq_c(to) == 6 || sq_c(to) == 2)
+}
+
+fn standard_castle_is_pseudo_legal(
+    st: &BoardState,
+    wturn: bool,
+    cr: &[bool; 4],
+    kingside: bool,
+) -> bool {
+    let rank = if wturn { 7usize } else { 0usize };
+    let right_idx = match (wturn, kingside) {
+        (true, true) => 0,
+        (true, false) => 1,
+        (false, true) => 2,
+        (false, false) => 3,
+    };
+    if !cr[right_idx] {
+        return false;
+    }
+
+    let king_pi = if wturn { WK } else { BK };
+    let rook_pi = if wturn { WR } else { BR };
+    let rook_col = if kingside { 7usize } else { 0usize };
+    if st.bb[king_pi] & bit(sq(rank, 4)) == 0 || st.bb[rook_pi] & bit(sq(rank, rook_col)) == 0 {
+        return false;
+    }
+
+    let occ = all_occ(&st.bb);
+    let clear_mask = if kingside {
+        bit(sq(rank, 5)) | bit(sq(rank, 6))
+    } else {
+        bit(sq(rank, 1)) | bit(sq(rank, 2)) | bit(sq(rank, 3))
+    };
+    occ & clear_mask == 0
+}
+
+fn standard_castle_is_legal(st: &BoardState, wturn: bool, cr: &[bool; 4], kingside: bool) -> bool {
+    if !standard_castle_is_pseudo_legal(st, wturn, cr, kingside) {
+        return false;
+    }
+
+    let rank = if wturn { 7usize } else { 0usize };
+    let cols: &[usize] = if kingside { &[4, 5, 6] } else { &[4, 3, 2] };
+    cols.iter()
+        .all(|&col| !is_attacked(&st.bb, sq(rank, col), !wturn))
+}
+
 fn castling_rook_square(
     st: &BoardState,
     wturn: bool,
@@ -353,6 +412,98 @@ fn square_attacked_with_king_removed(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn chess960_castle_is_pseudo_legal(
+    st: &BoardState,
+    wturn: bool,
+    cr: &[bool; 4],
+    kingside: bool,
+    kf: usize,
+    kr: usize,
+    king_col: usize,
+) -> bool {
+    let right_idx = match (wturn, kingside) {
+        (true, true) => 0,
+        (true, false) => 1,
+        (false, true) => 2,
+        (false, false) => 3,
+    };
+    if !cr[right_idx] {
+        return false;
+    }
+
+    let Some(rook_sq) = castling_rook_square(st, wturn, kingside, king_col) else {
+        return false;
+    };
+    if sq_r(rook_sq) != kr {
+        return false;
+    }
+
+    let rook_pi = if wturn { WR } else { BR };
+    let king_pi = if wturn { WK } else { BK };
+    if st.bb[king_pi] & bit(kf) == 0 {
+        return false;
+    }
+    if st.bb[rook_pi] & bit(rook_sq) == 0 {
+        return false;
+    }
+
+    let rook_col = sq_c(rook_sq);
+    let king_dst_col = if kingside { 6usize } else { 2usize };
+    let rook_dst_col = if kingside { 5usize } else { 3usize };
+    let occ = all_occ(&st.bb);
+
+    if !path_is_clear_for_castling(occ, kr, king_col, king_dst_col, king_col, rook_col) {
+        return false;
+    }
+    if !path_is_clear_for_castling(occ, kr, rook_col, rook_dst_col, king_col, rook_col) {
+        return false;
+    }
+
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
+fn chess960_castle_is_legal(
+    st: &BoardState,
+    wturn: bool,
+    cr: &[bool; 4],
+    kingside: bool,
+    kf: usize,
+    kr: usize,
+    king_col: usize,
+) -> bool {
+    if !chess960_castle_is_pseudo_legal(st, wturn, cr, kingside, kf, kr, king_col) {
+        return false;
+    }
+
+    let rook_sq = castling_rook_square(st, wturn, kingside, king_col).unwrap();
+    let rook_col = sq_c(rook_sq);
+    let king_pi = if wturn { WK } else { BK };
+    let rook_pi = if wturn { WR } else { BR };
+    let king_dst_col = if kingside { 6usize } else { 2usize };
+    let rook_dst_col = if kingside { 5usize } else { 3usize };
+
+    let lo = king_col.min(king_dst_col);
+    let hi = king_col.max(king_dst_col);
+    for col in lo..=hi {
+        if square_attacked_with_king_removed(st, king_pi, kf, sq(kr, col), !wturn) {
+            return false;
+        }
+    }
+
+    let mut bb2 = st.bb;
+    bb2[king_pi] &= !bit(sq(kr, king_col));
+    bb2[rook_pi] &= !bit(sq(kr, rook_col));
+    bb2[king_pi] |= bit(sq(kr, king_dst_col));
+    bb2[rook_pi] |= bit(sq(kr, rook_dst_col));
+    if is_attacked(&bb2, sq(kr, king_dst_col), !wturn) {
+        return false;
+    }
+
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
 fn try_chess960_castle(
     st: &BoardState,
     wturn: bool,
@@ -363,59 +514,388 @@ fn try_chess960_castle(
     kr: usize,
     king_col: usize,
 ) {
-    let right_idx = match (wturn, kingside) {
-        (true, true) => 0,
-        (true, false) => 1,
-        (false, true) => 2,
-        (false, false) => 3,
-    };
-    if !cr[right_idx] {
+    if !chess960_castle_is_legal(st, wturn, cr, kingside, kf, kr, king_col) {
         return;
     }
 
-    let Some(rook_sq) = castling_rook_square(st, wturn, kingside, king_col) else {
-        return;
-    };
-    if sq_r(rook_sq) != kr {
-        return;
+    let rook_sq = castling_rook_square(st, wturn, kingside, king_col).unwrap();
+
+    result.push(encode_move(kr, king_col, kr, sq_c(rook_sq), 0));
+}
+
+pub fn try_apply_move(st: &mut BoardState, mv: Move) -> bool {
+    let from = move_from(mv);
+    let to = move_to(mv);
+    let mover_pi = st.mailbox[from];
+    if mover_pi == EMPTY_SQ || is_white_piece(mover_pi) != st.w {
+        return false;
     }
 
-    let rook_pi = if wturn { WR } else { BR };
-    let king_pi = if wturn { WK } else { BK };
-    if st.bb[rook_pi] & bit(rook_sq) == 0 {
-        return;
-    }
+    let mover_white = is_white_piece(mover_pi);
+    let target_pi = st.mailbox[to];
+    let is_chess960_castle = is_chess960_castling_move(st, mv);
+    let is_standard_castle = is_standard_castling_move(st, mv);
 
-    let rook_col = sq_c(rook_sq);
-    let king_dst_col = if kingside { 6usize } else { 2usize };
-    let rook_dst_col = if kingside { 5usize } else { 3usize };
-    let occ = all_occ(&st.bb);
-
-    if !path_is_clear_for_castling(occ, kr, king_col, king_dst_col, king_col, rook_col) {
-        return;
-    }
-    if !path_is_clear_for_castling(occ, kr, rook_col, rook_dst_col, king_col, rook_col) {
-        return;
-    }
-
-    let lo = king_col.min(king_dst_col);
-    let hi = king_col.max(king_dst_col);
-    for col in lo..=hi {
-        if square_attacked_with_king_removed(st, king_pi, kf, sq(kr, col), !wturn) {
-            return;
+    if target_pi != EMPTY_SQ {
+        if is_white_piece(target_pi) == mover_white {
+            if !is_chess960_castle {
+                return false;
+            }
+        } else if piece_type(target_pi) == 5 {
+            return false;
         }
     }
 
-    let mut bb2 = st.bb;
-    bb2[king_pi] &= !bit(sq(kr, king_col));
-    bb2[rook_pi] &= !bit(sq(kr, rook_col));
-    bb2[king_pi] |= bit(sq(kr, king_dst_col));
-    bb2[rook_pi] |= bit(sq(kr, rook_dst_col));
-    if is_attacked(&bb2, sq(kr, king_dst_col), !wturn) {
-        return;
+    if is_standard_castle {
+        let kingside = sq_c(to) == 6;
+        if !standard_castle_is_legal(st, mover_white, &st.cr, kingside) {
+            return false;
+        }
     }
 
-    result.push(encode_move(kr, king_col, kr, rook_col, 0));
+    if is_chess960_castle {
+        let rank = if mover_white { 7usize } else { 0usize };
+        if sq_r(from) != rank || sq_r(to) != rank {
+            return false;
+        }
+        let kingside = sq_c(to) > sq_c(from);
+        if !chess960_castle_is_legal(st, mover_white, &st.cr, kingside, from, rank, sq_c(from)) {
+            return false;
+        }
+    }
+
+    let before = *st;
+    apply_move(
+        st,
+        sq_r(from),
+        sq_c(from),
+        sq_r(to),
+        sq_c(to),
+        move_promotion(mv),
+    );
+
+    let king_bb = if mover_white { st.bb[WK] } else { st.bb[BK] };
+    if king_bb == 0 {
+        *st = before;
+        return false;
+    }
+    let king_sq = king_bb.trailing_zeros() as usize;
+    if is_attacked(&st.bb, king_sq, !mover_white) {
+        *st = before;
+        return false;
+    }
+
+    true
+}
+
+pub fn generate_pseudo_moves(
+    st: &BoardState,
+    wturn: bool,
+    cr: &[bool; 4],
+    ep: Option<usize>,
+) -> Vec<Move> {
+    let mut out = Vec::with_capacity(64);
+    generate_pseudo_moves_into(st, wturn, cr, ep, &mut out);
+    out
+}
+
+pub fn generate_pseudo_moves_into(
+    st: &BoardState,
+    wturn: bool,
+    cr: &[bool; 4],
+    ep: Option<usize>,
+    out: &mut Vec<Move>,
+) {
+    generate_pseudo_moves_into_impl(st, wturn, cr, ep, out, false);
+}
+
+pub fn generate_pseudo_captures_promotions_into(
+    st: &BoardState,
+    wturn: bool,
+    cr: &[bool; 4],
+    ep: Option<usize>,
+    out: &mut Vec<Move>,
+) {
+    generate_pseudo_moves_into_impl(st, wturn, cr, ep, out, true);
+}
+
+fn generate_pseudo_moves_into_impl(
+    st: &BoardState,
+    wturn: bool,
+    cr: &[bool; 4],
+    ep: Option<usize>,
+    out: &mut Vec<Move>,
+    tactical_only: bool,
+) {
+    out.clear();
+    let occ = all_occ(&st.bb);
+    let own = if wturn {
+        white_occ(&st.bb)
+    } else {
+        black_occ(&st.bb)
+    };
+    let opp = occ ^ own;
+    let free = !occ;
+
+    macro_rules! push_move {
+        ($from:expr, $to:expr) => {{
+            let f = $from;
+            let t = $to;
+            out.push(encode_move(sq_r(f), sq_c(f), sq_r(t), sq_c(t), 0));
+        }};
+    }
+
+    macro_rules! push_promo {
+        ($from:expr, $to:expr) => {{
+            let f = $from;
+            let t = $to;
+            for promotion in [b'Q', b'R', b'B', b'N'] {
+                out.push(encode_move(sq_r(f), sq_c(f), sq_r(t), sq_c(t), promotion));
+            }
+        }};
+    }
+
+    macro_rules! push_ep {
+        ($from:expr, $to:expr) => {{
+            let f = $from;
+            let t = $to;
+            let cap_sq = if wturn { t + 8 } else { t.wrapping_sub(8) };
+            let expected_cap = if wturn { BP as u8 } else { WP as u8 };
+            if cap_sq < 64 && st.mailbox[cap_sq] == expected_cap && st.mailbox[t] == EMPTY_SQ {
+                out.push(encode_move(sq_r(f), sq_c(f), sq_r(t), sq_c(t), 0));
+            }
+        }};
+    }
+
+    {
+        let pawns = if wturn { st.bb[WP] } else { st.bb[BP] };
+        let promo_rank_bb: u64 = if wturn {
+            0x000000000000FF00u64
+        } else {
+            0x00FF000000000000u64
+        };
+        let start_rank: u64 = if wturn {
+            0x00FF000000000000u64
+        } else {
+            0x000000000000FF00u64
+        };
+
+        if !tactical_only {
+            let pushed = if wturn {
+                (pawns & !promo_rank_bb & !start_rank) >> 8 & free
+            } else {
+                (pawns & !promo_rank_bb & !start_rank) << 8 & free
+            };
+            let mut tmp = pushed;
+            while tmp != 0 {
+                let t = tmp.trailing_zeros() as usize;
+                let f = if wturn { t + 8 } else { t - 8 };
+                push_move!(f, t);
+                tmp &= tmp - 1;
+            }
+
+            let pushed2 = if wturn {
+                let p1 = (pawns & start_rank) >> 8 & free;
+                p1 >> 8 & free
+            } else {
+                let p1 = (pawns & start_rank) << 8 & free;
+                p1 << 8 & free
+            };
+            let mut tmp = pushed2;
+            while tmp != 0 {
+                let t = tmp.trailing_zeros() as usize;
+                let f = if wturn { t + 16 } else { t - 16 };
+                push_move!(f, t);
+                tmp &= tmp - 1;
+            }
+        }
+
+        let promo_pawns = pawns & promo_rank_bb;
+        let normal_pawns = pawns & !promo_rank_bb;
+        let cap_targets = opp | ep.map_or(0, bit);
+        let att_c1 = if wturn {
+            (normal_pawns & !0x0101010101010101u64) >> 9
+        } else {
+            (normal_pawns & !0x0101010101010101u64) << 7
+        };
+        let att_c2 = if wturn {
+            (normal_pawns & !0x8080808080808080u64) >> 7
+        } else {
+            (normal_pawns & !0x8080808080808080u64) << 9
+        };
+        let mut tmp = att_c1 & cap_targets;
+        while tmp != 0 {
+            let t = tmp.trailing_zeros() as usize;
+            let f = if wturn { t + 9 } else { t - 7 };
+            if Some(t) == ep {
+                push_ep!(f, t);
+            } else {
+                push_move!(f, t);
+            }
+            tmp &= tmp - 1;
+        }
+        let mut tmp = att_c2 & cap_targets;
+        while tmp != 0 {
+            let t = tmp.trailing_zeros() as usize;
+            let f = if wturn { t + 7 } else { t - 9 };
+            if Some(t) == ep {
+                push_ep!(f, t);
+            } else {
+                push_move!(f, t);
+            }
+            tmp &= tmp - 1;
+        }
+
+        if !tactical_only {
+            let start_pushed = if wturn {
+                (pawns & start_rank) >> 8 & free
+            } else {
+                (pawns & start_rank) << 8 & free
+            };
+            let mut tmp = start_pushed;
+            while tmp != 0 {
+                let t = tmp.trailing_zeros() as usize;
+                let f = if wturn { t + 8 } else { t - 8 };
+                push_move!(f, t);
+                tmp &= tmp - 1;
+            }
+        }
+
+        let promo_push = if wturn {
+            promo_pawns >> 8 & free
+        } else {
+            promo_pawns << 8 & free
+        };
+        let mut tmp = promo_push;
+        while tmp != 0 {
+            let t = tmp.trailing_zeros() as usize;
+            let f = if wturn { t + 8 } else { t - 8 };
+            push_promo!(f, t);
+            tmp &= tmp - 1;
+        }
+
+        let pc1 = if wturn {
+            (promo_pawns & !0x0101010101010101u64) >> 9
+        } else {
+            (promo_pawns & !0x0101010101010101u64) << 7
+        };
+        let mut tmp = pc1 & opp;
+        while tmp != 0 {
+            let t = tmp.trailing_zeros() as usize;
+            let f = if wturn { t + 9 } else { t - 7 };
+            push_promo!(f, t);
+            tmp &= tmp - 1;
+        }
+        let pc2 = if wturn {
+            (promo_pawns & !0x8080808080808080u64) >> 7
+        } else {
+            (promo_pawns & !0x8080808080808080u64) << 9
+        };
+        let mut tmp = pc2 & opp;
+        while tmp != 0 {
+            let t = tmp.trailing_zeros() as usize;
+            let f = if wturn { t + 7 } else { t - 9 };
+            push_promo!(f, t);
+            tmp &= tmp - 1;
+        }
+    }
+
+    {
+        let mut knights = if wturn { st.bb[WN] } else { st.bb[BN] };
+        while knights != 0 {
+            let f = knights.trailing_zeros() as usize;
+            let targets = if tactical_only { opp } else { !own };
+            let mut att = KNIGHT_ATTACKS[f] & targets;
+            while att != 0 {
+                let t = att.trailing_zeros() as usize;
+                push_move!(f, t);
+                att &= att - 1;
+            }
+            knights &= knights - 1;
+        }
+    }
+
+    {
+        let mut bishops = if wturn { st.bb[WB] } else { st.bb[BB] };
+        while bishops != 0 {
+            let f = bishops.trailing_zeros() as usize;
+            let targets = if tactical_only { opp } else { !own };
+            let mut att = bishop_attacks(f, occ) & targets;
+            while att != 0 {
+                let t = att.trailing_zeros() as usize;
+                push_move!(f, t);
+                att &= att - 1;
+            }
+            bishops &= bishops - 1;
+        }
+    }
+
+    {
+        let mut rooks = if wturn { st.bb[WR] } else { st.bb[BR] };
+        while rooks != 0 {
+            let f = rooks.trailing_zeros() as usize;
+            let targets = if tactical_only { opp } else { !own };
+            let mut att = rook_attacks(f, occ) & targets;
+            while att != 0 {
+                let t = att.trailing_zeros() as usize;
+                push_move!(f, t);
+                att &= att - 1;
+            }
+            rooks &= rooks - 1;
+        }
+    }
+
+    {
+        let mut queens = if wturn { st.bb[WQ] } else { st.bb[BQ] };
+        while queens != 0 {
+            let f = queens.trailing_zeros() as usize;
+            let targets = if tactical_only { opp } else { !own };
+            let mut att = (bishop_attacks(f, occ) | rook_attacks(f, occ)) & targets;
+            while att != 0 {
+                let t = att.trailing_zeros() as usize;
+                push_move!(f, t);
+                att &= att - 1;
+            }
+            queens &= queens - 1;
+        }
+    }
+
+    {
+        let kf = st.king_sq(wturn);
+        let targets = if tactical_only { opp } else { !own };
+        let mut att = KING_ATTACKS[kf] & targets;
+        while att != 0 {
+            let t = att.trailing_zeros() as usize;
+            let cap = st.mailbox[t];
+            if cap == EMPTY_SQ || piece_type(cap) != 5 {
+                push_move!(kf, t);
+            }
+            att &= att - 1;
+        }
+
+        if !tactical_only {
+            if st.chess960 {
+                let kr = if wturn { 7usize } else { 0usize };
+                let king_col = sq_c(kf);
+                if chess960_castle_is_pseudo_legal(st, wturn, cr, true, kf, kr, king_col) {
+                    let rook_sq = castling_rook_square(st, wturn, true, king_col).unwrap();
+                    out.push(encode_move(kr, king_col, kr, sq_c(rook_sq), 0));
+                }
+                if chess960_castle_is_pseudo_legal(st, wturn, cr, false, kf, kr, king_col) {
+                    let rook_sq = castling_rook_square(st, wturn, false, king_col).unwrap();
+                    out.push(encode_move(kr, king_col, kr, sq_c(rook_sq), 0));
+                }
+            } else {
+                let kr = if wturn { 7usize } else { 0usize };
+                if standard_castle_is_pseudo_legal(st, wturn, cr, true) {
+                    out.push(encode_move(kr, 4, kr, 6, 0));
+                }
+                if standard_castle_is_pseudo_legal(st, wturn, cr, false) {
+                    out.push(encode_move(kr, 4, kr, 2, 0));
+                }
+            }
+        }
+    }
 }
 
 pub fn generate_moves(
@@ -769,13 +1249,164 @@ pub fn generate_moves_into(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::{move_ec, move_er, move_promotion, move_sc, move_sr, move_to_uci, piece_on};
+    use crate::board::{
+        move_ec, move_er, move_from, move_promotion, move_sc, move_sr, move_to, move_to_uci,
+        piece_on,
+    };
     use crate::engine::Engine;
+    use std::collections::BTreeSet;
 
     fn state_from_fen(fen: &str) -> BoardState {
         let mut engine = Engine::new();
         engine.set_fen(fen);
         engine.st
+    }
+
+    fn state_from_fen_chess960(fen: &str) -> BoardState {
+        let mut engine = Engine::new();
+        engine.set_fen(fen);
+        engine.st.chess960 = true;
+        engine.st
+    }
+
+    fn assert_same_state(left: &BoardState, right: &BoardState) {
+        assert_eq!(left.bb, right.bb);
+        assert_eq!(left.mailbox, right.mailbox);
+        assert_eq!(left.w, right.w);
+        assert_eq!(left.cr, right.cr);
+        assert_eq!(left.castling_rooks, right.castling_rooks);
+        assert_eq!(left.ep, right.ep);
+        assert_eq!(left.mc, right.mc);
+        assert_eq!(left.chess960, right.chess960);
+    }
+
+    fn move_name_set(st: &BoardState, moves: impl IntoIterator<Item = Move>) -> BTreeSet<String> {
+        moves.into_iter().map(|mv| move_to_uci(st, mv)).collect()
+    }
+
+    fn filtered_pseudo_names(st: &BoardState) -> BTreeSet<String> {
+        generate_pseudo_moves(st, st.w, &st.cr, st.ep)
+            .into_iter()
+            .filter_map(|mv| {
+                let mut next = *st;
+                try_apply_move(&mut next, mv).then_some(mv)
+            })
+            .map(|mv| move_to_uci(st, mv))
+            .collect()
+    }
+
+    fn legal_names(st: &BoardState) -> BTreeSet<String> {
+        move_name_set(st, generate_moves(st, st.w, &st.cr, st.ep))
+    }
+
+    fn is_legal_tactical(st: &BoardState, mv: Move) -> bool {
+        let from = move_from(mv);
+        let to = move_to(mv);
+        let fpi = st.mailbox[from];
+        let tpi = st.mailbox[to];
+        if fpi == EMPTY_SQ {
+            return false;
+        }
+        let promotion = piece_type(fpi) == 0 && (sq_r(to) == 0 || sq_r(to) == 7);
+        let en_passant =
+            piece_type(fpi) == 0 && Some(to) == st.ep && sq_c(from) != sq_c(to) && tpi == EMPTY_SQ;
+        let capture = !is_chess960_castling_move(st, mv) && (tpi != EMPTY_SQ || en_passant);
+        capture || promotion || move_promotion(mv) != 0
+    }
+
+    fn filtered_pseudo_tactical_names(st: &BoardState) -> BTreeSet<String> {
+        let mut pseudo = Vec::new();
+        generate_pseudo_captures_promotions_into(st, st.w, &st.cr, st.ep, &mut pseudo);
+        pseudo
+            .into_iter()
+            .filter_map(|mv| {
+                let mut next = *st;
+                try_apply_move(&mut next, mv).then_some(mv)
+            })
+            .map(|mv| move_to_uci(st, mv))
+            .collect()
+    }
+
+    #[test]
+    fn filtered_pseudo_moves_match_legal_moves_for_rule_positions() {
+        let positions = [
+            state_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),
+            state_from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"),
+            state_from_fen("4k3/8/8/r2pP2K/8/8/8/8 w - d6 0 1"),
+            state_from_fen("k3r3/8/8/8/8/8/4R3/4K3 w - - 0 1"),
+            state_from_fen("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1"),
+            state_from_fen_chess960("6kr/8/8/8/8/8/8/6KR w Hh - 0 1"),
+        ];
+
+        for st in positions {
+            assert_eq!(filtered_pseudo_names(&st), legal_names(&st));
+        }
+    }
+
+    #[test]
+    fn filtered_pseudo_tactical_moves_match_legal_tactical_subset() {
+        let positions = [
+            state_from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"),
+            state_from_fen("4k3/8/8/r2pP2K/8/8/8/8 w - d6 0 1"),
+            state_from_fen("rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8"),
+            state_from_fen("7k/P7/8/8/8/8/8/4K3 w - - 0 1"),
+        ];
+
+        for st in positions {
+            let legal_tactical = generate_moves(&st, st.w, &st.cr, st.ep)
+                .into_iter()
+                .filter(|&mv| is_legal_tactical(&st, mv));
+            assert_eq!(
+                filtered_pseudo_tactical_names(&st),
+                move_name_set(&st, legal_tactical)
+            );
+        }
+    }
+
+    #[test]
+    fn try_apply_rejects_pinned_move_without_mutating_state() {
+        let st = state_from_fen("k3r3/8/8/8/8/8/4R3/4K3 w - - 0 1");
+        let mv = encode_move(6, 4, 6, 3, 0);
+        assert!(generate_pseudo_moves(&st, st.w, &st.cr, st.ep).contains(&mv));
+
+        let mut next = st;
+        assert!(!try_apply_move(&mut next, mv));
+        assert_same_state(&next, &st);
+    }
+
+    #[test]
+    fn try_apply_rejects_en_passant_self_check_without_mutating_state() {
+        let st = state_from_fen("4k3/8/8/r2pP2K/8/8/8/8 w - d6 0 1");
+        let mv = encode_move(3, 4, 2, 3, 0);
+        assert!(generate_pseudo_moves(&st, st.w, &st.cr, st.ep).contains(&mv));
+
+        let mut next = st;
+        assert!(!try_apply_move(&mut next, mv));
+        assert_same_state(&next, &st);
+    }
+
+    #[test]
+    fn try_apply_rejects_standard_castling_through_check() {
+        let st = state_from_fen("4k3/8/8/8/8/8/5r2/R3K2R w KQ - 0 1");
+        let mv = encode_move(7, 4, 7, 6, 0);
+        assert!(generate_pseudo_moves(&st, st.w, &st.cr, st.ep).contains(&mv));
+
+        let mut next = st;
+        assert!(!try_apply_move(&mut next, mv));
+        assert_same_state(&next, &st);
+    }
+
+    #[test]
+    fn try_apply_rejects_chess960_castling_through_check() {
+        let mut st = state_from_fen_chess960("1k6/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
+        st.bb[BR] |= bit(sq(0, 5));
+        st.refresh_mailbox();
+        let mv = encode_move(7, 4, 7, 7, 0);
+        assert!(generate_pseudo_moves(&st, st.w, &st.cr, st.ep).contains(&mv));
+
+        let before = st;
+        assert!(!try_apply_move(&mut st, mv));
+        assert_same_state(&st, &before);
     }
 
     fn perft(st: &BoardState, depth: u32) -> u64 {
