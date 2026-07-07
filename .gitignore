@@ -41,6 +41,7 @@ benchmark_results/
 results/
 /result
 .elo-remote/
+ratings/ccrl/
 __pycache__/
 *.py[cod]
 1.sh
