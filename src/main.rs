@@ -228,11 +228,14 @@ fn main() {
                 let stopped = Arc::new(AtomicBool::new(false));
                 let num_threads = engine.num_threads;
 
-                let mut search_searcher = chess_rs_lib::search::Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
+                let mut search_searcher = chess_rs_lib::search::Searcher::new(
+                    Arc::clone(&shared_tt),
+                    Arc::clone(&stopped),
+                );
                 engine.searcher.copy_root_context_to(&mut search_searcher);
                 search_searcher.tt_mb = engine.searcher.tt_mb;
                 #[cfg(feature = "decision-trace")]
-                let trace_path = engine.trace.path().map(|p| p.to_string());
+                let trace_path = engine.trace.path().map(|p| p.display().to_string());
 
                 let stopped_for_search = Arc::clone(&stopped);
                 let (tx, rx) = mpsc::channel();
@@ -248,8 +251,8 @@ fn main() {
                             stopped_for_search,
                         );
                         #[cfg(feature = "decision-trace")]
-                        if let Some(ref tp) = trace_path {
-                            search_engine.set_trace_file(tp);
+                        if let Some(tp) = trace_path {
+                            search_engine.set_trace_file(&tp);
                         }
                         let result = search_engine.find_best_move(tl, depth);
                         tx.send(result).ok();

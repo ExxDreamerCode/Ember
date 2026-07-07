@@ -50,8 +50,16 @@ impl TraceLogger {
         if let Some(parent) = path_buf.parent() {
             let _ = create_dir_all(parent);
         }
-        let file = OpenOptions::new().create(true).append(true).open(&path_buf).ok();
-        Self { file, seq: 0, path: Some(path_buf) }
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path_buf)
+            .ok();
+        Self {
+            file,
+            seq: 0,
+            path: Some(path_buf),
+        }
     }
 
     pub fn path(&self) -> Option<&std::path::Path> {

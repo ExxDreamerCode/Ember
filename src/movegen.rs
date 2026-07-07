@@ -1287,9 +1287,9 @@ mod tests {
     fn filtered_pseudo_names(st: &BoardState) -> BTreeSet<String> {
         generate_pseudo_moves(st, st.w, &st.cr, st.ep)
             .into_iter()
-            .filter_map(|mv| {
+            .filter(|mv| {
                 let mut next = *st;
-                try_apply_move(&mut next, mv).then_some(mv)
+                try_apply_move(&mut next, *mv)
             })
             .map(|mv| move_to_uci(st, mv))
             .collect()
@@ -1319,9 +1319,9 @@ mod tests {
         generate_pseudo_captures_promotions_into(st, st.w, &st.cr, st.ep, &mut pseudo);
         pseudo
             .into_iter()
-            .filter_map(|mv| {
+            .filter(|mv| {
                 let mut next = *st;
-                try_apply_move(&mut next, mv).then_some(mv)
+                try_apply_move(&mut next, *mv)
             })
             .map(|mv| move_to_uci(st, mv))
             .collect()
