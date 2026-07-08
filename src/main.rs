@@ -127,7 +127,7 @@ fn main() {
 
         match parts[0] {
             "uci" => {
-                println!("id name Ember 1.1.1");
+                println!("id name Ember 1.1.2");
                 println!("id author ExxDreamerCode");
                 println!(
                     "option name Hash type spin default 256 min {} max {}",
