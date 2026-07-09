@@ -8,11 +8,13 @@ use crate::board::{
 };
 use crate::polyglot_randoms::POLYGLOT_RANDOMS;
 
+#[derive(Clone)]
 struct BookMove {
     raw_move: u16,
     weight: u16,
 }
 
+#[derive(Clone)]
 pub struct OpeningBook {
     entries: HashMap<u64, Vec<BookMove>>,
 }

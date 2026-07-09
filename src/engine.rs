@@ -233,6 +233,7 @@ impl Engine {
         shared_tt: Arc<SharedTT>,
         num_threads: usize,
         stopped: Arc<AtomicBool>,
+        book: Option<OpeningBook>,
     ) -> Self {
         Engine {
             st,
@@ -240,7 +241,7 @@ impl Engine {
             shared_tt,
             num_threads,
             stopped,
-            book: None,
+            book,
             #[cfg(feature = "decision-trace")]
             trace: TraceLogger::default(),
         }

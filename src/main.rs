@@ -268,6 +268,7 @@ fn main() {
                 let shared_tt = Arc::clone(&engine.shared_tt);
                 let stopped = Arc::new(AtomicBool::new(false));
                 let num_threads = engine.num_threads;
+                let book = engine.book.clone();
 
                 let mut search_searcher = chess_rs_lib::search::Searcher::new(
                     Arc::clone(&shared_tt),
@@ -283,6 +284,7 @@ fn main() {
 
                 let handle = thread::Builder::new()
                     .name("search".into())
+                    .stack_size(8 * 1024 * 1024)
                     .spawn(move || {
                         let mut search_engine = Engine::new_with(
                             st,
@@ -290,6 +292,7 @@ fn main() {
                             shared_tt,
                             num_threads,
                             stopped_for_search,
+                            book,
                         );
                         #[cfg(feature = "decision-trace")]
                         if let Some(tp) = trace_path {

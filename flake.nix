@@ -34,6 +34,9 @@
           };
         });
 
+      packages = forAllSystems (pkgs:
+        import ./nix/ccrl-opponents.nix { inherit pkgs; });
+
       devShells = forAllSystems (pkgs:
         let
           blunder-7-2-0 = pkgs.buildGoModule {

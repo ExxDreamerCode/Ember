@@ -133,3 +133,123 @@ UCI_LimitStrength = "true"
 UCI_Elo = "2400"
 Threads = "1"
 Hash = "64"
+
+[[engine]]
+name = "seawall 20250322"
+role = "ccrl-replay"
+package = "ccrl-seawall-20250322"
+cmd = "ccrl-seawall-20250322"
+proto = "uci"
+rating = 1800
+rating_sigma = 1000
+rating_scale = "neutral replay prior"
+rating_source = "Neutral placeholder for replay; not a rating claim"
+rating_source_date = "2026-07-07"
+engine_version = "20250322"
+family = "seawall"
+required = false
+
+[[engine]]
+name = "OliThink 5.11.9"
+role = "ccrl-replay"
+package = "ccrl-olithink-5-11-9"
+cmd = "ccrl-olithink-5.11.9"
+proto = "uci"
+rating = 1800
+rating_sigma = 1000
+rating_scale = "neutral replay prior"
+rating_source = "Neutral placeholder for replay; not a rating claim"
+rating_source_date = "2026-07-07"
+engine_version = "5.11.9"
+family = "olithink"
+required = false
+
+[[engine]]
+name = "byte-knight 4.0.0"
+role = "ccrl-replay"
+package = "ccrl-byte-knight-4-0-0"
+cmd = "ccrl-byte-knight-4.0.0"
+proto = "uci"
+rating = 1800
+rating_sigma = 1000
+rating_scale = "neutral replay prior"
+rating_source = "Neutral placeholder for replay; not a rating claim"
+rating_source_date = "2026-07-07"
+engine_version = "4.0.0"
+family = "byte-knight"
+required = false
+
+[[engine]]
+name = "Rengar v2.1.1"
+role = "ccrl-replay"
+package = "ccrl-rengar-2-1-1"
+cmd = "ccrl-rengar-2.1.1"
+proto = "uci"
+rating = 1800
+rating_sigma = 1000
+rating_scale = "neutral replay prior"
+rating_source = "Neutral placeholder for replay; not a rating claim"
+rating_source_date = "2026-07-07"
+engine_version = "2.1.1"
+family = "rengar"
+required = false
+
+[[engine]]
+name = "Pawnstar 0.13.593"
+role = "ccrl-replay"
+package = "ccrl-pawnstar-0-13-593"
+cmd = "ccrl-pawnstar-0.13.593"
+proto = "uci"
+rating = 1800
+rating_sigma = 1000
+rating_scale = "neutral replay prior"
+rating_source = "Neutral placeholder for replay; not a rating claim"
+rating_source_date = "2026-07-07"
+engine_version = "0.13.593"
+family = "pawnstar"
+required = false
+
+[[engine]]
+name = "Puffin 5.0"
+role = "ccrl-replay"
+package = "ccrl-puffin-5-0"
+cmd = "ccrl-puffin-5.0"
+proto = "uci"
+rating = 1800
+rating_sigma = 1000
+rating_scale = "neutral replay prior"
+rating_source = "Neutral placeholder for replay; not a rating claim"
+rating_source_date = "2026-07-07"
+engine_version = "5.0"
+family = "puffin"
+required = false
+
+[[engine]]
+name = "Revolver 2.0"
+role = "ccrl-replay"
+package = "ccrl-revolver-2-0"
+cmd = "ccrl-revolver-2.0"
+proto = "uci"
+rating = 1800
+rating_sigma = 1000
+rating_scale = "neutral replay prior"
+rating_source = "Neutral placeholder for replay; not a rating claim"
+rating_source_date = "2026-07-07"
+engine_version = "2.0"
+family = "revolver"
+required = false
+
+[[engine]]
+name = "KnightX 4.92"
+role = "ccrl-replay"
+package = "ccrl-knightx-4-92"
+cmd = "ccrl-knightx-4.92"
+proto = "uci"
+rating = 1800
+rating_sigma = 1000
+rating_scale = "neutral replay prior"
+rating_source = "Neutral placeholder for replay; not a rating claim"
+rating_source_date = "2026-07-07"
+engine_version = "4.92"
+family = "knightx"
+required = false
