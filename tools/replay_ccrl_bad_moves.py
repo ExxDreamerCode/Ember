@@ -25,13 +25,16 @@ CASE_RE = re.compile(
 
 OPTION_RE = re.compile(r"^option name (?P<name>.*?) type\b", re.IGNORECASE)
 
-OPPONENT_BY_GAME = {
-    15: "ccrl-seawall-20250322",
-    24: "ccrl-pawnstar-0.13.593",
-    34: "ccrl-revolver-2.0",
-    38: "ccrl-pawnstar-0.13.593",
-    46: "ccrl-puffin-5.0",
-    60: "ccrl-knightx-4.92",
+OPPONENT_BY_NAME = {
+    "byte-knight": "ccrl-byte-knight-4.0.0",
+    "eidolon": "ccrl-eidolon-1.0.0",
+    "knightx": "ccrl-knightx-4.92",
+    "olithink": "ccrl-olithink-5.11.9",
+    "pawnstar": "ccrl-pawnstar-0.13.593",
+    "puffin": "ccrl-puffin-5.0",
+    "rengar": "ccrl-rengar-2.1.1",
+    "revolver": "ccrl-revolver-2.0",
+    "seawall": "ccrl-seawall-20250322",
 }
 
 
@@ -60,8 +63,33 @@ def load_cases(path):
     return cases
 
 
-def find_meta(meta_dir, game_number):
+def expected_players(label):
+    match = re.search(r"CCRL game \d+,\s*([^,]+),", label)
+    if not match:
+        return None
+    players = [part.strip().casefold() for part in match.group(1).split("-")]
+    if len(players) != 2 or not all(players):
+        return None
+    return players
+
+
+def names_match_meta(meta, players):
+    white = meta["white"]["name"].casefold()
+    black = meta["black"]["name"].casefold()
+    return players[0] in white and players[1] in black
+
+
+def find_meta(meta_dir, case):
+    game_number = case["game"]
     matches = sorted(Path(meta_dir).glob(f"{game_number}_*.meta.json"))
+    players = expected_players(case["label"])
+    if len(matches) > 1 and players is not None:
+        filtered = []
+        for match in matches:
+            meta = json.loads(match.read_text(encoding="utf-8"))
+            if names_match_meta(meta, players):
+                filtered.append(match)
+        matches = filtered
     if len(matches) != 1:
         raise SystemExit(f"expected one metadata file for game {game_number}, found {len(matches)}")
     return matches[0]
@@ -73,6 +101,21 @@ def engine_color(meta):
     if meta["black"]["name"].startswith("Ember"):
         return chess.BLACK
     raise SystemExit("metadata does not contain Ember as white or black")
+
+
+def opponent_for_meta(meta):
+    if meta["white"]["name"].startswith("Ember"):
+        opponent = meta["black"]["name"]
+    elif meta["black"]["name"].startswith("Ember"):
+        opponent = meta["white"]["name"]
+    else:
+        raise SystemExit("metadata does not contain Ember as white or black")
+
+    normalized = opponent.casefold()
+    for marker, package in OPPONENT_BY_NAME.items():
+        if marker in normalized:
+            return package
+    raise SystemExit(f"no packaged opponent mapping for {opponent}")
 
 
 def initial_board(history):
@@ -246,7 +289,7 @@ def write_pgn(path, meta, moves, result, start_ply, bad_move, replacement_move):
 
 
 def run_case(case, args, out_dir):
-    meta_path = find_meta(args.meta_dir, case["game"])
+    meta_path = find_meta(args.meta_dir, case)
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     board = initial_board(case["history"])
     ember_color = engine_color(meta)
@@ -255,7 +298,7 @@ def run_case(case, args, out_dir):
     if chess.Move.from_uci(case["bad_move"]) not in board.legal_moves:
         raise SystemExit(f"{case['label']}: observed bad move is not legal in the replay position")
 
-    opponent_cmd_name = OPPONENT_BY_GAME[case["game"]]
+    opponent_cmd_name = opponent_for_meta(meta)
     opponent_binary = Path(args.opponents_dir) / opponent_cmd_name
     if not opponent_binary.exists():
         raise SystemExit(f"opponent binary not found: {opponent_binary}")

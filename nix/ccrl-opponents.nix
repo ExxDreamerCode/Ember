@@ -175,6 +175,40 @@ let
     };
   };
 
+  eidolon-1-0-0 = pkgs.rustPlatform.buildRustPackage {
+    pname = "ccrl-eidolon";
+    version = "1.0.0";
+
+    src = githubSrc {
+      owner = "Daniel729";
+      repo = "Eidolon";
+      rev = "v1.0.0";
+      hash = "sha256-3TUJj+CV8zmoaLC8p8M0qOFT37UA9z9HIqPOueBvnzA=";
+    };
+
+    cargoHash = "sha256-RTkwK1JUkj+4+z0njXQgPrNaZN5cgToFp+laMFu5LsE=";
+    buildAndTestSubdir = "eidolon-bin";
+    cargoBuildFlags = [ "--bin" "eidolon" ];
+    cargoTestFlags = [ "--bin" "eidolon" ];
+    RUSTC_BOOTSTRAP = "1";
+
+    postPatch = ''
+      substituteInPlace eidolon-lib/src/lib.rs \
+        --replace-fail '#![feature(avx512_target_feature)]' ""
+    '';
+
+    postInstall = ''
+      mv "$out/bin/eidolon" "$out/bin/ccrl-eidolon-1.0.0"
+    '';
+
+    meta = {
+      description = "Eidolon 1.0.0 UCI chess engine, built from the upstream source tag";
+      homepage = "https://github.com/Daniel729/Eidolon";
+      license = lib.licenses.gpl3Only;
+      platforms = [ "x86_64-linux" ];
+    };
+  };
+
   puffin-5-0 = pkgs.buildDotnetModule {
     pname = "ccrl-puffin";
     version = "5.0";
@@ -287,6 +321,7 @@ onlyX86_64 {
   ccrl-byte-knight-4-0-0 = byte-knight-4-0-0;
   ccrl-rengar-2-1-1 = rengar-2-1-1;
   ccrl-pawnstar-0-13-593 = pawnstar-0-13-593;
+  ccrl-eidolon-1-0-0 = eidolon-1-0-0;
   ccrl-puffin-5-0 = puffin-5-0;
   ccrl-revolver-2-0 = revolver-2-0;
   ccrl-knightx-4-92 = knightx-4-92;
@@ -299,6 +334,7 @@ onlyX86_64 {
       byte-knight-4-0-0
       rengar-2-1-1
       pawnstar-0-13-593
+      eidolon-1-0-0
       puffin-5-0
       revolver-2-0
       knightx-4-92
