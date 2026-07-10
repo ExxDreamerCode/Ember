@@ -90,3 +90,21 @@ fn ccrl_repetition_histories_do_not_choose_observed_losing_moves() {
         );
     }
 }
+
+#[test]
+fn ccrl_rengar_loss_finds_queen_rook_invasion_setup() {
+    let mut engine = Engine::new();
+    engine.book = None;
+    engine.num_threads = 1;
+    replay_history(
+        &mut engine,
+        "e2e4 e7e5 g1f3 b8c6 f1b5 g8f6 d2d3 f8c5 c2c3 e8g8 e1g1 d7d6 b1d2 a7a6 b5a4 c5a7 h2h3 c6e7 d3d4 e7g6 a4c2 h7h6 f1e1 b7b5 d2f1 c7c5 c1e3 c8e6 a2a4 d8c7 d4d5 e6d7 c3c4 a8b8 f3d2 a7b6 a4b5 a6b5 d1e2 b6a5 a1a2 b5c4 e1a1 a5d2 e3d2 d7b5 e2d1 f6d7 f1e3 d7b6 h3h4 g6h4",
+    );
+
+    let (best_move, score, nodes, _) = engine.find_best_move(1_000_000.0, 6);
+
+    assert!(
+        matches!(best_move.as_str(), "d1h5" | "a2a7"),
+        "Rengar game 117 should find Qh5 or the immediate Ra7 rook invasion; got {best_move}, score={score}, nodes={nodes}"
+    );
+}
