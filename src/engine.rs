@@ -225,6 +225,102 @@ fn root_order_score(st: &BoardState, mv: Move, preferred: Move) -> i32 {
     score
 }
 
+fn root_enemy_pawn_attacks_square(st: &BoardState, target: usize) -> bool {
+    let row = target / 8;
+    let col = target % 8;
+    let pawn = if st.w { BP } else { WP };
+
+    if st.w {
+        if row == 0 {
+            return false;
+        }
+        let pawn_row = row - 1;
+        if col > 0 && (st.bb[pawn] & bit(pawn_row * 8 + col - 1)) != 0 {
+            return true;
+        }
+        if col < 7 && (st.bb[pawn] & bit(pawn_row * 8 + col + 1)) != 0 {
+            return true;
+        }
+    } else {
+        if row == 7 {
+            return false;
+        }
+        let pawn_row = row + 1;
+        if col > 0 && (st.bb[pawn] & bit(pawn_row * 8 + col - 1)) != 0 {
+            return true;
+        }
+        if col < 7 && (st.bb[pawn] & bit(pawn_row * 8 + col + 1)) != 0 {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn root_minor_king_zone_capture(st: &BoardState, mv: Move) -> bool {
+    if move_promotion(mv) != 0 {
+        return false;
+    }
+
+    let from = move_from(mv);
+    let to = move_to(mv);
+    let attacker = st.mailbox[from];
+    let victim = st.mailbox[to];
+    if attacker == EMPTY_SQ || victim == EMPTY_SQ {
+        return false;
+    }
+    if (attacker < 6) != st.w || (victim < 6) == st.w {
+        return false;
+    }
+
+    let attacker_type = piece_type(attacker);
+    if attacker_type != 1 && attacker_type != 2 {
+        return false;
+    }
+    if (st.bb[WQ] | st.bb[BQ]) != 0 {
+        return false;
+    }
+    let own_can_castle = if st.w {
+        st.cr[0] || st.cr[1]
+    } else {
+        st.cr[2] || st.cr[3]
+    };
+    if !own_can_castle {
+        return false;
+    }
+
+    let target_row = to / 8;
+    if (st.w && target_row > 3) || (!st.w && target_row < 4) {
+        return false;
+    }
+
+    let king = st.king_sq(!st.w);
+    let row_dist = target_row.abs_diff(king / 8);
+    let col_dist = (to % 8).abs_diff(king % 8);
+    if row_dist.max(col_dist) > 2 {
+        return false;
+    }
+
+    !root_enemy_pawn_attacks_square(st, to)
+}
+
+fn sort_tactical_root_moves(st: &BoardState, moves: &[Move], preferred: Move) -> Option<Vec<Move>> {
+    let mut scored = Vec::with_capacity(moves.len());
+    let mut has_tactical = false;
+    for (idx, &mv) in moves.iter().enumerate() {
+        let tactical = root_minor_king_zone_capture(st, mv);
+        has_tactical |= tactical;
+        let bonus = if tactical { 1_500_000 } else { 0 };
+        scored.push((root_order_score(st, mv, preferred) + bonus, idx, mv));
+    }
+    if !has_tactical {
+        return None;
+    }
+
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    Some(scored.into_iter().map(|(_, _, mv)| mv).collect())
+}
+
 fn sort_sparse_root_moves(st: &BoardState, moves: &[Move], preferred: Move) -> Option<Vec<Move>> {
     let sparse_endgame = root_non_king_piece_count(st) <= 8
         && (root_side_has_major(st, st.w) || root_promotion_race(st));
@@ -620,8 +716,9 @@ impl Engine {
         if self.num_threads > 1 {
             let start = Instant::now();
             self.searcher.stopped.store(false, Ordering::SeqCst);
-            let threaded_moves =
-                sort_sparse_root_moves(&self.st, &moves, NO_MOVE).unwrap_or_else(|| moves.clone());
+            let threaded_moves = sort_tactical_root_moves(&self.st, &moves, NO_MOVE)
+                .or_else(|| sort_sparse_root_moves(&self.st, &moves, NO_MOVE))
+                .unwrap_or_else(|| moves.clone());
 
             let (best_move, best_score, best_depth, total_nodes) = lazy_smp_search(
                 Arc::clone(&self.shared_tt),
@@ -702,6 +799,8 @@ impl Engine {
                         }
                     }
                     with_dtz.into_iter().map(|(_, mv)| mv).collect()
+                } else if let Some(s) = sort_tactical_root_moves(&self.st, &moves, asp_best) {
+                    s
                 } else if let Some(s) = sort_sparse_root_moves(&self.st, &moves, asp_best) {
                     s
                 } else {
