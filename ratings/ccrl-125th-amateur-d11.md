@@ -20,6 +20,17 @@ python3 tools/download_ccrl_ember_games.py \
   --out-dir ratings/ccrl/125th_Amateur_D11/ember_1.1.1
 ```
 
+The same event later included Ember 1.1.2. Recreate that local dump with:
+
+```sh
+python3 tools/download_ccrl_ember_games.py \
+  --archive-url https://ccrl.live/pgns/125th_Amateur_D11/ \
+  --engine "Ember 1.1.2" \
+  --filename-match ember_1.1.2 \
+  --scan-mode filename \
+  --out-dir ratings/ccrl/125th_Amateur_D11/ember_1.1.2
+```
+
 Build or fetch all packaged CCRL replay opponents with:
 
 ```sh
@@ -161,3 +172,48 @@ settings, so not every observed blunder changed the final result.
 - Separate deployed-version analysis from current-branch analysis. Ember
   1.1.1 was the version in the CCRL event; the current branch can be fixed
   while still needing tests that reproduce the deployed failure.
+
+## Follow-up Opponents
+
+The second pass added the remaining requested source-built opponent:
+Eidolon 1.0.0 from `Daniel729/Eidolon` tag `v1.0.0`. The package removes
+one obsolete stable Rust feature gate and builds the upstream source with
+`RUSTC_BOOTSTRAP=1` for `portable_simd`. Rengar 2.1.1, Puffin 5.0, and
+Revolver 2.0 were already packaged from source tags, so no binary archive
+or Wine wrapper is needed for these four opponents.
+
+Exact target archive links:
+
+| Game | Result | Archive |
+| --- | --- | --- |
+| Revolver 2.0 - Ember 1.1.1 | `1-0` | <https://ccrl.live/pgns/125th_Amateur_D11/6_revolver_2.0_vs_ember_1.1.1.pgn> |
+| Revolver 2.0 - Ember 1.1.1 | `1-0` | <https://ccrl.live/pgns/125th_Amateur_D11/34_revolver_2.0_vs_ember_1.1.1.pgn> |
+| Ember 1.1.1 - Puffin 5.0 | `0-1` | <https://ccrl.live/pgns/125th_Amateur_D11/46_ember_1.1.1_vs_puffin_5.0.pgn> |
+| Eidolon 1.0.0 - Ember 1.1.1 | `1-0` | <https://ccrl.live/pgns/125th_Amateur_D11/108_eidolon_1.0.0_vs_ember_1.1.1.pgn> |
+| Ember 1.1.2 - Rengar v2.1.1 | `0-1` | <https://ccrl.live/pgns/125th_Amateur_D11/117_ember_1.1.2_vs_rengar_v2.1.1.pgn> |
+| Eidolon 1.0.0 - Ember 1.1.2 | `1/2-1/2` | <https://ccrl.live/pgns/125th_Amateur_D11/124_eidolon_1.0.0_vs_ember_1.1.2.pgn> |
+| Ember 1.1.2 - Revolver 2.0 | `0-1` | <https://ccrl.live/pgns/125th_Amateur_D11/126_ember_1.1.2_vs_revolver_2.0.pgn> |
+| Revolver 2.0 - Ember 1.1.2 | `1/2-1/2` | <https://ccrl.live/pgns/125th_Amateur_D11/126_revolver_2.0_vs_ember_1.1.2.pgn> |
+
+The bad-move scan used Stockfish depth 12 from Ember's side of the board
+to rank evaluation drops, then probed exact release binaries built from
+`V1.1.1` (`bd752d9`) and `V1.1.2` (`7c191a5`) with full UCI histories and
+book disabled.
+
+| Game | Candidate | Stockfish drop | Exact release reproduction | Read |
+| --- | --- | ---: | --- | --- |
+| 6 Revolver-Ember 1.1.1 | `22...b6` / `b7b6` | ~81 cp | Not reproduced from 50-5000 ms; exact 1.1.1 preferred `...c5` or `...Be8`. | No stable one-move blunder found; the loss looks like accumulated strategic drift. |
+| 34 Revolver-Ember 1.1.1 | `111...Qh4+` / `e4h4` | ~638 cp | Repeats instantly at all tested movetimes with `depth 64 score cp 0`. | Same stale repetition-stack bug: a losing non-repetition move was scored as a draw. A one-ply Stockfish replacement did not save the result with exact 1.1.1 continuing. |
+| 46 Ember-Puffin 1.1.1 | `55.Rb6+` / `a6b6` | ~662 cp | Repeats instantly at all tested movetimes with `depth 64 score cp 0`. | Same stale repetition-stack bug. Replacing only this move with Stockfish's rook move changed the continuation from a loss to a draw. |
+| 108 Eidolon-Ember 1.1.1 | `64...f2` / `f3f2` | ~77 cp | Repeats from 50-5000 ms. | Already losing rook/pawn ending; a one-ply Stockfish replacement still lost. |
+| 117 Ember-Rengar 1.1.2 | `27.Ng4` / `e3g4` | ~89 cp | Repeats in bounded search at the tournament-like short time. | Tactical miss. Replacing only this move with Stockfish's `Ra7` changed the continuation from a loss to a win. |
+| 124 Eidolon-Ember 1.1.2 | `20...Bb7` / `c8b7` | ~63 cp | Repeats only in short searches, then switches to `...Rxb7`. | Drawn game; the one-ply replacement did not produce a completed win inside the cap. |
+| 126 Ember-Revolver 1.1.2 | several candidates | -- | `44.e6` repeats, but Stockfish does not consistently reject it at higher depth. | No tested one-ply replacement, including earlier candidates such as `12.Rc1`, `13.h4`, `20.Ka1`, and `24.c3`, improved the result. |
+| 126 Revolver-Ember 1.1.2 | `48...Qd6` / `d8d6` | ~118 cp | Time-sensitive; not consistently reproduced. | Drawn game; the Stockfish replacement line did not improve the result. |
+
+The one-ply replacement test confirmed only two result-changing root
+moves in this follow-up set: Puffin game 46 and Rengar game 117. The
+Revolver game 34 move is still a clear bug-level evaluation failure, but
+exact Ember 1.1.1 can still lose after a single corrected move. The
+Revolver 1.1.2 loss appears to be an already bad game state rather than a
+single isolated move in the tested candidate set.

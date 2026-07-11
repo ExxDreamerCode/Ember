@@ -210,6 +210,21 @@ family = "pawnstar"
 required = false
 
 [[engine]]
+name = "Eidolon 1.0.0"
+role = "ccrl-replay"
+package = "ccrl-eidolon-1-0-0"
+cmd = "ccrl-eidolon-1.0.0"
+proto = "uci"
+rating = 1800
+rating_sigma = 1000
+rating_scale = "neutral replay prior"
+rating_source = "Neutral placeholder for replay; not a rating claim"
+rating_source_date = "2026-07-10"
+engine_version = "1.0.0"
+family = "eidolon"
+required = false
+
+[[engine]]
 name = "Puffin 5.0"
 role = "ccrl-replay"
 package = "ccrl-puffin-5-0"

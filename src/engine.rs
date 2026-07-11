@@ -172,8 +172,53 @@ fn root_forcing_score(st: &BoardState, mv: Move) -> Option<i32> {
     Some(score)
 }
 
+fn root_rook_invasion_score(st: &BoardState, mv: Move) -> Option<i32> {
+    let from = move_from(mv);
+    let to = move_to(mv);
+    let attacker = st.mailbox[from];
+    if attacker == EMPTY_SQ || piece_type(attacker) != 3 {
+        return None;
+    }
+
+    let target_row = if st.w { 1 } else { 6 };
+    if to / 8 != target_row {
+        return None;
+    }
+
+    if root_non_king_piece_count(st) > 8 && !rook_attacks_enemy_non_pawn_on_rank(st, to, attacker) {
+        return None;
+    }
+
+    Some(600_000)
+}
+
+fn rook_attacks_enemy_non_pawn_on_rank(st: &BoardState, rook_sq: usize, rook: u8) -> bool {
+    let moving_white = rook < 6;
+    let row = rook_sq / 8;
+    let col = rook_sq % 8;
+
+    for c in (0..col).rev() {
+        let pi = st.mailbox[row * 8 + c];
+        if pi == EMPTY_SQ {
+            continue;
+        }
+        return (pi < 6) != moving_white && piece_type(pi) != 0;
+    }
+
+    for c in (col + 1)..8 {
+        let pi = st.mailbox[row * 8 + c];
+        if pi == EMPTY_SQ {
+            continue;
+        }
+        return (pi < 6) != moving_white && piece_type(pi) != 0;
+    }
+
+    false
+}
+
 fn root_order_score(st: &BoardState, mv: Move, preferred: Move) -> i32 {
     let mut score = root_forcing_score(st, mv).unwrap_or(0);
+    score += root_rook_invasion_score(st, mv).unwrap_or(0);
     if mv == preferred {
         score += 500_000;
     }
@@ -181,10 +226,13 @@ fn root_order_score(st: &BoardState, mv: Move, preferred: Move) -> i32 {
 }
 
 fn sort_sparse_root_moves(st: &BoardState, moves: &[Move], preferred: Move) -> Option<Vec<Move>> {
-    if root_non_king_piece_count(st) > 8 {
-        return None;
-    }
-    if !root_side_has_major(st, st.w) && !root_promotion_race(st) {
+    let sparse_endgame = root_non_king_piece_count(st) <= 8
+        && (root_side_has_major(st, st.w) || root_promotion_race(st));
+    let has_rook_invasion = moves
+        .iter()
+        .any(|&mv| root_rook_invasion_score(st, mv).is_some());
+
+    if !sparse_endgame && !has_rook_invasion {
         return None;
     }
 
@@ -193,8 +241,8 @@ fn sort_sparse_root_moves(st: &BoardState, moves: &[Move], preferred: Move) -> O
         .enumerate()
         .map(|(idx, &mv)| (root_order_score(st, mv, preferred), idx, mv))
         .collect();
-    let has_forcing = scored.iter().any(|(score, _, _)| *score >= 1_000_000);
-    if !has_forcing {
+    let has_priority = scored.iter().any(|(score, _, _)| *score >= 600_000);
+    if !has_priority {
         return None;
     }
 
@@ -691,11 +739,12 @@ impl Engine {
                     let h = compute_hash(&self.st);
                     self.searcher.rep_stack.push(h);
                     self.searcher.rep_stack_len += 1;
+                    let root_ext = i32::from(root_rook_invasion_score(&old, mv).is_some());
 
                     let score = if cur_score == -INF {
                         -self.searcher.negamax(
                             &mut self.st,
-                            depth - 1,
+                            depth - 1 + root_ext,
                             1,
                             -beta,
                             -loop_alpha,
@@ -707,7 +756,7 @@ impl Engine {
                     } else {
                         let s = -self.searcher.negamax(
                             &mut self.st,
-                            depth - 1,
+                            depth - 1 + root_ext,
                             1,
                             -loop_alpha - 1,
                             -loop_alpha,
@@ -719,7 +768,7 @@ impl Engine {
                         if s > loop_alpha && s < beta {
                             -self.searcher.negamax(
                                 &mut self.st,
-                                depth - 1,
+                                depth - 1 + root_ext,
                                 1,
                                 -beta,
                                 -loop_alpha,
