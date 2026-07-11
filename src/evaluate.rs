@@ -365,10 +365,6 @@ pub fn nnue_loaded() -> bool {
     NNUE_NET.read().is_ok_and(|lock| lock.is_some())
 }
 
-pub fn get_nnue_net() -> Option<&'static NNUENet> {
-    None
-}
-
 pub fn with_nnue_net<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&NNUENet) -> R,
