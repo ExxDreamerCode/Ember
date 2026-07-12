@@ -215,6 +215,7 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
                 let rook_to = sq(sr, rook_dst_col);
                 let king_to = sq(sr, king_dst_col);
                 hash ^= z.pieces[rook_pi][rook_from];
+                hash ^= z.pieces[mover_pi as usize][king_to];
                 hash ^= z.pieces[rook_pi][rook_to];
                 st.bb[rook_pi] &= !bit(rook_from);
                 st.bb[rook_pi] |= bit(rook_to);
