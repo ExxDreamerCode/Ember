@@ -607,4 +607,24 @@ mod tests {
             "invalid Threads must not change the worker count"
         );
     }
+
+    #[test]
+    fn reset_preserves_chess960_hash_alignment() {
+        let mut engine = Engine::new();
+        engine.st.chess960 = true;
+
+        reset_engine(&mut engine);
+
+        let recomputed = chess_rs_lib::zobrist::compute_hash(&engine.st);
+        assert!(engine.st.chess960, "reset should preserve Chess960 mode");
+        assert_eq!(
+            engine.st.hash, recomputed,
+            "reset must refresh the cached hash after preserving Chess960 mode"
+        );
+        assert_eq!(
+            engine.searcher.rep_stack[engine.searcher.rep_stack_len - 1],
+            recomputed,
+            "root repetition hash must match the refreshed Chess960 hash"
+        );
+    }
 }
