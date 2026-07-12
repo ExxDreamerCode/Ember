@@ -12,7 +12,7 @@ use crate::movegen::{
 use crate::nnue::NNUEAccumulator;
 use crate::syzygy::SyzygyTables;
 use crate::tt::{SharedTT, TT_ALPHA, TT_BETA, TT_EXACT};
-use crate::zobrist::{compute_pawn_hash, zobrist};
+use crate::zobrist::{compute_pawn_hash, ep_hash_square, zobrist};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -816,8 +816,9 @@ impl Searcher {
                 let r = 3 + actual_depth / 4 + ((eval_score - beta) / 200).min(3);
                 let ow = st.w;
                 let oe = st.ep;
+                let old_ep_hash = ep_hash_square(st);
                 let z = zobrist();
-                if let Some(ep_sq) = oe {
+                if let Some(ep_sq) = old_ep_hash {
                     st.hash ^= z.ep[ep_sq];
                 }
                 st.hash ^= z.side;
@@ -844,7 +845,7 @@ impl Searcher {
                 self.rep_stack.pop();
                 self.rep_stack_len -= 1;
                 st.hash ^= z.side;
-                if let Some(ep_sq) = oe {
+                if let Some(ep_sq) = old_ep_hash {
                     st.hash ^= z.ep[ep_sq];
                 }
                 st.w = ow;
