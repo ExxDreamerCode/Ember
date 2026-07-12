@@ -227,6 +227,32 @@ fn chess960_castling_works_when_king_already_on_destination() {
 }
 
 #[test]
+fn chess960_castling_keeps_incremental_hash_aligned() {
+    let engine = engine_from_fen("6kr/8/8/8/8/8/8/6KR w Hh - 0 1", true);
+    let mv = generate_moves(&engine.st, engine.st.w, &engine.st.cr, engine.st.ep)
+        .into_iter()
+        .find(|&mv| move_to_uci(&engine.st, mv) == "g1h1")
+        .expect("expected legal Chess960 castling move g1h1");
+
+    let mut next = engine.st;
+    apply_move(
+        &mut next,
+        move_sr(mv),
+        move_sc(mv),
+        move_er(mv),
+        move_ec(mv),
+        move_promotion(mv),
+    );
+
+    assert_eq!(
+        next.hash,
+        compute_hash(&next),
+        "incremental hash must match recomputed hash after Chess960 castling; reached {}",
+        board_to_fen(&next)
+    );
+}
+
+#[test]
 fn illegal_uci_move_is_rejected_without_mutating_state() {
     let mut engine = Engine::new();
     let before_state = engine.st;
