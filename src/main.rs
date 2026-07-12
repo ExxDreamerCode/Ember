@@ -1,6 +1,7 @@
 use chess_rs_lib::board::{piece_on, piece_type, EMPTY_SQ};
 use chess_rs_lib::evaluate;
 use chess_rs_lib::syzygy::SyzygyTables;
+use chess_rs_lib::zobrist::compute_hash;
 use chess_rs_lib::{opening_book, Engine, OpeningBook};
 use std::io::{self, BufRead};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -227,7 +228,7 @@ fn main() {
                     }
                     "uci_chess960" => {
                         let enable = val == "true";
-                        engine.st.chess960 = enable;
+                        set_chess960_mode(&mut engine, enable);
                         if enable {
                             eprintln!("info string Chess960 mode enabled");
                         } else {
@@ -391,6 +392,25 @@ fn parse_setoption(engine: &mut Engine, parts: &[&str]) {
     }
 }
 
+fn refresh_root_hash(engine: &mut Engine) {
+    engine.st.hash = compute_hash(&engine.st);
+    if engine.searcher.rep_stack_len == 0 {
+        engine.searcher.rep_stack.push(engine.st.hash);
+        engine.searcher.rep_stack_len = 1;
+    } else if let Some(slot) = engine
+        .searcher
+        .rep_stack
+        .get_mut(engine.searcher.rep_stack_len - 1)
+    {
+        *slot = engine.st.hash;
+    }
+}
+
+fn set_chess960_mode(engine: &mut Engine, enable: bool) {
+    engine.st.chess960 = enable;
+    refresh_root_hash(engine);
+}
+
 fn reset_engine(engine: &mut Engine) {
     let book = engine.book.take();
     let num_threads = engine.num_threads;
@@ -401,7 +421,7 @@ fn reset_engine(engine: &mut Engine) {
     *engine = Engine::new();
     engine.book = book;
     engine.num_threads = num_threads;
-    engine.st.chess960 = chess960;
+    set_chess960_mode(engine, chess960);
     #[cfg(feature = "decision-trace")]
     {
         engine.trace = trace;
