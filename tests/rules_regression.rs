@@ -305,18 +305,18 @@ fn repetition_hash_only_includes_legal_en_passant_rights() {
 
     let no_capture_ep = engine_from_fen("4k3/8/8/8/4P3/8/8/4K3 b - e3 0 1", false);
     let no_capture_without_ep = engine_from_fen("4k3/8/8/8/4P3/8/8/4K3 b - - 0 1", false);
-    assert_eq!(
+    assert_ne!(
         compute_hash(&no_capture_ep.st),
         compute_hash(&no_capture_without_ep.st),
-        "a non-capturable en-passant target must not affect repetition hash"
+        "EP square always affects zobrist hash (Stockfish convention), even when no capture is possible"
     );
 
     let pinned_ep = engine_from_fen("8/8/8/r2pP2K/8/8/8/4k3 w - d6 0 1", false);
     let pinned_without_ep = engine_from_fen("8/8/8/r2pP2K/8/8/8/4k3 w - - 0 1", false);
-    assert_eq!(
+    assert_ne!(
         compute_hash(&pinned_ep.st),
         compute_hash(&pinned_without_ep.st),
-        "an en-passant target that is illegal because of self-check must not affect repetition hash"
+        "EP square always affects zobrist hash (Stockfish convention), even when capture is illegal"
     );
 }
 

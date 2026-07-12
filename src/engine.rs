@@ -542,9 +542,10 @@ impl Engine {
         };
 
         self.st = next;
+        self.st.hash = compute_hash(&self.st);
         self.searcher.rep_stack.clear();
         self.searcher.rep_stack_len = 0;
-        let h = compute_hash(&self.st);
+        let h = self.st.hash;
         self.searcher.rep_stack.push(h);
         self.searcher.rep_stack_len = 1;
         Ok(())
@@ -569,7 +570,7 @@ impl Engine {
             move_ec(mv),
             move_promotion(mv),
         );
-        let h = compute_hash(&self.st);
+        let h = self.st.hash;
         self.searcher.rep_stack.push(h);
         self.searcher.rep_stack_len += 1;
         true
@@ -835,7 +836,7 @@ impl Engine {
                             self.searcher.nnue_stack[1].refresh(net, &self.st);
                         }
                     });
-                    let h = compute_hash(&self.st);
+                    let h = self.st.hash;
                     self.searcher.rep_stack.push(h);
                     self.searcher.rep_stack_len += 1;
                     let root_ext = i32::from(root_rook_invasion_score(&old, mv).is_some());

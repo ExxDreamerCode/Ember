@@ -4,6 +4,7 @@ use crate::board::{
     BP, BQ, BR, EMPTY_SQ, KING_ATTACKS, KNIGHT_ATTACKS, WB, WK, WN, WP, WQ, WR,
 };
 use crate::magic::{bishop_attacks, rook_attacks};
+use crate::zobrist::zobrist;
 
 pub use crate::board::Move;
 
@@ -152,6 +153,9 @@ fn revoke_castling_rights_for_square(st: &mut BoardState, square: usize) {
 }
 
 pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usize, promotion: u8) {
+    let z = zobrist();
+    let mut hash = st.hash;
+
     let from = sq(sr, sc);
     let to = sq(er, ec);
     let mover_pi = st.mailbox[from];
@@ -168,9 +172,16 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
         false
     };
 
+    let old_cr = st.cr;
+    let old_castling_rooks = st.castling_rooks;
+    let old_ep = st.ep;
+
+    hash ^= z.pieces[mover_pi as usize][from];
+
     if !is_chess960_castle {
         let cap_pi = st.mailbox[to];
         if cap_pi != EMPTY_SQ {
+            hash ^= z.pieces[cap_pi as usize][to];
             st.bb[cap_pi as usize] &= !bit(to);
             st.mailbox[to] = EMPTY_SQ;
         }
@@ -180,6 +191,7 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
         let cap_sq = if white { to + 8 } else { to - 8 };
         let ep_pi = st.mailbox[cap_sq];
         if ep_pi != EMPTY_SQ {
+            hash ^= z.pieces[ep_pi as usize][cap_sq];
             st.bb[ep_pi as usize] &= !bit(cap_sq);
             st.mailbox[cap_sq] = EMPTY_SQ;
         }
@@ -202,6 +214,8 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
                 let rook_from = sq(sr, rook_col);
                 let rook_to = sq(sr, rook_dst_col);
                 let king_to = sq(sr, king_dst_col);
+                hash ^= z.pieces[rook_pi][rook_from];
+                hash ^= z.pieces[rook_pi][rook_to];
                 st.bb[rook_pi] &= !bit(rook_from);
                 st.bb[rook_pi] |= bit(rook_to);
                 st.bb[mover_pi as usize] &= !bit(from);
@@ -218,6 +232,8 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
             } else {
                 (sq(sr, 0), sq(sr, 3))
             };
+            hash ^= z.pieces[rook_pi][r_from];
+            hash ^= z.pieces[rook_pi][r_to];
             st.bb[rook_pi] &= !bit(r_from);
             st.bb[rook_pi] |= bit(r_to);
             st.mailbox[r_from] = EMPTY_SQ;
@@ -232,9 +248,11 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
         if mover_type == 0 && (er == 0 || er == 7) {
             let promo_pi =
                 promotion_piece_index(white, promotion).unwrap_or(if white { WQ } else { BQ });
+            hash ^= z.pieces[promo_pi][to];
             st.bb[promo_pi] |= bit(to);
             st.mailbox[to] = promo_pi as u8;
         } else {
+            hash ^= z.pieces[mover_pi as usize][to];
             st.bb[mover_pi as usize] |= bit(to);
             st.mailbox[to] = mover_pi;
         }
@@ -273,14 +291,47 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
         }
     }
 
+    if let Some(ep_sq) = old_ep {
+        hash ^= z.ep[ep_sq];
+    }
+
     st.ep = if mover_type == 0 && er.abs_diff(sr) == 2 {
         Some(sq((sr + er) / 2, sc))
     } else {
         None
     };
 
+    if let Some(ep_sq) = st.ep {
+        hash ^= z.ep[ep_sq];
+    }
+
+    for i in 0..4 {
+        if old_cr[i] {
+            hash ^= z.castling[i];
+            if st.chess960 {
+                if let Some(rook_sq) = old_castling_rooks[i] {
+                    hash ^= z.castling_rook[i][rook_sq];
+                }
+            }
+        }
+    }
+
+    for i in 0..4 {
+        if st.cr[i] {
+            hash ^= z.castling[i];
+            if st.chess960 {
+                if let Some(rook_sq) = st.castling_rooks[i] {
+                    hash ^= z.castling_rook[i][rook_sq];
+                }
+            }
+        }
+    }
+
+    hash ^= z.side;
+
     st.w = !st.w;
     st.mc += 1;
+    st.hash = hash;
 }
 
 #[inline]

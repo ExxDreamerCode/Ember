@@ -12,7 +12,7 @@ use crate::movegen::{
 use crate::nnue::NNUEAccumulator;
 use crate::syzygy::SyzygyTables;
 use crate::tt::{SharedTT, TT_ALPHA, TT_BETA, TT_EXACT};
-use crate::zobrist::{compute_hash, compute_pawn_hash};
+use crate::zobrist::{compute_pawn_hash, zobrist};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -723,7 +723,7 @@ impl Searcher {
             }
         }
 
-        let h = compute_hash(st);
+        let h = st.hash;
         let ks = st.king_sq(st.w);
         let in_check = crate::board::is_attacked(&st.bb, ks, !st.w);
         let is_pv = beta - alpha > 1;
@@ -816,13 +816,18 @@ impl Searcher {
                 let r = 3 + actual_depth / 4 + ((eval_score - beta) / 200).min(3);
                 let ow = st.w;
                 let oe = st.ep;
-                st.w = !st.w;
+                let z = zobrist();
+                if let Some(ep_sq) = oe {
+                    st.hash ^= z.ep[ep_sq];
+                }
+                st.hash ^= z.side;
                 st.ep = None;
+                st.w = !st.w;
                 if ply + 1 < self.nnue_stack.len() {
                     let (left, right) = self.nnue_stack.split_at_mut(ply + 1);
                     right[0].clone_from(&left[ply]);
                 }
-                let null_h = compute_hash(st);
+                let null_h = st.hash;
                 self.rep_stack.push(null_h);
                 self.rep_stack_len += 1;
                 let s = -self.negamax(
@@ -838,6 +843,10 @@ impl Searcher {
                 );
                 self.rep_stack.pop();
                 self.rep_stack_len -= 1;
+                st.hash ^= z.side;
+                if let Some(ep_sq) = oe {
+                    st.hash ^= z.ep[ep_sq];
+                }
                 st.w = ow;
                 st.ep = oe;
                 if self.time_up(start, tl) {
@@ -1024,7 +1033,7 @@ impl Searcher {
                 ply,
             );
 
-            let h_after = compute_hash(st);
+            let h_after = st.hash;
             self.rep_stack.push(h_after);
             self.rep_stack_len += 1;
 
@@ -1265,11 +1274,11 @@ pub fn extract_pv_line(shared_tt: &SharedTT, st: &BoardState, first_move: Move) 
     }
 
     let mut seen_hashes = std::collections::HashSet::new();
-    seen_hashes.insert(compute_hash(st));
-    seen_hashes.insert(compute_hash(&prev_st));
+    seen_hashes.insert(st.hash);
+    seen_hashes.insert(prev_st.hash);
 
     for _ in 0..MAX_PLY.saturating_sub(1) {
-        let h = compute_hash(&prev_st);
+        let h = prev_st.hash;
         if let Some((_, _, _, Some(best))) = shared_tt.get_depth(h) {
             let moves = generate_moves(&prev_st, prev_st.w, &prev_st.cr, prev_st.ep);
             if !moves.contains(&best) {
@@ -1301,7 +1310,7 @@ pub fn extract_pv_line(shared_tt: &SharedTT, st: &BoardState, first_move: Move) 
                 pv.pop();
                 break;
             }
-            let h_after = compute_hash(&prev_st);
+            let h_after = prev_st.hash;
             if !seen_hashes.insert(h_after) {
                 pv.pop();
                 break;
@@ -1329,7 +1338,7 @@ pub fn lazy_smp_search(
     let global_best_depth: Arc<AtomicI32> = Arc::new(AtomicI32::new(0));
     let global_nodes: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
     let start = Instant::now();
-    let root_hash = compute_hash(st);
+    let root_hash = st.hash;
 
     let mut handles = Vec::with_capacity(num_threads);
 
@@ -1418,7 +1427,7 @@ pub fn lazy_smp_search(
                                     searcher.nnue_stack[1].refresh(net, &s);
                                 }
                             });
-                            let h = compute_hash(&s);
+                            let h = s.hash;
                             searcher.rep_stack.push(h);
                             searcher.rep_stack_len += 1;
 
@@ -1591,6 +1600,7 @@ mod tests {
     use super::*;
     use crate::board::encode_move;
     use crate::engine::Engine;
+    use crate::zobrist::compute_hash;
     use std::time::Duration;
 
     fn state_from_fen(fen: &str) -> BoardState {

@@ -185,6 +185,7 @@ pub struct BoardState {
     pub ep: Option<usize>,
     pub mc: usize,
     pub chess960: bool,
+    pub hash: u64,
 }
 
 impl BoardState {
@@ -198,6 +199,7 @@ impl BoardState {
             ep: None,
             mc: 0,
             chess960: false,
+            hash: 0,
         }
     }
 
