@@ -9,8 +9,16 @@ permissions:
 
 jobs:
   rust:
-    name: Rust checks
-    runs-on: ubuntu-latest
+    name: Rust checks (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            quick_nps: true
+          - runner: ubuntu-24.04-arm
+            quick_nps: false
 
     steps:
       - name: Checkout
@@ -65,6 +73,7 @@ jobs:
           --bin ember
 
       - name: Quick no-book NPS smoke benchmark
+        if: matrix.quick_nps
         run: |
           nix develop .#ci --command python3 tools/benchmark_search.py \
             --binary ember=target/release/ember \
