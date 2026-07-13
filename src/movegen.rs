@@ -1234,7 +1234,7 @@ pub fn generate_moves_into_mode<const CHESS960: bool>(
         while tmp != 0 {
             let t = tmp.trailing_zeros() as usize;
             let f = if wturn { t + 8 } else { t - 8 };
-            for promotion in [b'Q', b'R', b'B', b'N'] {
+            for promotion in *b"QRBN" {
                 try_push_promo!(f, t, promotion);
             }
             tmp &= tmp - 1;
@@ -1248,7 +1248,7 @@ pub fn generate_moves_into_mode<const CHESS960: bool>(
         while tmp != 0 {
             let t = tmp.trailing_zeros() as usize;
             let f = if wturn { t + 9 } else { t - 7 };
-            for promotion in [b'Q', b'R', b'B', b'N'] {
+            for promotion in *b"QRBN" {
                 try_push_promo!(f, t, promotion);
             }
             tmp &= tmp - 1;
@@ -1262,7 +1262,7 @@ pub fn generate_moves_into_mode<const CHESS960: bool>(
         while tmp != 0 {
             let t = tmp.trailing_zeros() as usize;
             let f = if wturn { t + 7 } else { t - 9 };
-            for promotion in [b'Q', b'R', b'B', b'N'] {
+            for promotion in *b"QRBN" {
                 try_push_promo!(f, t, promotion);
             }
             tmp &= tmp - 1;

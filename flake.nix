@@ -3,15 +3,20 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, rust-overlay }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = f:
         nixpkgs.lib.genAttrs systems (system:
           f (import nixpkgs {
             inherit system;
+            overlays = [ (import rust-overlay) ];
           }));
     in
     {
@@ -39,6 +44,8 @@
 
       devShells = forAllSystems (pkgs:
         let
+          rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+
           blunder-7-2-0 = pkgs.buildGoModule {
             pname = "blunder";
             version = "7.2.0";
@@ -63,10 +70,7 @@
             packages = with pkgs; [
               bash
               coreutils
-              cargo
-              rustc
-              clippy
-              rustfmt
+              rustToolchain
               go
               git
               gnugrep
@@ -97,10 +101,7 @@
             packages = with pkgs; [
               bash
               coreutils
-              cargo
-              rustc
-              clippy
-              rustfmt
+              rustToolchain
               python3
             ];
           };
