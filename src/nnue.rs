@@ -1137,9 +1137,15 @@ fn read_i32(r: &mut impl IoRead) -> Result<i32, String> {
 }
 
 fn read_i16s(r: &mut impl IoRead, buf: &mut [i16]) -> Result<(), String> {
-    let bytes =
-        unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, buf.len() * 2) };
-    r.read_exact(bytes).map_err(|e| format!("i16s: {}", e))?;
+    let mut bytes = vec![0u8; std::mem::size_of_val(buf)];
+    r.read_exact(&mut bytes)
+        .map_err(|e| format!("i16s: {}", e))?;
+    let (raw_values, []) = bytes.as_chunks::<2>() else {
+        unreachable!("i16 byte buffer length is always even");
+    };
+    for (value, raw) in buf.iter_mut().zip(raw_values) {
+        *value = i16::from_le_bytes([raw[0], raw[1]]);
+    }
     Ok(())
 }
 
