@@ -187,6 +187,8 @@ impl NNUENet {
     #[inline(always)]
     fn input_row_fast(&self, idx: usize) -> Option<&[i16]> {
         debug_assert!(idx < self.input_row_map.len());
+        // Safety: callers pass feature indices produced for this network's
+        // HalfKA layout, so the index is within the row map.
         let physical_row = unsafe { *self.input_row_map.get_unchecked(idx) };
         if physical_row == COMPACT_ZERO_ROW {
             return None;
@@ -194,6 +196,9 @@ impl NNUENet {
 
         let start = physical_row as usize * self.hidden_size;
         debug_assert!(start + self.hidden_size <= self.input_weights.len());
+        // Safety: non-zero physical rows are produced by
+        // `compact_input_weights`, which appends full `hidden_size` rows to
+        // `input_weights` and records only those row numbers.
         let row = unsafe {
             std::slice::from_raw_parts(self.input_weights.as_ptr().add(start), self.hidden_size)
         };
