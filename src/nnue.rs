@@ -788,10 +788,10 @@ impl NNUENet {
         let mut output = self.output_bias[bucket] as i64;
 
         if self.use_screlu {
-            output += unsafe { simd::simd_forward_base_crelu(stm, ntm, out_w, h, true) };
+            output += simd::simd_forward_base_crelu(stm, ntm, out_w, h, true);
             output /= QA as i64;
         } else {
-            output += unsafe { simd::simd_forward_base_crelu(stm, ntm, out_w, h, false) };
+            output += simd::simd_forward_base_crelu(stm, ntm, out_w, h, false);
         }
 
         let mut result = (output * EVAL_SCALE as i64 / QAB as i64) as i32;
@@ -889,24 +889,22 @@ impl NNUENet {
         pw_scale: i32,
         out: &mut [i32],
     ) {
-        unsafe {
-            simd::simd_l1_matmul(
-                sp,
-                np,
-                l1_total,
-                l1,
-                l1_off,
-                pw,
-                pw_scale,
-                &self.l1_weights,
-                &self.l1_biases,
-                out,
-            )
-        }
+        simd::simd_l1_matmul(
+            sp,
+            np,
+            l1_total,
+            l1,
+            l1_off,
+            pw,
+            pw_scale,
+            &self.l1_weights,
+            &self.l1_biases,
+            out,
+        )
     }
 
     fn screlu_activation(hidden: &[i32], pw_scale: i32, qa_l1: i32, out: &mut [f32]) {
-        unsafe { simd::simd_screlu_activation(hidden, pw_scale, qa_l1, out) }
+        simd::simd_screlu_activation(hidden, pw_scale, qa_l1, out)
     }
 
     fn forward_l2(&self, l1_out: &[f32], bucket: usize, _l1: usize) -> i32 {
@@ -924,18 +922,16 @@ impl NNUENet {
         };
 
         let ow = &self.out_weights_f[bucket * l2_pb..bucket * l2_pb + l2_pb];
-        let of = unsafe {
-            simd::simd_forward_l2(
-                l1_out,
-                &self.l2_weights_f,
-                &self.l2_biases_f,
-                l2,
-                l2_total,
-                l2_off,
-                ow,
-                self.out_bias_f[bucket],
-            )
-        };
+        let of = simd::simd_forward_l2(
+            l1_out,
+            &self.l2_weights_f,
+            &self.l2_biases_f,
+            l2,
+            l2_total,
+            l2_off,
+            ow,
+            self.out_bias_f[bucket],
+        );
         (of * EVAL_SCALE as f32) as i32
     }
 
@@ -979,12 +975,12 @@ impl NNUEAccumulator {
 
     #[inline(always)]
     fn add_row(acc: &mut [i16], row: &[i16]) {
-        unsafe { simd::simd_add_row(acc, row) }
+        simd::simd_add_row(acc, row)
     }
 
     #[inline(always)]
     fn remove_row(acc: &mut [i16], row: &[i16]) {
-        unsafe { simd::simd_sub_row(acc, row) }
+        simd::simd_sub_row(acc, row)
     }
 
     #[inline(always)]
