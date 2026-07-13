@@ -1,4 +1,5 @@
 use crate::board::BoardState;
+use crate::simd;
 use crate::types::*;
 use std::fs::File;
 use std::io::{BufReader, Read as IoRead};
@@ -7,10 +8,10 @@ pub const PSQ_INPUTS_PER_BUCKET: usize = 768;
 pub const NNUE_OUTPUT_BUCKETS: usize = 8;
 pub const MAX_HIDDEN_SIZE: usize = 2048;
 
-const QA: i32 = 255;
-const QB: i32 = 64;
-const QAB: i32 = QA * QB;
-const EVAL_SCALE: i32 = 400;
+pub(crate) const QA: i32 = 255;
+pub(crate) const QB: i32 = 64;
+pub(crate) const QAB: i32 = QA * QB;
+pub(crate) const EVAL_SCALE: i32 = 400;
 const FT_SHIFT: i32 = 9;
 const NNUE_NUM_PIECE_TYPES: usize = 12;
 const NNUE_MAGIC: u32 = 0x4E4E5545;
@@ -782,40 +783,15 @@ impl NNUENet {
         &self.output_weights[bucket * w..bucket * w + w]
     }
 
-    #[inline(always)]
-    fn crelu_i64(value: i16) -> i64 {
-        if value <= 0 {
-            0
-        } else if value >= QA as i16 {
-            QA as i64
-        } else {
-            value as i64
-        }
-    }
-
     fn forward_base(&self, stm: &[i16], ntm: &[i16], bucket: usize, out_w: &[i16]) -> i32 {
         let h = self.hidden_size;
         let mut output = self.output_bias[bucket] as i64;
 
         if self.use_screlu {
-            for i in 0..h {
-                let v = Self::crelu_i64(stm[i]);
-                output += v * v * out_w[i] as i64;
-            }
-            for i in 0..h {
-                let v = Self::crelu_i64(ntm[i]);
-                output += v * v * out_w[h + i] as i64;
-            }
+            output += unsafe { simd::simd_forward_base_crelu(stm, ntm, out_w, h, true) };
             output /= QA as i64;
         } else {
-            for i in 0..h {
-                let v = Self::crelu_i64(stm[i]);
-                output += v * out_w[i] as i64;
-            }
-            for i in 0..h {
-                let v = Self::crelu_i64(ntm[i]);
-                output += v * out_w[h + i] as i64;
-            }
+            output += unsafe { simd::simd_forward_base_crelu(stm, ntm, out_w, h, false) };
         }
 
         let mut result = (output * EVAL_SCALE as i64 / QAB as i64) as i32;
@@ -913,29 +889,16 @@ impl NNUENet {
         pw_scale: i32,
         out: &mut [i32],
     ) {
-        debug_assert!(l1 <= out.len());
-        for i in 0..l1 {
-            out[i] = self.l1_biases[l1_off + i] as i32 * pw_scale;
-        }
-        for i in 0..l1 {
-            let gi = l1_off + i;
-            for j in 0..pw {
-                out[i] += sp[j] as i32 * self.l1_weights[j * l1_total + gi] as i32;
-            }
-            for j in 0..pw {
-                out[i] += np[j] as i32 * self.l1_weights[(pw + j) * l1_total + gi] as i32;
-            }
+        unsafe {
+            simd::simd_l1_matmul(
+                sp, np, l1_total, l1, l1_off, pw, pw_scale,
+                &self.l1_weights, &self.l1_biases, out,
+            )
         }
     }
 
     fn screlu_activation(hidden: &[i32], pw_scale: i32, qa_l1: i32, out: &mut [f32]) {
-        debug_assert!(hidden.len() <= out.len());
-        let qf = qa_l1 as f32;
-        let qsq = qf * qf;
-        for i in 0..hidden.len() {
-            let v = (hidden[i] / pw_scale).clamp(0, qa_l1);
-            out[i] = (v * v) as f32 / qsq;
-        }
+        unsafe { simd::simd_screlu_activation(hidden, pw_scale, qa_l1, out) }
     }
 
     fn forward_l2(&self, l1_out: &[f32], bucket: usize, _l1: usize) -> i32 {
@@ -952,27 +915,19 @@ impl NNUENet {
             l2_total
         };
 
-        debug_assert!(l2 <= MAX_HIDDEN_SIZE);
-        let mut h2 = [0.0f32; MAX_HIDDEN_SIZE];
-        h2[..l2].copy_from_slice(&self.l2_biases_f[l2_off..l2_off + l2]);
-        for (i, &l1_value) in l1_out.iter().enumerate() {
-            if l1_value == 0.0 {
-                continue;
-            }
-            for (k, h2_value) in h2[..l2].iter_mut().enumerate() {
-                *h2_value += l1_value * self.l2_weights_f[i * l2_total + l2_off + k];
-            }
-        }
-        for h2_value in h2[..l2].iter_mut() {
-            *h2_value = h2_value.clamp(0.0, 1.0);
-            *h2_value *= *h2_value;
-        }
-
         let ow = &self.out_weights_f[bucket * l2_pb..bucket * l2_pb + l2_pb];
-        let mut of = self.out_bias_f[bucket];
-        for k in 0..l2 {
-            of += h2[k] * ow[k];
-        }
+        let of = unsafe {
+            simd::simd_forward_l2(
+                l1_out,
+                &self.l2_weights_f,
+                &self.l2_biases_f,
+                l2,
+                l2_total,
+                l2_off,
+                ow,
+                self.out_bias_f[bucket],
+            )
+        };
         (of * EVAL_SCALE as f32) as i32
     }
 
@@ -1016,46 +971,12 @@ impl NNUEAccumulator {
 
     #[inline(always)]
     fn add_row(acc: &mut [i16], row: &[i16]) {
-        let len = acc.len();
-        debug_assert_eq!(len, row.len());
-        let mut i = 0;
-        while i + 4 <= len {
-            unsafe {
-                *acc.get_unchecked_mut(i) += *row.get_unchecked(i);
-                *acc.get_unchecked_mut(i + 1) += *row.get_unchecked(i + 1);
-                *acc.get_unchecked_mut(i + 2) += *row.get_unchecked(i + 2);
-                *acc.get_unchecked_mut(i + 3) += *row.get_unchecked(i + 3);
-            }
-            i += 4;
-        }
-        while i < len {
-            unsafe {
-                *acc.get_unchecked_mut(i) += *row.get_unchecked(i);
-            }
-            i += 1;
-        }
+        unsafe { simd::simd_add_row(acc, row) }
     }
 
     #[inline(always)]
     fn remove_row(acc: &mut [i16], row: &[i16]) {
-        let len = acc.len();
-        debug_assert_eq!(len, row.len());
-        let mut i = 0;
-        while i + 4 <= len {
-            unsafe {
-                *acc.get_unchecked_mut(i) -= *row.get_unchecked(i);
-                *acc.get_unchecked_mut(i + 1) -= *row.get_unchecked(i + 1);
-                *acc.get_unchecked_mut(i + 2) -= *row.get_unchecked(i + 2);
-                *acc.get_unchecked_mut(i + 3) -= *row.get_unchecked(i + 3);
-            }
-            i += 4;
-        }
-        while i < len {
-            unsafe {
-                *acc.get_unchecked_mut(i) -= *row.get_unchecked(i);
-            }
-            i += 1;
-        }
+        unsafe { simd::simd_sub_row(acc, row) }
     }
 
     #[inline(always)]
