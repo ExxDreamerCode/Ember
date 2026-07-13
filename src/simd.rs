@@ -1,4 +1,5 @@
 #![allow(clippy::missing_safety_doc)]
+
 const QA: i32 = 255;
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
@@ -28,21 +29,6 @@ mod platform {
     #[inline(always)]
     pub unsafe fn sub_i16(a: __m256i, b: __m256i) -> __m256i {
         _mm256_sub_epi16(a, b)
-    }
-
-    #[inline(always)]
-    pub unsafe fn splat_i16(v: i16) -> __m256i {
-        _mm256_set1_epi16(v)
-    }
-
-    #[inline(always)]
-    pub unsafe fn min_i16(a: __m256i, b: __m256i) -> __m256i {
-        _mm256_min_epi16(a, b)
-    }
-
-    #[inline(always)]
-    pub unsafe fn max_i16(a: __m256i, b: __m256i) -> __m256i {
-        _mm256_max_epi16(a, b)
     }
 
     #[inline(always)]
@@ -78,31 +64,18 @@ mod platform {
     }
 
     #[inline(always)]
+    pub unsafe fn load_i16_i32(ptr: *const i16) -> __m256i {
+        _mm256_cvtepi16_epi32(_mm_loadu_si128(ptr as *const __m128i))
+    }
+
+    #[inline(always)]
+    pub unsafe fn mul_i32(a: __m256i, b: __m256i) -> __m256i {
+        _mm256_mullo_epi32(a, b)
+    }
+
+    #[inline(always)]
     pub unsafe fn zero_i32() -> __m256i {
         _mm256_setzero_si256()
-    }
-
-    #[inline(always)]
-    pub unsafe fn convert_u8_i16_low(a: __m128i) -> __m256i {
-        _mm256_cvtepu8_epi16(a)
-    }
-
-    #[inline(always)]
-    pub unsafe fn convert_u8_i16_high(a: __m128i) -> __m256i {
-        _mm256_cvtepu8_epi16(_mm_srli_si128::<8>(a))
-    }
-
-    #[inline(always)]
-    pub unsafe fn load_u8_widen_i16(ptr: *const u8) -> (__m256i, __m256i) {
-        let bytes = _mm_loadu_si128(ptr as *const __m128i);
-        let lo = _mm256_cvtepu8_epi16(bytes);
-        let hi = _mm256_cvtepu8_epi16(_mm_srli_si128::<8>(bytes));
-        (lo, hi)
-    }
-
-    #[inline(always)]
-    pub unsafe fn zero_f32() -> __m256 {
-        _mm256_setzero_ps()
     }
 
     #[inline(always)]
@@ -121,28 +94,18 @@ mod platform {
     }
 
     #[inline(always)]
-    pub unsafe fn add_f32(a: __m256, b: __m256) -> __m256 {
-        _mm256_add_ps(a, b)
-    }
-
-    #[inline(always)]
     pub unsafe fn mul_f32(a: __m256, b: __m256) -> __m256 {
         _mm256_mul_ps(a, b)
     }
 
     #[inline(always)]
     pub unsafe fn mul_add_f32(a: __m256, b: __m256, c: __m256) -> __m256 {
-        _mm256_fmadd_ps(a, b, c)
+        _mm256_add_ps(_mm256_mul_ps(a, b), c)
     }
 
     #[inline(always)]
     pub unsafe fn clamp_f32(x: __m256, min: __m256, max: __m256) -> __m256 {
         _mm256_max_ps(_mm256_min_ps(x, max), min)
-    }
-
-    #[inline(always)]
-    pub unsafe fn convert_i32_f32(a: __m256i) -> __m256 {
-        _mm256_cvtepi32_ps(a)
     }
 
     #[inline(always)]
@@ -199,23 +162,8 @@ mod platform {
     }
 
     #[inline(always)]
-    pub unsafe fn splat_i16(v: i16) -> i16 {
-        v
-    }
-
-    #[inline(always)]
-    pub unsafe fn min_i16(a: i16, b: i16) -> i16 {
-        a.min(b)
-    }
-
-    #[inline(always)]
-    pub unsafe fn max_i16(a: i16, b: i16) -> i16 {
-        a.max(b)
-    }
-
-    #[inline(always)]
     pub unsafe fn clamp_crelu_i16(v: i16) -> i16 {
-        v.max(0).min(QA as i16)
+        v.clamp(0, QA as i16)
     }
 
     #[inline(always)]
@@ -244,28 +192,18 @@ mod platform {
     }
 
     #[inline(always)]
+    pub unsafe fn load_i16_i32(ptr: *const i16) -> i32 {
+        *ptr as i32
+    }
+
+    #[inline(always)]
+    pub unsafe fn mul_i32(a: i32, b: i32) -> i32 {
+        a * b
+    }
+
+    #[inline(always)]
     pub unsafe fn zero_i32() -> i32 {
         0
-    }
-
-    #[inline(always)]
-    pub unsafe fn convert_u8_i16_low(a: u8) -> i16 {
-        a as i16
-    }
-
-    #[inline(always)]
-    pub unsafe fn convert_u8_i16_high(a: u8) -> i16 {
-        a as i16
-    }
-
-    #[inline(always)]
-    pub unsafe fn load_u8_widen_i16(ptr: *const u8) -> (i16, i16) {
-        (*ptr as i16, *ptr.add(1) as i16)
-    }
-
-    #[inline(always)]
-    pub unsafe fn zero_f32() -> f32 {
-        0.0
     }
 
     #[inline(always)]
@@ -284,28 +222,18 @@ mod platform {
     }
 
     #[inline(always)]
-    pub unsafe fn add_f32(a: f32, b: f32) -> f32 {
-        a + b
-    }
-
-    #[inline(always)]
     pub unsafe fn mul_f32(a: f32, b: f32) -> f32 {
         a * b
     }
 
     #[inline(always)]
     pub unsafe fn mul_add_f32(a: f32, b: f32, c: f32) -> f32 {
-        a.mul_add(b, c)
+        a * b + c
     }
 
     #[inline(always)]
     pub unsafe fn clamp_f32(x: f32, min: f32, max: f32) -> f32 {
         x.max(min).min(max)
-    }
-
-    #[inline(always)]
-    pub unsafe fn convert_i32_f32(a: i32) -> f32 {
-        a as f32
     }
 
     #[inline(always)]
@@ -371,11 +299,11 @@ pub unsafe fn simd_forward_base_crelu(
 
     if use_screlu {
         for j in 0..h {
-            let v = stm[j].max(0).min(QA as i16) as i64;
+            let v = stm[j].clamp(0, QA as i16) as i64;
             sum += v * v * out_w[j] as i64;
         }
         for j in 0..h {
-            let v = ntm[j].max(0).min(QA as i16) as i64;
+            let v = ntm[j].clamp(0, QA as i16) as i64;
             sum += v * v * out_w[h + j] as i64;
         }
         sum
@@ -423,7 +351,7 @@ pub unsafe fn simd_l1_matmul(
     l1_biases: &[i16],
     out: &mut [i32],
 ) {
-    let lanes = I16_LANES;
+    let lanes = I32_LANES;
 
     for i in 0..l1 {
         *out.get_unchecked_mut(i) = *l1_biases.get_unchecked(l1_off + i) as i32 * pw_scale;
@@ -438,14 +366,14 @@ pub unsafe fn simd_l1_matmul(
             let sp_j = *sp.get_unchecked(j) as i32;
             let np_j = *np.get_unchecked(j) as i32;
 
-            let sw = load_i16(l1_weights.as_ptr().add(j * l1_total + l1_off + i));
-            let nw = load_i16(l1_weights.as_ptr().add((pw + j) * l1_total + l1_off + i));
+            let sw = load_i16_i32(l1_weights.as_ptr().add(j * l1_total + l1_off + i));
+            let nw = load_i16_i32(l1_weights.as_ptr().add((pw + j) * l1_total + l1_off + i));
 
-            let sp_splat = splat_i16(sp_j as i16);
-            let np_splat = splat_i16(np_j as i16);
+            let sp_splat = splat_i32(sp_j);
+            let np_splat = splat_i32(np_j);
 
-            let s_prod = madd_i16(sp_splat, sw);
-            let n_prod = madd_i16(np_splat, nw);
+            let s_prod = mul_i32(sp_splat, sw);
+            let n_prod = mul_i32(np_splat, nw);
 
             s_acc = add_i32(s_acc, s_prod);
             n_acc = add_i32(n_acc, n_prod);
@@ -479,31 +407,12 @@ pub unsafe fn simd_l1_matmul(
 pub unsafe fn simd_screlu_activation(hidden: &[i32], pw_scale: i32, qa_l1: i32, out: &mut [f32]) {
     let len = hidden.len();
     debug_assert!(len <= out.len());
-    let lanes = F32_LANES;
-    let mut i = 0;
-
     let qf = qa_l1 as f32;
     let qsq = qf * qf;
-    let inv_qsq = splat_f32(1.0 / qsq);
-    let zero = splat_f32(0.0);
-    let qa_f = splat_f32(qf);
 
-    while i + lanes <= len {
-        let h = load_i32(hidden.as_ptr().add(i));
-        let h_f = convert_i32_f32(h);
-
-        let v = mul_f32(h_f, splat_f32(1.0 / pw_scale as f32));
-        let clamped = clamp_f32(v, zero, qa_f);
-        let result = mul_f32(mul_f32(clamped, clamped), inv_qsq);
-
-        store_f32(out.as_mut_ptr().add(i), result);
-        i += lanes;
-    }
-
-    while i < len {
+    for i in 0..len {
         let v = (*hidden.get_unchecked(i) / pw_scale).clamp(0, qa_l1);
         *out.get_unchecked_mut(i) = (v * v) as f32 / qsq;
-        i += 1;
     }
 }
 
@@ -578,4 +487,96 @@ pub unsafe fn simd_forward_l2(
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn l1_matmul_matches_scalar_reference() {
+        let pw = 7usize;
+        let l1_total = 32usize;
+        let l1_off = 5usize;
+        let l1 = 19usize;
+        let pw_scale = (QA * QA) >> 9;
+
+        let sp: Vec<u8> = (0..pw).map(|i| (3 + i * 17) as u8).collect();
+        let np: Vec<u8> = (0..pw).map(|i| (5 + i * 19) as u8).collect();
+        let weights: Vec<i16> = (0..2 * pw * l1_total)
+            .map(|i| ((i as i32 * 37 % 257) - 128) as i16)
+            .collect();
+        let biases: Vec<i16> = (0..l1_off + l1)
+            .map(|i| ((i as i32 * 11 % 53) - 26) as i16)
+            .collect();
+
+        let mut actual = vec![0i32; l1];
+        unsafe {
+            simd_l1_matmul(
+                &sp,
+                &np,
+                l1_total,
+                l1,
+                l1_off,
+                pw,
+                pw_scale,
+                &weights,
+                &biases,
+                &mut actual,
+            );
+        }
+
+        let mut expected = vec![0i32; l1];
+        for (i, value) in expected.iter_mut().enumerate().take(l1) {
+            let gi = l1_off + i;
+            *value = biases[gi] as i32 * pw_scale;
+            for j in 0..pw {
+                *value += sp[j] as i32 * weights[j * l1_total + gi] as i32;
+                *value += np[j] as i32 * weights[(pw + j) * l1_total + gi] as i32;
+            }
+        }
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn screlu_activation_matches_scalar_integer_reference() {
+        let pw_scale = (QA * QA) >> 9;
+        let qa_l1 = 255;
+        let hidden = vec![
+            -500,
+            -1,
+            0,
+            1,
+            pw_scale - 1,
+            pw_scale,
+            pw_scale + 1,
+            2 * pw_scale - 1,
+            2 * pw_scale,
+            2 * pw_scale + 1,
+            qa_l1 * pw_scale - 1,
+            qa_l1 * pw_scale,
+            qa_l1 * pw_scale + 1,
+            (qa_l1 + 3) * pw_scale,
+            12345,
+            23456,
+            34567,
+        ];
+
+        let mut actual = vec![0.0f32; hidden.len()];
+        unsafe {
+            simd_screlu_activation(&hidden, pw_scale, qa_l1, &mut actual);
+        }
+
+        let qsq = (qa_l1 as f32) * (qa_l1 as f32);
+        let expected: Vec<f32> = hidden
+            .iter()
+            .map(|value| {
+                let v = (*value / pw_scale).clamp(0, qa_l1);
+                (v * v) as f32 / qsq
+            })
+            .collect();
+
+        assert_eq!(actual, expected);
+    }
 }

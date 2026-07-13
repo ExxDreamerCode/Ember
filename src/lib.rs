@@ -15,7 +15,7 @@ pub mod opening_book;
 
 pub mod bitboard;
 pub mod nnue;
-pub mod simd;
+mod simd;
 pub mod syzygy;
 pub mod types;
 
