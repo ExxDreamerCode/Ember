@@ -642,6 +642,7 @@ impl Engine {
     }
 
     pub fn find_best_move(&mut self, time_limit: f64, depth_limit: i32) -> (String, i32, u64, f64) {
+        self.searcher.refresh_nnue_net();
         let moves = generate_moves(&self.st, self.st.w, &self.st.cr, self.st.ep);
         #[cfg(feature = "decision-trace")]
         let root_fen = board_to_fen(&self.st);
@@ -831,11 +832,7 @@ impl Engine {
                         move_ec(mv),
                         move_promotion(mv),
                     );
-                    crate::evaluate::with_nnue_net(|net| {
-                        if !self.searcher.nnue_stack.is_empty() {
-                            self.searcher.nnue_stack[1].refresh(net, &self.st);
-                        }
-                    });
+                    self.searcher.refresh_nnue_stack_at(1, &self.st);
                     let h = self.st.hash;
                     self.searcher.rep_stack.push(h);
                     self.searcher.rep_stack_len += 1;
