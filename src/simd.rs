@@ -14,6 +14,8 @@ type I32x = Simd<i32, I32_LANES>;
 type F32x = Simd<f32, F32_LANES>;
 
 #[inline(always)]
+// Safety: `offset + I16_LANES` must be within `slice`. The load is
+// unaligned and copies initialized `i16` values without taking references.
 unsafe fn load_i16(slice: &[i16], offset: usize) -> I16x {
     debug_assert!(offset + I16_LANES <= slice.len());
     let ptr = unsafe { slice.as_ptr().add(offset) as *const [i16; I16_LANES] };
@@ -21,6 +23,8 @@ unsafe fn load_i16(slice: &[i16], offset: usize) -> I16x {
 }
 
 #[inline(always)]
+// Safety: `offset + I16_LANES` must be within `slice`. The store is
+// unaligned and overwrites exactly those initialized `i16` elements.
 unsafe fn store_i16(slice: &mut [i16], offset: usize, value: I16x) {
     debug_assert!(offset + I16_LANES <= slice.len());
     let ptr = unsafe { slice.as_mut_ptr().add(offset) as *mut [i16; I16_LANES] };
@@ -28,6 +32,8 @@ unsafe fn store_i16(slice: &mut [i16], offset: usize, value: I16x) {
 }
 
 #[inline(always)]
+// Safety: `offset + I32_LANES` must be within `slice`. The load is
+// unaligned and copies initialized `i32` values without taking references.
 unsafe fn load_i32(slice: &[i32], offset: usize) -> I32x {
     debug_assert!(offset + I32_LANES <= slice.len());
     let ptr = unsafe { slice.as_ptr().add(offset) as *const [i32; I32_LANES] };
@@ -35,6 +41,8 @@ unsafe fn load_i32(slice: &[i32], offset: usize) -> I32x {
 }
 
 #[inline(always)]
+// Safety: `offset + I32_LANES` must be within `slice`. The store is
+// unaligned and overwrites exactly those initialized `i32` elements.
 unsafe fn store_i32(slice: &mut [i32], offset: usize, value: I32x) {
     debug_assert!(offset + I32_LANES <= slice.len());
     let ptr = unsafe { slice.as_mut_ptr().add(offset) as *mut [i32; I32_LANES] };
@@ -42,6 +50,8 @@ unsafe fn store_i32(slice: &mut [i32], offset: usize, value: I32x) {
 }
 
 #[inline(always)]
+// Safety: `offset + I32_LANES` must be within `slice`. The load is
+// unaligned and copies initialized `i16` values before widening to `i32`.
 unsafe fn load_i16_i32(slice: &[i16], offset: usize) -> I32x {
     debug_assert!(offset + I32_LANES <= slice.len());
     let ptr = unsafe { slice.as_ptr().add(offset) as *const [i16; I32_LANES] };
@@ -49,6 +59,8 @@ unsafe fn load_i16_i32(slice: &[i16], offset: usize) -> I32x {
 }
 
 #[inline(always)]
+// Safety: `offset + F32_LANES` must be within `slice`. The load is
+// unaligned and copies initialized `f32` values without taking references.
 unsafe fn load_f32(slice: &[f32], offset: usize) -> F32x {
     debug_assert!(offset + F32_LANES <= slice.len());
     let ptr = unsafe { slice.as_ptr().add(offset) as *const [f32; F32_LANES] };
@@ -56,6 +68,8 @@ unsafe fn load_f32(slice: &[f32], offset: usize) -> F32x {
 }
 
 #[inline(always)]
+// Safety: `offset + F32_LANES` must be within `slice`. The store is
+// unaligned and overwrites exactly those initialized `f32` elements.
 unsafe fn store_f32(slice: &mut [f32], offset: usize, value: F32x) {
     debug_assert!(offset + F32_LANES <= slice.len());
     let ptr = unsafe { slice.as_mut_ptr().add(offset) as *mut [f32; F32_LANES] };
