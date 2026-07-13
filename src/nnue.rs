@@ -861,28 +861,44 @@ impl NNUENet {
             l1_total
         };
 
-        let sp = Self::pairwise_pack(stm, pw);
-        let np = Self::pairwise_pack(ntm, pw);
+        debug_assert!(pw <= MAX_HIDDEN_SIZE / 2);
+        debug_assert!(l1 <= MAX_HIDDEN_SIZE);
+
+        let mut sp = [0u8; MAX_HIDDEN_SIZE / 2];
+        let mut np = [0u8; MAX_HIDDEN_SIZE / 2];
+        Self::pairwise_pack(stm, pw, &mut sp[..pw]);
+        Self::pairwise_pack(ntm, pw, &mut np[..pw]);
 
         let pw_scale = (QA * QA) >> FT_SHIFT;
-        let hidden32 = self.l1_matmul(&sp, &np, l1_total, l1, l1_off, pw, pw_scale);
-        let l1_out = Self::screlu_activation(&hidden32, pw_scale, qa_l1);
+        let mut hidden32 = [0i32; MAX_HIDDEN_SIZE];
+        self.l1_matmul(
+            &sp[..pw],
+            &np[..pw],
+            l1_total,
+            l1,
+            l1_off,
+            pw,
+            pw_scale,
+            &mut hidden32[..l1],
+        );
+
+        let mut l1_out = [0.0f32; MAX_HIDDEN_SIZE];
+        Self::screlu_activation(&hidden32[..l1], pw_scale, qa_l1, &mut l1_out[..l1]);
 
         if self.l2_per_bucket > 0 {
-            self.forward_l2(l1_out, bucket, l1)
+            self.forward_l2(&l1_out[..l1], bucket, l1)
         } else {
-            self.forward_l1_output(l1_out, bucket, l1)
+            self.forward_l1_output(&l1_out[..l1], bucket, l1)
         }
     }
 
-    fn pairwise_pack(input: &[i16], pw: usize) -> Vec<u8> {
-        let mut result = vec![0u8; pw];
+    fn pairwise_pack(input: &[i16], pw: usize, out: &mut [u8]) {
+        debug_assert!(pw <= out.len());
         for i in 0..pw {
             let a = (input[i] as i32).clamp(0, QA);
             let b = (input[i + pw] as i32).clamp(0, QA);
-            result[i] = ((a * b) >> FT_SHIFT) as u8;
+            out[i] = ((a * b) >> FT_SHIFT) as u8;
         }
-        result
     }
 
     #[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
@@ -895,35 +911,34 @@ impl NNUENet {
         l1_off: usize,
         pw: usize,
         pw_scale: i32,
-    ) -> Vec<i32> {
-        let mut hidden32 = vec![0i32; l1];
+        out: &mut [i32],
+    ) {
+        debug_assert!(l1 <= out.len());
         for i in 0..l1 {
-            hidden32[i] = self.l1_biases[l1_off + i] as i32 * pw_scale;
+            out[i] = self.l1_biases[l1_off + i] as i32 * pw_scale;
         }
         for i in 0..l1 {
             let gi = l1_off + i;
             for j in 0..pw {
-                hidden32[i] += sp[j] as i32 * self.l1_weights[j * l1_total + gi] as i32;
+                out[i] += sp[j] as i32 * self.l1_weights[j * l1_total + gi] as i32;
             }
             for j in 0..pw {
-                hidden32[i] += np[j] as i32 * self.l1_weights[(pw + j) * l1_total + gi] as i32;
+                out[i] += np[j] as i32 * self.l1_weights[(pw + j) * l1_total + gi] as i32;
             }
         }
-        hidden32
     }
 
-    fn screlu_activation(hidden: &[i32], pw_scale: i32, qa_l1: i32) -> Vec<f32> {
+    fn screlu_activation(hidden: &[i32], pw_scale: i32, qa_l1: i32, out: &mut [f32]) {
+        debug_assert!(hidden.len() <= out.len());
         let qf = qa_l1 as f32;
         let qsq = qf * qf;
-        let mut out = vec![0.0f32; hidden.len()];
         for i in 0..hidden.len() {
             let v = (hidden[i] / pw_scale).clamp(0, qa_l1);
             out[i] = (v * v) as f32 / qsq;
         }
-        out
     }
 
-    fn forward_l2(&self, l1_out: Vec<f32>, bucket: usize, _l1: usize) -> i32 {
+    fn forward_l2(&self, l1_out: &[f32], bucket: usize, _l1: usize) -> i32 {
         let l2_pb = self.l2_per_bucket;
         let l2_total = self.l2_size;
         let l2_off = if self.bucketed_hidden {
@@ -937,17 +952,18 @@ impl NNUENet {
             l2_total
         };
 
-        let mut h2 = vec![0.0f32; l2];
-        h2.copy_from_slice(&self.l2_biases_f[l2_off..l2_off + l2]);
+        debug_assert!(l2 <= MAX_HIDDEN_SIZE);
+        let mut h2 = [0.0f32; MAX_HIDDEN_SIZE];
+        h2[..l2].copy_from_slice(&self.l2_biases_f[l2_off..l2_off + l2]);
         for (i, &l1_value) in l1_out.iter().enumerate() {
             if l1_value == 0.0 {
                 continue;
             }
-            for (k, h2_value) in h2.iter_mut().enumerate().take(l2) {
+            for (k, h2_value) in h2[..l2].iter_mut().enumerate() {
                 *h2_value += l1_value * self.l2_weights_f[i * l2_total + l2_off + k];
             }
         }
-        for h2_value in h2.iter_mut().take(l2) {
+        for h2_value in h2[..l2].iter_mut() {
             *h2_value = h2_value.clamp(0.0, 1.0);
             *h2_value *= *h2_value;
         }
@@ -960,7 +976,7 @@ impl NNUENet {
         (of * EVAL_SCALE as f32) as i32
     }
 
-    fn forward_l1_output(&self, l1_out: Vec<f32>, bucket: usize, l1: usize) -> i32 {
+    fn forward_l1_output(&self, l1_out: &[f32], bucket: usize, l1: usize) -> i32 {
         let l1_pb = self.l1_per_bucket;
         let ow = &self.out_weights_f[bucket * l1_pb..bucket * l1_pb + l1_pb];
         let mut of = self.out_bias_f[bucket];

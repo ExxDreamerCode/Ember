@@ -1305,6 +1305,7 @@ mod tests {
         piece_on,
     };
     use crate::engine::Engine;
+    use crate::zobrist::compute_hash;
     use std::collections::BTreeSet;
 
     fn state_from_fen(fen: &str) -> BoardState {
@@ -1317,6 +1318,7 @@ mod tests {
         let mut engine = Engine::new();
         engine.set_fen(fen);
         engine.st.chess960 = true;
+        engine.st.hash = compute_hash(&engine.st);
         engine.st
     }
 
@@ -1461,6 +1463,11 @@ mod tests {
     }
 
     fn perft(st: &BoardState, depth: u32) -> u64 {
+        debug_assert_eq!(
+            st.hash,
+            compute_hash(st),
+            "incremental hash diverged from compute_hash at depth {depth}"
+        );
         if depth == 0 {
             return 1;
         }
@@ -1479,9 +1486,41 @@ mod tests {
                 move_ec(mv),
                 move_promotion(mv),
             );
+            debug_assert_eq!(
+                next.hash,
+                compute_hash(&next),
+                "incremental hash diverged from compute_hash after {}{}{}{}",
+                move_sr(mv),
+                move_sc(mv),
+                move_er(mv),
+                move_ec(mv)
+            );
             nodes += perft(&next, depth - 1);
         }
         nodes
+    }
+
+    #[test]
+    fn incremental_hash_matches_recompute_on_special_move_positions() {
+        let positions = [
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+            "4k3/8/8/r2pP2K/8/8/8/8 w - d6 0 1",
+        ];
+
+        for fen in positions {
+            let st = state_from_fen(fen);
+            assert_eq!(st.hash, compute_hash(&st), "bad initial hash for {fen}");
+            perft(&st, 4);
+        }
+
+        let st960 = state_from_fen("r3k2r/8/8/8/8/8/8/R3K2R w AHah - 0 1");
+        assert!(
+            st960.chess960,
+            "Shredder-FEN castling should auto-enable chess960"
+        );
+        assert_eq!(st960.hash, compute_hash(&st960));
+        perft(&st960, 4);
     }
 
     #[test]
