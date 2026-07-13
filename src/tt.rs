@@ -47,9 +47,7 @@ impl TT {
     }
     pub fn get(&self, key: u64) -> Option<&TTEntry> {
         let idx = self.idx(key);
-        self.entries[idx]
-            .as_ref()
-            .and_then(|e| if e.key == key { Some(e) } else { None })
+        self.entries[idx].as_ref().filter(|e| e.key == key)
     }
     pub fn resize(&mut self, mb: usize) {
         let size = (mb * 1024 * 1024 / 40).next_power_of_two();

@@ -1,3 +1,5 @@
+#![feature(portable_simd)]
+
 pub mod board;
 pub mod book;
 pub mod engine;
@@ -15,7 +17,7 @@ pub mod opening_book;
 
 pub mod bitboard;
 pub mod nnue;
-pub mod simd;
+mod simd;
 pub mod syzygy;
 pub mod types;
 

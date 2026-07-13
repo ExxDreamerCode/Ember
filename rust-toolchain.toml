@@ -1,0 +1,5 @@
+[toolchain]
+channel = "nightly-2026-07-07"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
+targets = ["aarch64-unknown-linux-gnu"]
