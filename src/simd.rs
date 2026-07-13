@@ -1,9 +1,10 @@
+#![allow(clippy::missing_safety_doc)]
 const QA: i32 = 255;
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 mod platform {
-    use std::arch::x86_64::*;
     use super::QA;
+    use std::arch::x86_64::*;
 
     pub const I16_LANES: usize = 16;
     pub const I32_LANES: usize = 8;
@@ -398,9 +399,9 @@ pub unsafe fn simd_forward_base_crelu(
         }
 
         while i < h {
-            let v = (*stm.get_unchecked(i) as i32).max(0).min(QA) as i64;
+            let v = (*stm.get_unchecked(i) as i32).clamp(0, QA) as i64;
             sum += v * *out_w.get_unchecked(i) as i64;
-            let v = (*ntm.get_unchecked(i) as i32).max(0).min(QA) as i64;
+            let v = (*ntm.get_unchecked(i) as i32).clamp(0, QA) as i64;
             sum += v * *out_w.get_unchecked(h + i) as i64;
             i += 1;
         }
@@ -409,6 +410,7 @@ pub unsafe fn simd_forward_base_crelu(
 }
 
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 pub unsafe fn simd_l1_matmul(
     sp: &[u8],
     np: &[u8],
@@ -450,7 +452,10 @@ pub unsafe fn simd_l1_matmul(
         }
 
         let existing = load_i32(out.as_ptr().add(i));
-        store_i32(out.as_mut_ptr().add(i), add_i32(existing, add_i32(s_acc, n_acc)));
+        store_i32(
+            out.as_mut_ptr().add(i),
+            add_i32(existing, add_i32(s_acc, n_acc)),
+        );
 
         i += lanes;
     }
@@ -460,8 +465,10 @@ pub unsafe fn simd_l1_matmul(
         let mut s_sum = 0i32;
         let mut n_sum = 0i32;
         for j in 0..pw {
-            s_sum += *sp.get_unchecked(j) as i32 * *l1_weights.get_unchecked(j * l1_total + gi) as i32;
-            n_sum += *np.get_unchecked(j) as i32 * *l1_weights.get_unchecked((pw + j) * l1_total + gi) as i32;
+            s_sum +=
+                *sp.get_unchecked(j) as i32 * *l1_weights.get_unchecked(j * l1_total + gi) as i32;
+            n_sum += *np.get_unchecked(j) as i32
+                * *l1_weights.get_unchecked((pw + j) * l1_total + gi) as i32;
         }
         *out.get_unchecked_mut(i) += s_sum + n_sum;
         i += 1;
@@ -501,6 +508,7 @@ pub unsafe fn simd_screlu_activation(hidden: &[i32], pw_scale: i32, qa_l1: i32, 
 }
 
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 pub unsafe fn simd_forward_l2(
     l1_out: &[f32],
     l2_weights: &[f32],

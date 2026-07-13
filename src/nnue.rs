@@ -891,8 +891,16 @@ impl NNUENet {
     ) {
         unsafe {
             simd::simd_l1_matmul(
-                sp, np, l1_total, l1, l1_off, pw, pw_scale,
-                &self.l1_weights, &self.l1_biases, out,
+                sp,
+                np,
+                l1_total,
+                l1,
+                l1_off,
+                pw,
+                pw_scale,
+                &self.l1_weights,
+                &self.l1_biases,
+                out,
             )
         }
     }
