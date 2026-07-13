@@ -127,9 +127,9 @@ fn compute_pins(
     (pinned, pin_mask)
 }
 
-#[inline]
-pub fn is_chess960_castling_move(st: &BoardState, mv: Move) -> bool {
-    if !st.chess960 {
+#[inline(always)]
+pub fn is_chess960_castling_move_mode<const CHESS960: bool>(st: &BoardState, mv: Move) -> bool {
+    if !CHESS960 {
         return false;
     }
     let from = move_from(mv);
@@ -143,6 +143,11 @@ pub fn is_chess960_castling_move(st: &BoardState, mv: Move) -> bool {
         && is_white_piece(mover_pi) == is_white_piece(target_pi)
 }
 
+#[inline]
+pub fn is_chess960_castling_move(st: &BoardState, mv: Move) -> bool {
+    st.chess960 && is_chess960_castling_move_mode::<true>(st, mv)
+}
+
 fn revoke_castling_rights_for_square(st: &mut BoardState, square: usize) {
     for idx in 0..4 {
         if st.cr[idx] && st.castling_rooks[idx] == Some(square) {
@@ -153,6 +158,21 @@ fn revoke_castling_rights_for_square(st: &mut BoardState, square: usize) {
 }
 
 pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usize, promotion: u8) {
+    if st.chess960 {
+        apply_move_mode::<true>(st, sr, sc, er, ec, promotion);
+    } else {
+        apply_move_mode::<false>(st, sr, sc, er, ec, promotion);
+    }
+}
+
+pub fn apply_move_mode<const CHESS960: bool>(
+    st: &mut BoardState,
+    sr: usize,
+    sc: usize,
+    er: usize,
+    ec: usize,
+    promotion: u8,
+) {
     let z = zobrist();
     let mut hash = st.hash;
 
@@ -165,7 +185,7 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
     let mover_type = piece_type(mover_pi);
     let white = is_white_piece(mover_pi);
 
-    let is_chess960_castle = if mover_type == 5 && st.chess960 {
+    let is_chess960_castle = if mover_type == 5 && CHESS960 {
         let target_pi = st.mailbox[to];
         target_pi != EMPTY_SQ && piece_type(target_pi) == 3 && is_white_piece(target_pi) == white
     } else {
@@ -198,7 +218,7 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
     }
 
     if mover_type == 5 {
-        if st.chess960 {
+        if CHESS960 {
             let target_pi = st.mailbox[to];
             if target_pi != EMPTY_SQ
                 && piece_type(target_pi) == 3
@@ -273,7 +293,7 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
     }
     revoke_castling_rights_for_square(st, from);
     revoke_castling_rights_for_square(st, to);
-    if !st.chess960 {
+    if !CHESS960 {
         if from == sq(7, 7) || to == sq(7, 7) {
             st.cr[0] = false;
             st.castling_rooks[0] = None;
@@ -305,7 +325,7 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
     for i in 0..4 {
         if old_cr[i] {
             hash ^= z.castling[i];
-            if st.chess960 {
+            if CHESS960 {
                 if let Some(rook_sq) = old_castling_rooks[i] {
                     hash ^= z.castling_rook[i][rook_sq];
                 }
@@ -316,7 +336,7 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
     for i in 0..4 {
         if st.cr[i] {
             hash ^= z.castling[i];
-            if st.chess960 {
+            if CHESS960 {
                 if let Some(rook_sq) = st.castling_rooks[i] {
                     hash ^= z.castling_rook[i][rook_sq];
                 }
@@ -334,9 +354,9 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
     st.hash = hash;
 }
 
-#[inline]
-fn is_standard_castling_move(st: &BoardState, mv: Move) -> bool {
-    if st.chess960 {
+#[inline(always)]
+fn is_standard_castling_move_mode<const CHESS960: bool>(st: &BoardState, mv: Move) -> bool {
+    if CHESS960 {
         return false;
     }
     let from = move_from(mv);
@@ -575,6 +595,14 @@ fn try_chess960_castle(
 }
 
 pub fn try_apply_move(st: &mut BoardState, mv: Move) -> bool {
+    if st.chess960 {
+        try_apply_move_mode::<true>(st, mv)
+    } else {
+        try_apply_move_mode::<false>(st, mv)
+    }
+}
+
+pub fn try_apply_move_mode<const CHESS960: bool>(st: &mut BoardState, mv: Move) -> bool {
     let from = move_from(mv);
     let to = move_to(mv);
     let mover_pi = st.mailbox[from];
@@ -584,8 +612,8 @@ pub fn try_apply_move(st: &mut BoardState, mv: Move) -> bool {
 
     let mover_white = is_white_piece(mover_pi);
     let target_pi = st.mailbox[to];
-    let is_chess960_castle = is_chess960_castling_move(st, mv);
-    let is_standard_castle = is_standard_castling_move(st, mv);
+    let is_chess960_castle = is_chess960_castling_move_mode::<CHESS960>(st, mv);
+    let is_standard_castle = is_standard_castling_move_mode::<CHESS960>(st, mv);
 
     if target_pi != EMPTY_SQ {
         if is_white_piece(target_pi) == mover_white {
@@ -616,7 +644,7 @@ pub fn try_apply_move(st: &mut BoardState, mv: Move) -> bool {
     }
 
     let before = *st;
-    apply_move(
+    apply_move_mode::<CHESS960>(
         st,
         sq_r(from),
         sq_c(from),
@@ -657,7 +685,21 @@ pub fn generate_pseudo_moves_into(
     ep: Option<usize>,
     out: &mut Vec<Move>,
 ) {
-    generate_pseudo_moves_into_impl(st, wturn, cr, ep, out, false);
+    if st.chess960 {
+        generate_pseudo_moves_into_mode::<true>(st, wturn, cr, ep, out);
+    } else {
+        generate_pseudo_moves_into_mode::<false>(st, wturn, cr, ep, out);
+    }
+}
+
+pub fn generate_pseudo_moves_into_mode<const CHESS960: bool>(
+    st: &BoardState,
+    wturn: bool,
+    cr: &[bool; 4],
+    ep: Option<usize>,
+    out: &mut Vec<Move>,
+) {
+    generate_pseudo_moves_into_impl::<CHESS960>(st, wturn, cr, ep, out, false);
 }
 
 pub fn generate_pseudo_captures_promotions_into(
@@ -667,10 +709,24 @@ pub fn generate_pseudo_captures_promotions_into(
     ep: Option<usize>,
     out: &mut Vec<Move>,
 ) {
-    generate_pseudo_moves_into_impl(st, wturn, cr, ep, out, true);
+    if st.chess960 {
+        generate_pseudo_captures_promotions_into_mode::<true>(st, wturn, cr, ep, out);
+    } else {
+        generate_pseudo_captures_promotions_into_mode::<false>(st, wturn, cr, ep, out);
+    }
 }
 
-fn generate_pseudo_moves_into_impl(
+pub fn generate_pseudo_captures_promotions_into_mode<const CHESS960: bool>(
+    st: &BoardState,
+    wturn: bool,
+    cr: &[bool; 4],
+    ep: Option<usize>,
+    out: &mut Vec<Move>,
+) {
+    generate_pseudo_moves_into_impl::<CHESS960>(st, wturn, cr, ep, out, true);
+}
+
+fn generate_pseudo_moves_into_impl<const CHESS960: bool>(
     st: &BoardState,
     wturn: bool,
     cr: &[bool; 4],
@@ -925,7 +981,7 @@ fn generate_pseudo_moves_into_impl(
         }
 
         if !tactical_only {
-            if st.chess960 {
+            if CHESS960 {
                 let kr = if wturn { 7usize } else { 0usize };
                 let king_col = sq_c(kf);
                 if chess960_castle_is_pseudo_legal(st, wturn, cr, true, kf, kr, king_col) {
@@ -955,12 +1011,39 @@ pub fn generate_moves(
     cr: &[bool; 4],
     ep: Option<usize>,
 ) -> Vec<Move> {
+    if st.chess960 {
+        generate_moves_mode::<true>(st, wturn, cr, ep)
+    } else {
+        generate_moves_mode::<false>(st, wturn, cr, ep)
+    }
+}
+
+pub fn generate_moves_mode<const CHESS960: bool>(
+    st: &BoardState,
+    wturn: bool,
+    cr: &[bool; 4],
+    ep: Option<usize>,
+) -> Vec<Move> {
     let mut out = Vec::with_capacity(48);
-    generate_moves_into(st, wturn, cr, ep, &mut out);
+    generate_moves_into_mode::<CHESS960>(st, wturn, cr, ep, &mut out);
     out
 }
 
 pub fn generate_moves_into(
+    st: &BoardState,
+    wturn: bool,
+    cr: &[bool; 4],
+    ep: Option<usize>,
+    out: &mut Vec<Move>,
+) {
+    if st.chess960 {
+        generate_moves_into_mode::<true>(st, wturn, cr, ep, out);
+    } else {
+        generate_moves_into_mode::<false>(st, wturn, cr, ep, out);
+    }
+}
+
+pub fn generate_moves_into_mode<const CHESS960: bool>(
     st: &BoardState,
     wturn: bool,
     cr: &[bool; 4],
@@ -1264,7 +1347,7 @@ pub fn generate_moves_into(
             }
             att &= att - 1;
         }
-        if !in_check && st.chess960 {
+        if !in_check && CHESS960 {
             let kr = if wturn { 7usize } else { 0usize };
             let king_col = sq_c(kf);
             try_chess960_castle(st, wturn, cr, result, true, kf, kr, king_col);
