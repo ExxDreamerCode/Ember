@@ -14,66 +14,12 @@ type I32x = Simd<i32, I32_LANES>;
 type F32x = Simd<f32, F32_LANES>;
 
 #[inline(always)]
-// Safety: `offset + I16_LANES` must be within `slice`. The load is
-// unaligned and copies initialized `i16` values without taking references.
-unsafe fn load_i16(slice: &[i16], offset: usize) -> I16x {
-    debug_assert!(offset + I16_LANES <= slice.len());
-    let ptr = unsafe { slice.as_ptr().add(offset) as *const [i16; I16_LANES] };
-    I16x::from_array(unsafe { ptr::read_unaligned(ptr) })
-}
-
-#[inline(always)]
-// Safety: `offset + I16_LANES` must be within `slice`. The store is
-// unaligned and overwrites exactly those initialized `i16` elements.
-unsafe fn store_i16(slice: &mut [i16], offset: usize, value: I16x) {
-    debug_assert!(offset + I16_LANES <= slice.len());
-    let ptr = unsafe { slice.as_mut_ptr().add(offset) as *mut [i16; I16_LANES] };
-    unsafe { ptr::write_unaligned(ptr, value.to_array()) };
-}
-
-#[inline(always)]
-// Safety: `offset + I32_LANES` must be within `slice`. The load is
-// unaligned and copies initialized `i32` values without taking references.
-unsafe fn load_i32(slice: &[i32], offset: usize) -> I32x {
-    debug_assert!(offset + I32_LANES <= slice.len());
-    let ptr = unsafe { slice.as_ptr().add(offset) as *const [i32; I32_LANES] };
-    I32x::from_array(unsafe { ptr::read_unaligned(ptr) })
-}
-
-#[inline(always)]
-// Safety: `offset + I32_LANES` must be within `slice`. The store is
-// unaligned and overwrites exactly those initialized `i32` elements.
-unsafe fn store_i32(slice: &mut [i32], offset: usize, value: I32x) {
-    debug_assert!(offset + I32_LANES <= slice.len());
-    let ptr = unsafe { slice.as_mut_ptr().add(offset) as *mut [i32; I32_LANES] };
-    unsafe { ptr::write_unaligned(ptr, value.to_array()) };
-}
-
-#[inline(always)]
 // Safety: `offset + I32_LANES` must be within `slice`. The load is
 // unaligned and copies initialized `i16` values before widening to `i32`.
 unsafe fn load_i16_i32(slice: &[i16], offset: usize) -> I32x {
     debug_assert!(offset + I32_LANES <= slice.len());
     let ptr = unsafe { slice.as_ptr().add(offset) as *const [i16; I32_LANES] };
     I16x8::from_array(unsafe { ptr::read_unaligned(ptr) }).cast()
-}
-
-#[inline(always)]
-// Safety: `offset + F32_LANES` must be within `slice`. The load is
-// unaligned and copies initialized `f32` values without taking references.
-unsafe fn load_f32(slice: &[f32], offset: usize) -> F32x {
-    debug_assert!(offset + F32_LANES <= slice.len());
-    let ptr = unsafe { slice.as_ptr().add(offset) as *const [f32; F32_LANES] };
-    F32x::from_array(unsafe { ptr::read_unaligned(ptr) })
-}
-
-#[inline(always)]
-// Safety: `offset + F32_LANES` must be within `slice`. The store is
-// unaligned and overwrites exactly those initialized `f32` elements.
-unsafe fn store_f32(slice: &mut [f32], offset: usize, value: F32x) {
-    debug_assert!(offset + F32_LANES <= slice.len());
-    let ptr = unsafe { slice.as_mut_ptr().add(offset) as *mut [f32; F32_LANES] };
-    unsafe { ptr::write_unaligned(ptr, value.to_array()) };
 }
 
 #[inline(always)]
@@ -94,35 +40,31 @@ fn clamp_crelu_i16(value: I16x) -> I16x {
 
 #[inline(always)]
 pub fn simd_add_row(acc: &mut [i16], row: &[i16]) {
-    let len = acc.len();
-    debug_assert_eq!(len, row.len());
+    debug_assert_eq!(acc.len(), row.len());
 
-    let mut i = 0;
-    while i + I16_LANES <= len {
-        let sum = unsafe { load_i16(acc, i) + load_i16(row, i) };
-        unsafe { store_i16(acc, i, sum) };
-        i += I16_LANES;
+    let (acc_chunks, acc_tail) = acc.as_chunks_mut::<I16_LANES>();
+    let (row_chunks, row_tail) = row.as_chunks::<I16_LANES>();
+    for (acc_chunk, row_chunk) in acc_chunks.iter_mut().zip(row_chunks) {
+        let sum = I16x::from_array(*acc_chunk) + I16x::from_array(*row_chunk);
+        *acc_chunk = sum.to_array();
     }
-    while i < len {
-        acc[i] += row[i];
-        i += 1;
+    for (acc_value, row_value) in acc_tail.iter_mut().zip(row_tail) {
+        *acc_value += *row_value;
     }
 }
 
 #[inline(always)]
 pub fn simd_sub_row(acc: &mut [i16], row: &[i16]) {
-    let len = acc.len();
-    debug_assert_eq!(len, row.len());
+    debug_assert_eq!(acc.len(), row.len());
 
-    let mut i = 0;
-    while i + I16_LANES <= len {
-        let sum = unsafe { load_i16(acc, i) - load_i16(row, i) };
-        unsafe { store_i16(acc, i, sum) };
-        i += I16_LANES;
+    let (acc_chunks, acc_tail) = acc.as_chunks_mut::<I16_LANES>();
+    let (row_chunks, row_tail) = row.as_chunks::<I16_LANES>();
+    for (acc_chunk, row_chunk) in acc_chunks.iter_mut().zip(row_chunks) {
+        let sum = I16x::from_array(*acc_chunk) - I16x::from_array(*row_chunk);
+        *acc_chunk = sum.to_array();
     }
-    while i < len {
-        acc[i] -= row[i];
-        i += 1;
+    for (acc_value, row_value) in acc_tail.iter_mut().zip(row_tail) {
+        *acc_value -= *row_value;
     }
 }
 
@@ -148,25 +90,31 @@ pub fn simd_forward_base_crelu(
         return sum;
     }
 
-    let mut i = 0;
-    while i + I16_LANES <= h {
-        let sc = clamp_crelu_i16(unsafe { load_i16(stm, i) });
-        let nc = clamp_crelu_i16(unsafe { load_i16(ntm, i) });
-        let sw = unsafe { load_i16(out_w, i) };
-        let nw = unsafe { load_i16(out_w, h + i) };
-
+    let (stm_chunks, stm_tail) = stm[..h].as_chunks::<I16_LANES>();
+    let (ntm_chunks, ntm_tail) = ntm[..h].as_chunks::<I16_LANES>();
+    let (sw_chunks, sw_tail) = out_w[..h].as_chunks::<I16_LANES>();
+    let (nw_chunks, nw_tail) = out_w[h..h + h].as_chunks::<I16_LANES>();
+    for (((stm_chunk, ntm_chunk), sw_chunk), nw_chunk) in stm_chunks
+        .iter()
+        .zip(ntm_chunks)
+        .zip(sw_chunks)
+        .zip(nw_chunks)
+    {
+        let sc = clamp_crelu_i16(I16x::from_array(*stm_chunk));
+        let nc = clamp_crelu_i16(I16x::from_array(*ntm_chunk));
+        let sw = I16x::from_array(*sw_chunk);
+        let nw = I16x::from_array(*nw_chunk);
         sum += dot_i16(sc, sw);
         sum += dot_i16(nc, nw);
-
-        i += I16_LANES;
     }
 
-    while i < h {
-        let v = (stm[i] as i32).clamp(0, QA) as i64;
-        sum += v * out_w[i] as i64;
-        let v = (ntm[i] as i32).clamp(0, QA) as i64;
-        sum += v * out_w[h + i] as i64;
-        i += 1;
+    for (((stm_value, ntm_value), sw_value), nw_value) in
+        stm_tail.iter().zip(ntm_tail).zip(sw_tail).zip(nw_tail)
+    {
+        let v = (*stm_value as i32).clamp(0, QA) as i64;
+        sum += v * *sw_value as i64;
+        let v = (*ntm_value as i32).clamp(0, QA) as i64;
+        sum += v * *nw_value as i64;
     }
 
     sum
@@ -190,8 +138,9 @@ pub fn simd_l1_matmul(
         out[i] = l1_biases[l1_off + i] as i32 * pw_scale;
     }
 
-    let mut i = 0;
-    while i + I32_LANES <= l1 {
+    let (out_chunks, out_tail) = out.as_chunks_mut::<I32_LANES>();
+    for (chunk_idx, out_chunk) in out_chunks.iter_mut().enumerate() {
+        let i = chunk_idx * I32_LANES;
         let mut s_acc = I32x::splat(0);
         let mut n_acc = I32x::splat(0);
 
@@ -203,12 +152,10 @@ pub fn simd_l1_matmul(
             n_acc += I32x::splat(np[j] as i32) * nw;
         }
 
-        let existing = unsafe { load_i32(out, i) };
-        unsafe { store_i32(out, i, existing + s_acc + n_acc) };
-        i += I32_LANES;
+        *out_chunk = (I32x::from_array(*out_chunk) + s_acc + n_acc).to_array();
     }
 
-    while i < l1 {
+    for (i, out_value) in (out_chunks.len() * I32_LANES..).zip(out_tail.iter_mut()) {
         let gi = l1_off + i;
         let mut s_sum = 0i32;
         let mut n_sum = 0i32;
@@ -216,8 +163,7 @@ pub fn simd_l1_matmul(
             s_sum += sp[j] as i32 * l1_weights[j * l1_total + gi] as i32;
             n_sum += np[j] as i32 * l1_weights[(pw + j) * l1_total + gi] as i32;
         }
-        out[i] += s_sum + n_sum;
-        i += 1;
+        *out_value += s_sum + n_sum;
     }
 }
 
@@ -255,46 +201,42 @@ pub fn simd_forward_l2(
         }
         let l1v = F32x::splat(l1_value);
         let w_base = i * l2_total + l2_off;
-
-        let mut k = 0;
-        while k + F32_LANES <= l2 {
-            let w = unsafe { load_f32(l2_weights, w_base + k) };
-            let h = unsafe { load_f32(&h2, k) };
-            unsafe { store_f32(&mut h2, k, l1v * w + h) };
-            k += F32_LANES;
+        let w_row = &l2_weights[w_base..w_base + l2];
+        let (h_chunks, h_tail) = h2.as_chunks_mut::<F32_LANES>();
+        let (w_chunks, w_tail) = w_row.as_chunks::<F32_LANES>();
+        for (h_chunk, w_chunk) in h_chunks.iter_mut().zip(w_chunks) {
+            let h = F32x::from_array(*h_chunk);
+            let w = F32x::from_array(*w_chunk);
+            *h_chunk = (l1v * w + h).to_array();
         }
-        while k < l2 {
-            h2[k] += l1_value * l2_weights[w_base + k];
-            k += 1;
+        for (h_value, w_value) in h_tail.iter_mut().zip(w_tail) {
+            *h_value += l1_value * *w_value;
         }
     }
 
     let zero = F32x::splat(0.0);
     let one = F32x::splat(1.0);
-    let mut k = 0;
-    while k + F32_LANES <= l2 {
-        let h = unsafe { load_f32(&h2, k) }.simd_clamp(zero, one);
-        unsafe { store_f32(&mut h2, k, h * h) };
-        k += F32_LANES;
+    let (h_chunks, h_tail) = h2.as_chunks_mut::<F32_LANES>();
+    for h_chunk in h_chunks {
+        let h = F32x::from_array(*h_chunk).simd_clamp(zero, one);
+        *h_chunk = (h * h).to_array();
     }
-    while k < l2 {
-        h2[k] = h2[k].clamp(0.0, 1.0);
-        h2[k] *= h2[k];
-        k += 1;
+    for h_value in h_tail {
+        *h_value = h_value.clamp(0.0, 1.0);
+        *h_value *= *h_value;
     }
 
     let mut of = F32x::splat(0.0);
-    k = 0;
-    while k + F32_LANES <= l2 {
-        let h = unsafe { load_f32(&h2, k) };
-        let w = unsafe { load_f32(out_weights, k) };
+    let (h_chunks, h_tail) = h2.as_chunks::<F32_LANES>();
+    let (w_chunks, w_tail) = out_weights[..l2].as_chunks::<F32_LANES>();
+    for (h_chunk, w_chunk) in h_chunks.iter().zip(w_chunks) {
+        let h = F32x::from_array(*h_chunk);
+        let w = F32x::from_array(*w_chunk);
         of += h * w;
-        k += F32_LANES;
     }
     let mut result = out_bias + of.reduce_sum();
-    while k < l2 {
-        result += h2[k] * out_weights[k];
-        k += 1;
+    for (h_value, w_value) in h_tail.iter().zip(w_tail) {
+        result += *h_value * *w_value;
     }
 
     result
