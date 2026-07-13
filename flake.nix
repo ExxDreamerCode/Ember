@@ -67,6 +67,8 @@
         in
         {
           elo-runner = pkgs.mkShell {
+            RUSTFLAGS = "-C target-cpu=native";
+
             packages = with pkgs; [
               bash
               coreutils
@@ -98,6 +100,8 @@
           };
 
           ci = pkgs.mkShell {
+            RUSTFLAGS = "-C target-cpu=native";
+
             packages = with pkgs; [
               bash
               coreutils

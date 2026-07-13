@@ -1,6 +1,7 @@
+use std::ptr;
 use std::simd::cmp::SimdOrd;
 use std::simd::num::{SimdFloat, SimdInt};
-use std::simd::Simd;
+use std::simd::{simd_swizzle, Simd};
 
 const QA: i32 = 255;
 const I16_LANES: usize = 16;
@@ -8,67 +9,68 @@ const I32_LANES: usize = 8;
 const F32_LANES: usize = 8;
 
 type I16x = Simd<i16, I16_LANES>;
+type I16x8 = Simd<i16, I32_LANES>;
 type I32x = Simd<i32, I32_LANES>;
 type F32x = Simd<f32, F32_LANES>;
 
 #[inline(always)]
-fn load_i16(slice: &[i16], offset: usize) -> I16x {
-    I16x::from_slice(&slice[offset..offset + I16_LANES])
+unsafe fn load_i16(slice: &[i16], offset: usize) -> I16x {
+    debug_assert!(offset + I16_LANES <= slice.len());
+    let ptr = unsafe { slice.as_ptr().add(offset) as *const [i16; I16_LANES] };
+    I16x::from_array(unsafe { ptr::read_unaligned(ptr) })
 }
 
 #[inline(always)]
-fn store_i16(slice: &mut [i16], offset: usize, value: I16x) {
-    value.copy_to_slice(&mut slice[offset..offset + I16_LANES]);
+unsafe fn store_i16(slice: &mut [i16], offset: usize, value: I16x) {
+    debug_assert!(offset + I16_LANES <= slice.len());
+    let ptr = unsafe { slice.as_mut_ptr().add(offset) as *mut [i16; I16_LANES] };
+    unsafe { ptr::write_unaligned(ptr, value.to_array()) };
 }
 
 #[inline(always)]
-fn load_i32(slice: &[i32], offset: usize) -> I32x {
-    I32x::from_slice(&slice[offset..offset + I32_LANES])
+unsafe fn load_i32(slice: &[i32], offset: usize) -> I32x {
+    debug_assert!(offset + I32_LANES <= slice.len());
+    let ptr = unsafe { slice.as_ptr().add(offset) as *const [i32; I32_LANES] };
+    I32x::from_array(unsafe { ptr::read_unaligned(ptr) })
 }
 
 #[inline(always)]
-fn store_i32(slice: &mut [i32], offset: usize, value: I32x) {
-    value.copy_to_slice(&mut slice[offset..offset + I32_LANES]);
+unsafe fn store_i32(slice: &mut [i32], offset: usize, value: I32x) {
+    debug_assert!(offset + I32_LANES <= slice.len());
+    let ptr = unsafe { slice.as_mut_ptr().add(offset) as *mut [i32; I32_LANES] };
+    unsafe { ptr::write_unaligned(ptr, value.to_array()) };
 }
 
 #[inline(always)]
-fn load_i16_i32(slice: &[i16], offset: usize) -> I32x {
-    I32x::from_array([
-        slice[offset] as i32,
-        slice[offset + 1] as i32,
-        slice[offset + 2] as i32,
-        slice[offset + 3] as i32,
-        slice[offset + 4] as i32,
-        slice[offset + 5] as i32,
-        slice[offset + 6] as i32,
-        slice[offset + 7] as i32,
-    ])
+unsafe fn load_i16_i32(slice: &[i16], offset: usize) -> I32x {
+    debug_assert!(offset + I32_LANES <= slice.len());
+    let ptr = unsafe { slice.as_ptr().add(offset) as *const [i16; I32_LANES] };
+    I16x8::from_array(unsafe { ptr::read_unaligned(ptr) }).cast()
 }
 
 #[inline(always)]
-fn load_f32(slice: &[f32], offset: usize) -> F32x {
-    F32x::from_slice(&slice[offset..offset + F32_LANES])
+unsafe fn load_f32(slice: &[f32], offset: usize) -> F32x {
+    debug_assert!(offset + F32_LANES <= slice.len());
+    let ptr = unsafe { slice.as_ptr().add(offset) as *const [f32; F32_LANES] };
+    F32x::from_array(unsafe { ptr::read_unaligned(ptr) })
 }
 
 #[inline(always)]
-fn store_f32(slice: &mut [f32], offset: usize, value: F32x) {
-    value.copy_to_slice(&mut slice[offset..offset + F32_LANES]);
+unsafe fn store_f32(slice: &mut [f32], offset: usize, value: F32x) {
+    debug_assert!(offset + F32_LANES <= slice.len());
+    let ptr = unsafe { slice.as_mut_ptr().add(offset) as *mut [f32; F32_LANES] };
+    unsafe { ptr::write_unaligned(ptr, value.to_array()) };
 }
 
 #[inline(always)]
-fn madd_i16(a: I16x, b: I16x) -> I32x {
-    let a = a.to_array();
-    let b = b.to_array();
-    I32x::from_array([
-        a[0] as i32 * b[0] as i32 + a[1] as i32 * b[1] as i32,
-        a[2] as i32 * b[2] as i32 + a[3] as i32 * b[3] as i32,
-        a[4] as i32 * b[4] as i32 + a[5] as i32 * b[5] as i32,
-        a[6] as i32 * b[6] as i32 + a[7] as i32 * b[7] as i32,
-        a[8] as i32 * b[8] as i32 + a[9] as i32 * b[9] as i32,
-        a[10] as i32 * b[10] as i32 + a[11] as i32 * b[11] as i32,
-        a[12] as i32 * b[12] as i32 + a[13] as i32 * b[13] as i32,
-        a[14] as i32 * b[14] as i32 + a[15] as i32 * b[15] as i32,
-    ])
+fn dot_i16(a: I16x, b: I16x) -> i64 {
+    let a_lo: I16x8 = simd_swizzle!(a, [0, 1, 2, 3, 4, 5, 6, 7]);
+    let a_hi: I16x8 = simd_swizzle!(a, [8, 9, 10, 11, 12, 13, 14, 15]);
+    let b_lo: I16x8 = simd_swizzle!(b, [0, 1, 2, 3, 4, 5, 6, 7]);
+    let b_hi: I16x8 = simd_swizzle!(b, [8, 9, 10, 11, 12, 13, 14, 15]);
+    let products =
+        a_lo.cast::<i32>() * b_lo.cast::<i32>() + a_hi.cast::<i32>() * b_hi.cast::<i32>();
+    products.reduce_sum() as i64
 }
 
 #[inline(always)]
@@ -83,8 +85,8 @@ pub fn simd_add_row(acc: &mut [i16], row: &[i16]) {
 
     let mut i = 0;
     while i + I16_LANES <= len {
-        let sum = load_i16(acc, i) + load_i16(row, i);
-        store_i16(acc, i, sum);
+        let sum = unsafe { load_i16(acc, i) + load_i16(row, i) };
+        unsafe { store_i16(acc, i, sum) };
         i += I16_LANES;
     }
     while i < len {
@@ -100,8 +102,8 @@ pub fn simd_sub_row(acc: &mut [i16], row: &[i16]) {
 
     let mut i = 0;
     while i + I16_LANES <= len {
-        let sum = load_i16(acc, i) - load_i16(row, i);
-        store_i16(acc, i, sum);
+        let sum = unsafe { load_i16(acc, i) - load_i16(row, i) };
+        unsafe { store_i16(acc, i, sum) };
         i += I16_LANES;
     }
     while i < len {
@@ -134,13 +136,13 @@ pub fn simd_forward_base_crelu(
 
     let mut i = 0;
     while i + I16_LANES <= h {
-        let sc = clamp_crelu_i16(load_i16(stm, i));
-        let nc = clamp_crelu_i16(load_i16(ntm, i));
-        let sw = load_i16(out_w, i);
-        let nw = load_i16(out_w, h + i);
+        let sc = clamp_crelu_i16(unsafe { load_i16(stm, i) });
+        let nc = clamp_crelu_i16(unsafe { load_i16(ntm, i) });
+        let sw = unsafe { load_i16(out_w, i) };
+        let nw = unsafe { load_i16(out_w, h + i) };
 
-        sum += madd_i16(sc, sw).reduce_sum() as i64;
-        sum += madd_i16(nc, nw).reduce_sum() as i64;
+        sum += dot_i16(sc, sw);
+        sum += dot_i16(nc, nw);
 
         i += I16_LANES;
     }
@@ -180,15 +182,15 @@ pub fn simd_l1_matmul(
         let mut n_acc = I32x::splat(0);
 
         for j in 0..pw {
-            let sw = load_i16_i32(l1_weights, j * l1_total + l1_off + i);
-            let nw = load_i16_i32(l1_weights, (pw + j) * l1_total + l1_off + i);
+            let sw = unsafe { load_i16_i32(l1_weights, j * l1_total + l1_off + i) };
+            let nw = unsafe { load_i16_i32(l1_weights, (pw + j) * l1_total + l1_off + i) };
 
             s_acc += I32x::splat(sp[j] as i32) * sw;
             n_acc += I32x::splat(np[j] as i32) * nw;
         }
 
-        let existing = load_i32(out, i);
-        store_i32(out, i, existing + s_acc + n_acc);
+        let existing = unsafe { load_i32(out, i) };
+        unsafe { store_i32(out, i, existing + s_acc + n_acc) };
         i += I32_LANES;
     }
 
@@ -242,9 +244,9 @@ pub fn simd_forward_l2(
 
         let mut k = 0;
         while k + F32_LANES <= l2 {
-            let w = load_f32(l2_weights, w_base + k);
-            let h = load_f32(&h2, k);
-            store_f32(&mut h2, k, l1v * w + h);
+            let w = unsafe { load_f32(l2_weights, w_base + k) };
+            let h = unsafe { load_f32(&h2, k) };
+            unsafe { store_f32(&mut h2, k, l1v * w + h) };
             k += F32_LANES;
         }
         while k < l2 {
@@ -257,8 +259,8 @@ pub fn simd_forward_l2(
     let one = F32x::splat(1.0);
     let mut k = 0;
     while k + F32_LANES <= l2 {
-        let h = load_f32(&h2, k).simd_clamp(zero, one);
-        store_f32(&mut h2, k, h * h);
+        let h = unsafe { load_f32(&h2, k) }.simd_clamp(zero, one);
+        unsafe { store_f32(&mut h2, k, h * h) };
         k += F32_LANES;
     }
     while k < l2 {
@@ -270,8 +272,8 @@ pub fn simd_forward_l2(
     let mut of = F32x::splat(0.0);
     k = 0;
     while k + F32_LANES <= l2 {
-        let h = load_f32(&h2, k);
-        let w = load_f32(out_weights, k);
+        let h = unsafe { load_f32(&h2, k) };
+        let w = unsafe { load_f32(out_weights, k) };
         of += h * w;
         k += F32_LANES;
     }
