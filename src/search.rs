@@ -4,13 +4,13 @@ use crate::board::{
     promotion_piece_index, see, BoardState, Move, BK, BP, BR, EMPTY_SQ, INF, KING_ATTACKS, MATE,
     MAX_PLY, QS_DEPTH, WK, WP, WR,
 };
-use crate::evaluate::{evaluate, evaluate_nnue_acc, with_nnue_net};
+use crate::evaluate::{current_nnue_net, evaluate, evaluate_nnue_acc};
 use crate::movegen::{
     apply_move, apply_move_mode, generate_moves, generate_moves_into_mode,
     generate_pseudo_captures_promotions_into_mode, generate_pseudo_moves_into_mode,
     is_chess960_castling_move_mode, try_apply_move_mode,
 };
-use crate::nnue::NNUEAccumulator;
+use crate::nnue::{NNUEAccumulator, NNUENet};
 use crate::syzygy::SyzygyTables;
 use crate::tt::{SharedTT, TT_ALPHA, TT_BETA, TT_EXACT};
 use crate::zobrist::{compute_pawn_hash, ep_hash_square, zobrist};
@@ -259,6 +259,7 @@ pub struct Searcher {
     pub tt_mb: usize,
     pub stopped: Arc<AtomicBool>,
     pub nnue_stack: Vec<NNUEAccumulator>,
+    pub nnue_net: Option<Arc<NNUENet>>,
     pub syzygy: SyzygyTables,
     move_bufs: Vec<Vec<Move>>,
     scored_bufs: Vec<Vec<(i32, Move)>>,
@@ -266,6 +267,43 @@ pub struct Searcher {
     caps_bufs: Vec<Vec<Move>>,
     #[cfg(feature = "search-debug")]
     pub debug: SearchDebug,
+}
+
+#[derive(Clone, Copy)]
+struct ClassicEval;
+
+#[derive(Clone, Copy)]
+struct NnueEval<'a> {
+    net: &'a NNUENet,
+}
+
+trait SearchEval: Copy {
+    fn static_eval<const CHESS960: bool>(
+        self,
+        searcher: &Searcher,
+        st: &BoardState,
+        ply: usize,
+    ) -> i32;
+
+    fn corrected_eval<const CHESS960: bool>(self, searcher: &Searcher, st: &BoardState) -> i32;
+
+    #[allow(clippy::too_many_arguments)]
+    fn push_acc(
+        self,
+        searcher: &mut Searcher,
+        st_before: &BoardState,
+        st_after: &BoardState,
+        sr: usize,
+        sc: usize,
+        er: usize,
+        ec: usize,
+        promotion: u8,
+        ply: usize,
+    );
+
+    fn ensure_child_stack(self, searcher: &mut Searcher, ply: usize);
+
+    fn copy_null_acc(self, searcher: &mut Searcher, ply: usize);
 }
 
 #[cfg(feature = "search-debug")]
@@ -294,6 +332,7 @@ impl Searcher {
             tt_mb: 128,
             stopped,
             nnue_stack: Vec::new(),
+            nnue_net: current_nnue_net(),
             syzygy: SyzygyTables::new(),
             move_bufs: Vec::new(),
             scored_bufs: Vec::new(),
@@ -313,14 +352,29 @@ impl Searcher {
         self.syzygy = syzygy;
     }
 
+    pub fn refresh_nnue_net(&mut self) {
+        self.nnue_net = current_nnue_net();
+    }
+
     pub fn init_nnue_stack(&mut self, st: &BoardState) {
-        with_nnue_net(|net| {
+        if let Some(net) = self.nnue_net.as_deref() {
             if self.nnue_stack.len() < MAX_PLY + 1 {
                 self.nnue_stack
                     .resize(MAX_PLY + 1, NNUEAccumulator::new(net.hidden_size));
             }
             self.nnue_stack[0].refresh(net, st);
-        });
+        }
+    }
+
+    pub fn refresh_nnue_stack_at(&mut self, ply: usize, st: &BoardState) {
+        let Some(net) = self.nnue_net.as_deref() else {
+            return;
+        };
+        if self.nnue_stack.len() <= ply {
+            self.nnue_stack
+                .resize(ply + 1, NNUEAccumulator::new(net.hidden_size));
+        }
+        self.nnue_stack[ply].refresh(net, st);
     }
 
     #[inline]
@@ -372,6 +426,7 @@ impl Searcher {
         dst.rep_stack = self.rep_stack.clone();
         dst.rep_stack_len = self.rep_stack_len;
         dst.corr_hist = self.corr_hist;
+        dst.nnue_net = self.nnue_net.clone();
         dst.syzygy = self.syzygy.clone();
     }
 
@@ -465,36 +520,48 @@ impl Searcher {
         true
     }
 
-    fn static_eval<const CHESS960: bool>(&self, st: &BoardState, ply: usize) -> i32 {
+    #[inline(always)]
+    fn static_eval_classic<const CHESS960: bool>(&self, st: &BoardState) -> i32 {
         if CHESS960 && st.mc <= 3 {
             return evaluate(st) * if st.w { 1 } else { -1 };
         }
-        with_nnue_net(|net| {
-            let score = if ply < self.nnue_stack.len() {
-                evaluate_nnue_acc(net, &self.nnue_stack[ply], st)
-            } else {
-                let mut acc = NNUEAccumulator::new(net.hidden_size);
-                acc.refresh(net, st);
-                evaluate_nnue_acc(net, &acc, st)
-            };
-            if st.w {
-                score
-            } else {
-                -score
-            }
-        })
-        .unwrap_or_else(|| evaluate(st) * if st.w { 1 } else { -1 })
+        evaluate(st) * if st.w { 1 } else { -1 }
     }
 
-    pub fn corrected_eval(&self, st: &BoardState) -> i32 {
-        if st.chess960 {
-            self.corrected_eval_mode::<true>(st)
+    #[inline(always)]
+    fn static_eval_nnue<const CHESS960: bool>(
+        &self,
+        st: &BoardState,
+        ply: usize,
+        net: &NNUENet,
+    ) -> i32 {
+        if CHESS960 && st.mc <= 3 {
+            return evaluate(st) * if st.w { 1 } else { -1 };
+        }
+        let score = if ply < self.nnue_stack.len() {
+            evaluate_nnue_acc(net, &self.nnue_stack[ply], st)
         } else {
-            self.corrected_eval_mode::<false>(st)
+            let mut acc = NNUEAccumulator::new(net.hidden_size);
+            acc.refresh(net, st);
+            evaluate_nnue_acc(net, &acc, st)
+        };
+        if st.w {
+            score
+        } else {
+            -score
         }
     }
 
-    pub fn corrected_eval_mode<const CHESS960: bool>(&self, st: &BoardState) -> i32 {
+    pub fn corrected_eval(&self, st: &BoardState) -> i32 {
+        match (st.chess960, self.nnue_net.as_deref()) {
+            (true, Some(net)) => NnueEval { net }.corrected_eval::<true>(self, st),
+            (true, None) => ClassicEval.corrected_eval::<true>(self, st),
+            (false, Some(net)) => NnueEval { net }.corrected_eval::<false>(self, st),
+            (false, None) => ClassicEval.corrected_eval::<false>(self, st),
+        }
+    }
+
+    fn corrected_eval_classic<const CHESS960: bool>(&self, st: &BoardState) -> i32 {
         if CHESS960 && st.mc <= 3 {
             let base = evaluate(st) * if st.w { 1 } else { -1 };
             if self.corr_hist_enabled() {
@@ -504,18 +571,6 @@ impl Searcher {
             }
             return base;
         }
-        if let Some(nnue_score) = with_nnue_net(|net| {
-            let mut acc = NNUEAccumulator::new(net.hidden_size);
-            acc.refresh(net, st);
-            let score = evaluate_nnue_acc(net, &acc, st);
-            if st.w {
-                score
-            } else {
-                -score
-            }
-        }) {
-            return nnue_score;
-        }
         let base = evaluate(st) * if st.w { 1 } else { -1 };
         if self.corr_hist_enabled() {
             let ph = compute_pawn_hash(st);
@@ -523,6 +578,20 @@ impl Searcher {
             return base + self.corr_hist[idx].clamp(-200, 200);
         }
         base
+    }
+
+    fn corrected_eval_nnue<const CHESS960: bool>(&self, st: &BoardState, net: &NNUENet) -> i32 {
+        if CHESS960 && st.mc <= 3 {
+            return self.corrected_eval_classic::<CHESS960>(st);
+        }
+        let mut acc = NNUEAccumulator::new(net.hidden_size);
+        acc.refresh(net, st);
+        let score = evaluate_nnue_acc(net, &acc, st);
+        if st.w {
+            score
+        } else {
+            -score
+        }
     }
 
     pub fn probe_syzygy(&self, st: &BoardState) -> Option<i32> {
@@ -561,6 +630,7 @@ impl Searcher {
     #[allow(clippy::too_many_arguments)]
     fn push_nnue_acc(
         &mut self,
+        net: &NNUENet,
         st_before: &BoardState,
         st_after: &BoardState,
         sr: usize,
@@ -569,24 +639,18 @@ impl Searcher {
         ec: usize,
         promotion: u8,
         ply: usize,
-    ) -> bool {
-        with_nnue_net(|net| {
-            if ply + 1 >= self.nnue_stack.len() {
-                return false;
-            }
+    ) {
+        if ply + 1 >= self.nnue_stack.len() {
+            return;
+        }
+        let (left, right) = self.nnue_stack.split_at_mut(ply + 1);
+        right[0].clone_from(&left[ply]);
 
-            let (left, right) = self.nnue_stack.split_at_mut(ply + 1);
-            right[0].clone_from(&left[ply]);
+        let ok = self.nnue_stack[ply + 1].update_move(net, st_before, sr, sc, er, ec, promotion);
 
-            let ok =
-                self.nnue_stack[ply + 1].update_move(net, st_before, sr, sc, er, ec, promotion);
-
-            if !ok {
-                self.nnue_stack[ply + 1].refresh(net, st_after);
-            }
-            true
-        })
-        .unwrap_or(false)
+        if !ok {
+            self.nnue_stack[ply + 1].refresh(net, st_after);
+        }
     }
 
     #[cfg(test)]
@@ -602,15 +666,57 @@ impl Searcher {
         cnt: &mut u64,
         ply: usize,
     ) -> i32 {
-        if st.chess960 {
-            self.qsearch_mode::<true>(st, alpha, beta, depth, start, tl, cnt, ply)
-        } else {
-            self.qsearch_mode::<false>(st, alpha, beta, depth, start, tl, cnt, ply)
+        let nnue_net = self.nnue_net.clone();
+        match (st.chess960, nnue_net.as_deref()) {
+            (true, Some(net)) => self.qsearch_mode::<true, _>(
+                st,
+                alpha,
+                beta,
+                depth,
+                start,
+                tl,
+                cnt,
+                ply,
+                NnueEval { net },
+            ),
+            (true, None) => self.qsearch_mode::<true, _>(
+                st,
+                alpha,
+                beta,
+                depth,
+                start,
+                tl,
+                cnt,
+                ply,
+                ClassicEval,
+            ),
+            (false, Some(net)) => self.qsearch_mode::<false, _>(
+                st,
+                alpha,
+                beta,
+                depth,
+                start,
+                tl,
+                cnt,
+                ply,
+                NnueEval { net },
+            ),
+            (false, None) => self.qsearch_mode::<false, _>(
+                st,
+                alpha,
+                beta,
+                depth,
+                start,
+                tl,
+                cnt,
+                ply,
+                ClassicEval,
+            ),
         }
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn qsearch_mode<const CHESS960: bool>(
+    fn qsearch_mode<const CHESS960: bool, E: SearchEval>(
         &mut self,
         st: &mut BoardState,
         mut alpha: i32,
@@ -620,6 +726,7 @@ impl Searcher {
         tl: f64,
         cnt: &mut u64,
         ply: usize,
+        eval: E,
     ) -> i32 {
         *cnt += 1;
         if self.time_up(start, tl) {
@@ -639,7 +746,7 @@ impl Searcher {
         }
 
         if !in_check {
-            let stand = self.static_eval::<CHESS960>(st, ply);
+            let stand = eval.static_eval::<CHESS960>(self, st, ply);
             if stand >= beta {
                 return stand;
             }
@@ -650,7 +757,7 @@ impl Searcher {
                 return alpha;
             }
         } else if depth <= -4 {
-            return self.static_eval::<CHESS960>(st, ply);
+            return eval.static_eval::<CHESS960>(self, st, ply);
         }
 
         self.ensure_buf_pools(ply);
@@ -666,13 +773,7 @@ impl Searcher {
             Self::return_buf(&mut self.move_bufs, ply, caps);
             return if in_check { -MATE + 1000 } else { alpha };
         }
-        if with_nnue_net(|_| true).unwrap_or(false)
-            && ply + 1 >= self.nnue_stack.len()
-            && ply + 1 < MAX_PLY + 1
-        {
-            self.nnue_stack
-                .resize(ply + 2, NNUEAccumulator::new(self.nnue_stack[0].hs));
-        }
+        eval.ensure_child_stack(self, ply);
 
         caps.sort_by_key(|mv| {
             let to = move_to(*mv);
@@ -719,7 +820,8 @@ impl Searcher {
             if !legal {
                 continue;
             }
-            self.push_nnue_acc(
+            eval.push_acc(
+                self,
                 &st_before,
                 st,
                 move_sr(mv),
@@ -729,7 +831,7 @@ impl Searcher {
                 move_promotion(mv),
                 ply,
             );
-            let score = -self.qsearch_mode::<CHESS960>(
+            let score = -self.qsearch_mode::<CHESS960, E>(
                 st,
                 -beta,
                 -alpha,
@@ -738,6 +840,7 @@ impl Searcher {
                 tl,
                 cnt,
                 ply + 1,
+                eval,
             );
             *st = st_before;
             if self.stopped.load(Ordering::Relaxed) {
@@ -768,15 +871,61 @@ impl Searcher {
         tl: f64,
         cnt: &mut u64,
     ) -> i32 {
-        if st.chess960 {
-            self.negamax_mode::<true>(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
-        } else {
-            self.negamax_mode::<false>(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
+        let nnue_net = self.nnue_net.clone();
+        match (st.chess960, nnue_net.as_deref()) {
+            (true, Some(net)) => self.negamax_mode::<true, _>(
+                st,
+                depth,
+                ply,
+                alpha,
+                beta,
+                can_null,
+                start,
+                tl,
+                cnt,
+                NnueEval { net },
+            ),
+            (true, None) => self.negamax_mode::<true, _>(
+                st,
+                depth,
+                ply,
+                alpha,
+                beta,
+                can_null,
+                start,
+                tl,
+                cnt,
+                ClassicEval,
+            ),
+            (false, Some(net)) => self.negamax_mode::<false, _>(
+                st,
+                depth,
+                ply,
+                alpha,
+                beta,
+                can_null,
+                start,
+                tl,
+                cnt,
+                NnueEval { net },
+            ),
+            (false, None) => self.negamax_mode::<false, _>(
+                st,
+                depth,
+                ply,
+                alpha,
+                beta,
+                can_null,
+                start,
+                tl,
+                cnt,
+                ClassicEval,
+            ),
         }
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn negamax_mode<const CHESS960: bool>(
+    fn negamax_mode<const CHESS960: bool, E: SearchEval>(
         &mut self,
         st: &mut BoardState,
         depth: i32,
@@ -787,13 +936,14 @@ impl Searcher {
         start: Instant,
         tl: f64,
         cnt: &mut u64,
+        eval: E,
     ) -> i32 {
         *cnt += 1;
         if self.time_up(start, tl) {
             return 0;
         }
         if ply >= MAX_PLY {
-            return self.static_eval::<CHESS960>(st, ply);
+            return eval.static_eval::<CHESS960>(self, st, ply);
         }
 
         let mut beta = beta;
@@ -826,9 +976,9 @@ impl Searcher {
 
         let eval_score = if tb_available {
             self.probe_syzygy(st)
-                .unwrap_or_else(|| self.static_eval::<CHESS960>(st, ply))
+                .unwrap_or_else(|| eval.static_eval::<CHESS960>(self, st, ply))
         } else {
-            self.static_eval::<CHESS960>(st, ply)
+            eval.static_eval::<CHESS960>(self, st, ply)
         };
 
         if tb_available && !is_pv && !is_root {
@@ -862,7 +1012,8 @@ impl Searcher {
         }
 
         if actual_depth <= 0 {
-            return self.qsearch_mode::<CHESS960>(st, alpha, beta, QS_DEPTH, start, tl, cnt, ply);
+            return self
+                .qsearch_mode::<CHESS960, E>(st, alpha, beta, QS_DEPTH, start, tl, cnt, ply, eval);
         }
 
         if self.reverse_futility_enabled() && !in_check && !is_pv && actual_depth <= 8 && ply > 0 {
@@ -874,7 +1025,7 @@ impl Searcher {
         if self.futility_enabled() && !in_check && !is_pv && actual_depth <= 3 && ply > 0 {
             let margin = 150 * actual_depth;
             if eval_score + margin <= alpha {
-                let q = self.qsearch_mode::<CHESS960>(
+                let q = self.qsearch_mode::<CHESS960, E>(
                     st,
                     alpha - margin,
                     beta - margin,
@@ -883,6 +1034,7 @@ impl Searcher {
                     tl,
                     cnt,
                     ply,
+                    eval,
                 );
                 if q + margin <= alpha {
                     return alpha;
@@ -912,14 +1064,11 @@ impl Searcher {
                 st.hash ^= z.side;
                 st.ep = None;
                 st.w = !st.w;
-                if ply + 1 < self.nnue_stack.len() {
-                    let (left, right) = self.nnue_stack.split_at_mut(ply + 1);
-                    right[0].clone_from(&left[ply]);
-                }
+                eval.copy_null_acc(self, ply);
                 let null_h = st.hash;
                 self.rep_stack.push(null_h);
                 self.rep_stack_len += 1;
-                let s = -self.negamax_mode::<CHESS960>(
+                let s = -self.negamax_mode::<CHESS960, E>(
                     st,
                     actual_depth - r - 1,
                     ply + 1,
@@ -929,6 +1078,7 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
+                    eval,
                 );
                 self.rep_stack.pop();
                 self.rep_stack_len -= 1;
@@ -1111,7 +1261,8 @@ impl Searcher {
             let move_index = legal_moves_seen;
             legal_moves_seen += 1;
 
-            self.push_nnue_acc(
+            eval.push_acc(
+                self,
                 &st_before,
                 st,
                 move_sr(mv),
@@ -1131,7 +1282,7 @@ impl Searcher {
             let lmr_eligible =
                 self.lmr_enabled() && move_index >= 2 && actual_depth >= 3 && is_quiet && !in_check;
             let s = if move_index == 0 {
-                -self.negamax_mode::<CHESS960>(
+                -self.negamax_mode::<CHESS960, E>(
                     st,
                     new_depth,
                     ply + 1,
@@ -1141,6 +1292,7 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
+                    eval,
                 )
             } else if lmr_eligible {
                 let r = {
@@ -1153,7 +1305,7 @@ impl Searcher {
                         r
                     }
                 };
-                let s2 = -self.negamax_mode::<CHESS960>(
+                let s2 = -self.negamax_mode::<CHESS960, E>(
                     st,
                     new_depth - r,
                     ply + 1,
@@ -1163,9 +1315,10 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
+                    eval,
                 );
                 if s2 > alpha {
-                    let s3 = -self.negamax_mode::<CHESS960>(
+                    let s3 = -self.negamax_mode::<CHESS960, E>(
                         st,
                         new_depth,
                         ply + 1,
@@ -1175,9 +1328,10 @@ impl Searcher {
                         start,
                         tl,
                         cnt,
+                        eval,
                     );
                     if s3 > alpha && is_pv {
-                        -self.negamax_mode::<CHESS960>(
+                        -self.negamax_mode::<CHESS960, E>(
                             st,
                             new_depth,
                             ply + 1,
@@ -1187,6 +1341,7 @@ impl Searcher {
                             start,
                             tl,
                             cnt,
+                            eval,
                         )
                     } else {
                         s3
@@ -1195,7 +1350,7 @@ impl Searcher {
                     s2
                 }
             } else if is_pv {
-                let s2 = -self.negamax_mode::<CHESS960>(
+                let s2 = -self.negamax_mode::<CHESS960, E>(
                     st,
                     new_depth,
                     ply + 1,
@@ -1205,9 +1360,10 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
+                    eval,
                 );
                 if s2 > alpha && s2 < beta {
-                    -self.negamax_mode::<CHESS960>(
+                    -self.negamax_mode::<CHESS960, E>(
                         st,
                         new_depth,
                         ply + 1,
@@ -1217,12 +1373,13 @@ impl Searcher {
                         start,
                         tl,
                         cnt,
+                        eval,
                     )
                 } else {
                     s2
                 }
             } else {
-                -self.negamax_mode::<CHESS960>(
+                -self.negamax_mode::<CHESS960, E>(
                     st,
                     new_depth,
                     ply + 1,
@@ -1232,6 +1389,7 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
+                    eval,
                 )
             };
 
@@ -1326,6 +1484,98 @@ impl Searcher {
             best_move,
         );
         best_score
+    }
+}
+
+impl SearchEval for ClassicEval {
+    #[inline(always)]
+    fn static_eval<const CHESS960: bool>(
+        self,
+        searcher: &Searcher,
+        st: &BoardState,
+        _ply: usize,
+    ) -> i32 {
+        searcher.static_eval_classic::<CHESS960>(st)
+    }
+
+    #[inline(always)]
+    fn corrected_eval<const CHESS960: bool>(self, searcher: &Searcher, st: &BoardState) -> i32 {
+        searcher.corrected_eval_classic::<CHESS960>(st)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn push_acc(
+        self,
+        _searcher: &mut Searcher,
+        _st_before: &BoardState,
+        _st_after: &BoardState,
+        _sr: usize,
+        _sc: usize,
+        _er: usize,
+        _ec: usize,
+        _promotion: u8,
+        _ply: usize,
+    ) {
+    }
+
+    #[inline(always)]
+    fn ensure_child_stack(self, _searcher: &mut Searcher, _ply: usize) {}
+
+    #[inline(always)]
+    fn copy_null_acc(self, _searcher: &mut Searcher, _ply: usize) {}
+}
+
+impl<'a> SearchEval for NnueEval<'a> {
+    #[inline(always)]
+    fn static_eval<const CHESS960: bool>(
+        self,
+        searcher: &Searcher,
+        st: &BoardState,
+        ply: usize,
+    ) -> i32 {
+        searcher.static_eval_nnue::<CHESS960>(st, ply, self.net)
+    }
+
+    #[inline(always)]
+    fn corrected_eval<const CHESS960: bool>(self, searcher: &Searcher, st: &BoardState) -> i32 {
+        searcher.corrected_eval_nnue::<CHESS960>(st, self.net)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn push_acc(
+        self,
+        searcher: &mut Searcher,
+        st_before: &BoardState,
+        st_after: &BoardState,
+        sr: usize,
+        sc: usize,
+        er: usize,
+        ec: usize,
+        promotion: u8,
+        ply: usize,
+    ) {
+        searcher.push_nnue_acc(
+            self.net, st_before, st_after, sr, sc, er, ec, promotion, ply,
+        );
+    }
+
+    #[inline(always)]
+    fn ensure_child_stack(self, searcher: &mut Searcher, ply: usize) {
+        if ply + 1 >= searcher.nnue_stack.len() && ply + 1 < MAX_PLY + 1 {
+            searcher
+                .nnue_stack
+                .resize(ply + 2, NNUEAccumulator::new(self.net.hidden_size));
+        }
+    }
+
+    #[inline(always)]
+    fn copy_null_acc(self, searcher: &mut Searcher, ply: usize) {
+        if ply + 1 < searcher.nnue_stack.len() {
+            let (left, right) = searcher.nnue_stack.split_at_mut(ply + 1);
+            right[0].clone_from(&left[ply]);
+        }
     }
 }
 
@@ -1551,11 +1801,7 @@ pub fn lazy_smp_search(
                                 move_ec(mv),
                                 move_promotion(mv),
                             );
-                            crate::evaluate::with_nnue_net(|net| {
-                                if !searcher.nnue_stack.is_empty() {
-                                    searcher.nnue_stack[1].refresh(net, &s);
-                                }
-                            });
+                            searcher.refresh_nnue_stack_at(1, &s);
                             let h = s.hash;
                             searcher.rep_stack.push(h);
                             searcher.rep_stack_len += 1;

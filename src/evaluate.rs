@@ -5,7 +5,7 @@ use crate::board::{
 use crate::magic::{bishop_attacks, rook_attacks};
 use crate::nnue::{NNUEAccumulator, NNUENet};
 use crate::types::*;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 const MG_VALUE: [i32; 6] = [82, 337, 365, 477, 1025, 0];
 const EG_VALUE: [i32; 6] = [94, 281, 297, 512, 936, 0];
@@ -330,14 +330,14 @@ fn king_safety(bb: &[u64; 12], white: bool, phase: i32) -> i32 {
     -(danger * phase / 24).max(0)
 }
 
-static NNUE_NET: RwLock<Option<NNUENet>> = RwLock::new(None);
+static NNUE_NET: RwLock<Option<Arc<NNUENet>>> = RwLock::new(None);
 
 pub const EMBEDDED_NNUE: &[u8] = include_bytes!("net.compact.nnue");
 
 pub fn init_nnue(path: &str) -> Result<(), String> {
     let net = NNUENet::load(path)?;
     let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
-    *lock = Some(net);
+    *lock = Some(Arc::new(net));
     Ok(())
 }
 
@@ -350,14 +350,14 @@ pub fn reset_nnue() -> Result<(), String> {
 pub fn init_embedded_nnue() -> Result<(), String> {
     let net = NNUENet::load_compact_from_bytes(EMBEDDED_NNUE, "<embedded>")?;
     let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
-    *lock = Some(net);
+    *lock = Some(Arc::new(net));
     Ok(())
 }
 
 pub fn init_nnue_from_bytes(data: &[u8]) -> Result<(), String> {
     let net = NNUENet::load_from_bytes(data, "<embedded>")?;
     let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
-    *lock = Some(net);
+    *lock = Some(Arc::new(net));
     Ok(())
 }
 
@@ -365,12 +365,15 @@ pub fn nnue_loaded() -> bool {
     NNUE_NET.read().is_ok_and(|lock| lock.is_some())
 }
 
+pub fn current_nnue_net() -> Option<Arc<NNUENet>> {
+    NNUE_NET.read().ok()?.clone()
+}
+
 pub fn with_nnue_net<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&NNUENet) -> R,
 {
-    let lock = NNUE_NET.read().ok()?;
-    lock.as_ref().map(f)
+    current_nnue_net().map(|net| f(&net))
 }
 
 pub fn evaluate_nnue_acc(net: &NNUENet, acc: &NNUEAccumulator, st: &BoardState) -> i32 {
