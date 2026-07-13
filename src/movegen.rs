@@ -4,7 +4,7 @@ use crate::board::{
     BP, BQ, BR, EMPTY_SQ, KING_ATTACKS, KNIGHT_ATTACKS, WB, WK, WN, WP, WQ, WR,
 };
 use crate::magic::{bishop_attacks, rook_attacks};
-use crate::zobrist::zobrist;
+use crate::zobrist::{ep_hash_square, zobrist};
 
 pub use crate::board::Move;
 
@@ -174,7 +174,7 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
 
     let old_cr = st.cr;
     let old_castling_rooks = st.castling_rooks;
-    let old_ep = st.ep;
+    let old_ep_hash = ep_hash_square(st);
 
     hash ^= z.pieces[mover_pi as usize][from];
 
@@ -215,6 +215,7 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
                 let rook_to = sq(sr, rook_dst_col);
                 let king_to = sq(sr, king_dst_col);
                 hash ^= z.pieces[rook_pi][rook_from];
+                hash ^= z.pieces[mover_pi as usize][king_to];
                 hash ^= z.pieces[rook_pi][rook_to];
                 st.bb[rook_pi] &= !bit(rook_from);
                 st.bb[rook_pi] |= bit(rook_to);
@@ -291,7 +292,7 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
         }
     }
 
-    if let Some(ep_sq) = old_ep {
+    if let Some(ep_sq) = old_ep_hash {
         hash ^= z.ep[ep_sq];
     }
 
@@ -300,10 +301,6 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
     } else {
         None
     };
-
-    if let Some(ep_sq) = st.ep {
-        hash ^= z.ep[ep_sq];
-    }
 
     for i in 0..4 {
         if old_cr[i] {
@@ -328,8 +325,11 @@ pub fn apply_move(st: &mut BoardState, sr: usize, sc: usize, er: usize, ec: usiz
     }
 
     hash ^= z.side;
-
     st.w = !st.w;
+
+    if let Some(ep_sq) = ep_hash_square(st) {
+        hash ^= z.ep[ep_sq];
+    }
     st.mc += 1;
     st.hash = hash;
 }

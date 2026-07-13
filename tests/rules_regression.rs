@@ -227,6 +227,32 @@ fn chess960_castling_works_when_king_already_on_destination() {
 }
 
 #[test]
+fn chess960_castling_keeps_incremental_hash_aligned() {
+    let engine = engine_from_fen("6kr/8/8/8/8/8/8/6KR w Hh - 0 1", true);
+    let mv = generate_moves(&engine.st, engine.st.w, &engine.st.cr, engine.st.ep)
+        .into_iter()
+        .find(|&mv| move_to_uci(&engine.st, mv) == "g1h1")
+        .expect("expected legal Chess960 castling move g1h1");
+
+    let mut next = engine.st;
+    apply_move(
+        &mut next,
+        move_sr(mv),
+        move_sc(mv),
+        move_er(mv),
+        move_ec(mv),
+        move_promotion(mv),
+    );
+
+    assert_eq!(
+        next.hash,
+        compute_hash(&next),
+        "incremental hash must match recomputed hash after Chess960 castling; reached {}",
+        board_to_fen(&next)
+    );
+}
+
+#[test]
 fn illegal_uci_move_is_rejected_without_mutating_state() {
     let mut engine = Engine::new();
     let before_state = engine.st;
@@ -305,18 +331,18 @@ fn repetition_hash_only_includes_legal_en_passant_rights() {
 
     let no_capture_ep = engine_from_fen("4k3/8/8/8/4P3/8/8/4K3 b - e3 0 1", false);
     let no_capture_without_ep = engine_from_fen("4k3/8/8/8/4P3/8/8/4K3 b - - 0 1", false);
-    assert_ne!(
+    assert_eq!(
         compute_hash(&no_capture_ep.st),
         compute_hash(&no_capture_without_ep.st),
-        "EP square always affects zobrist hash (Stockfish convention), even when no capture is possible"
+        "a non-capturable en-passant target must not affect repetition hash"
     );
 
     let pinned_ep = engine_from_fen("8/8/8/r2pP2K/8/8/8/4k3 w - d6 0 1", false);
     let pinned_without_ep = engine_from_fen("8/8/8/r2pP2K/8/8/8/4k3 w - - 0 1", false);
-    assert_ne!(
+    assert_eq!(
         compute_hash(&pinned_ep.st),
         compute_hash(&pinned_without_ep.st),
-        "EP square always affects zobrist hash (Stockfish convention), even when capture is illegal"
+        "an en-passant target that is illegal because of self-check must not affect repetition hash"
     );
 }
 

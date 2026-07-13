@@ -39,6 +39,16 @@ jobs:
         env:
           RUST_BACKTRACE: 1
 
+      - name: Run release regression tests
+        run: |
+          nix develop .#ci --command bash -c "
+            ulimit -s 65536
+            export RUST_MIN_STACK=16777216
+            cargo test --locked --release --test ccrl_game152_regression -- --test-threads=1
+          "
+        env:
+          RUST_BACKTRACE: 1
+
       - name: Retry failed tests with backtrace
         if: failure()
         run: |
