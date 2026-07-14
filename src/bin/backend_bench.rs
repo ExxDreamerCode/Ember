@@ -28,6 +28,7 @@ struct Args {
     update_loops: usize,
     search_depth: i32,
     search_repeats: usize,
+    search_threads: Vec<usize>,
     hash_mb: usize,
     json_path: Option<String>,
 }
@@ -56,6 +57,7 @@ struct SearchRun {
 #[derive(Debug)]
 struct SearchResult {
     backend: &'static str,
+    threads: usize,
     depth: i32,
     runs: Vec<SearchRun>,
 }
@@ -68,6 +70,30 @@ fn parse_arg<T: std::str::FromStr>(name: &str, default: T) -> T {
         .unwrap_or(default)
 }
 
+fn parse_usize_list(name: &str, default: &[usize]) -> Vec<usize> {
+    let prefix = format!("{name}=");
+    let Some(value) = std::env::args()
+        .skip(1)
+        .find_map(|arg| arg.strip_prefix(&prefix).map(str::to_owned))
+    else {
+        return default.to_vec();
+    };
+
+    let mut out = Vec::new();
+    for item in value.split(',') {
+        if let Ok(n) = item.trim().parse::<usize>() {
+            if n > 0 && !out.contains(&n) {
+                out.push(n);
+            }
+        }
+    }
+    if out.is_empty() {
+        default.to_vec()
+    } else {
+        out
+    }
+}
+
 fn parse_args() -> Args {
     let json_path = std::env::args()
         .skip(1)
@@ -77,6 +103,7 @@ fn parse_args() -> Args {
         update_loops: parse_arg("--update-loops", 200),
         search_depth: parse_arg("--search-depth", 11),
         search_repeats: parse_arg("--search-repeats", 2),
+        search_threads: parse_usize_list("--search-threads", &[1]),
         hash_mb: parse_arg("--hash-mb", 128),
         json_path,
     }
@@ -205,17 +232,19 @@ fn bench_nnue(args: &Args, net: &NNUENet, states: &[BoardState]) -> Vec<NnueResu
 }
 
 fn bench_search(args: &Args) -> Vec<SearchResult> {
-    available_search_backends()
-        .into_iter()
-        .map(|backend| {
-            set_search_backend_override(Some(backend));
+    let mut results = Vec::new();
+    for threads in args.search_threads.iter().copied() {
+        for backend in available_search_backends() {
+            if !set_search_backend_override(Some(backend)) {
+                continue;
+            }
             let mut runs = Vec::new();
 
             for repeat in 0..args.search_repeats {
                 for (fen_index, fen) in FENS.iter().enumerate() {
                     let mut engine = Engine::new();
                     engine.book = None;
-                    engine.num_threads = 1;
+                    engine.num_threads = threads;
                     engine.searcher.resize_tt(args.hash_mb);
                     engine.set_fen(fen);
 
@@ -233,13 +262,15 @@ fn bench_search(args: &Args) -> Vec<SearchResult> {
             }
 
             set_search_backend_override(None);
-            SearchResult {
+            results.push(SearchResult {
                 backend: backend.name(),
+                threads,
                 depth: args.search_depth,
                 runs,
-            }
-        })
-        .collect()
+            });
+        }
+    }
+    results
 }
 
 fn cpu_model() -> String {
@@ -368,8 +399,13 @@ fn write_json(
         json_escape(default_search_backend().name())
     ));
     json.push_str(&format!(
-        "  \"refresh_loops\": {},\n  \"update_loops\": {},\n  \"search_depth\": {},\n  \"search_repeats\": {},\n  \"hash_mb\": {},\n",
-        args.refresh_loops, args.update_loops, args.search_depth, args.search_repeats, args.hash_mb
+        "  \"refresh_loops\": {},\n  \"update_loops\": {},\n  \"search_depth\": {},\n  \"search_repeats\": {},\n  \"search_threads\": {:?},\n  \"hash_mb\": {},\n",
+        args.refresh_loops,
+        args.update_loops,
+        args.search_depth,
+        args.search_repeats,
+        args.search_threads,
+        args.hash_mb
     ));
 
     json.push_str("  \"nnue\": [\n");
@@ -398,8 +434,9 @@ fn write_json(
             json.push_str(",\n");
         }
         json.push_str(&format!(
-            "    {{\"backend\": \"{}\", \"depth\": {}, \"nps\": {:.2}, \"runs\": [",
+            "    {{\"backend\": \"{}\", \"threads\": {}, \"depth\": {}, \"nps\": {:.2}, \"runs\": [",
             json_escape(result.backend),
+            result.threads,
             result.depth,
             total_search_nps(result)
         ));
@@ -445,8 +482,9 @@ fn print_summary(nnue: &[NnueResult], search: &[SearchResult]) {
     for result in search {
         let nodes: u64 = result.runs.iter().map(|run| run.nodes).sum();
         eprintln!(
-            "  {} depth {} nps {:.0} nodes {} runs {}",
+            "  {} threads {} depth {} nps {:.0} nodes {} runs {}",
             result.backend,
+            result.threads,
             result.depth,
             total_search_nps(result),
             nodes,
