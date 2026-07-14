@@ -1,3 +1,4 @@
+use crate::backend::{nnue_backend_available, NnueBackendKind};
 use crate::board::BoardState;
 use crate::simd;
 use crate::types::*;
@@ -69,6 +70,10 @@ pub(crate) struct ScalarNnueBackend;
 
 #[derive(Clone, Copy)]
 pub(crate) struct SimdNnueBackend;
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
+pub(crate) struct Avx512NnueBackend;
 
 impl NnueBackend for ScalarNnueBackend {
     #[inline(always)]
@@ -200,6 +205,42 @@ unsafe fn nnue_update_move_x86_v3(
     promotion: u8,
 ) -> bool {
     acc.update_move_with_backend::<SimdNnueBackend>(net, st_before, sr, sc, er, ec, promotion)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,avx512f,avx512bw,avx512dq,avx512vl,bmi1,bmi2,fma,lzcnt,popcnt")]
+#[inline]
+unsafe fn nnue_forward_x86_avx512(
+    net: &NNUENet,
+    acc: &NNUEAccumulator,
+    stm: u8,
+    piece_count: u32,
+) -> i32 {
+    net.forward_with_backend::<Avx512NnueBackend>(acc, stm, piece_count)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,avx512f,avx512bw,avx512dq,avx512vl,bmi1,bmi2,fma,lzcnt,popcnt")]
+#[inline]
+unsafe fn nnue_refresh_x86_avx512(acc: &mut NNUEAccumulator, net: &NNUENet, st: &BoardState) {
+    acc.refresh_with_backend::<Avx512NnueBackend>(net, st)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,avx512f,avx512bw,avx512dq,avx512vl,bmi1,bmi2,fma,lzcnt,popcnt")]
+#[inline]
+#[allow(clippy::too_many_arguments)]
+unsafe fn nnue_update_move_x86_avx512(
+    acc: &mut NNUEAccumulator,
+    net: &NNUENet,
+    st_before: &BoardState,
+    sr: usize,
+    sc: usize,
+    er: usize,
+    ec: usize,
+    promotion: u8,
+) -> bool {
+    acc.update_move_with_backend::<Avx512NnueBackend>(net, st_before, sr, sc, er, ec, promotion)
 }
 
 impl NnueBackend for SimdNnueBackend {
@@ -351,6 +392,115 @@ impl NnueBackend for SimdNnueBackend {
             out_weights,
             out_bias,
         )
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl NnueBackend for Avx512NnueBackend {
+    #[inline(always)]
+    fn forward(net: &NNUENet, acc: &NNUEAccumulator, stm: u8, piece_count: u32) -> i32 {
+        unsafe { nnue_forward_x86_avx512(net, acc, stm, piece_count) }
+    }
+
+    #[inline(always)]
+    fn refresh(acc: &mut NNUEAccumulator, net: &NNUENet, st: &BoardState) {
+        unsafe {
+            nnue_refresh_x86_avx512(acc, net, st);
+        }
+    }
+
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn update_move(
+        acc: &mut NNUEAccumulator,
+        net: &NNUENet,
+        st_before: &BoardState,
+        sr: usize,
+        sc: usize,
+        er: usize,
+        ec: usize,
+        promotion: u8,
+    ) -> bool {
+        unsafe { nnue_update_move_x86_avx512(acc, net, st_before, sr, sc, er, ec, promotion) }
+    }
+
+    #[inline(always)]
+    fn add_row(acc: &mut [i16], row: &[i16]) {
+        unsafe {
+            simd::simd_add_row_x86_avx512(acc, row);
+        }
+    }
+
+    #[inline(always)]
+    fn sub_row(acc: &mut [i16], row: &[i16]) {
+        unsafe {
+            simd::simd_sub_row_x86_avx512(acc, row);
+        }
+    }
+
+    #[inline(always)]
+    fn forward_base_crelu(
+        stm: &[i16],
+        ntm: &[i16],
+        out_w: &[i16],
+        h: usize,
+        use_screlu: bool,
+    ) -> i64 {
+        unsafe { simd::simd_forward_base_crelu_x86_avx512(stm, ntm, out_w, h, use_screlu) }
+    }
+
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn l1_matmul(
+        sp: &[u8],
+        np: &[u8],
+        l1_total: usize,
+        l1: usize,
+        l1_off: usize,
+        pw: usize,
+        pw_scale: i32,
+        l1_weights: &[i16],
+        l1_biases: &[i16],
+        out: &mut [i32],
+    ) {
+        unsafe {
+            simd::simd_l1_matmul_x86_avx512(
+                sp, np, l1_total, l1, l1_off, pw, pw_scale, l1_weights, l1_biases, out,
+            );
+        }
+    }
+
+    #[inline(always)]
+    fn screlu_activation(hidden: &[i32], pw_scale: i32, qa_l1: i32, out: &mut [f32]) {
+        unsafe {
+            simd::simd_screlu_activation_x86_avx512(hidden, pw_scale, qa_l1, out);
+        }
+    }
+
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn forward_l2(
+        l1_out: &[f32],
+        l2_weights: &[f32],
+        l2_biases: &[f32],
+        l2: usize,
+        l2_total: usize,
+        l2_off: usize,
+        out_weights: &[f32],
+        out_bias: f32,
+    ) -> f32 {
+        unsafe {
+            simd::simd_forward_l2_x86_avx512(
+                l1_out,
+                l2_weights,
+                l2_biases,
+                l2,
+                l2_total,
+                l2_off,
+                out_weights,
+                out_bias,
+            )
+        }
     }
 }
 
@@ -1101,6 +1251,34 @@ impl NNUENet {
         self.forward_with_backend::<ScalarNnueBackend>(acc, stm, piece_count)
     }
 
+    pub fn forward_with_kind(
+        &self,
+        backend: NnueBackendKind,
+        acc: &NNUEAccumulator,
+        stm: u8,
+        piece_count: u32,
+    ) -> i32 {
+        debug_assert!(nnue_backend_available(backend));
+        match backend {
+            NnueBackendKind::Scalar => {
+                self.forward_with_backend::<ScalarNnueBackend>(acc, stm, piece_count)
+            }
+            NnueBackendKind::Simd256 => {
+                self.forward_with_backend::<SimdNnueBackend>(acc, stm, piece_count)
+            }
+            NnueBackendKind::X86Avx512 => {
+                #[cfg(target_arch = "x86_64")]
+                {
+                    self.forward_with_backend::<Avx512NnueBackend>(acc, stm, piece_count)
+                }
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    self.forward_with_backend::<ScalarNnueBackend>(acc, stm, piece_count)
+                }
+            }
+        }
+    }
+
     #[inline(always)]
     pub(crate) fn forward_with_backend<B: NnueBackend>(
         &self,
@@ -1373,6 +1551,24 @@ impl NNUEAccumulator {
         self.refresh_with_backend::<ScalarNnueBackend>(net, st)
     }
 
+    pub fn refresh_with_kind(&mut self, backend: NnueBackendKind, net: &NNUENet, st: &BoardState) {
+        debug_assert!(nnue_backend_available(backend));
+        match backend {
+            NnueBackendKind::Scalar => self.refresh_with_backend::<ScalarNnueBackend>(net, st),
+            NnueBackendKind::Simd256 => self.refresh_with_backend::<SimdNnueBackend>(net, st),
+            NnueBackendKind::X86Avx512 => {
+                #[cfg(target_arch = "x86_64")]
+                {
+                    self.refresh_with_backend::<Avx512NnueBackend>(net, st)
+                }
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    self.refresh_with_backend::<ScalarNnueBackend>(net, st)
+                }
+            }
+        }
+    }
+
     #[inline(always)]
     pub(crate) fn refresh_with_backend<B: NnueBackend>(&mut self, net: &NNUENet, st: &BoardState) {
         let h = self.hs;
@@ -1429,6 +1625,43 @@ impl NNUEAccumulator {
         self.update_move_with_backend::<ScalarNnueBackend>(
             net, st_before, sr, sc, er, ec, promotion,
         )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_move_with_kind(
+        &mut self,
+        backend: NnueBackendKind,
+        net: &NNUENet,
+        st_before: &BoardState,
+        sr: usize,
+        sc: usize,
+        er: usize,
+        ec: usize,
+        promotion: u8,
+    ) -> bool {
+        debug_assert!(nnue_backend_available(backend));
+        match backend {
+            NnueBackendKind::Scalar => self.update_move_with_backend::<ScalarNnueBackend>(
+                net, st_before, sr, sc, er, ec, promotion,
+            ),
+            NnueBackendKind::Simd256 => self.update_move_with_backend::<SimdNnueBackend>(
+                net, st_before, sr, sc, er, ec, promotion,
+            ),
+            NnueBackendKind::X86Avx512 => {
+                #[cfg(target_arch = "x86_64")]
+                {
+                    self.update_move_with_backend::<Avx512NnueBackend>(
+                        net, st_before, sr, sc, er, ec, promotion,
+                    )
+                }
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    self.update_move_with_backend::<ScalarNnueBackend>(
+                        net, st_before, sr, sc, er, ec, promotion,
+                    )
+                }
+            }
+        }
     }
 
     #[inline(always)]

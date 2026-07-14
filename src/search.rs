@@ -1,3 +1,7 @@
+use crate::backend::{
+    default_search_backend, parse_search_backend_name, search_backend_available,
+    x86_avx512_available, x86_v3_available,
+};
 use crate::board::{
     all_occ, attacked_by, bit, has_non_pawn, is_attacked, is_white_piece, move_ec, move_er,
     move_from, move_promotion, move_sc, move_sr, move_to, piece_on, piece_type,
@@ -10,77 +14,65 @@ use crate::movegen::{
     generate_pseudo_captures_promotions_into_mode, generate_pseudo_moves_into_mode,
     is_chess960_castling_move_mode, try_apply_move_mode,
 };
+#[cfg(target_arch = "x86_64")]
+use crate::nnue::Avx512NnueBackend;
 use crate::nnue::{NNUEAccumulator, NNUENet, NnueBackend, ScalarNnueBackend, SimdNnueBackend};
 use crate::syzygy::SyzygyTables;
 use crate::tt::{SharedTT, TT_ALPHA, TT_BETA, TT_EXACT};
 use crate::zobrist::{compute_pawn_hash, ep_hash_square, zobrist};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
+pub use crate::backend::SearchBackendKind;
+
 const SEARCH_BACKEND_ENV: &str = "EMBER_SEARCH_BACKEND";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SearchBackendKind {
-    Scalar,
-    X86V3,
-}
-
 static SEARCH_BACKEND: OnceLock<SearchBackendKind> = OnceLock::new();
+static SEARCH_BACKEND_OVERRIDE: AtomicU8 = AtomicU8::new(0);
 
 #[inline]
 pub fn active_search_backend() -> SearchBackendKind {
+    if let Some(backend) = search_backend_from_id(SEARCH_BACKEND_OVERRIDE.load(Ordering::Relaxed)) {
+        return backend;
+    }
     *SEARCH_BACKEND.get_or_init(detect_search_backend)
+}
+
+pub fn set_search_backend_override(backend: Option<SearchBackendKind>) {
+    let id = backend.map(search_backend_id).unwrap_or(0);
+    SEARCH_BACKEND_OVERRIDE.store(id, Ordering::SeqCst);
 }
 
 fn detect_search_backend() -> SearchBackendKind {
     if let Ok(value) = std::env::var(SEARCH_BACKEND_ENV) {
-        match normalize_backend_name(&value).as_str() {
-            "scalar" | "portable" => return SearchBackendKind::Scalar,
-            "x86-v3" | "x86-64-v3" | "x86_64-v3" | "v3" | "simd" => {
-                return if x86_v3_available() {
-                    SearchBackendKind::X86V3
-                } else {
-                    SearchBackendKind::Scalar
-                };
+        if let Some(backend) = parse_search_backend_name(&value) {
+            if search_backend_available(backend) {
+                return backend;
             }
-            "" | "auto" => {}
-            _ => {}
         }
     }
 
-    if x86_v3_available() {
-        SearchBackendKind::X86V3
-    } else {
-        SearchBackendKind::Scalar
+    default_search_backend()
+}
+
+fn search_backend_id(backend: SearchBackendKind) -> u8 {
+    match backend {
+        SearchBackendKind::Scalar => 1,
+        SearchBackendKind::X86V3 => 2,
+        SearchBackendKind::Aarch64Simd => 3,
+        SearchBackendKind::X86Avx512 => 4,
     }
 }
 
-fn normalize_backend_name(value: &str) -> String {
-    value.trim().to_ascii_lowercase().replace('_', "-")
-}
-
-#[inline]
-pub fn x86_v3_available() -> bool {
-    x86_v3_available_impl()
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline]
-fn x86_v3_available_impl() -> bool {
-    std::arch::is_x86_feature_detected!("avx")
-        && std::arch::is_x86_feature_detected!("avx2")
-        && std::arch::is_x86_feature_detected!("bmi1")
-        && std::arch::is_x86_feature_detected!("bmi2")
-        && std::arch::is_x86_feature_detected!("fma")
-        && std::arch::is_x86_feature_detected!("lzcnt")
-        && std::arch::is_x86_feature_detected!("popcnt")
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-#[inline]
-fn x86_v3_available_impl() -> bool {
-    false
+fn search_backend_from_id(id: u8) -> Option<SearchBackendKind> {
+    match id {
+        1 => Some(SearchBackendKind::Scalar),
+        2 => Some(SearchBackendKind::X86V3),
+        3 => Some(SearchBackendKind::Aarch64Simd),
+        4 => Some(SearchBackendKind::X86Avx512),
+        _ => None,
+    }
 }
 
 fn piece_val(pt: u8) -> i32 {
@@ -1574,6 +1566,34 @@ impl Searcher {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn qsearch_mode_simd256<const CHESS960: bool, E: SearchEval>(
+        &mut self,
+        st: &mut BoardState,
+        mut alpha: i32,
+        beta: i32,
+        depth: i32,
+        start: Instant,
+        tl: f64,
+        cnt: &mut u64,
+        ply: usize,
+        eval: E,
+    ) -> i32 {
+        qsearch_mode_body!(
+            self,
+            qsearch_mode_simd256,
+            st,
+            alpha,
+            beta,
+            depth,
+            start,
+            tl,
+            cnt,
+            ply,
+            eval
+        )
+    }
+
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
     #[allow(clippy::too_many_arguments)]
@@ -1606,6 +1626,40 @@ impl Searcher {
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(
+        enable = "avx,avx2,avx512f,avx512bw,avx512dq,avx512vl,bmi1,bmi2,fma,lzcnt,popcnt"
+    )]
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn qsearch_mode_x86_avx512<const CHESS960: bool, E: SearchEval>(
+        &mut self,
+        st: &mut BoardState,
+        mut alpha: i32,
+        beta: i32,
+        depth: i32,
+        start: Instant,
+        tl: f64,
+        cnt: &mut u64,
+        ply: usize,
+        eval: E,
+    ) -> i32 {
+        unsafe {
+            qsearch_mode_body!(
+                self,
+                qsearch_mode_x86_avx512,
+                st,
+                alpha,
+                beta,
+                depth,
+                start,
+                tl,
+                cnt,
+                ply,
+                eval
+            )
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn negamax(
         &mut self,
@@ -1620,6 +1674,18 @@ impl Searcher {
         cnt: &mut u64,
     ) -> i32 {
         match active_search_backend() {
+            SearchBackendKind::X86Avx512 if x86_avx512_available() => {
+                #[cfg(target_arch = "x86_64")]
+                {
+                    return unsafe {
+                        self.negamax_x86_avx512(
+                            st, depth, ply, alpha, beta, can_null, start, tl, cnt,
+                        )
+                    };
+                }
+                #[allow(unreachable_code)]
+                self.negamax_scalar(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
+            }
             SearchBackendKind::X86V3 if x86_v3_available() => {
                 #[cfg(target_arch = "x86_64")]
                 {
@@ -1629,6 +1695,11 @@ impl Searcher {
                 }
                 #[allow(unreachable_code)]
                 self.negamax_scalar(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
+            }
+            SearchBackendKind::Aarch64Simd
+                if search_backend_available(SearchBackendKind::Aarch64Simd) =>
+            {
+                self.negamax_simd256(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
             }
             _ => self.negamax_scalar(st, depth, ply, alpha, beta, can_null, start, tl, cnt),
         }
@@ -1692,6 +1763,78 @@ impl Searcher {
                 },
             ),
             (false, None) => self.negamax_mode_scalar::<false, _>(
+                st,
+                depth,
+                ply,
+                alpha,
+                beta,
+                can_null,
+                start,
+                tl,
+                cnt,
+                ClassicEval,
+            ),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn negamax_simd256(
+        &mut self,
+        st: &mut BoardState,
+        depth: i32,
+        ply: usize,
+        alpha: i32,
+        beta: i32,
+        can_null: bool,
+        start: Instant,
+        tl: f64,
+        cnt: &mut u64,
+    ) -> i32 {
+        let nnue_net = self.nnue_net.clone();
+        match (st.chess960, nnue_net.as_deref()) {
+            (true, Some(net)) => self.negamax_mode_simd256::<true, _>(
+                st,
+                depth,
+                ply,
+                alpha,
+                beta,
+                can_null,
+                start,
+                tl,
+                cnt,
+                NnueEval {
+                    net,
+                    _backend: SimdNnueBackend,
+                },
+            ),
+            (true, None) => self.negamax_mode_simd256::<true, _>(
+                st,
+                depth,
+                ply,
+                alpha,
+                beta,
+                can_null,
+                start,
+                tl,
+                cnt,
+                ClassicEval,
+            ),
+            (false, Some(net)) => self.negamax_mode_simd256::<false, _>(
+                st,
+                depth,
+                ply,
+                alpha,
+                beta,
+                can_null,
+                start,
+                tl,
+                cnt,
+                NnueEval {
+                    net,
+                    _backend: SimdNnueBackend,
+                },
+            ),
+            (false, None) => self.negamax_mode_simd256::<false, _>(
                 st,
                 depth,
                 ply,
@@ -1782,6 +1925,84 @@ impl Searcher {
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(
+        enable = "avx,avx2,avx512f,avx512bw,avx512dq,avx512vl,bmi1,bmi2,fma,lzcnt,popcnt"
+    )]
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn negamax_x86_avx512(
+        &mut self,
+        st: &mut BoardState,
+        depth: i32,
+        ply: usize,
+        alpha: i32,
+        beta: i32,
+        can_null: bool,
+        start: Instant,
+        tl: f64,
+        cnt: &mut u64,
+    ) -> i32 {
+        let nnue_net = self.nnue_net.clone();
+        unsafe {
+            match (st.chess960, nnue_net.as_deref()) {
+                (true, Some(net)) => self.negamax_mode_x86_avx512::<true, _>(
+                    st,
+                    depth,
+                    ply,
+                    alpha,
+                    beta,
+                    can_null,
+                    start,
+                    tl,
+                    cnt,
+                    NnueEval {
+                        net,
+                        _backend: Avx512NnueBackend,
+                    },
+                ),
+                (true, None) => self.negamax_mode_x86_avx512::<true, _>(
+                    st,
+                    depth,
+                    ply,
+                    alpha,
+                    beta,
+                    can_null,
+                    start,
+                    tl,
+                    cnt,
+                    ClassicEval,
+                ),
+                (false, Some(net)) => self.negamax_mode_x86_avx512::<false, _>(
+                    st,
+                    depth,
+                    ply,
+                    alpha,
+                    beta,
+                    can_null,
+                    start,
+                    tl,
+                    cnt,
+                    NnueEval {
+                        net,
+                        _backend: Avx512NnueBackend,
+                    },
+                ),
+                (false, None) => self.negamax_mode_x86_avx512::<false, _>(
+                    st,
+                    depth,
+                    ply,
+                    alpha,
+                    beta,
+                    can_null,
+                    start,
+                    tl,
+                    cnt,
+                    ClassicEval,
+                ),
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn negamax_mode_scalar<const CHESS960: bool, E: SearchEval>(
         &mut self,
@@ -1800,6 +2021,37 @@ impl Searcher {
             self,
             negamax_mode_scalar,
             qsearch_mode_scalar,
+            st,
+            depth,
+            ply,
+            alpha,
+            beta,
+            can_null,
+            start,
+            tl,
+            cnt,
+            eval
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn negamax_mode_simd256<const CHESS960: bool, E: SearchEval>(
+        &mut self,
+        st: &mut BoardState,
+        depth: i32,
+        ply: usize,
+        mut alpha: i32,
+        beta: i32,
+        can_null: bool,
+        start: Instant,
+        tl: f64,
+        cnt: &mut u64,
+        eval: E,
+    ) -> i32 {
+        negamax_mode_body!(
+            self,
+            negamax_mode_simd256,
+            qsearch_mode_simd256,
             st,
             depth,
             ply,
@@ -1834,6 +2086,43 @@ impl Searcher {
                 self,
                 negamax_mode_x86_v3,
                 qsearch_mode_x86_v3,
+                st,
+                depth,
+                ply,
+                alpha,
+                beta,
+                can_null,
+                start,
+                tl,
+                cnt,
+                eval
+            )
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(
+        enable = "avx,avx2,avx512f,avx512bw,avx512dq,avx512vl,bmi1,bmi2,fma,lzcnt,popcnt"
+    )]
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn negamax_mode_x86_avx512<const CHESS960: bool, E: SearchEval>(
+        &mut self,
+        st: &mut BoardState,
+        depth: i32,
+        ply: usize,
+        mut alpha: i32,
+        beta: i32,
+        can_null: bool,
+        start: Instant,
+        tl: f64,
+        cnt: &mut u64,
+        eval: E,
+    ) -> i32 {
+        unsafe {
+            negamax_mode_body!(
+                self,
+                negamax_mode_x86_avx512,
+                qsearch_mode_x86_avx512,
                 st,
                 depth,
                 ply,
