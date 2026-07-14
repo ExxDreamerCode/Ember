@@ -1,7 +1,9 @@
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum NnueBackendKind {
     Scalar,
+    Simd128,
     Simd256,
+    Simd512,
     X86Avx512,
 }
 
@@ -9,7 +11,9 @@ impl NnueBackendKind {
     pub fn name(self) -> &'static str {
         match self {
             NnueBackendKind::Scalar => "scalar",
+            NnueBackendKind::Simd128 => "simd128",
             NnueBackendKind::Simd256 => "simd256",
+            NnueBackendKind::Simd512 => "simd512",
             NnueBackendKind::X86Avx512 => "x86-avx512",
         }
     }
@@ -19,7 +23,9 @@ impl NnueBackendKind {
 pub enum SearchBackendKind {
     Scalar,
     X86V3,
-    Aarch64Simd,
+    Aarch64Simd128,
+    Aarch64Simd256,
+    Aarch64Simd512,
     X86Avx512,
 }
 
@@ -28,7 +34,9 @@ impl SearchBackendKind {
         match self {
             SearchBackendKind::Scalar => "scalar",
             SearchBackendKind::X86V3 => "x86-v3",
-            SearchBackendKind::Aarch64Simd => "aarch64-simd",
+            SearchBackendKind::Aarch64Simd128 => "aarch64-simd128",
+            SearchBackendKind::Aarch64Simd256 => "aarch64-simd256",
+            SearchBackendKind::Aarch64Simd512 => "aarch64-simd512",
             SearchBackendKind::X86Avx512 => "x86-avx512",
         }
     }
@@ -36,7 +44,11 @@ impl SearchBackendKind {
     pub fn nnue_backend(self) -> NnueBackendKind {
         match self {
             SearchBackendKind::Scalar => NnueBackendKind::Scalar,
-            SearchBackendKind::X86V3 | SearchBackendKind::Aarch64Simd => NnueBackendKind::Simd256,
+            SearchBackendKind::Aarch64Simd128 => NnueBackendKind::Simd128,
+            SearchBackendKind::X86V3 | SearchBackendKind::Aarch64Simd256 => {
+                NnueBackendKind::Simd256
+            }
+            SearchBackendKind::Aarch64Simd512 => NnueBackendKind::Simd512,
             SearchBackendKind::X86Avx512 => NnueBackendKind::X86Avx512,
         }
     }
@@ -46,15 +58,23 @@ pub fn parse_search_backend_name(value: &str) -> Option<SearchBackendKind> {
     match normalize_backend_name(value).as_str() {
         "scalar" | "portable" => Some(SearchBackendKind::Scalar),
         "x86-v3" | "x86-64-v3" | "x86_64-v3" | "v3" | "avx2" => Some(SearchBackendKind::X86V3),
-        "aarch64-simd" | "arm64-simd" | "arm-simd" | "neon" => Some(SearchBackendKind::Aarch64Simd),
+        "aarch64-simd128" | "arm64-simd128" | "arm-simd128" | "neon128" => {
+            Some(SearchBackendKind::Aarch64Simd128)
+        }
+        "aarch64-simd" | "arm64-simd" | "arm-simd" | "neon" | "aarch64-simd256"
+        | "arm64-simd256" | "arm-simd256" | "neon256" => Some(SearchBackendKind::Aarch64Simd256),
+        "aarch64-simd512" | "arm64-simd512" | "arm-simd512" | "neon512" => {
+            Some(SearchBackendKind::Aarch64Simd512)
+        }
         "x86-avx512" | "avx512" | "x86-v4" | "x86-64-v4" | "v4" => {
             Some(SearchBackendKind::X86Avx512)
         }
-        "simd" | "simd256" => {
+        "simd" => Some(default_search_backend()),
+        "simd256" => {
             if x86_v3_available() {
                 Some(SearchBackendKind::X86V3)
             } else if aarch64_simd_available() {
-                Some(SearchBackendKind::Aarch64Simd)
+                Some(SearchBackendKind::Aarch64Simd256)
             } else {
                 Some(SearchBackendKind::Scalar)
             }
@@ -69,8 +89,12 @@ pub fn normalize_backend_name(value: &str) -> String {
 }
 
 pub fn default_search_backend() -> SearchBackendKind {
-    if x86_v3_available() {
+    if x86_avx512_available() {
+        SearchBackendKind::X86Avx512
+    } else if x86_v3_available() {
         SearchBackendKind::X86V3
+    } else if aarch64_simd_available() {
+        SearchBackendKind::Aarch64Simd512
     } else {
         SearchBackendKind::Scalar
     }
@@ -83,7 +107,9 @@ pub fn available_search_backends() -> Vec<SearchBackendKind> {
         backends.push(SearchBackendKind::X86V3);
     }
     if aarch64_simd_available() {
-        backends.push(SearchBackendKind::Aarch64Simd);
+        backends.push(SearchBackendKind::Aarch64Simd128);
+        backends.push(SearchBackendKind::Aarch64Simd256);
+        backends.push(SearchBackendKind::Aarch64Simd512);
     }
     if x86_avx512_available() {
         backends.push(SearchBackendKind::X86Avx512);
@@ -96,7 +122,9 @@ pub fn search_backend_available(backend: SearchBackendKind) -> bool {
     match backend {
         SearchBackendKind::Scalar => true,
         SearchBackendKind::X86V3 => x86_v3_available(),
-        SearchBackendKind::Aarch64Simd => aarch64_simd_available(),
+        SearchBackendKind::Aarch64Simd128
+        | SearchBackendKind::Aarch64Simd256
+        | SearchBackendKind::Aarch64Simd512 => aarch64_simd_available(),
         SearchBackendKind::X86Avx512 => x86_avx512_available(),
     }
 }
@@ -104,8 +132,14 @@ pub fn search_backend_available(backend: SearchBackendKind) -> bool {
 pub fn available_nnue_backends() -> Vec<NnueBackendKind> {
     let mut backends = vec![NnueBackendKind::Scalar];
 
+    if aarch64_simd_available() {
+        backends.push(NnueBackendKind::Simd128);
+    }
     if x86_v3_available() || aarch64_simd_available() {
         backends.push(NnueBackendKind::Simd256);
+    }
+    if aarch64_simd_available() {
+        backends.push(NnueBackendKind::Simd512);
     }
     if x86_avx512_available() {
         backends.push(NnueBackendKind::X86Avx512);
@@ -117,7 +151,9 @@ pub fn available_nnue_backends() -> Vec<NnueBackendKind> {
 pub fn nnue_backend_available(backend: NnueBackendKind) -> bool {
     match backend {
         NnueBackendKind::Scalar => true,
+        NnueBackendKind::Simd128 => aarch64_simd_available(),
         NnueBackendKind::Simd256 => x86_v3_available() || aarch64_simd_available(),
+        NnueBackendKind::Simd512 => aarch64_simd_available(),
         NnueBackendKind::X86Avx512 => x86_avx512_available(),
     }
 }

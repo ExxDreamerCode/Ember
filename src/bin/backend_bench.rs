@@ -1,4 +1,6 @@
-use chess_rs_lib::backend::{available_nnue_backends, available_search_backends, NnueBackendKind};
+use chess_rs_lib::backend::{
+    available_nnue_backends, available_search_backends, default_search_backend, NnueBackendKind,
+};
 use chess_rs_lib::board::{move_ec, move_er, move_promotion, move_sc, move_sr, BoardState};
 use chess_rs_lib::evaluate::{self, EMBEDDED_NNUE};
 use chess_rs_lib::movegen::{apply_move, generate_moves};
@@ -362,6 +364,10 @@ fn write_json(
         json_escape(&cpu_features())
     ));
     json.push_str(&format!(
+        "  \"default_search_backend\": \"{}\",\n",
+        json_escape(default_search_backend().name())
+    ));
+    json.push_str(&format!(
         "  \"refresh_loops\": {},\n  \"update_loops\": {},\n  \"search_depth\": {},\n  \"search_repeats\": {},\n  \"hash_mb\": {},\n",
         args.refresh_loops, args.update_loops, args.search_depth, args.search_repeats, args.hash_mb
     ));
@@ -478,6 +484,7 @@ fn main() {
             .collect::<Vec<_>>()
             .join(",")
     );
+    eprintln!("default_search_backend={}", default_search_backend().name());
 
     let nnue = bench_nnue(&args, &net, &states);
     let search = bench_search(&args);

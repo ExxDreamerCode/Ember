@@ -16,7 +16,10 @@ use crate::movegen::{
 };
 #[cfg(target_arch = "x86_64")]
 use crate::nnue::Avx512NnueBackend;
-use crate::nnue::{NNUEAccumulator, NNUENet, NnueBackend, ScalarNnueBackend, SimdNnueBackend};
+use crate::nnue::{
+    NNUEAccumulator, NNUENet, NnueBackend, ScalarNnueBackend, Simd128NnueBackend,
+    Simd512NnueBackend, SimdNnueBackend,
+};
 use crate::syzygy::SyzygyTables;
 use crate::tt::{SharedTT, TT_ALPHA, TT_BETA, TT_EXACT};
 use crate::zobrist::{compute_pawn_hash, ep_hash_square, zobrist};
@@ -60,7 +63,9 @@ fn search_backend_id(backend: SearchBackendKind) -> u8 {
     match backend {
         SearchBackendKind::Scalar => 1,
         SearchBackendKind::X86V3 => 2,
-        SearchBackendKind::Aarch64Simd => 3,
+        SearchBackendKind::Aarch64Simd128 => 3,
+        SearchBackendKind::Aarch64Simd256 => 5,
+        SearchBackendKind::Aarch64Simd512 => 6,
         SearchBackendKind::X86Avx512 => 4,
     }
 }
@@ -69,8 +74,10 @@ fn search_backend_from_id(id: u8) -> Option<SearchBackendKind> {
     match id {
         1 => Some(SearchBackendKind::Scalar),
         2 => Some(SearchBackendKind::X86V3),
-        3 => Some(SearchBackendKind::Aarch64Simd),
+        3 => Some(SearchBackendKind::Aarch64Simd128),
         4 => Some(SearchBackendKind::X86Avx512),
+        5 => Some(SearchBackendKind::Aarch64Simd256),
+        6 => Some(SearchBackendKind::Aarch64Simd512),
         _ => None,
     }
 }
@@ -1567,6 +1574,34 @@ impl Searcher {
     }
 
     #[allow(clippy::too_many_arguments)]
+    fn qsearch_mode_simd128<const CHESS960: bool, E: SearchEval>(
+        &mut self,
+        st: &mut BoardState,
+        mut alpha: i32,
+        beta: i32,
+        depth: i32,
+        start: Instant,
+        tl: f64,
+        cnt: &mut u64,
+        ply: usize,
+        eval: E,
+    ) -> i32 {
+        qsearch_mode_body!(
+            self,
+            qsearch_mode_simd128,
+            st,
+            alpha,
+            beta,
+            depth,
+            start,
+            tl,
+            cnt,
+            ply,
+            eval
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn qsearch_mode_simd256<const CHESS960: bool, E: SearchEval>(
         &mut self,
         st: &mut BoardState,
@@ -1582,6 +1617,34 @@ impl Searcher {
         qsearch_mode_body!(
             self,
             qsearch_mode_simd256,
+            st,
+            alpha,
+            beta,
+            depth,
+            start,
+            tl,
+            cnt,
+            ply,
+            eval
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn qsearch_mode_simd512<const CHESS960: bool, E: SearchEval>(
+        &mut self,
+        st: &mut BoardState,
+        mut alpha: i32,
+        beta: i32,
+        depth: i32,
+        start: Instant,
+        tl: f64,
+        cnt: &mut u64,
+        ply: usize,
+        eval: E,
+    ) -> i32 {
+        qsearch_mode_body!(
+            self,
+            qsearch_mode_simd512,
             st,
             alpha,
             beta,
@@ -1696,10 +1759,20 @@ impl Searcher {
                 #[allow(unreachable_code)]
                 self.negamax_scalar(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
             }
-            SearchBackendKind::Aarch64Simd
-                if search_backend_available(SearchBackendKind::Aarch64Simd) =>
+            SearchBackendKind::Aarch64Simd128
+                if search_backend_available(SearchBackendKind::Aarch64Simd128) =>
+            {
+                self.negamax_simd128(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
+            }
+            SearchBackendKind::Aarch64Simd256
+                if search_backend_available(SearchBackendKind::Aarch64Simd256) =>
             {
                 self.negamax_simd256(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
+            }
+            SearchBackendKind::Aarch64Simd512
+                if search_backend_available(SearchBackendKind::Aarch64Simd512) =>
+            {
+                self.negamax_simd512(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
             }
             _ => self.negamax_scalar(st, depth, ply, alpha, beta, can_null, start, tl, cnt),
         }
@@ -1778,6 +1851,78 @@ impl Searcher {
     }
 
     #[allow(clippy::too_many_arguments)]
+    fn negamax_simd128(
+        &mut self,
+        st: &mut BoardState,
+        depth: i32,
+        ply: usize,
+        alpha: i32,
+        beta: i32,
+        can_null: bool,
+        start: Instant,
+        tl: f64,
+        cnt: &mut u64,
+    ) -> i32 {
+        let nnue_net = self.nnue_net.clone();
+        match (st.chess960, nnue_net.as_deref()) {
+            (true, Some(net)) => self.negamax_mode_simd128::<true, _>(
+                st,
+                depth,
+                ply,
+                alpha,
+                beta,
+                can_null,
+                start,
+                tl,
+                cnt,
+                NnueEval {
+                    net,
+                    _backend: Simd128NnueBackend,
+                },
+            ),
+            (true, None) => self.negamax_mode_simd128::<true, _>(
+                st,
+                depth,
+                ply,
+                alpha,
+                beta,
+                can_null,
+                start,
+                tl,
+                cnt,
+                ClassicEval,
+            ),
+            (false, Some(net)) => self.negamax_mode_simd128::<false, _>(
+                st,
+                depth,
+                ply,
+                alpha,
+                beta,
+                can_null,
+                start,
+                tl,
+                cnt,
+                NnueEval {
+                    net,
+                    _backend: Simd128NnueBackend,
+                },
+            ),
+            (false, None) => self.negamax_mode_simd128::<false, _>(
+                st,
+                depth,
+                ply,
+                alpha,
+                beta,
+                can_null,
+                start,
+                tl,
+                cnt,
+                ClassicEval,
+            ),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn negamax_simd256(
         &mut self,
         st: &mut BoardState,
@@ -1835,6 +1980,78 @@ impl Searcher {
                 },
             ),
             (false, None) => self.negamax_mode_simd256::<false, _>(
+                st,
+                depth,
+                ply,
+                alpha,
+                beta,
+                can_null,
+                start,
+                tl,
+                cnt,
+                ClassicEval,
+            ),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn negamax_simd512(
+        &mut self,
+        st: &mut BoardState,
+        depth: i32,
+        ply: usize,
+        alpha: i32,
+        beta: i32,
+        can_null: bool,
+        start: Instant,
+        tl: f64,
+        cnt: &mut u64,
+    ) -> i32 {
+        let nnue_net = self.nnue_net.clone();
+        match (st.chess960, nnue_net.as_deref()) {
+            (true, Some(net)) => self.negamax_mode_simd512::<true, _>(
+                st,
+                depth,
+                ply,
+                alpha,
+                beta,
+                can_null,
+                start,
+                tl,
+                cnt,
+                NnueEval {
+                    net,
+                    _backend: Simd512NnueBackend,
+                },
+            ),
+            (true, None) => self.negamax_mode_simd512::<true, _>(
+                st,
+                depth,
+                ply,
+                alpha,
+                beta,
+                can_null,
+                start,
+                tl,
+                cnt,
+                ClassicEval,
+            ),
+            (false, Some(net)) => self.negamax_mode_simd512::<false, _>(
+                st,
+                depth,
+                ply,
+                alpha,
+                beta,
+                can_null,
+                start,
+                tl,
+                cnt,
+                NnueEval {
+                    net,
+                    _backend: Simd512NnueBackend,
+                },
+            ),
+            (false, None) => self.negamax_mode_simd512::<false, _>(
                 st,
                 depth,
                 ply,
@@ -2035,6 +2252,37 @@ impl Searcher {
     }
 
     #[allow(clippy::too_many_arguments)]
+    fn negamax_mode_simd128<const CHESS960: bool, E: SearchEval>(
+        &mut self,
+        st: &mut BoardState,
+        depth: i32,
+        ply: usize,
+        mut alpha: i32,
+        beta: i32,
+        can_null: bool,
+        start: Instant,
+        tl: f64,
+        cnt: &mut u64,
+        eval: E,
+    ) -> i32 {
+        negamax_mode_body!(
+            self,
+            negamax_mode_simd128,
+            qsearch_mode_simd128,
+            st,
+            depth,
+            ply,
+            alpha,
+            beta,
+            can_null,
+            start,
+            tl,
+            cnt,
+            eval
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn negamax_mode_simd256<const CHESS960: bool, E: SearchEval>(
         &mut self,
         st: &mut BoardState,
@@ -2052,6 +2300,37 @@ impl Searcher {
             self,
             negamax_mode_simd256,
             qsearch_mode_simd256,
+            st,
+            depth,
+            ply,
+            alpha,
+            beta,
+            can_null,
+            start,
+            tl,
+            cnt,
+            eval
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn negamax_mode_simd512<const CHESS960: bool, E: SearchEval>(
+        &mut self,
+        st: &mut BoardState,
+        depth: i32,
+        ply: usize,
+        mut alpha: i32,
+        beta: i32,
+        can_null: bool,
+        start: Instant,
+        tl: f64,
+        cnt: &mut u64,
+        eval: E,
+    ) -> i32 {
+        negamax_mode_body!(
+            self,
+            negamax_mode_simd512,
+            qsearch_mode_simd512,
             st,
             depth,
             ply,
