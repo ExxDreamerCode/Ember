@@ -160,11 +160,10 @@ fn shift_for(mask: u64) -> u32 {
 
 impl MagicTables {
     fn init() -> Self {
-        let mut bishop_magics_arr: [Magic; 64] = unsafe { std::mem::zeroed() };
         let mut bishop_attacks_vec = Vec::new();
         let mut offset = 0usize;
 
-        for sq in 0..64 {
+        let bishop_magics_arr = std::array::from_fn(|sq| {
             let mask = bishop_mask(sq);
             let shift = shift_for(mask);
             let magic = BISHOP_MAGICS[sq];
@@ -176,7 +175,7 @@ impl MagicTables {
                 table[idx] = slow_bishop(sq, sub);
             }
 
-            bishop_magics_arr[sq] = Magic {
+            let entry = Magic {
                 mask,
                 magic,
                 shift,
@@ -184,13 +183,13 @@ impl MagicTables {
             };
             bishop_attacks_vec.extend_from_slice(&table);
             offset += size;
-        }
+            entry
+        });
 
-        let mut rook_magics_arr: [Magic; 64] = unsafe { std::mem::zeroed() };
         let mut rook_attacks_vec = Vec::new();
         let mut offset = 0usize;
 
-        for sq in 0..64 {
+        let rook_magics_arr = std::array::from_fn(|sq| {
             let mask = rook_mask(sq);
             let shift = shift_for(mask);
             let magic = ROOK_MAGICS[sq];
@@ -202,7 +201,7 @@ impl MagicTables {
                 table[idx] = slow_rook(sq, sub);
             }
 
-            rook_magics_arr[sq] = Magic {
+            let entry = Magic {
                 mask,
                 magic,
                 shift,
@@ -210,7 +209,8 @@ impl MagicTables {
             };
             rook_attacks_vec.extend_from_slice(&table);
             offset += size;
-        }
+            entry
+        });
 
         MagicTables {
             bishop: bishop_magics_arr,

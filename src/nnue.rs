@@ -187,6 +187,8 @@ impl NNUENet {
     #[inline(always)]
     fn input_row_fast(&self, idx: usize) -> Option<&[i16]> {
         debug_assert!(idx < self.input_row_map.len());
+        // Safety: callers pass feature indices produced for this network's
+        // HalfKA layout, so the index is within the row map.
         let physical_row = unsafe { *self.input_row_map.get_unchecked(idx) };
         if physical_row == COMPACT_ZERO_ROW {
             return None;
@@ -194,6 +196,9 @@ impl NNUENet {
 
         let start = physical_row as usize * self.hidden_size;
         debug_assert!(start + self.hidden_size <= self.input_weights.len());
+        // Safety: non-zero physical rows are produced by
+        // `compact_input_weights`, which appends full `hidden_size` rows to
+        // `input_weights` and records only those row numbers.
         let row = unsafe {
             std::slice::from_raw_parts(self.input_weights.as_ptr().add(start), self.hidden_size)
         };
@@ -1137,9 +1142,15 @@ fn read_i32(r: &mut impl IoRead) -> Result<i32, String> {
 }
 
 fn read_i16s(r: &mut impl IoRead, buf: &mut [i16]) -> Result<(), String> {
-    let bytes =
-        unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, buf.len() * 2) };
-    r.read_exact(bytes).map_err(|e| format!("i16s: {}", e))?;
+    let mut bytes = vec![0u8; std::mem::size_of_val(buf)];
+    r.read_exact(&mut bytes)
+        .map_err(|e| format!("i16s: {}", e))?;
+    let (raw_values, []) = bytes.as_chunks::<2>() else {
+        unreachable!("i16 byte buffer length is always even");
+    };
+    for (value, raw) in buf.iter_mut().zip(raw_values) {
+        *value = i16::from_le_bytes([raw[0], raw[1]]);
+    }
     Ok(())
 }
 
