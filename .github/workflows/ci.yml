@@ -61,6 +61,10 @@ jobs:
         if: matrix.runner == 'ubuntu-latest'
         run: tools/test-aarch64-qemu.sh
 
+      - name: Run old x86 CPU smoke under QEMU
+        if: matrix.runner == 'ubuntu-latest'
+        run: tools/test-x86_64-qemu-oldcpu.sh
+
       - name: Retry failed tests with backtrace
         if: failure()
         run: |
