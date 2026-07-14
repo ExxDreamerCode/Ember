@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum NnueBackendKind {
     Scalar,
@@ -89,15 +91,34 @@ pub fn normalize_backend_name(value: &str) -> String {
 }
 
 pub fn default_search_backend() -> SearchBackendKind {
-    if x86_avx512_available() {
-        SearchBackendKind::X86Avx512
-    } else if x86_v3_available() {
-        SearchBackendKind::X86V3
-    } else if aarch64_simd_available() {
-        SearchBackendKind::Aarch64Simd512
-    } else {
-        SearchBackendKind::Scalar
+    static DEFAULT_SEARCH_BACKEND: OnceLock<SearchBackendKind> = OnceLock::new();
+    *DEFAULT_SEARCH_BACKEND.get_or_init(|| {
+        if x86_avx512_available() {
+            SearchBackendKind::X86Avx512
+        } else if x86_v3_available() {
+            SearchBackendKind::X86V3
+        } else {
+            SearchBackendKind::Scalar
+        }
+    })
+}
+
+pub fn compiled_search_backends() -> Vec<SearchBackendKind> {
+    let mut backends = vec![SearchBackendKind::Scalar];
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        backends.push(SearchBackendKind::X86V3);
+        backends.push(SearchBackendKind::X86Avx512);
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        backends.push(SearchBackendKind::Aarch64Simd128);
+        backends.push(SearchBackendKind::Aarch64Simd256);
+        backends.push(SearchBackendKind::Aarch64Simd512);
+    }
+
+    backends
 }
 
 pub fn available_search_backends() -> Vec<SearchBackendKind> {
@@ -160,7 +181,8 @@ pub fn nnue_backend_available(backend: NnueBackendKind) -> bool {
 
 #[inline]
 pub fn x86_v3_available() -> bool {
-    x86_v3_available_impl()
+    static X86_V3_AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *X86_V3_AVAILABLE.get_or_init(x86_v3_available_impl)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -183,7 +205,8 @@ fn x86_v3_available_impl() -> bool {
 
 #[inline]
 pub fn x86_avx512_available() -> bool {
-    x86_avx512_available_impl()
+    static X86_AVX512_AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *X86_AVX512_AVAILABLE.get_or_init(x86_avx512_available_impl)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -204,7 +227,8 @@ fn x86_avx512_available_impl() -> bool {
 
 #[inline]
 pub fn aarch64_simd_available() -> bool {
-    aarch64_simd_available_impl()
+    static AARCH64_SIMD_AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AARCH64_SIMD_AVAILABLE.get_or_init(aarch64_simd_available_impl)
 }
 
 #[cfg(target_arch = "aarch64")]

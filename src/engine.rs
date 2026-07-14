@@ -643,6 +643,7 @@ impl Engine {
 
     pub fn find_best_move(&mut self, time_limit: f64, depth_limit: i32) -> (String, i32, u64, f64) {
         self.searcher.refresh_nnue_net();
+        self.searcher.refresh_search_backend();
         let moves = generate_moves(&self.st, self.st.w, &self.st.cr, self.st.ep);
         #[cfg(feature = "decision-trace")]
         let root_fen = board_to_fen(&self.st);

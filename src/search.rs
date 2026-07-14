@@ -1,7 +1,4 @@
-use crate::backend::{
-    default_search_backend, parse_search_backend_name, search_backend_available,
-    x86_avx512_available, x86_v3_available,
-};
+use crate::backend::{default_search_backend, parse_search_backend_name, search_backend_available};
 use crate::board::{
     all_occ, attacked_by, bit, has_non_pawn, is_attacked, is_white_piece, move_ec, move_er,
     move_from, move_promotion, move_sc, move_sr, move_to, piece_on, piece_type,
@@ -42,9 +39,13 @@ pub fn active_search_backend() -> SearchBackendKind {
     *SEARCH_BACKEND.get_or_init(detect_search_backend)
 }
 
-pub fn set_search_backend_override(backend: Option<SearchBackendKind>) {
+pub fn set_search_backend_override(backend: Option<SearchBackendKind>) -> bool {
+    if backend.is_some_and(|backend| !search_backend_available(backend)) {
+        return false;
+    }
     let id = backend.map(search_backend_id).unwrap_or(0);
     SEARCH_BACKEND_OVERRIDE.store(id, Ordering::SeqCst);
+    true
 }
 
 fn detect_search_backend() -> SearchBackendKind {
@@ -324,6 +325,7 @@ pub struct Searcher {
     pub stopped: Arc<AtomicBool>,
     pub nnue_stack: Vec<NNUEAccumulator>,
     pub nnue_net: Option<Arc<NNUENet>>,
+    pub search_backend: SearchBackendKind,
     pub syzygy: SyzygyTables,
     move_bufs: Vec<Vec<Move>>,
     scored_bufs: Vec<Vec<(i32, Move)>>,
@@ -1118,6 +1120,7 @@ impl Searcher {
             stopped,
             nnue_stack: Vec::new(),
             nnue_net: current_nnue_net(),
+            search_backend: active_search_backend(),
             syzygy: SyzygyTables::new(),
             move_bufs: Vec::new(),
             scored_bufs: Vec::new(),
@@ -1139,6 +1142,10 @@ impl Searcher {
 
     pub fn refresh_nnue_net(&mut self) {
         self.nnue_net = current_nnue_net();
+    }
+
+    pub fn refresh_search_backend(&mut self) {
+        self.search_backend = active_search_backend();
     }
 
     pub fn init_nnue_stack(&mut self, st: &BoardState) {
@@ -1212,6 +1219,7 @@ impl Searcher {
         dst.rep_stack_len = self.rep_stack_len;
         dst.corr_hist = self.corr_hist;
         dst.nnue_net = self.nnue_net.clone();
+        dst.search_backend = self.search_backend;
         dst.syzygy = self.syzygy.clone();
     }
 
@@ -1736,8 +1744,8 @@ impl Searcher {
         tl: f64,
         cnt: &mut u64,
     ) -> i32 {
-        match active_search_backend() {
-            SearchBackendKind::X86Avx512 if x86_avx512_available() => {
+        match self.search_backend {
+            SearchBackendKind::X86Avx512 => {
                 #[cfg(target_arch = "x86_64")]
                 {
                     return unsafe {
@@ -1749,7 +1757,7 @@ impl Searcher {
                 #[allow(unreachable_code)]
                 self.negamax_scalar(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
             }
-            SearchBackendKind::X86V3 if x86_v3_available() => {
+            SearchBackendKind::X86V3 => {
                 #[cfg(target_arch = "x86_64")]
                 {
                     return unsafe {
@@ -1759,19 +1767,13 @@ impl Searcher {
                 #[allow(unreachable_code)]
                 self.negamax_scalar(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
             }
-            SearchBackendKind::Aarch64Simd128
-                if search_backend_available(SearchBackendKind::Aarch64Simd128) =>
-            {
+            SearchBackendKind::Aarch64Simd128 => {
                 self.negamax_simd128(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
             }
-            SearchBackendKind::Aarch64Simd256
-                if search_backend_available(SearchBackendKind::Aarch64Simd256) =>
-            {
+            SearchBackendKind::Aarch64Simd256 => {
                 self.negamax_simd256(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
             }
-            SearchBackendKind::Aarch64Simd512
-                if search_backend_available(SearchBackendKind::Aarch64Simd512) =>
-            {
+            SearchBackendKind::Aarch64Simd512 => {
                 self.negamax_simd512(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
             }
             _ => self.negamax_scalar(st, depth, ply, alpha, beta, can_null, start, tl, cnt),
