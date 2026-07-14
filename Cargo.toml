@@ -15,7 +15,7 @@ path = "src/lib.rs"
 [dependencies]
 rand = { version = "0.8", features = ["small_rng"] }
 shakmaty = "0.30"
-shakmaty-syzygy = "0.28"
+shakmaty-syzygy = { version = "0.28", features = ["mmap"] }
 
 [features]
 default = []

@@ -223,6 +223,20 @@ fn board_to_chess(st: &BoardState) -> Option<Chess> {
     Chess::from_setup(setup, CastlingMode::Standard).ok()
 }
 
+fn new_tablebase() -> Tablebase<Chess> {
+    #[cfg(target_pointer_width = "64")]
+    {
+        // Syzygy tables are treated as immutable while the engine is running.
+        // This is true for Nix-store tables and for normal tablebase installs.
+        unsafe { Tablebase::with_mmap_filesystem() }
+    }
+
+    #[cfg(not(target_pointer_width = "64"))]
+    {
+        Tablebase::new()
+    }
+}
+
 #[derive(Clone)]
 pub struct SyzygyTables {
     pub tables: Option<Arc<Tablebase<Chess>>>,
@@ -253,7 +267,7 @@ impl SyzygyTables {
         if !path.exists() {
             return Err(format!("Syzygy directory not found: {}", path.display()));
         }
-        let mut tb = Tablebase::new();
+        let mut tb = new_tablebase();
         tb.add_directory(path)
             .map_err(|e| format!("Failed to load Syzygy tables: {}", e))?;
         let max_pieces = tb.max_pieces() as u32;
