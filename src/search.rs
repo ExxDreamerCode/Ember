@@ -962,10 +962,32 @@ impl Searcher {
         }
 
         let h = st.hash;
+
+        let tt_data = self.shared_tt.get_depth(h);
+        let tt_move = tt_data.and_then(|(_, _, _, best)| best);
+        let tt_score = tt_data.map(|(_, s, _, _)| score_from_tt(s, ply));
+        let tt_depth = tt_data.map(|(d, _, _, _)| d).unwrap_or(-1);
+        let tt_flag = tt_data.map(|(_, _, f, _)| f);
+
         let ks = st.king_sq(st.w);
         let in_check = crate::board::is_attacked(&st.bb, ks, !st.w);
         let is_pv = beta - alpha > 1;
         let is_root = ply == 0;
+
+        let ext = if in_check && depth < 16 { 1 } else { 0 };
+        let actual_depth = depth + ext;
+
+        if !is_pv && tt_depth >= actual_depth {
+            if let (Some(flag), Some(s)) = (tt_flag, tt_score) {
+                match flag {
+                    TT_EXACT => return s,
+                    TT_ALPHA if s <= alpha => return alpha,
+                    TT_BETA if s >= beta => return beta,
+                    _ => {}
+                }
+            }
+        }
+
         let king_pressure = if in_check {
             8
         } else {
@@ -989,26 +1011,6 @@ impl Searcher {
 
         if ply > 0 && self.is_repetition() {
             return 0;
-        }
-
-        let ext = if in_check && depth < 16 { 1 } else { 0 };
-        let actual_depth = depth + ext;
-
-        let tt_data = self.shared_tt.get_depth(h);
-        let tt_move = tt_data.and_then(|(_, _, _, best)| best);
-        let tt_score = tt_data.map(|(_, s, _, _)| score_from_tt(s, ply));
-        let tt_depth = tt_data.map(|(d, _, _, _)| d).unwrap_or(-1);
-        let tt_flag = tt_data.map(|(_, _, f, _)| f);
-
-        if !is_pv && tt_depth >= actual_depth {
-            if let (Some(flag), Some(s)) = (tt_flag, tt_score) {
-                match flag {
-                    TT_EXACT => return s,
-                    TT_ALPHA if s <= alpha => return alpha,
-                    TT_BETA if s >= beta => return beta,
-                    _ => {}
-                }
-            }
         }
 
         if actual_depth <= 0 {
