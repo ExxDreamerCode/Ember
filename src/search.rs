@@ -4,19 +4,84 @@ use crate::board::{
     promotion_piece_index, see, BoardState, Move, BK, BP, BR, EMPTY_SQ, INF, KING_ATTACKS, MATE,
     MAX_PLY, QS_DEPTH, WK, WP, WR,
 };
-use crate::evaluate::{current_nnue_net, evaluate, evaluate_nnue_acc};
+use crate::evaluate::{current_nnue_net, evaluate, evaluate_nnue_acc_with_backend};
 use crate::movegen::{
     apply_move, apply_move_mode, generate_moves, generate_moves_into_mode,
     generate_pseudo_captures_promotions_into_mode, generate_pseudo_moves_into_mode,
     is_chess960_castling_move_mode, try_apply_move_mode,
 };
-use crate::nnue::{NNUEAccumulator, NNUENet};
+use crate::nnue::{NNUEAccumulator, NNUENet, NnueBackend, ScalarNnueBackend, SimdNnueBackend};
 use crate::syzygy::SyzygyTables;
 use crate::tt::{SharedTT, TT_ALPHA, TT_BETA, TT_EXACT};
 use crate::zobrist::{compute_pawn_hash, ep_hash_square, zobrist};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
+
+const SEARCH_BACKEND_ENV: &str = "EMBER_SEARCH_BACKEND";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchBackendKind {
+    Scalar,
+    X86V3,
+}
+
+static SEARCH_BACKEND: OnceLock<SearchBackendKind> = OnceLock::new();
+
+#[inline]
+pub fn active_search_backend() -> SearchBackendKind {
+    *SEARCH_BACKEND.get_or_init(detect_search_backend)
+}
+
+fn detect_search_backend() -> SearchBackendKind {
+    if let Ok(value) = std::env::var(SEARCH_BACKEND_ENV) {
+        match normalize_backend_name(&value).as_str() {
+            "scalar" | "portable" => return SearchBackendKind::Scalar,
+            "x86-v3" | "x86-64-v3" | "x86_64-v3" | "v3" | "simd" => {
+                return if x86_v3_available() {
+                    SearchBackendKind::X86V3
+                } else {
+                    SearchBackendKind::Scalar
+                };
+            }
+            "" | "auto" => {}
+            _ => {}
+        }
+    }
+
+    if x86_v3_available() {
+        SearchBackendKind::X86V3
+    } else {
+        SearchBackendKind::Scalar
+    }
+}
+
+fn normalize_backend_name(value: &str) -> String {
+    value.trim().to_ascii_lowercase().replace('_', "-")
+}
+
+#[inline]
+pub fn x86_v3_available() -> bool {
+    x86_v3_available_impl()
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn x86_v3_available_impl() -> bool {
+    std::arch::is_x86_feature_detected!("avx")
+        && std::arch::is_x86_feature_detected!("avx2")
+        && std::arch::is_x86_feature_detected!("bmi1")
+        && std::arch::is_x86_feature_detected!("bmi2")
+        && std::arch::is_x86_feature_detected!("fma")
+        && std::arch::is_x86_feature_detected!("lzcnt")
+        && std::arch::is_x86_feature_detected!("popcnt")
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[inline]
+fn x86_v3_available_impl() -> bool {
+    false
+}
 
 fn piece_val(pt: u8) -> i32 {
     match pt {
@@ -273,8 +338,9 @@ pub struct Searcher {
 struct ClassicEval;
 
 #[derive(Clone, Copy)]
-struct NnueEval<'a> {
+struct NnueEval<'a, B: NnueBackend> {
     net: &'a NNUENet,
+    _backend: B,
 }
 
 trait SearchEval: Copy {
@@ -317,6 +383,726 @@ pub struct SearchDebug {
     pub disable_null_move: bool,
     pub disable_reverse_futility: bool,
     pub disable_see_pruning: bool,
+}
+
+macro_rules! qsearch_mode_body {
+    (
+        $this:tt,
+        $qsearch_mode:ident,
+        $st:ident,
+        $alpha:ident,
+        $beta:ident,
+        $depth:ident,
+        $start:ident,
+        $tl:ident,
+        $cnt:ident,
+        $ply:ident,
+        $eval:ident
+    ) => {{
+        *$cnt += 1;
+        if $this.time_up($start, $tl) {
+            return 0;
+        }
+        let ks = $st.king_sq($st.w);
+        let in_check = crate::board::is_attacked(&$st.bb, ks, !$st.w);
+
+        if !in_check && $this.syzygy.tables.is_some() && SyzygyTables::pieces_ok($st) {
+            if let Some(cutoff) = $this.syzygy.probe_cutoff($st, $beta, $alpha) {
+                return cutoff;
+            }
+        }
+
+        if $ply >= 2 && $this.is_repetition() {
+            return 0;
+        }
+
+        if !in_check {
+            let stand = $eval.static_eval::<CHESS960>($this, $st, $ply);
+            if stand >= $beta {
+                return stand;
+            }
+            if stand > $alpha {
+                $alpha = stand;
+            }
+            if $depth <= 0 && $alpha - 975 > stand {
+                return $alpha;
+            }
+        } else if $depth <= -4 {
+            return $eval.static_eval::<CHESS960>($this, $st, $ply);
+        }
+
+        $this.ensure_buf_pools($ply);
+        let mut caps = Self::take_buf(&mut $this.move_bufs, $ply);
+        if in_check {
+            generate_moves_into_mode::<CHESS960>($st, $st.w, &$st.cr, $st.ep, &mut caps);
+        } else {
+            generate_pseudo_captures_promotions_into_mode::<CHESS960>(
+                $st, $st.w, &$st.cr, $st.ep, &mut caps,
+            );
+        }
+        if caps.is_empty() {
+            Self::return_buf(&mut $this.move_bufs, $ply, caps);
+            return if in_check { -MATE + 1000 } else { $alpha };
+        }
+        $eval.ensure_child_stack($this, $ply);
+
+        caps.sort_by_key(|mv| {
+            let to = move_to(*mv);
+            let from = move_from(*mv);
+            let vpi = $st.mailbox[to];
+            let api = $st.mailbox[from];
+            let victim = capture_victim_value::<CHESS960>($st, api, *mv, to, vpi);
+            let attacker = if api != EMPTY_SQ {
+                piece_val(piece_type(api))
+            } else {
+                0
+            };
+            -(victim * 10 - attacker + promotion_value(*mv))
+        });
+
+        let mut cap_idx = 0usize;
+        while cap_idx < caps.len() {
+            let mv = caps[cap_idx];
+            cap_idx += 1;
+            if $this.time_up($start, $tl) {
+                return 0;
+            }
+            let from = move_from(mv);
+            let to = move_to(mv);
+            let fpi = $st.mailbox[from];
+            let tpi = $st.mailbox[to];
+            if !in_check && move_see::<CHESS960>($st, mv, from, to, fpi, tpi) < 0 {
+                continue;
+            }
+            let st_before = *$st;
+            let legal = if in_check {
+                apply_move_mode::<CHESS960>(
+                    $st,
+                    move_sr(mv),
+                    move_sc(mv),
+                    move_er(mv),
+                    move_ec(mv),
+                    move_promotion(mv),
+                );
+                true
+            } else {
+                try_apply_move_mode::<CHESS960>($st, mv)
+            };
+            if !legal {
+                continue;
+            }
+            $eval.push_acc(
+                $this,
+                &st_before,
+                $st,
+                move_sr(mv),
+                move_sc(mv),
+                move_er(mv),
+                move_ec(mv),
+                move_promotion(mv),
+                $ply,
+            );
+            let score = -$this.$qsearch_mode::<CHESS960, E>(
+                $st,
+                -$beta,
+                -$alpha,
+                $depth - 1,
+                $start,
+                $tl,
+                $cnt,
+                $ply + 1,
+                $eval,
+            );
+            *$st = st_before;
+            if $this.stopped.load(Ordering::Relaxed) {
+                return 0;
+            }
+            if score >= $beta {
+                Self::return_buf(&mut $this.move_bufs, $ply, caps);
+                return score;
+            }
+            if score > $alpha {
+                $alpha = score;
+            }
+        }
+        Self::return_buf(&mut $this.move_bufs, $ply, caps);
+        $alpha
+    }};
+}
+
+macro_rules! negamax_mode_body {
+    (
+        $this:tt,
+        $negamax_mode:ident,
+        $qsearch_mode:ident,
+        $st:ident,
+        $depth:ident,
+        $ply:ident,
+        $alpha:ident,
+        $beta:ident,
+        $can_null:ident,
+        $start:ident,
+        $tl:ident,
+        $cnt:ident,
+        $eval:ident
+    ) => {{
+        *$cnt += 1;
+        if $this.time_up($start, $tl) {
+            return 0;
+        }
+        if $ply >= MAX_PLY {
+            return $eval.static_eval::<CHESS960>($this, $st, $ply);
+        }
+
+        let mut beta = $beta;
+        if $ply > 0 {
+            let mate_alpha = -MATE + $ply as i32;
+            let mate_beta = MATE - $ply as i32;
+            if $alpha < mate_alpha {
+                $alpha = mate_alpha;
+            }
+            if beta > mate_beta {
+                beta = mate_beta;
+            }
+            if $alpha >= beta {
+                return $alpha;
+            }
+        }
+
+        let h = $st.hash;
+
+        let tt_data = $this.shared_tt.get_depth(h);
+        let tt_move = tt_data.and_then(|(_, _, _, best)| best);
+        let tt_score = tt_data.map(|(_, s, _, _)| score_from_tt(s, $ply));
+        let tt_depth = tt_data.map(|(d, _, _, _)| d).unwrap_or(-1);
+        let tt_flag = tt_data.map(|(_, _, f, _)| f);
+
+        let ks = $st.king_sq($st.w);
+        let in_check = crate::board::is_attacked(&$st.bb, ks, !$st.w);
+        let is_pv = beta - $alpha > 1;
+        let is_root = $ply == 0;
+
+        let ext = if in_check && $depth < 16 { 1 } else { 0 };
+        let actual_depth = $depth + ext;
+
+        if !is_pv && tt_depth >= actual_depth {
+            if let (Some(flag), Some(s)) = (tt_flag, tt_score) {
+                match flag {
+                    TT_EXACT => return s,
+                    TT_ALPHA if s <= $alpha => return $alpha,
+                    TT_BETA if s >= beta => return beta,
+                    _ => {}
+                }
+            }
+        }
+
+        let king_pressure = if in_check {
+            8
+        } else {
+            tactical_king_pressure($st)
+        };
+
+        let tb_available =
+            !in_check && $this.syzygy.tables.is_some() && SyzygyTables::pieces_ok($st);
+
+        let eval_score = if tb_available {
+            $this
+                .probe_syzygy($st)
+                .unwrap_or_else(|| $eval.static_eval::<CHESS960>($this, $st, $ply))
+        } else {
+            $eval.static_eval::<CHESS960>($this, $st, $ply)
+        };
+
+        if tb_available && !is_pv && !is_root {
+            if let Some(cutoff) = $this.syzygy.probe_cutoff($st, beta, $alpha) {
+                return cutoff;
+            }
+        }
+
+        if $ply > 0 && $this.is_repetition() {
+            return 0;
+        }
+
+        if actual_depth <= 0 {
+            return $this.$qsearch_mode::<CHESS960, E>(
+                $st, $alpha, beta, QS_DEPTH, $start, $tl, $cnt, $ply, $eval,
+            );
+        }
+
+        if $this.reverse_futility_enabled() && !in_check && !is_pv && actual_depth <= 8 && $ply > 0
+        {
+            let margin = 80 + 65 * actual_depth;
+            if eval_score - margin >= beta {
+                return eval_score - margin;
+            }
+        }
+        if $this.futility_enabled() && !in_check && !is_pv && actual_depth <= 3 && $ply > 0 {
+            let margin = 150 * actual_depth;
+            if eval_score + margin <= $alpha {
+                let q = $this.$qsearch_mode::<CHESS960, E>(
+                    $st,
+                    $alpha - margin,
+                    beta - margin,
+                    QS_DEPTH,
+                    $start,
+                    $tl,
+                    $cnt,
+                    $ply,
+                    $eval,
+                );
+                if q + margin <= $alpha {
+                    return $alpha;
+                }
+            }
+        }
+        if $this.null_move_enabled()
+            && king_pressure < 3
+            && !in_check
+            && $can_null
+            && !is_pv
+            && $ply > 0
+            && actual_depth >= 3
+            && has_non_pawn(&$st.bb, $st.w)
+            && eval_score >= beta
+        {
+            let total_non_pawn = (all_occ(&$st.bb) & !($st.bb[WP] | $st.bb[BP])).count_ones();
+            if total_non_pawn > 4 {
+                let r = 3 + actual_depth / 4 + ((eval_score - beta) / 200).min(3);
+                let ow = $st.w;
+                let oe = $st.ep;
+                let old_ep_hash = ep_hash_square($st);
+                let z = zobrist();
+                if let Some(ep_sq) = old_ep_hash {
+                    $st.hash ^= z.ep[ep_sq];
+                }
+                $st.hash ^= z.side;
+                $st.ep = None;
+                $st.w = !$st.w;
+                $eval.copy_null_acc($this, $ply);
+                let null_h = $st.hash;
+                $this.rep_stack.push(null_h);
+                $this.rep_stack_len += 1;
+                let s = -$this.$negamax_mode::<CHESS960, E>(
+                    $st,
+                    actual_depth - r - 1,
+                    $ply + 1,
+                    -beta,
+                    -beta + 1,
+                    false,
+                    $start,
+                    $tl,
+                    $cnt,
+                    $eval,
+                );
+                $this.rep_stack.pop();
+                $this.rep_stack_len -= 1;
+                $st.hash ^= z.side;
+                if let Some(ep_sq) = old_ep_hash {
+                    $st.hash ^= z.ep[ep_sq];
+                }
+                $st.w = ow;
+                $st.ep = oe;
+                if $this.time_up($start, $tl) {
+                    return 0;
+                }
+                if s >= beta {
+                    return beta;
+                }
+            }
+        }
+
+        $this.ensure_buf_pools($ply);
+        let mut moves_buf = Self::take_buf(&mut $this.move_bufs, $ply);
+        let pseudo_moves = !in_check;
+        if pseudo_moves {
+            generate_pseudo_moves_into_mode::<CHESS960>(
+                $st,
+                $st.w,
+                &$st.cr,
+                $st.ep,
+                &mut moves_buf,
+            );
+        } else {
+            generate_moves_into_mode::<CHESS960>($st, $st.w, &$st.cr, $st.ep, &mut moves_buf);
+        }
+        if moves_buf.is_empty() {
+            Self::return_buf(&mut $this.move_bufs, $ply, moves_buf);
+            return if in_check { -MATE + $ply as i32 } else { 0 };
+        }
+
+        let actual_depth =
+            if $this.iid_reduction_enabled() && tt_move.is_none() && actual_depth >= 4 && is_pv {
+                actual_depth - 1
+            } else {
+                actual_depth
+            };
+
+        let mut scored = Self::take_buf(&mut $this.scored_bufs, $ply);
+        scored.clear();
+        scored.reserve(moves_buf.len());
+        for &mv in moves_buf.iter() {
+            let mut s = 0i32;
+            if Some(mv) == tt_move {
+                s = 10_000_000;
+            } else {
+                let from = move_from(mv);
+                let to = move_to(mv);
+                let tpi = $st.mailbox[to];
+                let fpi = $st.mailbox[from];
+                let is_promo = is_promotion_move(fpi, mv);
+                if move_is_capture::<CHESS960>($st, fpi, mv, to, tpi) || is_promo {
+                    let v = capture_victim_value::<CHESS960>($st, fpi, mv, to, tpi);
+                    let a = if fpi != EMPTY_SQ {
+                        piece_val(piece_type(fpi))
+                    } else {
+                        0
+                    };
+                    let see_sc = move_see::<CHESS960>($st, mv, from, to, fpi, tpi);
+                    if see_sc >= 0 {
+                        s += 2_000_000 + v * 10 - a + see_sc;
+                    } else {
+                        s += 500_000 + v * 10 - a;
+                    }
+                    if is_promo {
+                        s += 1_500_000 + promotion_value(mv);
+                    }
+                } else {
+                    if $this.killers[$ply][0] == Some(mv) {
+                        s += 900_000;
+                    } else if $this.killers[$ply][1] == Some(mv) {
+                        s += 800_000;
+                    }
+                    let p_idx = if fpi != EMPTY_SQ {
+                        piece_to_idx(piece_type(fpi))
+                    } else {
+                        0
+                    };
+                    if $this.counter_move[p_idx][to] == Some(mv) {
+                        s += 700_000;
+                    }
+                    let (fk, tk) = from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
+                    s += $this.history[fk][tk].clamp(-32768, 32768);
+                }
+            }
+            scored.push((s, mv));
+        }
+        Self::return_buf(&mut $this.move_bufs, $ply, moves_buf);
+        scored.sort_unstable_by_key(|b| std::cmp::Reverse(b.0));
+
+        let lmp_count =
+            if $this.lmp_enabled() && king_pressure < 3 && !is_pv && !in_check && actual_depth <= 8
+            {
+                match actual_depth {
+                    1 => 4,
+                    2 => 7,
+                    3 => 11,
+                    4 => 17,
+                    5 => 24,
+                    6 => 33,
+                    7 => 44,
+                    8 => 57,
+                    _ => usize::MAX,
+                }
+            } else {
+                usize::MAX
+            };
+
+        let orig_alpha = $alpha;
+        let mut best_score = -INF;
+        let mut best_move = None;
+        let mut legal_moves_seen = 0usize;
+        let mut quiets_tried = Self::take_buf(&mut $this.quiets_bufs, $ply);
+        quiets_tried.clear();
+
+        for &(_, mv) in scored.iter() {
+            if $this.time_up($start, $tl) {
+                return 0;
+            }
+
+            let from = move_from(mv);
+            let to = move_to(mv);
+            let fpi = $st.mailbox[from];
+            let tpi = $st.mailbox[to];
+            let capture = move_is_capture::<CHESS960>($st, fpi, mv, to, tpi);
+            let is_promo = is_promotion_move(fpi, mv);
+            let is_quiet = !capture && !is_promo;
+
+            if !is_pv && !in_check && is_quiet && legal_moves_seen >= lmp_count {
+                break;
+            }
+            if !is_pv && !in_check && legal_moves_seen > 0 && best_score > -MATE / 2 {
+                if capture {
+                    if $this.see_pruning_enabled()
+                        && move_see::<CHESS960>($st, mv, from, to, fpi, tpi) < -80 * actual_depth
+                    {
+                        continue;
+                    }
+                } else if is_quiet && $this.history_pruning_enabled() {
+                    let (fk, tk) = from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
+                    if actual_depth <= 5 && $this.history[fk][tk] < -1024 * actual_depth {
+                        continue;
+                    }
+                }
+            }
+
+            let move_ext = if !in_check
+                && legal_moves_seen == 0
+                && !is_quiet
+                && actual_depth <= 2
+                && special_move_gives_check_mode::<CHESS960>($st, mv)
+            {
+                1
+            } else {
+                0
+            };
+
+            let st_before = *$st;
+            let legal = if pseudo_moves {
+                try_apply_move_mode::<CHESS960>($st, mv)
+            } else {
+                apply_move_mode::<CHESS960>(
+                    $st,
+                    move_sr(mv),
+                    move_sc(mv),
+                    move_er(mv),
+                    move_ec(mv),
+                    move_promotion(mv),
+                );
+                true
+            };
+            if !legal {
+                continue;
+            }
+            let move_index = legal_moves_seen;
+            legal_moves_seen += 1;
+
+            $eval.push_acc(
+                $this,
+                &st_before,
+                $st,
+                move_sr(mv),
+                move_sc(mv),
+                move_er(mv),
+                move_ec(mv),
+                move_promotion(mv),
+                $ply,
+            );
+
+            let h_after = $st.hash;
+            $this.rep_stack.push(h_after);
+            $this.rep_stack_len += 1;
+
+            let new_depth = actual_depth - 1 + move_ext;
+
+            let lmr_eligible = $this.lmr_enabled()
+                && move_index >= 2
+                && actual_depth >= 3
+                && is_quiet
+                && !in_check;
+            let s = if move_index == 0 {
+                -$this.$negamax_mode::<CHESS960, E>(
+                    $st,
+                    new_depth,
+                    $ply + 1,
+                    -beta,
+                    -$alpha,
+                    true,
+                    $start,
+                    $tl,
+                    $cnt,
+                    $eval,
+                )
+            } else if lmr_eligible {
+                let r = {
+                    let base =
+                        (0.5 + (move_index as f64).ln() * (actual_depth as f64).ln() / 1.8) as i32;
+                    let r = base.min(actual_depth - 1).max(1);
+                    if !is_pv {
+                        (r + 1).min(actual_depth - 1)
+                    } else {
+                        r
+                    }
+                };
+                let s2 = -$this.$negamax_mode::<CHESS960, E>(
+                    $st,
+                    new_depth - r,
+                    $ply + 1,
+                    -$alpha - 1,
+                    -$alpha,
+                    true,
+                    $start,
+                    $tl,
+                    $cnt,
+                    $eval,
+                );
+                if s2 > $alpha {
+                    let s3 = -$this.$negamax_mode::<CHESS960, E>(
+                        $st,
+                        new_depth,
+                        $ply + 1,
+                        -$alpha - 1,
+                        -$alpha,
+                        true,
+                        $start,
+                        $tl,
+                        $cnt,
+                        $eval,
+                    );
+                    if s3 > $alpha && is_pv {
+                        -$this.$negamax_mode::<CHESS960, E>(
+                            $st,
+                            new_depth,
+                            $ply + 1,
+                            -beta,
+                            -$alpha,
+                            true,
+                            $start,
+                            $tl,
+                            $cnt,
+                            $eval,
+                        )
+                    } else {
+                        s3
+                    }
+                } else {
+                    s2
+                }
+            } else if is_pv {
+                let s2 = -$this.$negamax_mode::<CHESS960, E>(
+                    $st,
+                    new_depth,
+                    $ply + 1,
+                    -$alpha - 1,
+                    -$alpha,
+                    true,
+                    $start,
+                    $tl,
+                    $cnt,
+                    $eval,
+                );
+                if s2 > $alpha && s2 < beta {
+                    -$this.$negamax_mode::<CHESS960, E>(
+                        $st,
+                        new_depth,
+                        $ply + 1,
+                        -beta,
+                        -$alpha,
+                        true,
+                        $start,
+                        $tl,
+                        $cnt,
+                        $eval,
+                    )
+                } else {
+                    s2
+                }
+            } else {
+                -$this.$negamax_mode::<CHESS960, E>(
+                    $st,
+                    new_depth,
+                    $ply + 1,
+                    -beta,
+                    -$alpha,
+                    true,
+                    $start,
+                    $tl,
+                    $cnt,
+                    $eval,
+                )
+            };
+
+            $this.rep_stack.pop();
+            $this.rep_stack_len -= 1;
+            *$st = st_before;
+
+            if $this.stopped.load(Ordering::Relaxed) {
+                return 0;
+            }
+
+            if is_quiet {
+                quiets_tried.push(mv);
+            }
+
+            if s > best_score {
+                best_score = s;
+                best_move = Some(mv);
+                if s > $alpha {
+                    $alpha = s;
+                    if $alpha >= beta {
+                        if is_quiet {
+                            if $this.killers[$ply][0] != Some(mv) {
+                                $this.killers[$ply][1] = $this.killers[$ply][0];
+                                $this.killers[$ply][0] = Some(mv);
+                            }
+                            let (fk, tk) =
+                                from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
+                            let bonus = (actual_depth * actual_depth).min(512);
+                            $this.history[fk][tk] += bonus;
+                            if $this.history[fk][tk] > 16384 {
+                                for a in 0..64 {
+                                    for b in 0..64 {
+                                        $this.history[a][b] /= 2;
+                                    }
+                                }
+                            }
+                            for &qmv in &quiets_tried {
+                                if qmv == mv {
+                                    continue;
+                                }
+                                let (qfk, qtk) = from_to_key(
+                                    move_sr(qmv),
+                                    move_sc(qmv),
+                                    move_er(qmv),
+                                    move_ec(qmv),
+                                );
+                                $this.history[qfk][qtk] -= bonus;
+                                if $this.history[qfk][qtk] < -16384 {
+                                    for a in 0..64 {
+                                        for b in 0..64 {
+                                            $this.history[a][b] /= 2;
+                                        }
+                                    }
+                                }
+                            }
+                            let p_idx = if fpi != EMPTY_SQ {
+                                piece_to_idx(piece_type(fpi))
+                            } else {
+                                0
+                            };
+                            $this.counter_move[p_idx][to] = Some(mv);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        Self::return_buf(&mut $this.scored_bufs, $ply, scored);
+        Self::return_buf(&mut $this.quiets_bufs, $ply, quiets_tried);
+
+        if $this.stopped.load(Ordering::Relaxed) {
+            return 0;
+        }
+        if legal_moves_seen == 0 {
+            return if in_check { -MATE + $ply as i32 } else { 0 };
+        }
+
+        let flag = if best_score <= orig_alpha {
+            TT_ALPHA
+        } else if best_score >= beta {
+            TT_BETA
+        } else {
+            TT_EXACT
+        };
+        $this.shared_tt.store(
+            h,
+            actual_depth,
+            score_to_tt(best_score, $ply),
+            flag,
+            best_move,
+        );
+        best_score
+    }};
 }
 
 impl Searcher {
@@ -529,7 +1315,7 @@ impl Searcher {
     }
 
     #[inline(always)]
-    fn static_eval_nnue<const CHESS960: bool>(
+    fn static_eval_nnue<const CHESS960: bool, B: NnueBackend>(
         &self,
         st: &BoardState,
         ply: usize,
@@ -539,11 +1325,11 @@ impl Searcher {
             return evaluate(st) * if st.w { 1 } else { -1 };
         }
         let score = if ply < self.nnue_stack.len() {
-            evaluate_nnue_acc(net, &self.nnue_stack[ply], st)
+            evaluate_nnue_acc_with_backend::<B>(net, &self.nnue_stack[ply], st)
         } else {
             let mut acc = NNUEAccumulator::new(net.hidden_size);
-            acc.refresh(net, st);
-            evaluate_nnue_acc(net, &acc, st)
+            B::refresh(&mut acc, net, st);
+            evaluate_nnue_acc_with_backend::<B>(net, &acc, st)
         };
         if st.w {
             score
@@ -554,9 +1340,17 @@ impl Searcher {
 
     pub fn corrected_eval(&self, st: &BoardState) -> i32 {
         match (st.chess960, self.nnue_net.as_deref()) {
-            (true, Some(net)) => NnueEval { net }.corrected_eval::<true>(self, st),
+            (true, Some(net)) => NnueEval {
+                net,
+                _backend: ScalarNnueBackend,
+            }
+            .corrected_eval::<true>(self, st),
             (true, None) => ClassicEval.corrected_eval::<true>(self, st),
-            (false, Some(net)) => NnueEval { net }.corrected_eval::<false>(self, st),
+            (false, Some(net)) => NnueEval {
+                net,
+                _backend: ScalarNnueBackend,
+            }
+            .corrected_eval::<false>(self, st),
             (false, None) => ClassicEval.corrected_eval::<false>(self, st),
         }
     }
@@ -580,13 +1374,18 @@ impl Searcher {
         base
     }
 
-    fn corrected_eval_nnue<const CHESS960: bool>(&self, st: &BoardState, net: &NNUENet) -> i32 {
+    #[inline(always)]
+    fn corrected_eval_nnue<const CHESS960: bool, B: NnueBackend>(
+        &self,
+        st: &BoardState,
+        net: &NNUENet,
+    ) -> i32 {
         if CHESS960 && st.mc <= 3 {
             return self.corrected_eval_classic::<CHESS960>(st);
         }
         let mut acc = NNUEAccumulator::new(net.hidden_size);
-        acc.refresh(net, st);
-        let score = evaluate_nnue_acc(net, &acc, st);
+        B::refresh(&mut acc, net, st);
+        let score = evaluate_nnue_acc_with_backend::<B>(net, &acc, st);
         if st.w {
             score
         } else {
@@ -628,7 +1427,8 @@ impl Searcher {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn push_nnue_acc(
+    #[inline(always)]
+    fn push_nnue_acc<B: NnueBackend>(
         &mut self,
         net: &NNUENet,
         st_before: &BoardState,
@@ -646,10 +1446,19 @@ impl Searcher {
         let (left, right) = self.nnue_stack.split_at_mut(ply + 1);
         right[0].clone_from(&left[ply]);
 
-        let ok = self.nnue_stack[ply + 1].update_move(net, st_before, sr, sc, er, ec, promotion);
+        let ok = B::update_move(
+            &mut self.nnue_stack[ply + 1],
+            net,
+            st_before,
+            sr,
+            sc,
+            er,
+            ec,
+            promotion,
+        );
 
         if !ok {
-            self.nnue_stack[ply + 1].refresh(net, st_after);
+            B::refresh(&mut self.nnue_stack[ply + 1], net, st_after);
         }
     }
 
@@ -666,9 +1475,25 @@ impl Searcher {
         cnt: &mut u64,
         ply: usize,
     ) -> i32 {
+        self.qsearch_scalar(st, alpha, beta, depth, start, tl, cnt, ply)
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    fn qsearch_scalar(
+        &mut self,
+        st: &mut BoardState,
+        alpha: i32,
+        beta: i32,
+        depth: i32,
+        start: Instant,
+        tl: f64,
+        cnt: &mut u64,
+        ply: usize,
+    ) -> i32 {
         let nnue_net = self.nnue_net.clone();
         match (st.chess960, nnue_net.as_deref()) {
-            (true, Some(net)) => self.qsearch_mode::<true, _>(
+            (true, Some(net)) => self.qsearch_mode_scalar::<true, _>(
                 st,
                 alpha,
                 beta,
@@ -677,9 +1502,12 @@ impl Searcher {
                 tl,
                 cnt,
                 ply,
-                NnueEval { net },
+                NnueEval {
+                    net,
+                    _backend: ScalarNnueBackend,
+                },
             ),
-            (true, None) => self.qsearch_mode::<true, _>(
+            (true, None) => self.qsearch_mode_scalar::<true, _>(
                 st,
                 alpha,
                 beta,
@@ -690,7 +1518,7 @@ impl Searcher {
                 ply,
                 ClassicEval,
             ),
-            (false, Some(net)) => self.qsearch_mode::<false, _>(
+            (false, Some(net)) => self.qsearch_mode_scalar::<false, _>(
                 st,
                 alpha,
                 beta,
@@ -699,9 +1527,12 @@ impl Searcher {
                 tl,
                 cnt,
                 ply,
-                NnueEval { net },
+                NnueEval {
+                    net,
+                    _backend: ScalarNnueBackend,
+                },
             ),
-            (false, None) => self.qsearch_mode::<false, _>(
+            (false, None) => self.qsearch_mode_scalar::<false, _>(
                 st,
                 alpha,
                 beta,
@@ -716,7 +1547,7 @@ impl Searcher {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn qsearch_mode<const CHESS960: bool, E: SearchEval>(
+    fn qsearch_mode_scalar<const CHESS960: bool, E: SearchEval>(
         &mut self,
         st: &mut BoardState,
         mut alpha: i32,
@@ -728,134 +1559,51 @@ impl Searcher {
         ply: usize,
         eval: E,
     ) -> i32 {
-        *cnt += 1;
-        if self.time_up(start, tl) {
-            return 0;
-        }
-        let ks = st.king_sq(st.w);
-        let in_check = crate::board::is_attacked(&st.bb, ks, !st.w);
+        qsearch_mode_body!(
+            self,
+            qsearch_mode_scalar,
+            st,
+            alpha,
+            beta,
+            depth,
+            start,
+            tl,
+            cnt,
+            ply,
+            eval
+        )
+    }
 
-        if !in_check && self.syzygy.tables.is_some() && SyzygyTables::pieces_ok(st) {
-            if let Some(cutoff) = self.syzygy.probe_cutoff(st, beta, alpha) {
-                return cutoff;
-            }
-        }
-
-        if ply >= 2 && self.is_repetition() {
-            return 0;
-        }
-
-        if !in_check {
-            let stand = eval.static_eval::<CHESS960>(self, st, ply);
-            if stand >= beta {
-                return stand;
-            }
-            if stand > alpha {
-                alpha = stand;
-            }
-            if depth <= 0 && alpha - 975 > stand {
-                return alpha;
-            }
-        } else if depth <= -4 {
-            return eval.static_eval::<CHESS960>(self, st, ply);
-        }
-
-        self.ensure_buf_pools(ply);
-        let mut caps = Self::take_buf(&mut self.move_bufs, ply);
-        if in_check {
-            generate_moves_into_mode::<CHESS960>(st, st.w, &st.cr, st.ep, &mut caps);
-        } else {
-            generate_pseudo_captures_promotions_into_mode::<CHESS960>(
-                st, st.w, &st.cr, st.ep, &mut caps,
-            );
-        }
-        if caps.is_empty() {
-            Self::return_buf(&mut self.move_bufs, ply, caps);
-            return if in_check { -MATE + 1000 } else { alpha };
-        }
-        eval.ensure_child_stack(self, ply);
-
-        caps.sort_by_key(|mv| {
-            let to = move_to(*mv);
-            let from = move_from(*mv);
-            let vpi = st.mailbox[to];
-            let api = st.mailbox[from];
-            let victim = capture_victim_value::<CHESS960>(st, api, *mv, to, vpi);
-            let attacker = if api != EMPTY_SQ {
-                piece_val(piece_type(api))
-            } else {
-                0
-            };
-            -(victim * 10 - attacker + promotion_value(*mv))
-        });
-
-        let mut cap_idx = 0usize;
-        while cap_idx < caps.len() {
-            let mv = caps[cap_idx];
-            cap_idx += 1;
-            if self.time_up(start, tl) {
-                return 0;
-            }
-            let from = move_from(mv);
-            let to = move_to(mv);
-            let fpi = st.mailbox[from];
-            let tpi = st.mailbox[to];
-            if !in_check && move_see::<CHESS960>(st, mv, from, to, fpi, tpi) < 0 {
-                continue;
-            }
-            let st_before = *st;
-            let legal = if in_check {
-                apply_move_mode::<CHESS960>(
-                    st,
-                    move_sr(mv),
-                    move_sc(mv),
-                    move_er(mv),
-                    move_ec(mv),
-                    move_promotion(mv),
-                );
-                true
-            } else {
-                try_apply_move_mode::<CHESS960>(st, mv)
-            };
-            if !legal {
-                continue;
-            }
-            eval.push_acc(
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn qsearch_mode_x86_v3<const CHESS960: bool, E: SearchEval>(
+        &mut self,
+        st: &mut BoardState,
+        mut alpha: i32,
+        beta: i32,
+        depth: i32,
+        start: Instant,
+        tl: f64,
+        cnt: &mut u64,
+        ply: usize,
+        eval: E,
+    ) -> i32 {
+        unsafe {
+            qsearch_mode_body!(
                 self,
-                &st_before,
+                qsearch_mode_x86_v3,
                 st,
-                move_sr(mv),
-                move_sc(mv),
-                move_er(mv),
-                move_ec(mv),
-                move_promotion(mv),
-                ply,
-            );
-            let score = -self.qsearch_mode::<CHESS960, E>(
-                st,
-                -beta,
-                -alpha,
-                depth - 1,
+                alpha,
+                beta,
+                depth,
                 start,
                 tl,
                 cnt,
-                ply + 1,
-                eval,
-            );
-            *st = st_before;
-            if self.stopped.load(Ordering::Relaxed) {
-                return 0;
-            }
-            if score >= beta {
-                Self::return_buf(&mut self.move_bufs, ply, caps);
-                return score;
-            }
-            if score > alpha {
-                alpha = score;
-            }
+                ply,
+                eval
+            )
         }
-        Self::return_buf(&mut self.move_bufs, ply, caps);
-        alpha
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -871,9 +1619,37 @@ impl Searcher {
         tl: f64,
         cnt: &mut u64,
     ) -> i32 {
+        match active_search_backend() {
+            SearchBackendKind::X86V3 if x86_v3_available() => {
+                #[cfg(target_arch = "x86_64")]
+                {
+                    return unsafe {
+                        self.negamax_x86_v3(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
+                    };
+                }
+                #[allow(unreachable_code)]
+                self.negamax_scalar(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
+            }
+            _ => self.negamax_scalar(st, depth, ply, alpha, beta, can_null, start, tl, cnt),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn negamax_scalar(
+        &mut self,
+        st: &mut BoardState,
+        depth: i32,
+        ply: usize,
+        alpha: i32,
+        beta: i32,
+        can_null: bool,
+        start: Instant,
+        tl: f64,
+        cnt: &mut u64,
+    ) -> i32 {
         let nnue_net = self.nnue_net.clone();
         match (st.chess960, nnue_net.as_deref()) {
-            (true, Some(net)) => self.negamax_mode::<true, _>(
+            (true, Some(net)) => self.negamax_mode_scalar::<true, _>(
                 st,
                 depth,
                 ply,
@@ -883,9 +1659,12 @@ impl Searcher {
                 start,
                 tl,
                 cnt,
-                NnueEval { net },
+                NnueEval {
+                    net,
+                    _backend: ScalarNnueBackend,
+                },
             ),
-            (true, None) => self.negamax_mode::<true, _>(
+            (true, None) => self.negamax_mode_scalar::<true, _>(
                 st,
                 depth,
                 ply,
@@ -897,7 +1676,7 @@ impl Searcher {
                 cnt,
                 ClassicEval,
             ),
-            (false, Some(net)) => self.negamax_mode::<false, _>(
+            (false, Some(net)) => self.negamax_mode_scalar::<false, _>(
                 st,
                 depth,
                 ply,
@@ -907,9 +1686,12 @@ impl Searcher {
                 start,
                 tl,
                 cnt,
-                NnueEval { net },
+                NnueEval {
+                    net,
+                    _backend: ScalarNnueBackend,
+                },
             ),
-            (false, None) => self.negamax_mode::<false, _>(
+            (false, None) => self.negamax_mode_scalar::<false, _>(
                 st,
                 depth,
                 ply,
@@ -924,8 +1706,84 @@ impl Searcher {
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
     #[allow(clippy::too_many_arguments)]
-    fn negamax_mode<const CHESS960: bool, E: SearchEval>(
+    unsafe fn negamax_x86_v3(
+        &mut self,
+        st: &mut BoardState,
+        depth: i32,
+        ply: usize,
+        alpha: i32,
+        beta: i32,
+        can_null: bool,
+        start: Instant,
+        tl: f64,
+        cnt: &mut u64,
+    ) -> i32 {
+        let nnue_net = self.nnue_net.clone();
+        unsafe {
+            match (st.chess960, nnue_net.as_deref()) {
+                (true, Some(net)) => self.negamax_mode_x86_v3::<true, _>(
+                    st,
+                    depth,
+                    ply,
+                    alpha,
+                    beta,
+                    can_null,
+                    start,
+                    tl,
+                    cnt,
+                    NnueEval {
+                        net,
+                        _backend: SimdNnueBackend,
+                    },
+                ),
+                (true, None) => self.negamax_mode_x86_v3::<true, _>(
+                    st,
+                    depth,
+                    ply,
+                    alpha,
+                    beta,
+                    can_null,
+                    start,
+                    tl,
+                    cnt,
+                    ClassicEval,
+                ),
+                (false, Some(net)) => self.negamax_mode_x86_v3::<false, _>(
+                    st,
+                    depth,
+                    ply,
+                    alpha,
+                    beta,
+                    can_null,
+                    start,
+                    tl,
+                    cnt,
+                    NnueEval {
+                        net,
+                        _backend: SimdNnueBackend,
+                    },
+                ),
+                (false, None) => self.negamax_mode_x86_v3::<false, _>(
+                    st,
+                    depth,
+                    ply,
+                    alpha,
+                    beta,
+                    can_null,
+                    start,
+                    tl,
+                    cnt,
+                    ClassicEval,
+                ),
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn negamax_mode_scalar<const CHESS960: bool, E: SearchEval>(
         &mut self,
         st: &mut BoardState,
         depth: i32,
@@ -938,552 +1796,56 @@ impl Searcher {
         cnt: &mut u64,
         eval: E,
     ) -> i32 {
-        *cnt += 1;
-        if self.time_up(start, tl) {
-            return 0;
-        }
-        if ply >= MAX_PLY {
-            return eval.static_eval::<CHESS960>(self, st, ply);
-        }
+        negamax_mode_body!(
+            self,
+            negamax_mode_scalar,
+            qsearch_mode_scalar,
+            st,
+            depth,
+            ply,
+            alpha,
+            beta,
+            can_null,
+            start,
+            tl,
+            cnt,
+            eval
+        )
+    }
 
-        let mut beta = beta;
-        if ply > 0 {
-            let mate_alpha = -MATE + ply as i32;
-            let mate_beta = MATE - ply as i32;
-            if alpha < mate_alpha {
-                alpha = mate_alpha;
-            }
-            if beta > mate_beta {
-                beta = mate_beta;
-            }
-            if alpha >= beta {
-                return alpha;
-            }
-        }
-
-        let h = st.hash;
-
-        let tt_data = self.shared_tt.get_depth(h);
-        let tt_move = tt_data.and_then(|(_, _, _, best)| best);
-        let tt_score = tt_data.map(|(_, s, _, _)| score_from_tt(s, ply));
-        let tt_depth = tt_data.map(|(d, _, _, _)| d).unwrap_or(-1);
-        let tt_flag = tt_data.map(|(_, _, f, _)| f);
-
-        let ks = st.king_sq(st.w);
-        let in_check = crate::board::is_attacked(&st.bb, ks, !st.w);
-        let is_pv = beta - alpha > 1;
-        let is_root = ply == 0;
-
-        let ext = if in_check && depth < 16 { 1 } else { 0 };
-        let actual_depth = depth + ext;
-
-        if !is_pv && tt_depth >= actual_depth {
-            if let (Some(flag), Some(s)) = (tt_flag, tt_score) {
-                match flag {
-                    TT_EXACT => return s,
-                    TT_ALPHA if s <= alpha => return alpha,
-                    TT_BETA if s >= beta => return beta,
-                    _ => {}
-                }
-            }
-        }
-
-        let king_pressure = if in_check {
-            8
-        } else {
-            tactical_king_pressure(st)
-        };
-
-        let tb_available = !in_check && self.syzygy.tables.is_some() && SyzygyTables::pieces_ok(st);
-
-        let eval_score = if tb_available {
-            self.probe_syzygy(st)
-                .unwrap_or_else(|| eval.static_eval::<CHESS960>(self, st, ply))
-        } else {
-            eval.static_eval::<CHESS960>(self, st, ply)
-        };
-
-        if tb_available && !is_pv && !is_root {
-            if let Some(cutoff) = self.syzygy.probe_cutoff(st, beta, alpha) {
-                return cutoff;
-            }
-        }
-
-        if ply > 0 && self.is_repetition() {
-            return 0;
-        }
-
-        if actual_depth <= 0 {
-            return self
-                .qsearch_mode::<CHESS960, E>(st, alpha, beta, QS_DEPTH, start, tl, cnt, ply, eval);
-        }
-
-        if self.reverse_futility_enabled() && !in_check && !is_pv && actual_depth <= 8 && ply > 0 {
-            let margin = 80 + 65 * actual_depth;
-            if eval_score - margin >= beta {
-                return eval_score - margin;
-            }
-        }
-        if self.futility_enabled() && !in_check && !is_pv && actual_depth <= 3 && ply > 0 {
-            let margin = 150 * actual_depth;
-            if eval_score + margin <= alpha {
-                let q = self.qsearch_mode::<CHESS960, E>(
-                    st,
-                    alpha - margin,
-                    beta - margin,
-                    QS_DEPTH,
-                    start,
-                    tl,
-                    cnt,
-                    ply,
-                    eval,
-                );
-                if q + margin <= alpha {
-                    return alpha;
-                }
-            }
-        }
-        if self.null_move_enabled()
-            && king_pressure < 3
-            && !in_check
-            && can_null
-            && !is_pv
-            && ply > 0
-            && actual_depth >= 3
-            && has_non_pawn(&st.bb, st.w)
-            && eval_score >= beta
-        {
-            let total_non_pawn = (all_occ(&st.bb) & !(st.bb[WP] | st.bb[BP])).count_ones();
-            if total_non_pawn > 4 {
-                let r = 3 + actual_depth / 4 + ((eval_score - beta) / 200).min(3);
-                let ow = st.w;
-                let oe = st.ep;
-                let old_ep_hash = ep_hash_square(st);
-                let z = zobrist();
-                if let Some(ep_sq) = old_ep_hash {
-                    st.hash ^= z.ep[ep_sq];
-                }
-                st.hash ^= z.side;
-                st.ep = None;
-                st.w = !st.w;
-                eval.copy_null_acc(self, ply);
-                let null_h = st.hash;
-                self.rep_stack.push(null_h);
-                self.rep_stack_len += 1;
-                let s = -self.negamax_mode::<CHESS960, E>(
-                    st,
-                    actual_depth - r - 1,
-                    ply + 1,
-                    -beta,
-                    -beta + 1,
-                    false,
-                    start,
-                    tl,
-                    cnt,
-                    eval,
-                );
-                self.rep_stack.pop();
-                self.rep_stack_len -= 1;
-                st.hash ^= z.side;
-                if let Some(ep_sq) = old_ep_hash {
-                    st.hash ^= z.ep[ep_sq];
-                }
-                st.w = ow;
-                st.ep = oe;
-                if self.time_up(start, tl) {
-                    return 0;
-                }
-                if s >= beta {
-                    return beta;
-                }
-            }
-        }
-
-        self.ensure_buf_pools(ply);
-        let mut moves_buf = Self::take_buf(&mut self.move_bufs, ply);
-        let pseudo_moves = !in_check;
-        if pseudo_moves {
-            generate_pseudo_moves_into_mode::<CHESS960>(st, st.w, &st.cr, st.ep, &mut moves_buf);
-        } else {
-            generate_moves_into_mode::<CHESS960>(st, st.w, &st.cr, st.ep, &mut moves_buf);
-        }
-        if moves_buf.is_empty() {
-            Self::return_buf(&mut self.move_bufs, ply, moves_buf);
-            return if in_check { -MATE + ply as i32 } else { 0 };
-        }
-
-        let actual_depth =
-            if self.iid_reduction_enabled() && tt_move.is_none() && actual_depth >= 4 && is_pv {
-                actual_depth - 1
-            } else {
-                actual_depth
-            };
-
-        let mut scored = Self::take_buf(&mut self.scored_bufs, ply);
-        scored.clear();
-        scored.reserve(moves_buf.len());
-        for &mv in moves_buf.iter() {
-            let mut s = 0i32;
-            if Some(mv) == tt_move {
-                s = 10_000_000;
-            } else {
-                let from = move_from(mv);
-                let to = move_to(mv);
-                let tpi = st.mailbox[to];
-                let fpi = st.mailbox[from];
-                let is_promo = is_promotion_move(fpi, mv);
-                if move_is_capture::<CHESS960>(st, fpi, mv, to, tpi) || is_promo {
-                    let v = capture_victim_value::<CHESS960>(st, fpi, mv, to, tpi);
-                    let a = if fpi != EMPTY_SQ {
-                        piece_val(piece_type(fpi))
-                    } else {
-                        0
-                    };
-                    let see_sc = move_see::<CHESS960>(st, mv, from, to, fpi, tpi);
-                    if see_sc >= 0 {
-                        s += 2_000_000 + v * 10 - a + see_sc;
-                    } else {
-                        s += 500_000 + v * 10 - a;
-                    }
-                    if is_promo {
-                        s += 1_500_000 + promotion_value(mv);
-                    }
-                } else {
-                    if self.killers[ply][0] == Some(mv) {
-                        s += 900_000;
-                    } else if self.killers[ply][1] == Some(mv) {
-                        s += 800_000;
-                    }
-                    let p_idx = if fpi != EMPTY_SQ {
-                        piece_to_idx(piece_type(fpi))
-                    } else {
-                        0
-                    };
-                    if self.counter_move[p_idx][to] == Some(mv) {
-                        s += 700_000;
-                    }
-                    let (fk, tk) = from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
-                    s += self.history[fk][tk].clamp(-32768, 32768);
-                }
-            }
-            scored.push((s, mv));
-        }
-        Self::return_buf(&mut self.move_bufs, ply, moves_buf);
-        scored.sort_unstable_by_key(|b| std::cmp::Reverse(b.0));
-
-        let lmp_count = if self.lmp_enabled()
-            && king_pressure < 3
-            && !is_pv
-            && !in_check
-            && actual_depth <= 8
-        {
-            match actual_depth {
-                1 => 4,
-                2 => 7,
-                3 => 11,
-                4 => 17,
-                5 => 24,
-                6 => 33,
-                7 => 44,
-                8 => 57,
-                _ => usize::MAX,
-            }
-        } else {
-            usize::MAX
-        };
-
-        let orig_alpha = alpha;
-        let mut best_score = -INF;
-        let mut best_move = None;
-        let mut legal_moves_seen = 0usize;
-        let mut quiets_tried = Self::take_buf(&mut self.quiets_bufs, ply);
-        quiets_tried.clear();
-
-        for &(_, mv) in scored.iter() {
-            if self.time_up(start, tl) {
-                return 0;
-            }
-
-            let from = move_from(mv);
-            let to = move_to(mv);
-            let fpi = st.mailbox[from];
-            let tpi = st.mailbox[to];
-            let capture = move_is_capture::<CHESS960>(st, fpi, mv, to, tpi);
-            let is_promo = is_promotion_move(fpi, mv);
-            let is_quiet = !capture && !is_promo;
-
-            if !is_pv && !in_check && is_quiet && legal_moves_seen >= lmp_count {
-                break;
-            }
-            if !is_pv && !in_check && legal_moves_seen > 0 && best_score > -MATE / 2 {
-                if capture {
-                    if self.see_pruning_enabled()
-                        && move_see::<CHESS960>(st, mv, from, to, fpi, tpi) < -80 * actual_depth
-                    {
-                        continue;
-                    }
-                } else if is_quiet && self.history_pruning_enabled() {
-                    let (fk, tk) = from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
-                    if actual_depth <= 5 && self.history[fk][tk] < -1024 * actual_depth {
-                        continue;
-                    }
-                }
-            }
-
-            let move_ext = if !in_check
-                && legal_moves_seen == 0
-                && !is_quiet
-                && actual_depth <= 2
-                && special_move_gives_check_mode::<CHESS960>(st, mv)
-            {
-                1
-            } else {
-                0
-            };
-
-            let st_before = *st;
-            let legal = if pseudo_moves {
-                try_apply_move_mode::<CHESS960>(st, mv)
-            } else {
-                apply_move_mode::<CHESS960>(
-                    st,
-                    move_sr(mv),
-                    move_sc(mv),
-                    move_er(mv),
-                    move_ec(mv),
-                    move_promotion(mv),
-                );
-                true
-            };
-            if !legal {
-                continue;
-            }
-            let move_index = legal_moves_seen;
-            legal_moves_seen += 1;
-
-            eval.push_acc(
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn negamax_mode_x86_v3<const CHESS960: bool, E: SearchEval>(
+        &mut self,
+        st: &mut BoardState,
+        depth: i32,
+        ply: usize,
+        mut alpha: i32,
+        beta: i32,
+        can_null: bool,
+        start: Instant,
+        tl: f64,
+        cnt: &mut u64,
+        eval: E,
+    ) -> i32 {
+        unsafe {
+            negamax_mode_body!(
                 self,
-                &st_before,
+                negamax_mode_x86_v3,
+                qsearch_mode_x86_v3,
                 st,
-                move_sr(mv),
-                move_sc(mv),
-                move_er(mv),
-                move_ec(mv),
-                move_promotion(mv),
+                depth,
                 ply,
-            );
-
-            let h_after = st.hash;
-            self.rep_stack.push(h_after);
-            self.rep_stack_len += 1;
-
-            let new_depth = actual_depth - 1 + move_ext;
-
-            let lmr_eligible =
-                self.lmr_enabled() && move_index >= 2 && actual_depth >= 3 && is_quiet && !in_check;
-            let s = if move_index == 0 {
-                -self.negamax_mode::<CHESS960, E>(
-                    st,
-                    new_depth,
-                    ply + 1,
-                    -beta,
-                    -alpha,
-                    true,
-                    start,
-                    tl,
-                    cnt,
-                    eval,
-                )
-            } else if lmr_eligible {
-                let r = {
-                    let base =
-                        (0.5 + (move_index as f64).ln() * (actual_depth as f64).ln() / 1.8) as i32;
-                    let r = base.min(actual_depth - 1).max(1);
-                    if !is_pv {
-                        (r + 1).min(actual_depth - 1)
-                    } else {
-                        r
-                    }
-                };
-                let s2 = -self.negamax_mode::<CHESS960, E>(
-                    st,
-                    new_depth - r,
-                    ply + 1,
-                    -alpha - 1,
-                    -alpha,
-                    true,
-                    start,
-                    tl,
-                    cnt,
-                    eval,
-                );
-                if s2 > alpha {
-                    let s3 = -self.negamax_mode::<CHESS960, E>(
-                        st,
-                        new_depth,
-                        ply + 1,
-                        -alpha - 1,
-                        -alpha,
-                        true,
-                        start,
-                        tl,
-                        cnt,
-                        eval,
-                    );
-                    if s3 > alpha && is_pv {
-                        -self.negamax_mode::<CHESS960, E>(
-                            st,
-                            new_depth,
-                            ply + 1,
-                            -beta,
-                            -alpha,
-                            true,
-                            start,
-                            tl,
-                            cnt,
-                            eval,
-                        )
-                    } else {
-                        s3
-                    }
-                } else {
-                    s2
-                }
-            } else if is_pv {
-                let s2 = -self.negamax_mode::<CHESS960, E>(
-                    st,
-                    new_depth,
-                    ply + 1,
-                    -alpha - 1,
-                    -alpha,
-                    true,
-                    start,
-                    tl,
-                    cnt,
-                    eval,
-                );
-                if s2 > alpha && s2 < beta {
-                    -self.negamax_mode::<CHESS960, E>(
-                        st,
-                        new_depth,
-                        ply + 1,
-                        -beta,
-                        -alpha,
-                        true,
-                        start,
-                        tl,
-                        cnt,
-                        eval,
-                    )
-                } else {
-                    s2
-                }
-            } else {
-                -self.negamax_mode::<CHESS960, E>(
-                    st,
-                    new_depth,
-                    ply + 1,
-                    -beta,
-                    -alpha,
-                    true,
-                    start,
-                    tl,
-                    cnt,
-                    eval,
-                )
-            };
-
-            self.rep_stack.pop();
-            self.rep_stack_len -= 1;
-            *st = st_before;
-
-            if self.stopped.load(Ordering::Relaxed) {
-                return 0;
-            }
-
-            if is_quiet {
-                quiets_tried.push(mv);
-            }
-
-            if s > best_score {
-                best_score = s;
-                best_move = Some(mv);
-                if s > alpha {
-                    alpha = s;
-                    if alpha >= beta {
-                        if is_quiet {
-                            if self.killers[ply][0] != Some(mv) {
-                                self.killers[ply][1] = self.killers[ply][0];
-                                self.killers[ply][0] = Some(mv);
-                            }
-                            let (fk, tk) =
-                                from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
-                            let bonus = (actual_depth * actual_depth).min(512);
-                            self.history[fk][tk] += bonus;
-                            if self.history[fk][tk] > 16384 {
-                                for a in 0..64 {
-                                    for b in 0..64 {
-                                        self.history[a][b] /= 2;
-                                    }
-                                }
-                            }
-                            for &qmv in &quiets_tried {
-                                if qmv == mv {
-                                    continue;
-                                }
-                                let (qfk, qtk) = from_to_key(
-                                    move_sr(qmv),
-                                    move_sc(qmv),
-                                    move_er(qmv),
-                                    move_ec(qmv),
-                                );
-                                self.history[qfk][qtk] -= bonus;
-                                if self.history[qfk][qtk] < -16384 {
-                                    for a in 0..64 {
-                                        for b in 0..64 {
-                                            self.history[a][b] /= 2;
-                                        }
-                                    }
-                                }
-                            }
-                            let p_idx = if fpi != EMPTY_SQ {
-                                piece_to_idx(piece_type(fpi))
-                            } else {
-                                0
-                            };
-                            self.counter_move[p_idx][to] = Some(mv);
-                        }
-                        break;
-                    }
-                }
-            }
+                alpha,
+                beta,
+                can_null,
+                start,
+                tl,
+                cnt,
+                eval
+            )
         }
-
-        Self::return_buf(&mut self.scored_bufs, ply, scored);
-        Self::return_buf(&mut self.quiets_bufs, ply, quiets_tried);
-
-        if self.stopped.load(Ordering::Relaxed) {
-            return 0;
-        }
-        if legal_moves_seen == 0 {
-            return if in_check { -MATE + ply as i32 } else { 0 };
-        }
-
-        let flag = if best_score <= orig_alpha {
-            TT_ALPHA
-        } else if best_score >= beta {
-            TT_BETA
-        } else {
-            TT_EXACT
-        };
-        self.shared_tt.store(
-            h,
-            actual_depth,
-            score_to_tt(best_score, ply),
-            flag,
-            best_move,
-        );
-        best_score
     }
 }
 
@@ -1526,7 +1888,7 @@ impl SearchEval for ClassicEval {
     fn copy_null_acc(self, _searcher: &mut Searcher, _ply: usize) {}
 }
 
-impl<'a> SearchEval for NnueEval<'a> {
+impl<'a, B: NnueBackend> SearchEval for NnueEval<'a, B> {
     #[inline(always)]
     fn static_eval<const CHESS960: bool>(
         self,
@@ -1534,12 +1896,12 @@ impl<'a> SearchEval for NnueEval<'a> {
         st: &BoardState,
         ply: usize,
     ) -> i32 {
-        searcher.static_eval_nnue::<CHESS960>(st, ply, self.net)
+        searcher.static_eval_nnue::<CHESS960, B>(st, ply, self.net)
     }
 
     #[inline(always)]
     fn corrected_eval<const CHESS960: bool>(self, searcher: &Searcher, st: &BoardState) -> i32 {
-        searcher.corrected_eval_nnue::<CHESS960>(st, self.net)
+        searcher.corrected_eval_nnue::<CHESS960, B>(st, self.net)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1556,7 +1918,7 @@ impl<'a> SearchEval for NnueEval<'a> {
         promotion: u8,
         ply: usize,
     ) {
-        searcher.push_nnue_acc(
+        searcher.push_nnue_acc::<B>(
             self.net, st_before, st_after, sr, sc, er, ec, promotion, ply,
         );
     }

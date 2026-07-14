@@ -3,7 +3,7 @@ use crate::board::{
     KING_ATTACKS, KNIGHT_ATTACKS, WB, WK, WN, WP, WQ, WR,
 };
 use crate::magic::{bishop_attacks, rook_attacks};
-use crate::nnue::{NNUEAccumulator, NNUENet};
+use crate::nnue::{NNUEAccumulator, NNUENet, NnueBackend, ScalarNnueBackend};
 use crate::types::*;
 use std::sync::{Arc, RwLock};
 
@@ -377,9 +377,17 @@ where
 }
 
 pub fn evaluate_nnue_acc(net: &NNUENet, acc: &NNUEAccumulator, st: &BoardState) -> i32 {
+    evaluate_nnue_acc_with_backend::<ScalarNnueBackend>(net, acc, st)
+}
+
+pub(crate) fn evaluate_nnue_acc_with_backend<B: NnueBackend>(
+    net: &NNUENet,
+    acc: &NNUEAccumulator,
+    st: &BoardState,
+) -> i32 {
     let stm = if st.w { WHITE } else { BLACK };
     let pc: u32 = (0..12).map(|i| st.bb[i].count_ones()).sum();
-    let score = net.forward(acc, stm, pc);
+    let score = B::forward(net, acc, stm, pc);
     if stm == WHITE {
         score
     } else {

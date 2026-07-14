@@ -14,6 +14,125 @@ type I32x = Simd<i32, I32_LANES>;
 type F32x = Simd<f32, F32_LANES>;
 
 #[inline(always)]
+pub fn scalar_add_row(acc: &mut [i16], row: &[i16]) {
+    debug_assert_eq!(acc.len(), row.len());
+    for (acc_value, row_value) in acc.iter_mut().zip(row) {
+        *acc_value += *row_value;
+    }
+}
+
+#[inline(always)]
+pub fn scalar_sub_row(acc: &mut [i16], row: &[i16]) {
+    debug_assert_eq!(acc.len(), row.len());
+    for (acc_value, row_value) in acc.iter_mut().zip(row) {
+        *acc_value -= *row_value;
+    }
+}
+
+#[inline(always)]
+pub fn scalar_forward_base_crelu(
+    stm: &[i16],
+    ntm: &[i16],
+    out_w: &[i16],
+    h: usize,
+    use_screlu: bool,
+) -> i64 {
+    let mut sum = 0i64;
+
+    if use_screlu {
+        for j in 0..h {
+            let v = stm[j].clamp(0, QA as i16) as i64;
+            sum += v * v * out_w[j] as i64;
+        }
+        for j in 0..h {
+            let v = ntm[j].clamp(0, QA as i16) as i64;
+            sum += v * v * out_w[h + j] as i64;
+        }
+        return sum;
+    }
+
+    for j in 0..h {
+        let v = (stm[j] as i32).clamp(0, QA) as i64;
+        sum += v * out_w[j] as i64;
+    }
+    for j in 0..h {
+        let v = (ntm[j] as i32).clamp(0, QA) as i64;
+        sum += v * out_w[h + j] as i64;
+    }
+
+    sum
+}
+
+#[inline(always)]
+#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+pub fn scalar_l1_matmul(
+    sp: &[u8],
+    np: &[u8],
+    l1_total: usize,
+    l1: usize,
+    l1_off: usize,
+    pw: usize,
+    pw_scale: i32,
+    l1_weights: &[i16],
+    l1_biases: &[i16],
+    out: &mut [i32],
+) {
+    for i in 0..l1 {
+        let gi = l1_off + i;
+        let mut sum = l1_biases[gi] as i32 * pw_scale;
+        for j in 0..pw {
+            sum += sp[j] as i32 * l1_weights[j * l1_total + gi] as i32;
+            sum += np[j] as i32 * l1_weights[(pw + j) * l1_total + gi] as i32;
+        }
+        out[i] = sum;
+    }
+}
+
+#[inline(always)]
+pub fn scalar_screlu_activation(hidden: &[i32], pw_scale: i32, qa_l1: i32, out: &mut [f32]) {
+    let qf = qa_l1 as f32;
+    let qsq = qf * qf;
+    for (hidden_value, out_value) in hidden.iter().zip(out.iter_mut()) {
+        let v = (*hidden_value / pw_scale).clamp(0, qa_l1);
+        *out_value = (v * v) as f32 / qsq;
+    }
+}
+
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+pub fn scalar_forward_l2(
+    l1_out: &[f32],
+    l2_weights: &[f32],
+    l2_biases: &[f32],
+    l2: usize,
+    l2_total: usize,
+    l2_off: usize,
+    out_weights: &[f32],
+    out_bias: f32,
+) -> f32 {
+    let mut h2 = vec![0.0f32; l2];
+    h2[..l2].copy_from_slice(&l2_biases[l2_off..l2_off + l2]);
+
+    for (i, &l1_value) in l1_out.iter().enumerate() {
+        if l1_value == 0.0 {
+            continue;
+        }
+        let w_base = i * l2_total + l2_off;
+        let w_row = &l2_weights[w_base..w_base + l2];
+        for (h_value, w_value) in h2.iter_mut().zip(w_row) {
+            *h_value += l1_value * *w_value;
+        }
+    }
+
+    let mut result = out_bias;
+    for (h_value, w_value) in h2.iter().zip(out_weights) {
+        let v = h_value.clamp(0.0, 1.0);
+        result += v * v * *w_value;
+    }
+    result
+}
+
+#[inline(always)]
 // Safety: `offset + I32_LANES` must be within `slice`. The load is
 // unaligned and copies initialized `i16` values before widening to `i32`.
 unsafe fn load_i16_i32(slice: &[i16], offset: usize) -> I32x {
@@ -240,6 +359,92 @@ pub fn simd_forward_l2(
     }
 
     result
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
+#[inline]
+pub unsafe fn simd_add_row_x86_v3(acc: &mut [i16], row: &[i16]) {
+    simd_add_row(acc, row)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
+#[inline]
+pub unsafe fn simd_sub_row_x86_v3(acc: &mut [i16], row: &[i16]) {
+    simd_sub_row(acc, row)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
+#[inline]
+pub unsafe fn simd_forward_base_crelu_x86_v3(
+    stm: &[i16],
+    ntm: &[i16],
+    out_w: &[i16],
+    h: usize,
+    use_screlu: bool,
+) -> i64 {
+    simd_forward_base_crelu(stm, ntm, out_w, h, use_screlu)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn simd_l1_matmul_x86_v3(
+    sp: &[u8],
+    np: &[u8],
+    l1_total: usize,
+    l1: usize,
+    l1_off: usize,
+    pw: usize,
+    pw_scale: i32,
+    l1_weights: &[i16],
+    l1_biases: &[i16],
+    out: &mut [i32],
+) {
+    simd_l1_matmul(
+        sp, np, l1_total, l1, l1_off, pw, pw_scale, l1_weights, l1_biases, out,
+    )
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
+#[inline]
+pub unsafe fn simd_screlu_activation_x86_v3(
+    hidden: &[i32],
+    pw_scale: i32,
+    qa_l1: i32,
+    out: &mut [f32],
+) {
+    simd_screlu_activation(hidden, pw_scale, qa_l1, out)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn simd_forward_l2_x86_v3(
+    l1_out: &[f32],
+    l2_weights: &[f32],
+    l2_biases: &[f32],
+    l2: usize,
+    l2_total: usize,
+    l2_off: usize,
+    out_weights: &[f32],
+    out_bias: f32,
+) -> f32 {
+    simd_forward_l2(
+        l1_out,
+        l2_weights,
+        l2_biases,
+        l2,
+        l2_total,
+        l2_off,
+        out_weights,
+        out_bias,
+    )
 }
 
 #[cfg(test)]
