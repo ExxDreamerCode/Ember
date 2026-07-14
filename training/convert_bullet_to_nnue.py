@@ -24,7 +24,7 @@ If input is already .nnue (v6/v7), assume l1w is already in Ember format [8][204
 
 Usage:
   python convert_bullet_to_nnue.py quantised.bin net.nnue     (bullet raw)
-  python convert_bullet_to_nnue.py Coda_v6.nnue net.nnue      (re-header)
+  python convert_bullet_to_nnue.py v6.nnue net.nnue      (re-header)
 """
 
 import struct

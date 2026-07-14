@@ -1212,8 +1212,6 @@ impl Searcher {
             let is_promo = is_promotion_move(fpi, mv);
             let is_quiet = !capture && !is_promo;
 
-            let gives_check = special_move_gives_check_mode::<CHESS960>(st, mv);
-
             if !is_pv && !in_check && is_quiet && legal_moves_seen >= lmp_count {
                 break;
             }
@@ -1232,11 +1230,11 @@ impl Searcher {
                 }
             }
 
-            let move_ext = if gives_check
-                && !in_check
+            let move_ext = if !in_check
                 && legal_moves_seen == 0
                 && !is_quiet
                 && actual_depth <= 2
+                && special_move_gives_check_mode::<CHESS960>(st, mv)
             {
                 1
             } else {
