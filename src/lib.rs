@@ -1,5 +1,6 @@
 #![feature(portable_simd)]
 
+pub mod backend;
 pub mod board;
 pub mod book;
 pub mod engine;

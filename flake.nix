@@ -36,6 +36,38 @@
             '';
           };
 
+
+          x86_64-qemu-oldcpu-smoke = pkgs.writeShellApplication {
+            name = "x86_64-qemu-oldcpu-smoke";
+            runtimeInputs = with pkgs; [
+              coreutils
+              gnugrep
+              qemu
+              rustToolchain
+              stdenv.cc
+            ];
+            text = ''
+              if [ "$(uname -m)" != "x86_64" ]; then
+                echo "skipping x86_64 QEMU smoke on $(uname -m)"
+                exit 0
+              fi
+
+              unset RUSTFLAGS
+              cargo build --locked --release --bin ember
+
+              output=$(printf 'uci
+isready
+setoption name Book value
+position startpos
+go depth 1
+quit
+'                 | EMBER_SEARCH_BACKEND=auto qemu-x86_64 -cpu Nehalem target/release/ember)
+              printf '%s
+' "$output"
+              grep -q '^bestmove ' <<<"$output"
+            '';
+          };
+
           aarch64-qemu-tests = pkgs.writeShellApplication {
             name = "aarch64-qemu-tests";
             runtimeInputs = with pkgs; [
@@ -43,6 +75,7 @@
               crossAarch64
               qemu
               rustToolchain
+              stdenv.cc
             ];
             text = ''
               export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="${crossAarch64}/bin/aarch64-unknown-linux-gnu-gcc"
@@ -58,6 +91,12 @@
           };
         in
         {
+
+          x86_64-qemu-oldcpu-smoke = {
+            type = "app";
+            program = "${x86_64-qemu-oldcpu-smoke}/bin/x86_64-qemu-oldcpu-smoke";
+          };
+
           aarch64-qemu-tests = {
             type = "app";
             program = "${aarch64-qemu-tests}/bin/aarch64-qemu-tests";
@@ -97,8 +136,6 @@
         in
         {
           elo-runner = pkgs.mkShell {
-            RUSTFLAGS = "-C target-cpu=native";
-
             packages = with pkgs; [
               bash
               coreutils
@@ -130,8 +167,6 @@
           };
 
           ci = pkgs.mkShell {
-            RUSTFLAGS = "-C target-cpu=native";
-
             packages = with pkgs; [
               bash
               coreutils

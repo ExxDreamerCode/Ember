@@ -16,7 +16,7 @@ const FENS: &[&str] = &[
     "8/2p2pk1/1p4p1/p2Pp3/P1P1P1P1/1P3K2/8/8 w - - 0 40",
     "8/5pk1/6p1/3N4/3P4/5P2/6PK/8 w - - 0 45",
     "8/P4k2/8/8/8/8/8/6K1 w - - 0 1",
-    "8/8/8/R2pP1k/8/8/6Q1/4K3 w - d6 0 1",
+    "8/8/8/R2pP1k1/8/8/6Q1/4K3 w - d6 0 1",
 ];
 
 fn parse_arg(name: &str, default: usize) -> usize {

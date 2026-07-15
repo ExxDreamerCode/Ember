@@ -1,8 +1,11 @@
+use crate::backend::{nnue_backend_available, NnueBackendKind};
 use crate::board::BoardState;
 use crate::simd;
 use crate::types::*;
 use std::fs::File;
 use std::io::{BufReader, Read as IoRead};
+use std::mem::MaybeUninit;
+use std::slice;
 
 pub const PSQ_INPUTS_PER_BUCKET: usize = 768;
 pub const NNUE_OUTPUT_BUCKETS: usize = 8;
@@ -13,6 +16,706 @@ pub(crate) const QB: i32 = 64;
 pub(crate) const QAB: i32 = QA * QB;
 pub(crate) const EVAL_SCALE: i32 = 400;
 const FT_SHIFT: i32 = 9;
+
+#[inline(always)]
+fn uninit_array<T, const N: usize>() -> [MaybeUninit<T>; N] {
+    [const { MaybeUninit::uninit() }; N]
+}
+
+#[inline(always)]
+unsafe fn assume_init_slice<T>(values: &[MaybeUninit<T>]) -> &[T] {
+    // Safety: the caller guarantees every element in `values` has previously
+    // been initialized, and this produces a shared slice over that prefix only.
+    unsafe { slice::from_raw_parts(values.as_ptr() as *const T, values.len()) }
+}
+
+pub(crate) trait NnueBackend: Copy {
+    fn forward(net: &NNUENet, acc: &NNUEAccumulator, stm: u8, piece_count: u32) -> i32;
+    fn refresh(acc: &mut NNUEAccumulator, net: &NNUENet, st: &BoardState);
+    #[allow(clippy::too_many_arguments)]
+    fn update_move(
+        acc: &mut NNUEAccumulator,
+        net: &NNUENet,
+        st_before: &BoardState,
+        sr: usize,
+        sc: usize,
+        er: usize,
+        ec: usize,
+        promotion: u8,
+    ) -> bool;
+    fn add_row(acc: &mut [i16], row: &[i16]);
+    fn sub_row(acc: &mut [i16], row: &[i16]);
+    fn forward_base_crelu(
+        stm: &[i16],
+        ntm: &[i16],
+        out_w: &[i16],
+        h: usize,
+        use_screlu: bool,
+    ) -> i64;
+    #[allow(clippy::too_many_arguments)]
+    fn l1_matmul(
+        sp: &[u8],
+        np: &[u8],
+        l1_total: usize,
+        l1: usize,
+        l1_off: usize,
+        pw: usize,
+        pw_scale: i32,
+        l1_weights: &[i16],
+        l1_biases: &[i16],
+        out: &mut [MaybeUninit<i32>],
+    );
+    fn screlu_activation(hidden: &[i32], pw_scale: i32, qa_l1: i32, out: &mut [MaybeUninit<f32>]);
+    #[allow(clippy::too_many_arguments)]
+    fn forward_l2(
+        l1_out: &[f32],
+        l2_weights: &[f32],
+        l2_biases: &[f32],
+        l2: usize,
+        l2_total: usize,
+        l2_off: usize,
+        out_weights: &[f32],
+        out_bias: f32,
+    ) -> f32;
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ScalarNnueBackend;
+
+#[derive(Clone, Copy)]
+pub(crate) struct Simd128NnueBackend;
+
+#[derive(Clone, Copy)]
+pub(crate) struct SimdNnueBackend;
+
+#[derive(Clone, Copy)]
+pub(crate) struct Simd512NnueBackend;
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
+pub(crate) struct Avx512NnueBackend;
+
+impl NnueBackend for ScalarNnueBackend {
+    #[inline(always)]
+    fn forward(net: &NNUENet, acc: &NNUEAccumulator, stm: u8, piece_count: u32) -> i32 {
+        net.forward_with_backend::<Self>(acc, stm, piece_count)
+    }
+
+    #[inline(always)]
+    fn refresh(acc: &mut NNUEAccumulator, net: &NNUENet, st: &BoardState) {
+        acc.refresh_with_backend::<Self>(net, st)
+    }
+
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn update_move(
+        acc: &mut NNUEAccumulator,
+        net: &NNUENet,
+        st_before: &BoardState,
+        sr: usize,
+        sc: usize,
+        er: usize,
+        ec: usize,
+        promotion: u8,
+    ) -> bool {
+        acc.update_move_with_backend::<Self>(net, st_before, sr, sc, er, ec, promotion)
+    }
+
+    #[inline(always)]
+    fn add_row(acc: &mut [i16], row: &[i16]) {
+        simd::scalar_add_row(acc, row)
+    }
+
+    #[inline(always)]
+    fn sub_row(acc: &mut [i16], row: &[i16]) {
+        simd::scalar_sub_row(acc, row)
+    }
+
+    #[inline(always)]
+    fn forward_base_crelu(
+        stm: &[i16],
+        ntm: &[i16],
+        out_w: &[i16],
+        h: usize,
+        use_screlu: bool,
+    ) -> i64 {
+        simd::scalar_forward_base_crelu(stm, ntm, out_w, h, use_screlu)
+    }
+
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn l1_matmul(
+        sp: &[u8],
+        np: &[u8],
+        l1_total: usize,
+        l1: usize,
+        l1_off: usize,
+        pw: usize,
+        pw_scale: i32,
+        l1_weights: &[i16],
+        l1_biases: &[i16],
+        out: &mut [MaybeUninit<i32>],
+    ) {
+        simd::scalar_l1_matmul(
+            sp, np, l1_total, l1, l1_off, pw, pw_scale, l1_weights, l1_biases, out,
+        )
+    }
+
+    #[inline(always)]
+    fn screlu_activation(hidden: &[i32], pw_scale: i32, qa_l1: i32, out: &mut [MaybeUninit<f32>]) {
+        simd::scalar_screlu_activation(hidden, pw_scale, qa_l1, out)
+    }
+
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn forward_l2(
+        l1_out: &[f32],
+        l2_weights: &[f32],
+        l2_biases: &[f32],
+        l2: usize,
+        l2_total: usize,
+        l2_off: usize,
+        out_weights: &[f32],
+        out_bias: f32,
+    ) -> f32 {
+        simd::scalar_forward_l2(
+            l1_out,
+            l2_weights,
+            l2_biases,
+            l2,
+            l2_total,
+            l2_off,
+            out_weights,
+            out_bias,
+        )
+    }
+}
+
+impl NnueBackend for Simd128NnueBackend {
+    #[inline(always)]
+    fn forward(net: &NNUENet, acc: &NNUEAccumulator, stm: u8, piece_count: u32) -> i32 {
+        net.forward_with_backend::<Self>(acc, stm, piece_count)
+    }
+
+    #[inline(always)]
+    fn refresh(acc: &mut NNUEAccumulator, net: &NNUENet, st: &BoardState) {
+        acc.refresh_with_backend::<Self>(net, st)
+    }
+
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn update_move(
+        acc: &mut NNUEAccumulator,
+        net: &NNUENet,
+        st_before: &BoardState,
+        sr: usize,
+        sc: usize,
+        er: usize,
+        ec: usize,
+        promotion: u8,
+    ) -> bool {
+        acc.update_move_with_backend::<Self>(net, st_before, sr, sc, er, ec, promotion)
+    }
+
+    #[inline(always)]
+    fn add_row(acc: &mut [i16], row: &[i16]) {
+        simd::simd128_add_row(acc, row)
+    }
+
+    #[inline(always)]
+    fn sub_row(acc: &mut [i16], row: &[i16]) {
+        simd::simd128_sub_row(acc, row)
+    }
+
+    #[inline(always)]
+    fn forward_base_crelu(
+        stm: &[i16],
+        ntm: &[i16],
+        out_w: &[i16],
+        h: usize,
+        use_screlu: bool,
+    ) -> i64 {
+        simd::simd128_forward_base_crelu(stm, ntm, out_w, h, use_screlu)
+    }
+
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn l1_matmul(
+        sp: &[u8],
+        np: &[u8],
+        l1_total: usize,
+        l1: usize,
+        l1_off: usize,
+        pw: usize,
+        pw_scale: i32,
+        l1_weights: &[i16],
+        l1_biases: &[i16],
+        out: &mut [MaybeUninit<i32>],
+    ) {
+        simd::simd128_l1_matmul(
+            sp, np, l1_total, l1, l1_off, pw, pw_scale, l1_weights, l1_biases, out,
+        )
+    }
+
+    #[inline(always)]
+    fn screlu_activation(hidden: &[i32], pw_scale: i32, qa_l1: i32, out: &mut [MaybeUninit<f32>]) {
+        simd::simd_screlu_activation(hidden, pw_scale, qa_l1, out)
+    }
+
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn forward_l2(
+        l1_out: &[f32],
+        l2_weights: &[f32],
+        l2_biases: &[f32],
+        l2: usize,
+        l2_total: usize,
+        l2_off: usize,
+        out_weights: &[f32],
+        out_bias: f32,
+    ) -> f32 {
+        simd::simd128_forward_l2(
+            l1_out,
+            l2_weights,
+            l2_biases,
+            l2,
+            l2_total,
+            l2_off,
+            out_weights,
+            out_bias,
+        )
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
+#[inline]
+unsafe fn nnue_forward_x86_v3(
+    net: &NNUENet,
+    acc: &NNUEAccumulator,
+    stm: u8,
+    piece_count: u32,
+) -> i32 {
+    net.forward_with_backend::<SimdNnueBackend>(acc, stm, piece_count)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
+#[inline]
+unsafe fn nnue_refresh_x86_v3(acc: &mut NNUEAccumulator, net: &NNUENet, st: &BoardState) {
+    acc.refresh_with_backend::<SimdNnueBackend>(net, st)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
+#[inline]
+#[allow(clippy::too_many_arguments)]
+unsafe fn nnue_update_move_x86_v3(
+    acc: &mut NNUEAccumulator,
+    net: &NNUENet,
+    st_before: &BoardState,
+    sr: usize,
+    sc: usize,
+    er: usize,
+    ec: usize,
+    promotion: u8,
+) -> bool {
+    acc.update_move_with_backend::<SimdNnueBackend>(net, st_before, sr, sc, er, ec, promotion)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,avx512f,avx512bw,avx512dq,avx512vl,bmi1,bmi2,fma,lzcnt,popcnt")]
+#[inline]
+unsafe fn nnue_forward_x86_avx512(
+    net: &NNUENet,
+    acc: &NNUEAccumulator,
+    stm: u8,
+    piece_count: u32,
+) -> i32 {
+    net.forward_with_backend::<Avx512NnueBackend>(acc, stm, piece_count)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,avx512f,avx512bw,avx512dq,avx512vl,bmi1,bmi2,fma,lzcnt,popcnt")]
+#[inline]
+unsafe fn nnue_refresh_x86_avx512(acc: &mut NNUEAccumulator, net: &NNUENet, st: &BoardState) {
+    acc.refresh_with_backend::<Avx512NnueBackend>(net, st)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,avx512f,avx512bw,avx512dq,avx512vl,bmi1,bmi2,fma,lzcnt,popcnt")]
+#[inline]
+#[allow(clippy::too_many_arguments)]
+unsafe fn nnue_update_move_x86_avx512(
+    acc: &mut NNUEAccumulator,
+    net: &NNUENet,
+    st_before: &BoardState,
+    sr: usize,
+    sc: usize,
+    er: usize,
+    ec: usize,
+    promotion: u8,
+) -> bool {
+    acc.update_move_with_backend::<Avx512NnueBackend>(net, st_before, sr, sc, er, ec, promotion)
+}
+
+impl NnueBackend for SimdNnueBackend {
+    #[inline(always)]
+    fn forward(net: &NNUENet, acc: &NNUEAccumulator, stm: u8, piece_count: u32) -> i32 {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            nnue_forward_x86_v3(net, acc, stm, piece_count)
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        net.forward_with_backend::<Self>(acc, stm, piece_count)
+    }
+
+    #[inline(always)]
+    fn refresh(acc: &mut NNUEAccumulator, net: &NNUENet, st: &BoardState) {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            nnue_refresh_x86_v3(acc, net, st);
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        acc.refresh_with_backend::<Self>(net, st)
+    }
+
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn update_move(
+        acc: &mut NNUEAccumulator,
+        net: &NNUENet,
+        st_before: &BoardState,
+        sr: usize,
+        sc: usize,
+        er: usize,
+        ec: usize,
+        promotion: u8,
+    ) -> bool {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            nnue_update_move_x86_v3(acc, net, st_before, sr, sc, er, ec, promotion)
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        acc.update_move_with_backend::<Self>(net, st_before, sr, sc, er, ec, promotion)
+    }
+
+    #[inline(always)]
+    fn add_row(acc: &mut [i16], row: &[i16]) {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            simd::simd_add_row_x86_v3(acc, row);
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        simd::simd_add_row(acc, row)
+    }
+
+    #[inline(always)]
+    fn sub_row(acc: &mut [i16], row: &[i16]) {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            simd::simd_sub_row_x86_v3(acc, row);
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        simd::simd_sub_row(acc, row)
+    }
+
+    #[inline(always)]
+    fn forward_base_crelu(
+        stm: &[i16],
+        ntm: &[i16],
+        out_w: &[i16],
+        h: usize,
+        use_screlu: bool,
+    ) -> i64 {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            simd::simd_forward_base_crelu_x86_v3(stm, ntm, out_w, h, use_screlu)
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        simd::simd_forward_base_crelu(stm, ntm, out_w, h, use_screlu)
+    }
+
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn l1_matmul(
+        sp: &[u8],
+        np: &[u8],
+        l1_total: usize,
+        l1: usize,
+        l1_off: usize,
+        pw: usize,
+        pw_scale: i32,
+        l1_weights: &[i16],
+        l1_biases: &[i16],
+        out: &mut [MaybeUninit<i32>],
+    ) {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            simd::simd_l1_matmul_x86_v3(
+                sp, np, l1_total, l1, l1_off, pw, pw_scale, l1_weights, l1_biases, out,
+            );
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        simd::simd_l1_matmul(
+            sp, np, l1_total, l1, l1_off, pw, pw_scale, l1_weights, l1_biases, out,
+        )
+    }
+
+    #[inline(always)]
+    fn screlu_activation(hidden: &[i32], pw_scale: i32, qa_l1: i32, out: &mut [MaybeUninit<f32>]) {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            simd::simd_screlu_activation_x86_v3(hidden, pw_scale, qa_l1, out);
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        simd::simd_screlu_activation(hidden, pw_scale, qa_l1, out)
+    }
+
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn forward_l2(
+        l1_out: &[f32],
+        l2_weights: &[f32],
+        l2_biases: &[f32],
+        l2: usize,
+        l2_total: usize,
+        l2_off: usize,
+        out_weights: &[f32],
+        out_bias: f32,
+    ) -> f32 {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            simd::simd_forward_l2_x86_v3(
+                l1_out,
+                l2_weights,
+                l2_biases,
+                l2,
+                l2_total,
+                l2_off,
+                out_weights,
+                out_bias,
+            )
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        simd::simd_forward_l2(
+            l1_out,
+            l2_weights,
+            l2_biases,
+            l2,
+            l2_total,
+            l2_off,
+            out_weights,
+            out_bias,
+        )
+    }
+}
+
+impl NnueBackend for Simd512NnueBackend {
+    #[inline(always)]
+    fn forward(net: &NNUENet, acc: &NNUEAccumulator, stm: u8, piece_count: u32) -> i32 {
+        net.forward_with_backend::<Self>(acc, stm, piece_count)
+    }
+
+    #[inline(always)]
+    fn refresh(acc: &mut NNUEAccumulator, net: &NNUENet, st: &BoardState) {
+        acc.refresh_with_backend::<Self>(net, st)
+    }
+
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn update_move(
+        acc: &mut NNUEAccumulator,
+        net: &NNUENet,
+        st_before: &BoardState,
+        sr: usize,
+        sc: usize,
+        er: usize,
+        ec: usize,
+        promotion: u8,
+    ) -> bool {
+        acc.update_move_with_backend::<Self>(net, st_before, sr, sc, er, ec, promotion)
+    }
+
+    #[inline(always)]
+    fn add_row(acc: &mut [i16], row: &[i16]) {
+        simd::simd512_add_row(acc, row)
+    }
+
+    #[inline(always)]
+    fn sub_row(acc: &mut [i16], row: &[i16]) {
+        simd::simd512_sub_row(acc, row)
+    }
+
+    #[inline(always)]
+    fn forward_base_crelu(
+        stm: &[i16],
+        ntm: &[i16],
+        out_w: &[i16],
+        h: usize,
+        use_screlu: bool,
+    ) -> i64 {
+        simd::simd512_forward_base_crelu(stm, ntm, out_w, h, use_screlu)
+    }
+
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn l1_matmul(
+        sp: &[u8],
+        np: &[u8],
+        l1_total: usize,
+        l1: usize,
+        l1_off: usize,
+        pw: usize,
+        pw_scale: i32,
+        l1_weights: &[i16],
+        l1_biases: &[i16],
+        out: &mut [MaybeUninit<i32>],
+    ) {
+        simd::simd512_l1_matmul(
+            sp, np, l1_total, l1, l1_off, pw, pw_scale, l1_weights, l1_biases, out,
+        )
+    }
+
+    #[inline(always)]
+    fn screlu_activation(hidden: &[i32], pw_scale: i32, qa_l1: i32, out: &mut [MaybeUninit<f32>]) {
+        simd::simd_screlu_activation(hidden, pw_scale, qa_l1, out)
+    }
+
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn forward_l2(
+        l1_out: &[f32],
+        l2_weights: &[f32],
+        l2_biases: &[f32],
+        l2: usize,
+        l2_total: usize,
+        l2_off: usize,
+        out_weights: &[f32],
+        out_bias: f32,
+    ) -> f32 {
+        simd::simd512_forward_l2(
+            l1_out,
+            l2_weights,
+            l2_biases,
+            l2,
+            l2_total,
+            l2_off,
+            out_weights,
+            out_bias,
+        )
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl NnueBackend for Avx512NnueBackend {
+    #[inline(always)]
+    fn forward(net: &NNUENet, acc: &NNUEAccumulator, stm: u8, piece_count: u32) -> i32 {
+        unsafe { nnue_forward_x86_avx512(net, acc, stm, piece_count) }
+    }
+
+    #[inline(always)]
+    fn refresh(acc: &mut NNUEAccumulator, net: &NNUENet, st: &BoardState) {
+        unsafe {
+            nnue_refresh_x86_avx512(acc, net, st);
+        }
+    }
+
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn update_move(
+        acc: &mut NNUEAccumulator,
+        net: &NNUENet,
+        st_before: &BoardState,
+        sr: usize,
+        sc: usize,
+        er: usize,
+        ec: usize,
+        promotion: u8,
+    ) -> bool {
+        unsafe { nnue_update_move_x86_avx512(acc, net, st_before, sr, sc, er, ec, promotion) }
+    }
+
+    #[inline(always)]
+    fn add_row(acc: &mut [i16], row: &[i16]) {
+        unsafe {
+            simd::simd_add_row_x86_avx512(acc, row);
+        }
+    }
+
+    #[inline(always)]
+    fn sub_row(acc: &mut [i16], row: &[i16]) {
+        unsafe {
+            simd::simd_sub_row_x86_avx512(acc, row);
+        }
+    }
+
+    #[inline(always)]
+    fn forward_base_crelu(
+        stm: &[i16],
+        ntm: &[i16],
+        out_w: &[i16],
+        h: usize,
+        use_screlu: bool,
+    ) -> i64 {
+        unsafe { simd::simd_forward_base_crelu_x86_avx512(stm, ntm, out_w, h, use_screlu) }
+    }
+
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn l1_matmul(
+        sp: &[u8],
+        np: &[u8],
+        l1_total: usize,
+        l1: usize,
+        l1_off: usize,
+        pw: usize,
+        pw_scale: i32,
+        l1_weights: &[i16],
+        l1_biases: &[i16],
+        out: &mut [MaybeUninit<i32>],
+    ) {
+        unsafe {
+            simd::simd_l1_matmul_x86_avx512(
+                sp, np, l1_total, l1, l1_off, pw, pw_scale, l1_weights, l1_biases, out,
+            );
+        }
+    }
+
+    #[inline(always)]
+    fn screlu_activation(hidden: &[i32], pw_scale: i32, qa_l1: i32, out: &mut [MaybeUninit<f32>]) {
+        unsafe {
+            simd::simd_screlu_activation_x86_avx512(hidden, pw_scale, qa_l1, out);
+        }
+    }
+
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn forward_l2(
+        l1_out: &[f32],
+        l2_weights: &[f32],
+        l2_biases: &[f32],
+        l2: usize,
+        l2_total: usize,
+        l2_off: usize,
+        out_weights: &[f32],
+        out_bias: f32,
+    ) -> f32 {
+        unsafe {
+            simd::simd_forward_l2_x86_avx512(
+                l1_out,
+                l2_weights,
+                l2_biases,
+                l2,
+                l2_total,
+                l2_off,
+                out_weights,
+                out_bias,
+            )
+        }
+    }
+}
+
 const NNUE_NUM_PIECE_TYPES: usize = 12;
 const NNUE_MAGIC: u32 = 0x4E4E5545;
 const COMPACT_NNUE_MAGIC: u32 = 0x314E4345;
@@ -757,6 +1460,50 @@ impl NNUENet {
     }
 
     pub fn forward(&self, acc: &NNUEAccumulator, stm: u8, piece_count: u32) -> i32 {
+        self.forward_with_backend::<ScalarNnueBackend>(acc, stm, piece_count)
+    }
+
+    pub fn forward_with_kind(
+        &self,
+        backend: NnueBackendKind,
+        acc: &NNUEAccumulator,
+        stm: u8,
+        piece_count: u32,
+    ) -> i32 {
+        debug_assert!(nnue_backend_available(backend));
+        match backend {
+            NnueBackendKind::Scalar => {
+                self.forward_with_backend::<ScalarNnueBackend>(acc, stm, piece_count)
+            }
+            NnueBackendKind::Simd128 => {
+                self.forward_with_backend::<Simd128NnueBackend>(acc, stm, piece_count)
+            }
+            NnueBackendKind::Simd256 => {
+                self.forward_with_backend::<SimdNnueBackend>(acc, stm, piece_count)
+            }
+            NnueBackendKind::Simd512 => {
+                self.forward_with_backend::<Simd512NnueBackend>(acc, stm, piece_count)
+            }
+            NnueBackendKind::X86Avx512 => {
+                #[cfg(target_arch = "x86_64")]
+                {
+                    self.forward_with_backend::<Avx512NnueBackend>(acc, stm, piece_count)
+                }
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    self.forward_with_backend::<ScalarNnueBackend>(acc, stm, piece_count)
+                }
+            }
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn forward_with_backend<B: NnueBackend>(
+        &self,
+        acc: &NNUEAccumulator,
+        stm: u8,
+        piece_count: u32,
+    ) -> i32 {
         let bucket = output_bucket(piece_count);
         let out_w = self.output_weight_row(bucket);
 
@@ -767,12 +1514,12 @@ impl NNUENet {
         };
 
         if self.l1_size > 0 && self.use_pairwise {
-            return self.forward_l1_pairwise(stm_acc, ntm_acc, bucket);
+            return self.forward_l1_pairwise::<B>(stm_acc, ntm_acc, bucket);
         }
         if self.use_pairwise {
             return self.forward_v6_pairwise(stm_acc, ntm_acc, bucket, out_w);
         }
-        self.forward_base(stm_acc, ntm_acc, bucket, out_w)
+        self.forward_base::<B>(stm_acc, ntm_acc, bucket, out_w)
     }
 
     fn output_weight_row(&self, bucket: usize) -> &[i16] {
@@ -788,15 +1535,22 @@ impl NNUENet {
         &self.output_weights[bucket * w..bucket * w + w]
     }
 
-    fn forward_base(&self, stm: &[i16], ntm: &[i16], bucket: usize, out_w: &[i16]) -> i32 {
+    #[inline(always)]
+    fn forward_base<B: NnueBackend>(
+        &self,
+        stm: &[i16],
+        ntm: &[i16],
+        bucket: usize,
+        out_w: &[i16],
+    ) -> i32 {
         let h = self.hidden_size;
         let mut output = self.output_bias[bucket] as i64;
 
         if self.use_screlu {
-            output += simd::simd_forward_base_crelu(stm, ntm, out_w, h, true);
+            output += B::forward_base_crelu(stm, ntm, out_w, h, true);
             output /= QA as i64;
         } else {
-            output += simd::simd_forward_base_crelu(stm, ntm, out_w, h, false);
+            output += B::forward_base_crelu(stm, ntm, out_w, h, false);
         }
 
         let mut result = (output * EVAL_SCALE as i64 / QAB as i64) as i32;
@@ -825,7 +1579,8 @@ impl NNUENet {
         (output * EVAL_SCALE as i64 / QAB as i64) as i32
     }
 
-    fn forward_l1_pairwise(&self, stm: &[i16], ntm: &[i16], bucket: usize) -> i32 {
+    #[inline(always)]
+    fn forward_l1_pairwise<B: NnueBackend>(&self, stm: &[i16], ntm: &[i16], bucket: usize) -> i32 {
         let pw = self.hidden_size / 2;
         let l1_total = self.l1_size;
         let l1_pb = self.l1_per_bucket;
@@ -845,16 +1600,18 @@ impl NNUENet {
         debug_assert!(pw <= MAX_HIDDEN_SIZE / 2);
         debug_assert!(l1 <= MAX_HIDDEN_SIZE);
 
-        let mut sp = [0u8; MAX_HIDDEN_SIZE / 2];
-        let mut np = [0u8; MAX_HIDDEN_SIZE / 2];
+        let mut sp = uninit_array::<u8, { MAX_HIDDEN_SIZE / 2 }>();
+        let mut np = uninit_array::<u8, { MAX_HIDDEN_SIZE / 2 }>();
         Self::pairwise_pack(stm, pw, &mut sp[..pw]);
         Self::pairwise_pack(ntm, pw, &mut np[..pw]);
+        let sp = unsafe { assume_init_slice(&sp[..pw]) };
+        let np = unsafe { assume_init_slice(&np[..pw]) };
 
         let pw_scale = (QA * QA) >> FT_SHIFT;
-        let mut hidden32 = [0i32; MAX_HIDDEN_SIZE];
-        self.l1_matmul(
-            &sp[..pw],
-            &np[..pw],
+        let mut hidden32 = uninit_array::<i32, MAX_HIDDEN_SIZE>();
+        self.l1_matmul::<B>(
+            sp,
+            np,
             l1_total,
             l1,
             l1_off,
@@ -862,28 +1619,31 @@ impl NNUENet {
             pw_scale,
             &mut hidden32[..l1],
         );
+        let hidden32 = unsafe { assume_init_slice(&hidden32[..l1]) };
 
-        let mut l1_out = [0.0f32; MAX_HIDDEN_SIZE];
-        Self::screlu_activation(&hidden32[..l1], pw_scale, qa_l1, &mut l1_out[..l1]);
+        let mut l1_out = uninit_array::<f32, MAX_HIDDEN_SIZE>();
+        Self::screlu_activation::<B>(hidden32, pw_scale, qa_l1, &mut l1_out[..l1]);
+        let l1_out = unsafe { assume_init_slice(&l1_out[..l1]) };
 
         if self.l2_per_bucket > 0 {
-            self.forward_l2(&l1_out[..l1], bucket, l1)
+            self.forward_l2::<B>(l1_out, bucket, l1)
         } else {
-            self.forward_l1_output(&l1_out[..l1], bucket, l1)
+            self.forward_l1_output(l1_out, bucket, l1)
         }
     }
 
-    fn pairwise_pack(input: &[i16], pw: usize, out: &mut [u8]) {
+    fn pairwise_pack(input: &[i16], pw: usize, out: &mut [MaybeUninit<u8>]) {
         debug_assert!(pw <= out.len());
         for i in 0..pw {
             let a = (input[i] as i32).clamp(0, QA);
             let b = (input[i + pw] as i32).clamp(0, QA);
-            out[i] = ((a * b) >> FT_SHIFT) as u8;
+            out[i].write(((a * b) >> FT_SHIFT) as u8);
         }
     }
 
+    #[inline(always)]
     #[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
-    fn l1_matmul(
+    fn l1_matmul<B: NnueBackend>(
         &self,
         sp: &[u8],
         np: &[u8],
@@ -892,9 +1652,9 @@ impl NNUENet {
         l1_off: usize,
         pw: usize,
         pw_scale: i32,
-        out: &mut [i32],
+        out: &mut [MaybeUninit<i32>],
     ) {
-        simd::simd_l1_matmul(
+        B::l1_matmul(
             sp,
             np,
             l1_total,
@@ -908,11 +1668,18 @@ impl NNUENet {
         )
     }
 
-    fn screlu_activation(hidden: &[i32], pw_scale: i32, qa_l1: i32, out: &mut [f32]) {
-        simd::simd_screlu_activation(hidden, pw_scale, qa_l1, out)
+    #[inline(always)]
+    fn screlu_activation<B: NnueBackend>(
+        hidden: &[i32],
+        pw_scale: i32,
+        qa_l1: i32,
+        out: &mut [MaybeUninit<f32>],
+    ) {
+        B::screlu_activation(hidden, pw_scale, qa_l1, out)
     }
 
-    fn forward_l2(&self, l1_out: &[f32], bucket: usize, _l1: usize) -> i32 {
+    #[inline(always)]
+    fn forward_l2<B: NnueBackend>(&self, l1_out: &[f32], bucket: usize, _l1: usize) -> i32 {
         let l2_pb = self.l2_per_bucket;
         let l2_total = self.l2_size;
         let l2_off = if self.bucketed_hidden {
@@ -927,7 +1694,7 @@ impl NNUENet {
         };
 
         let ow = &self.out_weights_f[bucket * l2_pb..bucket * l2_pb + l2_pb];
-        let of = simd::simd_forward_l2(
+        let of = B::forward_l2(
             l1_out,
             &self.l2_weights_f,
             &self.l2_biases_f,
@@ -979,30 +1746,55 @@ impl NNUEAccumulator {
     }
 
     #[inline(always)]
-    fn add_row(acc: &mut [i16], row: &[i16]) {
-        simd::simd_add_row(acc, row)
+    fn add_row<B: NnueBackend>(acc: &mut [i16], row: &[i16]) {
+        B::add_row(acc, row)
     }
 
     #[inline(always)]
-    fn remove_row(acc: &mut [i16], row: &[i16]) {
-        simd::simd_sub_row(acc, row)
+    fn remove_row<B: NnueBackend>(acc: &mut [i16], row: &[i16]) {
+        B::sub_row(acc, row)
     }
 
     #[inline(always)]
-    fn add_feature(acc: &mut [i16], net: &NNUENet, idx: usize) {
+    fn add_feature<B: NnueBackend>(acc: &mut [i16], net: &NNUENet, idx: usize) {
         if let Some(row) = net.input_row_fast(idx) {
-            Self::add_row(acc, row);
+            Self::add_row::<B>(acc, row);
         }
     }
 
     #[inline(always)]
-    fn remove_feature(acc: &mut [i16], net: &NNUENet, idx: usize) {
+    fn remove_feature<B: NnueBackend>(acc: &mut [i16], net: &NNUENet, idx: usize) {
         if let Some(row) = net.input_row_fast(idx) {
-            Self::remove_row(acc, row);
+            Self::remove_row::<B>(acc, row);
         }
     }
 
     pub fn refresh(&mut self, net: &NNUENet, st: &BoardState) {
+        self.refresh_with_backend::<ScalarNnueBackend>(net, st)
+    }
+
+    pub fn refresh_with_kind(&mut self, backend: NnueBackendKind, net: &NNUENet, st: &BoardState) {
+        debug_assert!(nnue_backend_available(backend));
+        match backend {
+            NnueBackendKind::Scalar => self.refresh_with_backend::<ScalarNnueBackend>(net, st),
+            NnueBackendKind::Simd128 => self.refresh_with_backend::<Simd128NnueBackend>(net, st),
+            NnueBackendKind::Simd256 => self.refresh_with_backend::<SimdNnueBackend>(net, st),
+            NnueBackendKind::Simd512 => self.refresh_with_backend::<Simd512NnueBackend>(net, st),
+            NnueBackendKind::X86Avx512 => {
+                #[cfg(target_arch = "x86_64")]
+                {
+                    self.refresh_with_backend::<Avx512NnueBackend>(net, st)
+                }
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    self.refresh_with_backend::<ScalarNnueBackend>(net, st)
+                }
+            }
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn refresh_with_backend<B: NnueBackend>(&mut self, net: &NNUENet, st: &BoardState) {
         let h = self.hs;
         let wk = convert(st.king_sq(true) as u8);
         let bk = convert(st.king_sq(false) as u8);
@@ -1020,29 +1812,91 @@ impl NNUEAccumulator {
                     bb &= bb - 1;
                     let csq = convert(sq);
 
-                    Self::add_feature(&mut self.white, net, net.halfka(0, wk, color, pt, csq));
-                    Self::add_feature(&mut self.black, net, net.halfka(1, bk, color, pt, csq));
+                    Self::add_feature::<B>(&mut self.white, net, net.halfka(0, wk, color, pt, csq));
+                    Self::add_feature::<B>(&mut self.black, net, net.halfka(1, bk, color, pt, csq));
                 }
             }
         }
     }
 
-    fn add_piece(&mut self, net: &NNUENet, color: u8, pt: u8, sq: u8) {
+    #[inline(always)]
+    fn add_piece<B: NnueBackend>(&mut self, net: &NNUENet, color: u8, pt: u8, sq: u8) {
         let csq = convert(sq);
 
-        Self::add_feature(&mut self.white, net, net.halfka(0, self.wk, color, pt, csq));
-        Self::add_feature(&mut self.black, net, net.halfka(1, self.bk, color, pt, csq));
+        Self::add_feature::<B>(&mut self.white, net, net.halfka(0, self.wk, color, pt, csq));
+        Self::add_feature::<B>(&mut self.black, net, net.halfka(1, self.bk, color, pt, csq));
     }
 
-    fn remove_piece(&mut self, net: &NNUENet, color: u8, pt: u8, sq: u8) {
+    #[inline(always)]
+    fn remove_piece<B: NnueBackend>(&mut self, net: &NNUENet, color: u8, pt: u8, sq: u8) {
         let csq = convert(sq);
 
-        Self::remove_feature(&mut self.white, net, net.halfka(0, self.wk, color, pt, csq));
-        Self::remove_feature(&mut self.black, net, net.halfka(1, self.bk, color, pt, csq));
+        Self::remove_feature::<B>(&mut self.white, net, net.halfka(0, self.wk, color, pt, csq));
+        Self::remove_feature::<B>(&mut self.black, net, net.halfka(1, self.bk, color, pt, csq));
     }
 
     #[allow(clippy::too_many_arguments)]
     pub fn update_move(
+        &mut self,
+        net: &NNUENet,
+        st_before: &BoardState,
+        sr: usize,
+        sc: usize,
+        er: usize,
+        ec: usize,
+        promotion: u8,
+    ) -> bool {
+        self.update_move_with_backend::<ScalarNnueBackend>(
+            net, st_before, sr, sc, er, ec, promotion,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_move_with_kind(
+        &mut self,
+        backend: NnueBackendKind,
+        net: &NNUENet,
+        st_before: &BoardState,
+        sr: usize,
+        sc: usize,
+        er: usize,
+        ec: usize,
+        promotion: u8,
+    ) -> bool {
+        debug_assert!(nnue_backend_available(backend));
+        match backend {
+            NnueBackendKind::Scalar => self.update_move_with_backend::<ScalarNnueBackend>(
+                net, st_before, sr, sc, er, ec, promotion,
+            ),
+            NnueBackendKind::Simd128 => self.update_move_with_backend::<Simd128NnueBackend>(
+                net, st_before, sr, sc, er, ec, promotion,
+            ),
+            NnueBackendKind::Simd256 => self.update_move_with_backend::<SimdNnueBackend>(
+                net, st_before, sr, sc, er, ec, promotion,
+            ),
+            NnueBackendKind::Simd512 => self.update_move_with_backend::<Simd512NnueBackend>(
+                net, st_before, sr, sc, er, ec, promotion,
+            ),
+            NnueBackendKind::X86Avx512 => {
+                #[cfg(target_arch = "x86_64")]
+                {
+                    self.update_move_with_backend::<Avx512NnueBackend>(
+                        net, st_before, sr, sc, er, ec, promotion,
+                    )
+                }
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    self.update_move_with_backend::<ScalarNnueBackend>(
+                        net, st_before, sr, sc, er, ec, promotion,
+                    )
+                }
+            }
+        }
+    }
+
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn update_move_with_backend<B: NnueBackend>(
         &mut self,
         net: &NNUENet,
         st_before: &BoardState,
@@ -1069,28 +1923,28 @@ impl NNUEAccumulator {
             return false;
         }
 
-        self.remove_piece(net, color, mover_type, from as u8);
+        self.remove_piece::<B>(net, color, mover_type, from as u8);
 
         let cap_pi = piece_on(&st_before.bb, to);
         if cap_pi != EMPTY_SQ {
             let cap_color: u8 = if is_white_piece(cap_pi) { 0 } else { 1 };
             let cap_type = piece_type(cap_pi);
-            self.remove_piece(net, cap_color, cap_type, to as u8);
+            self.remove_piece::<B>(net, cap_color, cap_type, to as u8);
         }
 
         if mover_type == 0 && Some(to) == st_before.ep && sc != ec {
             let cap_sq = if white { to + 8 } else { to - 8 };
             let ep_color: u8 = if white { 1 } else { 0 };
-            self.remove_piece(net, ep_color, 0, cap_sq as u8);
+            self.remove_piece::<B>(net, ep_color, 0, cap_sq as u8);
         }
 
         if mover_type == 5 && sc == 4 && (ec == 6 || ec == 2) {
             if ec == 6 {
-                self.remove_piece(net, color, 3, sq(sr, 7) as u8);
-                self.add_piece(net, color, 3, sq(sr, 5) as u8);
+                self.remove_piece::<B>(net, color, 3, sq(sr, 7) as u8);
+                self.add_piece::<B>(net, color, 3, sq(sr, 5) as u8);
             } else {
-                self.remove_piece(net, color, 3, sq(sr, 0) as u8);
-                self.add_piece(net, color, 3, sq(sr, 3) as u8);
+                self.remove_piece::<B>(net, color, 3, sq(sr, 0) as u8);
+                self.add_piece::<B>(net, color, 3, sq(sr, 3) as u8);
             }
         }
 
@@ -1102,9 +1956,9 @@ impl NNUEAccumulator {
                 b'N' => 1,
                 _ => 4,
             };
-            self.add_piece(net, color, promo_type, to as u8);
+            self.add_piece::<B>(net, color, promo_type, to as u8);
         } else {
-            self.add_piece(net, color, mover_type, to as u8);
+            self.add_piece::<B>(net, color, mover_type, to as u8);
         }
 
         true

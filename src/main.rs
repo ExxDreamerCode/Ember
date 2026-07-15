@@ -1,5 +1,9 @@
+use chess_rs_lib::backend::{
+    compiled_search_backends, parse_search_backend_name, search_backend_available,
+};
 use chess_rs_lib::board::{piece_on, piece_type, EMPTY_SQ};
 use chess_rs_lib::evaluate;
+use chess_rs_lib::search::{active_search_backend, set_search_backend_override};
 use chess_rs_lib::syzygy::SyzygyTables;
 use chess_rs_lib::zobrist::compute_hash;
 use chess_rs_lib::{opening_book, Engine, OpeningBook};
@@ -140,6 +144,11 @@ fn main() {
                 );
                 println!("option name Book type string default <embedded>");
                 println!("option name NNUE type string default <embedded>");
+                print!("option name NNUEBackend type combo default auto var auto");
+                for backend in compiled_search_backends() {
+                    print!(" var {}", backend.name());
+                }
+                println!();
                 println!("option name SyzygyPath type string default <empty>");
                 println!("option name UCI_Chess960 type check default false");
                 #[cfg(feature = "decision-trace")]
@@ -153,13 +162,9 @@ fn main() {
                 reset_engine(&mut engine);
             }
             "setoption" if parts.len() >= 3 && parts[1].to_lowercase() == "name" => {
-                let name = parts[2].to_lowercase();
-                let val_start = parts
-                    .iter()
-                    .position(|part| part.eq_ignore_ascii_case("value"))
-                    .map(|idx| idx + 1)
-                    .unwrap_or(3);
-                let val = parts[val_start..].join(" ");
+                let Some((name, val)) = parse_option_name_value(&parts) else {
+                    continue;
+                };
 
                 match name.as_str() {
                     "book" => {
@@ -213,6 +218,9 @@ fn main() {
                             maybe_load_nnue(&val);
                         }
                     }
+                    "nnuebackend" | "nnue backend" | "searchbackend" | "search backend" => {
+                        set_nnue_backend(&val);
+                    }
                     "syzygypath" => {
                         if val.is_empty() || val.to_lowercase() == "<empty>" {
                             engine.searcher.syzygy = SyzygyTables::new();
@@ -236,7 +244,7 @@ fn main() {
                         }
                     }
                     _ => {
-                        parse_setoption(&mut engine, &parts);
+                        parse_setoption(&mut engine, &name, &val);
                     }
                 }
             }
@@ -355,40 +363,79 @@ fn print_bestmove(engine: &Engine, best_move: &str) {
     }
 }
 
-fn parse_setoption(engine: &mut Engine, parts: &[&str]) {
-    if parts.len() >= 5 && parts[1].to_lowercase() == "name" && parts[3].to_lowercase() == "value" {
-        let value_idx = parts
-            .iter()
-            .position(|part| part.eq_ignore_ascii_case("value"))
-            .unwrap_or(3);
-        let name = parts[2..value_idx].join(" ").to_lowercase();
-        let val = parts.get(value_idx + 1..).unwrap_or(&[]).join(" ");
-        match name.as_str() {
-            "hash" => {
-                if let Ok(mb) = val.parse::<usize>() {
-                    if (MIN_HASH_MB..=MAX_HASH_MB).contains(&mb) {
-                        engine.searcher.resize_tt(mb);
-                    } else {
-                        eprintln!("info string Ignoring out-of-range Hash value: {}", mb);
-                    }
+fn parse_option_name_value(parts: &[&str]) -> Option<(String, String)> {
+    if parts.len() < 3 || !parts[1].eq_ignore_ascii_case("name") {
+        return None;
+    }
+    let value_idx = parts
+        .iter()
+        .position(|part| part.eq_ignore_ascii_case("value"));
+    let name_end = value_idx.unwrap_or(parts.len());
+    if name_end <= 2 {
+        return None;
+    }
+    let name = parts[2..name_end].join(" ").to_lowercase();
+    let value = value_idx
+        .map(|idx| parts.get(idx + 1..).unwrap_or(&[]).join(" "))
+        .unwrap_or_default();
+    Some((name, value))
+}
+
+fn set_nnue_backend(value: &str) {
+    let normalized = chess_rs_lib::backend::normalize_backend_name(value);
+    if normalized.is_empty() || normalized == "auto" || normalized == "default" {
+        set_search_backend_override(None);
+        eprintln!(
+            "info string NNUE backend set to auto ({})",
+            active_search_backend().name()
+        );
+        return;
+    }
+
+    let Some(backend) = parse_search_backend_name(value) else {
+        eprintln!("info string Unknown NNUE backend: {}", value);
+        return;
+    };
+
+    if !search_backend_available(backend) {
+        eprintln!(
+            "info string NNUE backend {} is not available on this CPU",
+            backend.name()
+        );
+        return;
+    }
+
+    if set_search_backend_override(Some(backend)) {
+        eprintln!("info string NNUE backend set to {}", backend.name());
+    }
+}
+
+fn parse_setoption(engine: &mut Engine, name: &str, val: &str) {
+    match name {
+        "hash" => {
+            if let Ok(mb) = val.parse::<usize>() {
+                if (MIN_HASH_MB..=MAX_HASH_MB).contains(&mb) {
+                    engine.searcher.resize_tt(mb);
+                } else {
+                    eprintln!("info string Ignoring out-of-range Hash value: {}", mb);
                 }
             }
-            "threads" => {
-                if let Ok(n) = val.parse::<usize>() {
-                    if (MIN_THREADS..=MAX_THREADS).contains(&n) {
-                        engine.num_threads = n;
-                        eprintln!("info string Set threads to {}", engine.num_threads);
-                    } else {
-                        eprintln!("info string Ignoring out-of-range Threads value: {}", n);
-                    }
-                }
-            }
-            #[cfg(feature = "decision-trace")]
-            "tracefile" if !val.is_empty() => {
-                engine.set_trace_file(&val);
-            }
-            _ => {}
         }
+        "threads" => {
+            if let Ok(n) = val.parse::<usize>() {
+                if (MIN_THREADS..=MAX_THREADS).contains(&n) {
+                    engine.num_threads = n;
+                    eprintln!("info string Set threads to {}", engine.num_threads);
+                } else {
+                    eprintln!("info string Ignoring out-of-range Threads value: {}", n);
+                }
+            }
+        }
+        #[cfg(feature = "decision-trace")]
+        "tracefile" if !val.is_empty() => {
+            engine.set_trace_file(val);
+        }
+        _ => {}
     }
 }
 
@@ -592,11 +639,12 @@ mod tests {
         let hash_mb = engine.searcher.tt_mb;
         let threads = engine.num_threads;
 
-        parse_setoption(&mut engine, &["setoption", "name", "Hash", "value", "0"]);
-        parse_setoption(
-            &mut engine,
-            &["setoption", "name", "Threads", "value", "1000000"],
-        );
+        let (hash_name, hash_value) =
+            parse_option_name_value(&["setoption", "name", "Hash", "value", "0"]).unwrap();
+        let (threads_name, threads_value) =
+            parse_option_name_value(&["setoption", "name", "Threads", "value", "1000000"]).unwrap();
+        parse_setoption(&mut engine, &hash_name, &hash_value);
+        parse_setoption(&mut engine, &threads_name, &threads_value);
 
         assert_eq!(
             engine.searcher.tt_mb, hash_mb,
@@ -606,6 +654,16 @@ mod tests {
             engine.num_threads, threads,
             "invalid Threads must not change the worker count"
         );
+    }
+
+    #[test]
+    fn setoption_parses_multiword_backend_name() {
+        let (name, value) =
+            parse_option_name_value(&["setoption", "name", "NNUE", "Backend", "value", "scalar"])
+                .unwrap();
+
+        assert_eq!(name, "nnue backend");
+        assert_eq!(value, "scalar");
     }
 
     #[test]
