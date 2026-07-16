@@ -52,6 +52,25 @@ echo -e "uci\nisready\nquit" | cargo run --release
 | `SyzygyPath` | string | `<empty>` | — | Путь к папке с Syzygy таблицами (DTZ) |
 | `UCI_Chess960` | string | `false`    | —        | Включение/отключение Chess 960     |
 
+### Syzygy через Nix
+
+Репозиторий содержит Nix-цель для полного набора Syzygy 3-4-5 WDL+DTZ
+из зеркала Lichess:
+
+```
+nix build .#syzygy
+```
+
+Все 290 файлов скачиваются как fixed-output derivations с SHA-256 из
+`nix/syzygy-3-4-5.json`. Получившийся путь можно передать движку:
+
+```
+setoption name SyzygyPath value ./result/share/syzygy/3-4-5
+```
+
+Это набор до 5 фигур, размером 983957920 байт. Полный набор 6 фигур
+существенно больше и не входит в эту Nix-цель.
+
 ### Дебютная книга
 
 Движок поддерживает Polyglot-формат дебютных книг (.bin). В бинарник **встроена** книга по умолчанию — она загружается автоматически, если `book.bin` не найден рядом с исполняемым файлом.

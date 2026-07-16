@@ -407,7 +407,7 @@ macro_rules! qsearch_mode_body {
         let ks = $st.king_sq($st.w);
         let in_check = crate::board::is_attacked(&$st.bb, ks, !$st.w);
 
-        if !in_check && $this.syzygy.tables.is_some() && SyzygyTables::pieces_ok($st) {
+        if !in_check && $this.syzygy.can_probe_wdl($st) {
             if let Some(cutoff) = $this.syzygy.probe_cutoff($st, $beta, $alpha) {
                 return cutoff;
             }
@@ -603,8 +603,7 @@ macro_rules! negamax_mode_body {
             tactical_king_pressure($st)
         };
 
-        let tb_available =
-            !in_check && $this.syzygy.tables.is_some() && SyzygyTables::pieces_ok($st);
+        let tb_available = !in_check && $this.syzygy.can_probe_wdl($st);
 
         let eval_score = if tb_available {
             $this

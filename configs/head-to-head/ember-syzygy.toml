@@ -1,0 +1,45 @@
+[run]
+name = "ember-syzygy-vs-none"
+time_control = "8+0.08"
+timemargin_ms = 2000
+workers = "auto"
+worker_multiplier = 1.0
+max_pairs = 400
+min_pairs = 30
+batch_pairs = 20
+alpha = 0.05
+alternative = "greater"
+opening_source = "polyglot"
+polyglot_book = "src/book.bin"
+book_min_plies = 8
+book_max_plies = 20
+opening_format = "epd"
+seed = 20260714
+results_dir = "results/head-to-head"
+rating_interval = 20
+max_moves = 220
+
+[build]
+command = ["cargo", "build", "--release", "--bin", "ember"]
+
+[engine_a]
+name = "Ember-Syzygy"
+cmd = "target/release/ember"
+proto = "uci"
+
+[engine_a.options]
+Hash = "64"
+Threads = "1"
+Book = ""
+SyzygyPath = "result/share/syzygy/3-4-5"
+
+[engine_b]
+name = "Ember-NoSyzygy"
+cmd = "target/release/ember"
+proto = "uci"
+
+[engine_b.options]
+Hash = "64"
+Threads = "1"
+Book = ""
+SyzygyPath = "<empty>"

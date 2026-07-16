@@ -8,7 +8,6 @@ use crate::board::{
 use crate::book::OpeningBook;
 use crate::movegen::{apply_move, generate_moves};
 use crate::search::{lazy_smp_search, Searcher};
-use crate::syzygy::SyzygyTables;
 #[cfg(feature = "decision-trace")]
 use crate::trace::{DecisionTrace, DepthInfo, TraceLogger};
 use crate::tt::SharedTT;
@@ -774,10 +773,9 @@ impl Engine {
             let mut asp_score = -INF;
 
             'asp: loop {
-                let sorted = if SyzygyTables::pieces_ok(&self.st)
-                    && self.searcher.syzygy.tables.is_some()
-                    && depth >= 2
-                {
+                let use_syzygy_dtz =
+                    depth >= 2 && self.searcher.syzygy.can_probe_dtz_after_one_move(&self.st);
+                let sorted = if use_syzygy_dtz {
                     let mut with_dtz: Vec<(i32, Move)> = moves
                         .iter()
                         .map(|&mv| {

@@ -109,7 +109,8 @@ quit
         });
 
       packages = forAllSystems (pkgs:
-        import ./nix/ccrl-opponents.nix { inherit pkgs; });
+        (import ./nix/ccrl-opponents.nix { inherit pkgs; })
+        // (import ./nix/syzygy-tablebases.nix { inherit pkgs; }));
 
       devShells = forAllSystems (pkgs:
         let
