@@ -638,6 +638,35 @@ mod tests {
     }
 
     #[test]
+    fn position_startpos_preserves_search_context_within_game() {
+        // python-chess/lichess-bot sends the complete move list as
+        // `position startpos moves ...` before every search. Reconstructing the
+        // board must not discard information learned on earlier moves. That
+        // made shallow searches less stable in both investigated games:
+        // https://lichess.org/xMs5Nkx3 and https://lichess.org/VIPYcetR.
+        let mut engine = Engine::new();
+        let shared_tt = Arc::clone(&engine.shared_tt);
+        engine.searcher.history[12][28] = 1_234;
+        engine.searcher.corr_hist[321] = -87;
+
+        parse_position(
+            &mut engine,
+            &["position", "startpos", "moves", "e2e4", "e7e5"],
+        );
+
+        assert!(
+            Arc::ptr_eq(&shared_tt, &engine.shared_tt),
+            "position must preserve the transposition table allocated by ucinewgame"
+        );
+        assert_eq!(engine.searcher.history[12][28], 1_234);
+        assert_eq!(engine.searcher.corr_hist[321], -87);
+        assert_eq!(
+            board_to_fen(&engine.st),
+            "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2"
+        );
+    }
+
+    #[test]
     fn setoption_rejects_out_of_range_resources() {
         let mut engine = Engine::new();
         let hash_mb = engine.searcher.tt_mb;
