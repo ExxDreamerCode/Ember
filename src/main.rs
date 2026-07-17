@@ -18,6 +18,7 @@ const MIN_HASH_MB: usize = 1;
 const MAX_HASH_MB: usize = 4096;
 const MIN_THREADS: usize = 1;
 const MAX_THREADS: usize = 256;
+const STARTPOS_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 struct SearchTask {
     handle: thread::JoinHandle<()>,
@@ -481,7 +482,10 @@ fn parse_position(engine: &mut Engine, parts: &[&str]) {
         return;
     }
     if parts[1] == "startpos" {
-        reset_engine(engine);
+        // `ucinewgame` owns the search-state reset. Normal UCI clients send a
+        // complete `position startpos moves ...` command before every move, so
+        // resetting here would discard useful TT and correction-history state.
+        engine.set_fen(STARTPOS_FEN);
         let mut i = 2;
         if i < parts.len() && parts[i] == "moves" {
             i += 1;
