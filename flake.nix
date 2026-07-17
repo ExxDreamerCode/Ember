@@ -128,6 +128,11 @@ quit
         // (import ./nix/syzygy-tablebases.nix { inherit pkgs; })
         // {
           windows-ember = windowsEmber.package;
+          windows-portable = import ./nix/windows-portable.nix {
+            inherit pkgs;
+            lib = pkgs.lib;
+            emberWindows = windowsEmber.package;
+          };
         });
 
       devShells = forAllSystems (pkgs:
@@ -190,7 +195,10 @@ quit
               bash
               coreutils
               rustToolchain
-              python3
+              (python3.withPackages (ps: [
+                ps.pyyaml
+                ps.requests
+              ]))
             ];
           };
 
