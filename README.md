@@ -21,6 +21,48 @@
 
 - Скачайте [последний релиз](https://github.com/ExxDreamerCode/Ember/releases/tag/V1.1.2)
 
+### Сборка Windows-версии через Nix
+
+На Linux воспроизводимый Windows-бинарник с ABI MSVC собирается как обычный
+Nix package на базе `cargo-xwin`, Clang и LLD:
+
+```bash
+nix build .#windows-ember
+```
+
+Готовый файл появится по пути:
+
+```text
+result/bin/ember.exe
+```
+
+Эта цель собирает автономный бинарник со статически связанным
+MSVC CRT и оптимизацией `x86-64-v3`. Такой бинарник рассчитан на современные
+x86-64 процессоры с AVX2, BMI2 и FMA. Portable ZIP использует ровно этот же
+package, а все xwin-параметры и сама сборка определены в одном файле
+`nix/windows-ember.nix`.
+
+Для итеративной разработки сохранён совместимый frontend, который собирает в
+`target/xwin/x86_64-pc-windows-msvc/release/ember.exe` и позволяет выбрать
+переносимый baseline для старого процессора:
+
+```bash
+EMBER_WINDOWS_TARGET_CPU=x86-64 nix run .#windows-release
+```
+
+Дополнительные флаги `rustc` передаются через
+`EMBER_WINDOWS_RUSTFLAGS`, а дополнительные аргументы Cargo — после `--`:
+
+```bash
+EMBER_WINDOWS_RUSTFLAGS="-C debuginfo=1" \
+  nix run .#windows-release -- --features decision-trace
+```
+
+Обе цели получают версии Windows SDK, CRT и Cargo-параметры из общей Nix-
+дефиниции. Итеративный frontend кэширует скачанные `cargo-xwin` файлы в
+`$HOME/.cache/cargo-xwin`. Использование Microsoft CRT и Windows SDK
+подразумевает принятие их лицензий.
+
 ## ♟️ Использование
 
 ### С графической оболочкой

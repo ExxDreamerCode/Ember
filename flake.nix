@@ -23,6 +23,10 @@
       apps = forAllSystems (pkgs:
         let
           rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+          windowsEmber = import ./nix/windows-ember.nix {
+            inherit pkgs;
+            lib = pkgs.lib;
+          };
           crossAarch64 = pkgs.pkgsCross.aarch64-multiplatform.stdenv.cc;
           crossAarch64Libc = pkgs.pkgsCross.aarch64-multiplatform.stdenv.cc.libc;
 
@@ -92,6 +96,11 @@ quit
         in
         {
 
+          windows-release = {
+            type = "app";
+            program = "${windowsEmber.releaseApp}/bin/windows-release";
+          };
+
           x86_64-qemu-oldcpu-smoke = {
             type = "app";
             program = "${x86_64-qemu-oldcpu-smoke}/bin/x86_64-qemu-oldcpu-smoke";
@@ -109,8 +118,17 @@ quit
         });
 
       packages = forAllSystems (pkgs:
+        let
+          windowsEmber = import ./nix/windows-ember.nix {
+            inherit pkgs;
+            lib = pkgs.lib;
+          };
+        in
         (import ./nix/ccrl-opponents.nix { inherit pkgs; })
-        // (import ./nix/syzygy-tablebases.nix { inherit pkgs; }));
+        // (import ./nix/syzygy-tablebases.nix { inherit pkgs; })
+        // {
+          windows-ember = windowsEmber.package;
+        });
 
       devShells = forAllSystems (pkgs:
         let
