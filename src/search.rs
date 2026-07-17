@@ -2544,6 +2544,30 @@ struct ThreadResult {
     nodes: u64,
 }
 
+fn select_lazy_smp_result(results: &[ThreadResult]) -> Option<&ThreadResult> {
+    let max_depth = results.iter().map(|result| result.depth).max()?;
+    let near_deep_floor = max_depth.saturating_sub(1).max(1);
+
+    results
+        .iter()
+        .filter(|result| result.depth >= near_deep_floor)
+        .max_by(|a, b| {
+            let a_support = results
+                .iter()
+                .filter(|result| result.depth >= near_deep_floor && result.best_move == a.best_move)
+                .count();
+            let b_support = results
+                .iter()
+                .filter(|result| result.depth >= near_deep_floor && result.best_move == b.best_move)
+                .count();
+
+            a_support
+                .cmp(&b_support)
+                .then_with(|| a.depth.cmp(&b.depth))
+                .then_with(|| a.score.cmp(&b.score))
+        })
+}
+
 fn diversify_lazy_smp_root_moves(moves: &mut [Move], thread_id: usize) {
     if moves.len() <= 1 || thread_id == 0 {
         return;
@@ -2890,10 +2914,7 @@ pub fn lazy_smp_search(
     }
 
     let lock = results.lock().unwrap();
-    let best = lock
-        .iter()
-        .max_by(|a, b| a.depth.cmp(&b.depth).then_with(|| a.score.cmp(&b.score)))
-        .unwrap_or(&lock[0]);
+    let best = select_lazy_smp_result(&lock).unwrap_or(&lock[0]);
 
     let best_depth = best.depth;
     let total_nodes: u64 = lock.iter().map(|r| r.nodes).sum();
