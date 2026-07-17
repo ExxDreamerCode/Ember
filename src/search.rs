@@ -3155,6 +3155,69 @@ mod tests {
         assert_eq!(sorted_thread_one, sorted_original);
     }
 
+    fn completed_thread(best_move: Move, score: i32, depth: i32) -> ThreadResult {
+        ThreadResult {
+            best_move,
+            score,
+            depth,
+            nodes: 1,
+        }
+    }
+
+    #[test]
+    fn lazy_smp_does_not_let_deepest_outlier_repeat_draw_game_kh7() {
+        // https://lichess.org/xMs5Nkx3 before 49...Kh7:
+        // 2r3k1/5q2/2p3pb/4Qp1p/pB1P3P/P1P5/4RKP1/8 b - - 19 49
+        // 49...Bg7 held the evaluation near equality; the played 49...Kh7
+        // conceded a substantial white advantage. A one-ply-deeper dissenting
+        // Lazy SMP worker must not overrule two current-depth votes for Bg7.
+        let st = state_from_fen("2r3k1/5q2/2p3pb/4Qp1p/pB1P3P/P1P5/4RKP1/8 b - - 19 49");
+        let bg7 = legal_move(&st, "h6g7");
+        let kh7 = legal_move(&st, "g8h7");
+        let results = [
+            completed_thread(bg7, -72, 14),
+            completed_thread(bg7, -68, 14),
+            completed_thread(kh7, -61, 15),
+        ];
+
+        assert_eq!(select_lazy_smp_result(&results).unwrap().best_move, bg7);
+    }
+
+    #[test]
+    fn lazy_smp_does_not_let_deepest_outlier_repeat_loss_game_kf7() {
+        // https://lichess.org/VIPYcetR before 22...Kf7:
+        // 1r1qk3/Q1p5/5n2/3n1pp1/2BP3r/2P1P3/P2B3P/R3K2R b KQ - 0 22
+        // 22...Ne7 was the resilient move; 22...Kf7 was the first major error.
+        let st = state_from_fen("1r1qk3/Q1p5/5n2/3n1pp1/2BP3r/2P1P3/P2B3P/R3K2R b KQ - 0 22");
+        let ne7 = legal_move(&st, "d5e7");
+        let kf7 = legal_move(&st, "e8f7");
+        let results = [
+            completed_thread(ne7, -31, 12),
+            completed_thread(ne7, -28, 12),
+            completed_thread(kf7, -20, 13),
+        ];
+
+        assert_eq!(select_lazy_smp_result(&results).unwrap().best_move, ne7);
+    }
+
+    #[test]
+    fn lazy_smp_does_not_let_deepest_outlier_repeat_loss_game_g4() {
+        // https://lichess.org/VIPYcetR before 28...g4:
+        // 1r1q4/Q1p5/1n2B1k1/5ppr/3Pn3/2P1P1R1/P2B3P/2K2R2 b - - 12 28
+        // 28...Kh6 resisted; 28...g4 allowed the forcing Bxf5+/Rxg4+
+        // sequence. Prefer the supported near-deep result to a deepest outlier.
+        let st = state_from_fen("1r1q4/Q1p5/1n2B1k1/5ppr/3Pn3/2P1P1R1/P2B3P/2K2R2 b - - 12 28");
+        let kh6 = legal_move(&st, "g6h6");
+        let g4 = legal_move(&st, "g5g4");
+        let results = [
+            completed_thread(kh6, -205, 13),
+            completed_thread(kh6, -198, 13),
+            completed_thread(g4, -187, 14),
+        ];
+
+        assert_eq!(select_lazy_smp_result(&results).unwrap().best_move, kh6);
+    }
+
     #[test]
     fn root_search_resets_previous_timeout_state() {
         let mut engine = Engine::new();
