@@ -2544,6 +2544,13 @@ struct ThreadResult {
     nodes: u64,
 }
 
+#[derive(Clone, Copy)]
+pub struct LazySmpSearchLimits {
+    pub soft_time: f64,
+    pub hard_time: f64,
+    pub depth: i32,
+}
+
 fn select_lazy_smp_result(results: &[ThreadResult]) -> Option<&ThreadResult> {
     let max_depth = results.iter().map(|result| result.depth).max()?;
     let near_deep_floor = max_depth.saturating_sub(1).max(1);
@@ -2660,8 +2667,7 @@ pub fn lazy_smp_search(
     shared_tt: Arc<SharedTT>,
     st: &BoardState,
     root_moves: &[Move],
-    time_limit: f64,
-    depth_limit: i32,
+    limits: LazySmpSearchLimits,
     num_threads: usize,
     root_searcher: &Searcher,
 ) -> (Move, i32, i32, u64) {
@@ -2704,8 +2710,8 @@ pub fn lazy_smp_search(
                 let init_eval = searcher.corrected_eval(&st);
                 let mut prev_score = init_eval;
 
-                for depth in 1..=depth_limit {
-                    if searcher.time_up(start, time_limit) {
+                for depth in 1..=limits.depth {
+                    if searcher.time_up(start, limits.hard_time) {
                         break;
                     }
 
@@ -2744,7 +2750,7 @@ pub fn lazy_smp_search(
                         let mut loop_alpha = alpha;
 
                         for &mv in &sorted {
-                            if searcher.time_up(start, time_limit) {
+                            if searcher.time_up(start, limits.hard_time) {
                                 break;
                             }
                             let mut s = st;
@@ -2770,7 +2776,7 @@ pub fn lazy_smp_search(
                                     -loop_alpha,
                                     true,
                                     start,
-                                    time_limit,
+                                    limits.hard_time,
                                     &mut nd,
                                 )
                             } else {
@@ -2782,7 +2788,7 @@ pub fn lazy_smp_search(
                                     -loop_alpha,
                                     true,
                                     start,
-                                    time_limit,
+                                    limits.hard_time,
                                     &mut nd,
                                 );
                                 if sc > loop_alpha && sc < beta {
@@ -2794,7 +2800,7 @@ pub fn lazy_smp_search(
                                         -loop_alpha,
                                         true,
                                         start,
-                                        time_limit,
+                                        limits.hard_time,
                                         &mut nd,
                                     )
                                 } else {
@@ -2821,7 +2827,7 @@ pub fn lazy_smp_search(
                         }
 
                         if stopped.load(Ordering::Relaxed)
-                            || start.elapsed().as_secs_f64() > time_limit
+                            || start.elapsed().as_secs_f64() > limits.hard_time
                         {
                             break 'asp;
                         }
@@ -2850,7 +2856,7 @@ pub fn lazy_smp_search(
                     global_nodes.fetch_add(nd, Ordering::Relaxed);
                     let elapsed = start.elapsed().as_secs_f64();
 
-                    if elapsed <= time_limit {
+                    if elapsed <= limits.hard_time {
                         let prev = global_best_depth.fetch_max(depth, Ordering::SeqCst);
                         if prev < depth {
                             let score_str = if asp_score.abs() > 90_000 {
@@ -2890,6 +2896,9 @@ pub fn lazy_smp_search(
                         best_depth = depth;
                         prev_score = best_score;
                         searcher.update_correction_history(&st, best_score, best_depth);
+                        if elapsed >= limits.soft_time {
+                            break;
+                        }
                     } else {
                         break;
                     }

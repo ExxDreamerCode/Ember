@@ -7,7 +7,7 @@ use crate::board::{
 };
 use crate::book::OpeningBook;
 use crate::movegen::{apply_move, generate_moves};
-use crate::search::{lazy_smp_search, Searcher};
+use crate::search::{lazy_smp_search, LazySmpSearchLimits, Searcher};
 #[cfg(feature = "decision-trace")]
 use crate::trace::{DecisionTrace, DepthInfo, TraceLogger};
 use crate::tt::SharedTT;
@@ -647,6 +647,16 @@ impl Engine {
     }
 
     pub fn find_best_move(&mut self, time_limit: f64, depth_limit: i32) -> (String, i32, u64, f64) {
+        self.find_best_move_with_time_limits(time_limit, time_limit, depth_limit)
+    }
+
+    pub fn find_best_move_with_time_limits(
+        &mut self,
+        soft_time_limit: f64,
+        time_limit: f64,
+        depth_limit: i32,
+    ) -> (String, i32, u64, f64) {
+        let soft_time_limit = soft_time_limit.min(time_limit);
         self.searcher.refresh_nnue_net();
         self.searcher.refresh_search_backend();
         let moves = generate_moves(&self.st, self.st.w, &self.st.cr, self.st.ep);
@@ -732,8 +742,11 @@ impl Engine {
                 Arc::clone(&self.shared_tt),
                 &self.st,
                 &threaded_moves,
-                time_limit,
-                depth_limit,
+                LazySmpSearchLimits {
+                    soft_time: soft_time_limit,
+                    hard_time: time_limit,
+                    depth: depth_limit,
+                },
                 self.num_threads,
                 &self.searcher,
             );
@@ -972,6 +985,9 @@ impl Engine {
                     elapsed_ms: (elapsed * 1000.0) as u128,
                     pv: pv_str,
                 });
+                if elapsed >= soft_time_limit {
+                    break;
+                }
             } else {
                 break;
             }

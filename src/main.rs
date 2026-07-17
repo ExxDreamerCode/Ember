@@ -26,6 +26,13 @@ struct SearchTask {
     rx: mpsc::Receiver<(String, i32, u64, f64)>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct SearchLimits {
+    soft_seconds: f64,
+    hard_seconds: f64,
+    depth: i32,
+}
+
 fn try_load_book(engine: &mut Engine, path: &std::path::Path) -> bool {
     let display = path.display();
     if path.exists() {
@@ -272,7 +279,7 @@ fn main() {
                     continue;
                 }
 
-                let (tl, depth) = parse_go_params(&parts, &engine);
+                let limits = parse_go_params(&parts, &engine);
 
                 let st = engine.st;
                 let shared_tt = Arc::clone(&engine.shared_tt);
@@ -308,7 +315,11 @@ fn main() {
                         if let Some(tp) = trace_path {
                             search_engine.set_trace_file(&tp);
                         }
-                        let result = search_engine.find_best_move(tl, depth);
+                        let result = search_engine.find_best_move_with_time_limits(
+                            limits.soft_seconds,
+                            limits.hard_seconds,
+                            limits.depth,
+                        );
                         tx.send(result).ok();
                     })
                     .expect("failed to spawn search thread");
@@ -550,7 +561,7 @@ fn clamp_time_limit(tl: f64) -> f64 {
     tl.max(0.05).min(60.0)
 }
 
-fn parse_go_params(parts: &[&str], engine: &Engine) -> (f64, i32) {
+fn parse_go_params(parts: &[&str], engine: &Engine) -> SearchLimits {
     let mut wtime = 300000f64;
     let mut btime = 300000f64;
     let mut winc = 0f64;
@@ -598,23 +609,33 @@ fn parse_go_params(parts: &[&str], engine: &Engine) -> (f64, i32) {
         i += 1;
     }
 
+    let remaining_ms = if engine.st.w { wtime } else { btime };
     let tl = if movetime > 0.0 {
         movetime / 1000.0
     } else if depth < 64 {
         1_000_000_000.0
     } else {
-        let t = if engine.st.w { wtime } else { btime };
         let inc = if engine.st.w { winc } else { binc };
         let moves_left = if movestogo > 0 {
             movestogo as f64
         } else {
             30.0
         };
-        (t / (moves_left + 2.0) + inc * 0.8) / 1000.0
+        (remaining_ms / (moves_left + 2.0) + inc * 0.8) / 1000.0
     };
-    let tl = if depth < 64 { tl } else { clamp_time_limit(tl) };
+    let soft_seconds = if depth < 64 { tl } else { clamp_time_limit(tl) };
+    let hard_seconds = if movetime > 0.0 || depth < 64 {
+        soft_seconds
+    } else {
+        let clock_quarter = (remaining_ms.max(0.0) / 4000.0).max(soft_seconds);
+        clamp_time_limit((soft_seconds * 3.0).min(clock_quarter))
+    };
 
-    (tl, depth)
+    SearchLimits {
+        soft_seconds,
+        hard_seconds,
+        depth,
+    }
 }
 
 #[cfg(test)]
