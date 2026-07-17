@@ -688,6 +688,38 @@ mod tests {
     }
 
     #[test]
+    fn clock_search_reserves_time_to_finish_the_crossing_iteration() {
+        // At 8+0.08, increasing NPS can leave Ember at the same completed
+        // depth: depth N finishes sooner, but N+1 is still aborted at the one
+        // allocation boundary. The same quantization amplified the shallow
+        // instability investigated in https://lichess.org/xMs5Nkx3 and
+        // https://lichess.org/VIPYcetR. Clock searches need a soft target plus
+        // a larger hard limit so one iteration may cross the target intact.
+        let engine = Engine::new();
+        let limits = parse_go_params(
+            &[
+                "go", "wtime", "8000", "btime", "8000", "winc", "80", "binc", "80",
+            ],
+            &engine,
+        );
+
+        assert!((limits.soft_seconds - 0.314).abs() < 0.002);
+        assert!(
+            limits.hard_seconds >= limits.soft_seconds * 2.0,
+            "clock search needs iteration-overrun reserve: {limits:?}"
+        );
+    }
+
+    #[test]
+    fn fixed_movetime_remains_an_exact_hard_limit() {
+        let engine = Engine::new();
+        let limits = parse_go_params(&["go", "movetime", "500"], &engine);
+
+        assert_eq!(limits.soft_seconds, 0.5);
+        assert_eq!(limits.hard_seconds, 0.5);
+    }
+
+    #[test]
     fn setoption_rejects_out_of_range_resources() {
         let mut engine = Engine::new();
         let hash_mb = engine.searcher.tt_mb;
