@@ -540,6 +540,12 @@ impl Engine {
             0
         };
 
+        next.halfmove_clock = if parts.len() > 4 {
+            parts[4].parse::<u32>().unwrap_or(0)
+        } else {
+            0
+        };
+
         self.st = next;
         self.st.hash = compute_hash(&self.st);
         self.searcher.rep_stack.clear();

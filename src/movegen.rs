@@ -192,6 +192,14 @@ pub fn apply_move_mode<const CHESS960: bool>(
         false
     };
 
+    let is_capture = !is_chess960_castle
+        && (st.mailbox[to] != EMPTY_SQ || (mover_type == 0 && Some(to) == st.ep));
+    st.halfmove_clock = if mover_type == 0 || is_capture {
+        0
+    } else {
+        st.halfmove_clock + 1
+    };
+
     let old_cr = st.cr;
     let old_castling_rooks = st.castling_rooks;
     let old_ep_hash = ep_hash_square(st);

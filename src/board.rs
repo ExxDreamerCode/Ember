@@ -184,6 +184,7 @@ pub struct BoardState {
     pub castling_rooks: [Option<usize>; 4],
     pub ep: Option<usize>,
     pub mc: usize,
+    pub halfmove_clock: u32,
     pub chess960: bool,
     pub hash: u64,
 }
@@ -198,6 +199,7 @@ impl BoardState {
             castling_rooks: [None; 4],
             ep: None,
             mc: 0,
+            halfmove_clock: 0,
             chess960: false,
             hash: 0,
         }
@@ -329,7 +331,10 @@ pub fn board_to_fen(st: &BoardState) -> String {
     }
     let ep = st.ep.map(sq_to_str).unwrap_or_else(|| "-".to_string());
     let fullmove = st.mc / 2 + 1;
-    format!("{} {} {} {} 0 {}", board, side, castling, ep, fullmove)
+    format!(
+        "{} {} {} {} {} {}",
+        board, side, castling, ep, st.halfmove_clock, fullmove
+    )
 }
 
 pub fn see_val(pt: u8) -> i32 {

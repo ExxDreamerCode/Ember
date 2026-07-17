@@ -413,7 +413,7 @@ macro_rules! qsearch_mode_body {
             }
         }
 
-        if $ply >= 2 && $this.is_repetition() {
+        if $ply >= 2 && ($this.is_repetition() || $st.halfmove_clock >= 100) {
             return 0;
         }
 
@@ -619,7 +619,7 @@ macro_rules! negamax_mode_body {
             }
         }
 
-        if $ply > 0 && $this.is_repetition() {
+        if $ply > 0 && ($this.is_repetition() || $st.halfmove_clock >= 100) {
             return 0;
         }
 
