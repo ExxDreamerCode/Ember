@@ -495,9 +495,6 @@ fn parse_position(engine: &mut Engine, parts: &[&str]) {
         return;
     }
     if parts[1] == "startpos" {
-        // `ucinewgame` owns the search-state reset. Normal UCI clients send a
-        // complete `position startpos moves ...` command before every move, so
-        // resetting here would discard useful TT and correction-history state.
         engine.set_fen(STARTPOS_FEN);
         let mut i = 2;
         if i < parts.len() && parts[i] == "moves" {
@@ -640,9 +637,12 @@ fn parse_go_params(parts: &[&str], engine: &Engine) -> SearchLimits {
 
         let optimum_ms = (opt_scale * time_left).max(1.0);
         let maximum_ms = optimum_ms.max((0.8097 * time_ms).min(max_scale * optimum_ms));
-
+        let absolute_max = (time_ms + inc * 0.8).max(1.0);
         let soft = (optimum_ms / 1000.0).max(0.05).min(60.0);
-        let hard = (maximum_ms / 1000.0).max(0.05).min(60.0);
+        let hard = (maximum_ms / 1000.0)
+            .max(0.05)
+            .min(60.0)
+            .min(absolute_max / 1000.0);
         (soft, hard.max(soft + 0.01))
     };
 
@@ -675,11 +675,6 @@ mod tests {
 
     #[test]
     fn position_startpos_preserves_search_context_within_game() {
-        // python-chess/lichess-bot sends the complete move list as
-        // `position startpos moves ...` before every search. Reconstructing the
-        // board must not discard information learned on earlier moves. That
-        // made shallow searches less stable in both investigated games:
-        // https://lichess.org/xMs5Nkx3 and https://lichess.org/VIPYcetR.
         let mut engine = Engine::new();
         let shared_tt = Arc::clone(&engine.shared_tt);
         engine.searcher.history[12][28] = 1_234;
@@ -704,12 +699,6 @@ mod tests {
 
     #[test]
     fn clock_search_reserves_time_to_finish_the_crossing_iteration() {
-        // At 8+0.08, increasing NPS can leave Ember at the same completed
-        // depth: depth N finishes sooner, but N+1 is still aborted at the one
-        // allocation boundary. The same quantization amplified the shallow
-        // instability investigated in https://lichess.org/xMs5Nkx3 and
-        // https://lichess.org/VIPYcetR. Clock searches need a soft target plus
-        // a larger hard limit so one iteration may cross the target intact.
         let engine = Engine::new();
         let limits = parse_go_params(
             &[
