@@ -8,6 +8,7 @@ use crate::board::{
 use crate::book::OpeningBook;
 use crate::movegen::{apply_move, generate_moves};
 use crate::search::{lazy_smp_search, LazySmpSearchLimits, Searcher};
+use crate::time_management::threads_for_time_budget;
 #[cfg(feature = "decision-trace")]
 use crate::trace::{DecisionTrace, DepthInfo, TraceLogger};
 use crate::tt::SharedTT;
@@ -659,6 +660,16 @@ impl Engine {
         time_limit: f64,
         depth_limit: i32,
     ) -> (String, i32, u64, f64) {
+        self.searcher.stopped.store(false, Ordering::SeqCst);
+        self.find_best_move_with_time_limits_prepared(soft_time_limit, time_limit, depth_limit)
+    }
+
+    pub fn find_best_move_with_time_limits_prepared(
+        &mut self,
+        soft_time_limit: f64,
+        time_limit: f64,
+        depth_limit: i32,
+    ) -> (String, i32, u64, f64) {
         let soft_time_limit = soft_time_limit.min(time_limit);
         self.searcher.refresh_nnue_net();
         self.searcher.refresh_search_backend();
@@ -769,9 +780,9 @@ impl Engine {
             }
         }
 
-        if self.num_threads > 1 {
+        let search_threads = threads_for_time_budget(self.num_threads, soft_time_limit);
+        if search_threads > 1 {
             let start = Instant::now();
-            self.searcher.stopped.store(false, Ordering::SeqCst);
             let threaded_moves = sort_tactical_root_moves(&self.st, &moves, NO_MOVE)
                 .or_else(|| sort_sparse_root_moves(&self.st, &moves, NO_MOVE))
                 .unwrap_or_else(|| moves.clone());
@@ -785,7 +796,7 @@ impl Engine {
                     hard_time: time_limit,
                     depth: depth_limit,
                 },
-                self.num_threads,
+                search_threads,
                 &self.searcher,
             );
 
@@ -798,7 +809,6 @@ impl Engine {
 
         self.searcher.killers = [[None; 2]; MAX_PLY];
         self.searcher.history = [[0i32; 64]; 64];
-        self.searcher.stopped.store(false, Ordering::SeqCst);
         self.searcher.init_nnue_stack(&self.st);
 
         let start = Instant::now();
