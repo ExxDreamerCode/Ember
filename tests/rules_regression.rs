@@ -380,8 +380,8 @@ fn checkmate_on_the_hundredth_halfmove_outranks_the_draw_threshold() {
 }
 
 #[test]
-fn fifty_move_draw_outranks_a_transposition_table_cutoff() {
-    let mut engine = engine_from_fen("7k/8/8/8/8/8/8/KQ6 w - - 100 1", false);
+fn automatic_draw_outranks_a_transposition_table_cutoff() {
+    let mut engine = engine_from_fen("7k/8/8/8/8/8/8/KQ6 w - - 150 1", false);
     engine
         .shared_tt
         .store(engine.st.hash, 8, 1234, TT_EXACT, None);
@@ -389,7 +389,46 @@ fn fifty_move_draw_outranks_a_transposition_table_cutoff() {
     assert_eq!(
         search_score(&mut engine, 2, 1, -1, 0),
         0,
-        "a cached board score must not override draw adjudication"
+        "a cached board score must not override an automatic draw"
+    );
+}
+
+#[test]
+fn twofold_repetition_is_not_adjudicated_as_threefold() {
+    let mut engine = engine_from_fen("7k/8/8/8/8/8/8/KQ6 w - - 0 1", false);
+    let cycle = [(7, 1, 7, 2), (0, 7, 0, 6), (7, 2, 7, 1), (0, 6, 0, 7)];
+    for (sr, sc, er, ec) in cycle {
+        assert!(engine.make_move_uci(sr, sc, er, ec, 0));
+    }
+    assert_eq!(
+        engine
+            .searcher
+            .rep_stack
+            .iter()
+            .filter(|&&hash| hash == engine.st.hash)
+            .count(),
+        2
+    );
+
+    let twofold_score = search_score(&mut engine, 2, 1, -INF, INF);
+    let mut control = engine_from_fen("7k/8/8/8/8/8/8/KQ6 w - - 4 3", false);
+    let control_score = search_score(&mut control, 2, 1, -INF, INF);
+    assert!(
+        control_score > 0,
+        "the material-winning control scores above draw"
+    );
+    assert_eq!(
+        twofold_score, control_score,
+        "a second occurrence is not yet a claimable draw"
+    );
+
+    for (sr, sc, er, ec) in cycle {
+        assert!(engine.make_move_uci(sr, sc, er, ec, 0));
+    }
+    assert_eq!(
+        search_score(&mut engine, 2, 1, -INF, INF),
+        0,
+        "the third occurrence is claimable"
     );
 }
 

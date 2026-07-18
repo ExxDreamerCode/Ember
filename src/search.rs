@@ -1462,12 +1462,7 @@ impl Searcher {
         self.repetition_count(u32::MAX) >= 3
     }
 
-    fn draw_status(
-        &self,
-        st: &BoardState,
-        ply: usize,
-        minimum_ply: usize,
-    ) -> DrawStatus {
+    fn draw_status(&self, st: &BoardState, ply: usize, minimum_ply: usize) -> DrawStatus {
         if ply < minimum_ply {
             return DrawStatus::None;
         }
@@ -3342,6 +3337,31 @@ mod tests {
             engine.searcher.is_repetition(),
             "Threefold repetition should be detected even after 20+ moves of history"
         );
+    }
+
+    #[test]
+    fn draw_status_distinguishes_claimable_and_automatic_thresholds() {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(1));
+        let mut searcher = Searcher::new(shared_tt, stopped);
+        let mut st = state_from_fen("7k/8/8/8/8/8/8/KQ6 w - - 99 1");
+        searcher.rep_stack = vec![st.hash];
+        searcher.rep_stack_len = 1;
+
+        assert_eq!(searcher.draw_status(&st, 1, 1), DrawStatus::None);
+        st.halfmove_clock = 100;
+        assert_eq!(searcher.draw_status(&st, 1, 1), DrawStatus::Claimable);
+        st.halfmove_clock = 150;
+        assert_eq!(searcher.draw_status(&st, 1, 1), DrawStatus::Automatic);
+
+        st.halfmove_clock = 8;
+        searcher.rep_stack = vec![7, 1, 7, 2, 7];
+        searcher.rep_stack_len = searcher.rep_stack.len();
+        assert_eq!(searcher.draw_status(&st, 1, 1), DrawStatus::Claimable);
+
+        searcher.rep_stack = vec![7, 1, 7, 2, 7, 3, 7, 4, 7];
+        searcher.rep_stack_len = searcher.rep_stack.len();
+        assert_eq!(searcher.draw_status(&st, 1, 1), DrawStatus::Automatic);
     }
 
     #[test]
