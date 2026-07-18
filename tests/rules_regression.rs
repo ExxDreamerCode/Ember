@@ -7,6 +7,7 @@ use chess_rs_lib::board::{
 };
 use chess_rs_lib::movegen::{apply_move, generate_moves};
 use chess_rs_lib::syzygy::SyzygyTables;
+use chess_rs_lib::tt::TT_EXACT;
 use chess_rs_lib::zobrist::compute_hash;
 use chess_rs_lib::Engine;
 use shakmaty::{fen::Fen, perft as shakmaty_perft, CastlingMode, Chess, Position};
@@ -375,6 +376,20 @@ fn checkmate_on_the_hundredth_halfmove_outranks_the_draw_threshold() {
         search_score(&mut engine, 2, 1, -INF, INF),
         -MATE + 1,
         "checkmate must end the game before a draw threshold is considered"
+    );
+}
+
+#[test]
+fn fifty_move_draw_outranks_a_transposition_table_cutoff() {
+    let mut engine = engine_from_fen("7k/8/8/8/8/8/8/KQ6 w - - 100 1", false);
+    engine
+        .shared_tt
+        .store(engine.st.hash, 8, 1234, TT_EXACT, None);
+
+    assert_eq!(
+        search_score(&mut engine, 2, 1, -1, 0),
+        0,
+        "a cached board score must not override draw adjudication"
     );
 }
 
