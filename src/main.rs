@@ -558,11 +558,6 @@ fn parse_uci_move(mv: &str) -> Option<(usize, usize, usize, usize, u8)> {
     Some((sr, sc, er, ec, promotion))
 }
 
-#[allow(clippy::manual_clamp)]
-fn clamp_time_limit(tl: f64) -> f64 {
-    tl.max(0.05).min(60.0)
-}
-
 fn parse_go_params(parts: &[&str], engine: &Engine) -> SearchLimits {
     let mut wtime = 300000f64;
     let mut btime = 300000f64;
@@ -611,26 +606,44 @@ fn parse_go_params(parts: &[&str], engine: &Engine) -> SearchLimits {
         i += 1;
     }
 
-    let remaining_ms = if engine.st.w { wtime } else { btime };
-    let tl = if movetime > 0.0 {
-        movetime / 1000.0
+    let time_ms = if engine.st.w { wtime } else { btime };
+    let inc = if engine.st.w { winc } else { binc };
+    let (soft_seconds, hard_seconds) = if movetime > 0.0 {
+        let t = movetime / 1000.0;
+        (t, t)
     } else if depth < 64 {
-        1_000_000_000.0
+        (1_000_000_000.0, 1_000_000_000.0)
     } else {
-        let inc = if engine.st.w { winc } else { binc };
-        let moves_left = if movestogo > 0 {
-            movestogo as f64
+        let mut mtg = if movestogo > 0 {
+            movestogo.min(50) as f64
         } else {
-            30.0
+            50.0
         };
-        (remaining_ms / (moves_left + 2.0) + inc * 0.8) / 1000.0
-    };
-    let soft_seconds = if depth < 64 { tl } else { clamp_time_limit(tl) };
-    let hard_seconds = if movetime > 0.0 || depth < 64 {
-        soft_seconds
-    } else {
-        let clock_quarter = (remaining_ms.max(0.0) / 4000.0).max(soft_seconds);
-        clamp_time_limit((soft_seconds * 3.0).min(clock_quarter))
+        if time_ms < 1000.0 {
+            mtg = (time_ms * 0.05).max(1.0);
+        }
+        let time_left = (time_ms + inc * (mtg - 1.0)).max(1.0);
+
+        let (opt_scale, max_scale) = if movestogo > 0 {
+            let opt = ((0.88 + 0.0 / 116.4) / mtg).min(0.88 * time_ms / time_left);
+            let max = 1.3 + 0.11 * mtg;
+            (opt, max)
+        } else {
+            let log_time_sec = (time_ms / 1000.0).log10();
+            let opt_constant = (0.0029869 + 0.00033554 * log_time_sec).min(0.004905);
+            let max_constant = (3.3744 + 3.0608 * log_time_sec).max(3.1441);
+            let opt = (0.012112 + (3.22713f64).powf(0.46866) * opt_constant)
+                .min(0.19404 * time_ms / time_left);
+            let max = max_constant.min(6.873);
+            (opt, max)
+        };
+
+        let optimum_ms = (opt_scale * time_left).max(1.0);
+        let maximum_ms = optimum_ms.max((0.8097 * time_ms).min(max_scale * optimum_ms));
+
+        let soft = (optimum_ms / 1000.0).max(0.05).min(60.0);
+        let hard = (maximum_ms / 1000.0).max(0.05).min(60.0);
+        (soft, hard.max(soft + 0.01))
     };
 
     SearchLimits {
@@ -705,9 +718,9 @@ mod tests {
             &engine,
         );
 
-        assert!((limits.soft_seconds - 0.314).abs() < 0.002);
+        assert!((limits.soft_seconds - 0.212).abs() < 0.002);
         assert!(
-            limits.hard_seconds >= limits.soft_seconds * 2.0,
+            limits.hard_seconds >= limits.soft_seconds * 3.0,
             "clock search needs iteration-overrun reserve: {limits:?}"
         );
     }
