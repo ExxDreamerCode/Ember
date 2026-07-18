@@ -197,7 +197,7 @@ pub fn apply_move_mode<const CHESS960: bool>(
     st.halfmove_clock = if mover_type == 0 || is_capture {
         0
     } else {
-        st.halfmove_clock + 1
+        st.halfmove_clock.saturating_add(1)
     };
 
     let old_cr = st.cr;
