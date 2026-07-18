@@ -3188,6 +3188,59 @@ mod tests {
     }
 
     #[test]
+    fn lazy_smp_honors_the_root_searcher_stop_token() {
+        let st = state_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1");
+        let stopped = Arc::new(AtomicBool::new(true));
+        let shared_tt = Arc::new(SharedTT::new(128));
+        let root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
+        let root_moves = generate_moves(&st, st.w, &st.cr, st.ep);
+
+        let (_, _, depth, nodes) = lazy_smp_search(
+            shared_tt,
+            &st,
+            &root_moves,
+            LazySmpSearchLimits {
+                soft_time: 10.0,
+                hard_time: 10.0,
+                depth: 4,
+            },
+            2,
+            &root,
+        );
+
+        assert_eq!(depth, 0, "workers searched despite an external stop");
+        assert_eq!(nodes, 0, "workers counted nodes despite an external stop");
+    }
+
+    #[test]
+    fn lazy_smp_soft_completion_signals_the_root_searcher() {
+        let st = state_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1");
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(128));
+        let root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
+        let root_moves = generate_moves(&st, st.w, &st.cr, st.ep);
+
+        let (_, _, depth, _) = lazy_smp_search(
+            shared_tt,
+            &st,
+            &root_moves,
+            LazySmpSearchLimits {
+                soft_time: 0.0,
+                hard_time: 10.0,
+                depth: 4,
+            },
+            2,
+            &root,
+        );
+
+        assert!(depth >= 1, "no worker completed the crossing iteration");
+        assert!(
+            stopped.load(Ordering::Relaxed),
+            "the first crossing iteration did not stop sibling workers"
+        );
+    }
+
+    #[test]
     fn lazy_smp_root_diversification_changes_nonzero_worker_order() {
         let original = vec![
             encode_move(0, 0, 0, 0, 0),
