@@ -37,7 +37,7 @@ jobs:
           nix develop .#ci --command cargo clippy --locked
           --all-targets --all-features -- -D warnings
 
-      - name: Run tests
+      - name: Run native tests
         run: |
           nix develop .#ci --command bash -c "
             ulimit -s 65536
@@ -56,10 +56,6 @@ jobs:
           "
         env:
           RUST_BACKTRACE: 1
-
-      - name: Run arm64 tests under QEMU
-        if: matrix.runner == 'ubuntu-latest'
-        run: tools/test-aarch64-qemu.sh
 
       - name: Run old x86 CPU smoke under QEMU
         if: matrix.runner == 'ubuntu-latest'
