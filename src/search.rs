@@ -2717,7 +2717,7 @@ pub fn lazy_smp_search(
     num_threads: usize,
     root_searcher: &Searcher,
 ) -> (Move, i32, i32, u64) {
-    let stopped = Arc::new(AtomicBool::new(false));
+    let stopped = Arc::clone(&root_searcher.stopped);
     let all_moves = root_moves.to_vec();
 
     let results = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -2943,6 +2943,7 @@ pub fn lazy_smp_search(
                         prev_score = best_score;
                         searcher.update_correction_history(&st, best_score, best_depth);
                         if elapsed >= limits.soft_time {
+                            stopped.store(true, Ordering::SeqCst);
                             break;
                         }
                     } else {
