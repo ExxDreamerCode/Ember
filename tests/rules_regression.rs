@@ -355,6 +355,17 @@ fn malformed_halfmove_clock_is_rejected_without_mutating_state() {
 }
 
 #[test]
+fn halfmove_clock_does_not_overflow_on_quiet_moves() {
+    let mut engine = engine_from_fen("7k/8/8/8/8/8/8/KQ6 w - - 4294967295 1", false);
+
+    assert!(engine.make_move_uci(7, 1, 7, 2, 0), "Qb1-c1 is legal");
+    assert!(
+        engine.st.halfmove_clock >= 150,
+        "the counter must remain at or beyond the automatic-draw threshold"
+    );
+}
+
+#[test]
 fn halfmove_clock_is_preserved_updated_and_adjudicated() {
     let mut quiet = engine_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 37 12", false);
     assert_eq!(quiet.st.halfmove_clock, 37);
