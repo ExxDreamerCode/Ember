@@ -638,10 +638,9 @@ fn parse_go_params(parts: &[&str], engine: &Engine) -> SearchLimits {
         let optimum_ms = (opt_scale * time_left).max(1.0);
         let maximum_ms = optimum_ms.max((0.8097 * time_ms).min(max_scale * optimum_ms));
         let absolute_max = (time_ms + inc * 0.8).max(1.0);
-        let soft = (optimum_ms / 1000.0).max(0.05).min(60.0);
+        let soft = (optimum_ms / 1000.0).clamp(0.05, 60.0);
         let hard = (maximum_ms / 1000.0)
-            .max(0.05)
-            .min(60.0)
+            .clamp(0.05, 60.0)
             .min(absolute_max / 1000.0);
         (soft, hard.max(soft + 0.01))
     };
