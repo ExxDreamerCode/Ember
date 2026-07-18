@@ -407,14 +407,14 @@ macro_rules! qsearch_mode_body {
         let ks = $st.king_sq($st.w);
         let in_check = crate::board::is_attacked(&$st.bb, ks, !$st.w);
 
+        if let Some(score) = $this.draw_score($st, $ply, 2, in_check) {
+            return score;
+        }
+
         if !in_check && $this.syzygy.can_probe_wdl($st) {
             if let Some(cutoff) = $this.syzygy.probe_cutoff($st, $beta, $alpha) {
                 return cutoff;
             }
-        }
-
-        if let Some(score) = $this.draw_score($st, $ply, 2, in_check) {
-            return score;
         }
 
         if !in_check {
@@ -572,14 +572,18 @@ macro_rules! negamax_mode_body {
 
         let h = $st.hash;
 
+        let ks = $st.king_sq($st.w);
+        let in_check = crate::board::is_attacked(&$st.bb, ks, !$st.w);
+        if let Some(score) = $this.draw_score($st, $ply, 1, in_check) {
+            return score;
+        }
+
         let tt_data = $this.shared_tt.get_depth(h);
         let tt_move = tt_data.and_then(|(_, _, _, best)| best);
         let tt_score = tt_data.map(|(_, s, _, _)| score_from_tt(s, $ply));
         let tt_depth = tt_data.map(|(d, _, _, _)| d).unwrap_or(-1);
         let tt_flag = tt_data.map(|(_, _, f, _)| f);
 
-        let ks = $st.king_sq($st.w);
-        let in_check = crate::board::is_attacked(&$st.bb, ks, !$st.w);
         let is_pv = beta - $alpha > 1;
         let is_root = $ply == 0;
 
@@ -617,10 +621,6 @@ macro_rules! negamax_mode_body {
             if let Some(cutoff) = $this.syzygy.probe_cutoff($st, beta, $alpha) {
                 return cutoff;
             }
-        }
-
-        if let Some(score) = $this.draw_score($st, $ply, 1, in_check) {
-            return score;
         }
 
         if actual_depth <= 0 {
