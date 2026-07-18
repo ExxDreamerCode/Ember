@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 use std::time::Instant;
 
 use chess_rs_lib::board::{
-    bit, board_to_fen, move_ec, move_er, move_promotion, move_sc, move_sr, move_to_uci, piece_on,
-    sq, EMPTY_SQ, INF, MATE, WK, WR,
+    bit, board_to_fen, is_dead_position, move_ec, move_er, move_promotion, move_sc, move_sr,
+    move_to_uci, piece_on, sq, EMPTY_SQ, INF, MATE, WK, WR,
 };
 use chess_rs_lib::movegen::{apply_move, generate_moves};
 use chess_rs_lib::syzygy::SyzygyTables;
@@ -429,6 +429,42 @@ fn twofold_repetition_is_not_adjudicated_as_threefold() {
         search_score(&mut engine, 2, 1, -INF, INF),
         0,
         "the third occurrence is claimable"
+    );
+}
+
+#[test]
+fn dead_material_is_adjudicated_without_false_minor_piece_draws() {
+    for fen in [
+        "7k/8/8/8/8/8/8/K7 w - - 0 1",
+        "7k/8/8/8/8/8/8/KB6 w - - 0 1",
+        "7k/8/8/8/8/8/8/KN6 w - - 0 1",
+        "7k/8/8/8/8/3b4/8/KB6 w - - 0 1",
+    ] {
+        let engine = engine_from_fen(fen, false);
+        assert!(
+            is_dead_position(&engine.st),
+            "expected dead position: {fen}"
+        );
+    }
+
+    for fen in [
+        "7k/8/8/8/8/8/8/KNN5 w - - 0 1",
+        "7k/8/8/8/8/8/8/KBN5 w - - 0 1",
+        "7k/8/8/8/8/2b5/8/KB6 w - - 0 1",
+        "7k/8/8/8/8/8/P7/K7 w - - 0 1",
+    ] {
+        let engine = engine_from_fen(fen, false);
+        assert!(
+            !is_dead_position(&engine.st),
+            "mating material remains: {fen}"
+        );
+    }
+
+    let mut engine = engine_from_fen("7k/8/8/8/8/8/8/KB6 w - - 0 1", false);
+    assert_eq!(
+        search_score(&mut engine, 2, 1, -INF, INF),
+        0,
+        "K+B versus K is an immediate dead-position draw"
     );
 }
 
