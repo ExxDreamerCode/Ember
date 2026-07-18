@@ -1,7 +1,8 @@
 use crate::board::{
     all_occ, bit, black_occ, encode_move, is_attacked, is_white_piece, move_from, move_promotion,
     move_to, piece_type, promotion_piece_index, sq, sq_c, sq_r, white_occ, BoardState, BB, BK, BN,
-    BP, BQ, BR, EMPTY_SQ, KING_ATTACKS, KNIGHT_ATTACKS, WB, WK, WN, WP, WQ, WR,
+    BP, BQ, BR, EMPTY_SQ, KING_ATTACKS, KNIGHT_ATTACKS, MAX_HALF_MOVE_CLOCK, WB, WK, WN, WP, WQ,
+    WR,
 };
 use crate::magic::{bishop_attacks, rook_attacks};
 use crate::zobrist::{ep_hash_square, zobrist};
@@ -197,7 +198,7 @@ pub fn apply_move_mode<const CHESS960: bool>(
     st.halfmove_clock = if mover_type == 0 || is_capture {
         0
     } else {
-        st.halfmove_clock.saturating_add(1)
+        st.halfmove_clock.saturating_add(1).min(MAX_HALF_MOVE_CLOCK)
     };
 
     let old_cr = st.cr;

@@ -3,7 +3,7 @@ use crate::board::board_to_fen;
 use crate::board::{
     bit, is_attacked, move_ec, move_er, move_from, move_promotion, move_sc, move_sr, move_to,
     move_to_uci, piece_from_char, piece_type, sq, sq_c, BoardState, Move, BK, BP, BQ, BR, EMPTY_SQ,
-    INF, MATE, MAX_PLY, NO_MOVE, WK, WP, WQ, WR,
+    INF, MATE, MAX_HALF_MOVE_CLOCK, MAX_PLY, NO_MOVE, WK, WP, WQ, WR,
 };
 use crate::book::OpeningBook;
 use crate::movegen::{apply_move, generate_moves};
@@ -541,9 +541,10 @@ impl Engine {
         };
 
         next.halfmove_clock = if parts.len() > 4 {
-            parts[4]
-                .parse::<u32>()
-                .map_err(|_| "halfmove clock must be a nonnegative integer".to_string())?
+            let parsed = parts[4]
+                .parse::<u64>()
+                .map_err(|_| "halfmove clock must be a nonnegative integer".to_string())?;
+            parsed.min(u64::from(MAX_HALF_MOVE_CLOCK)) as u8
         } else {
             0
         };

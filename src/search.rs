@@ -3,7 +3,7 @@ use crate::board::{
     all_occ, attacked_by, bit, has_non_pawn, is_attacked, is_dead_position, is_white_piece,
     move_ec, move_er, move_from, move_promotion, move_sc, move_sr, move_to, piece_on, piece_type,
     promotion_piece_index, see, BoardState, Move, BK, BP, BR, EMPTY_SQ, INF, KING_ATTACKS, MATE,
-    MAX_PLY, QS_DEPTH, WK, WP, WR,
+    MAX_HALF_MOVE_CLOCK, MAX_PLY, QS_DEPTH, WK, WP, WR,
 };
 use crate::evaluate::{current_nnue_net, evaluate, evaluate_nnue_acc_with_backend};
 use crate::movegen::{
@@ -1426,16 +1426,14 @@ impl Searcher {
         }
     }
 
-    fn repetition_count(&self, reversible_plies: u32) -> u8 {
+    fn repetition_count(&self, reversible_plies: usize) -> u8 {
         let len = self.rep_stack_len.min(self.rep_stack.len());
         if len == 0 {
             return 0;
         }
 
         let current_idx = len - 1;
-        let reversible_plies = usize::try_from(reversible_plies)
-            .unwrap_or(usize::MAX)
-            .min(current_idx);
+        let reversible_plies = reversible_plies.min(current_idx);
         let earliest_idx = current_idx - reversible_plies;
         let current = self.rep_stack[current_idx];
         let mut occurrences = 0u8;
@@ -1459,7 +1457,7 @@ impl Searcher {
 
     #[cfg(test)]
     fn is_repetition(&self) -> bool {
-        self.repetition_count(u32::MAX) >= 3
+        self.repetition_count(usize::MAX) >= 3
     }
 
     fn draw_status(&self, st: &BoardState, ply: usize, minimum_ply: usize) -> DrawStatus {
@@ -1470,8 +1468,8 @@ impl Searcher {
             return DrawStatus::None;
         }
 
-        let repetitions = self.repetition_count(st.halfmove_clock);
-        if st.halfmove_clock >= 150 || repetitions >= 5 {
+        let repetitions = self.repetition_count(usize::from(st.halfmove_clock));
+        if st.halfmove_clock >= MAX_HALF_MOVE_CLOCK || repetitions >= 5 {
             DrawStatus::Automatic
         } else if st.halfmove_clock >= 100 || repetitions >= 3 {
             DrawStatus::Claimable

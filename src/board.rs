@@ -3,6 +3,7 @@ pub const MATE: i32 = 100_000;
 pub const INF: i32 = 1_000_000;
 pub const MAX_PLY: usize = 128;
 pub const QS_DEPTH: i32 = 0;
+pub const MAX_HALF_MOVE_CLOCK: u8 = 150;
 
 pub const WP: usize = 0;
 pub const WN: usize = 1;
@@ -184,7 +185,7 @@ pub struct BoardState {
     pub castling_rooks: [Option<usize>; 4],
     pub ep: Option<usize>,
     pub mc: usize,
-    pub halfmove_clock: u32,
+    pub halfmove_clock: u8,
     pub chess960: bool,
     pub hash: u64,
 }
