@@ -357,6 +357,25 @@ pub fn has_non_pawn(bb: &[u64; 12], white: bool) -> bool {
     }
 }
 
+#[inline(always)]
+pub fn is_dead_position(st: &BoardState) -> bool {
+    if st.bb[WP] | st.bb[BP] | st.bb[WR] | st.bb[BR] | st.bb[WQ] | st.bb[BQ] != 0 {
+        return false;
+    }
+
+    let knights = st.bb[WN] | st.bb[BN];
+    let bishops = st.bb[WB] | st.bb[BB];
+    if (knights | bishops).count_ones() <= 1 {
+        return true;
+    }
+    if knights != 0 {
+        return false;
+    }
+
+    const ONE_SQUARE_COLOR: u64 = 0xAA55_AA55_AA55_AA55;
+    bishops & ONE_SQUARE_COLOR == 0 || bishops & !ONE_SQUARE_COLOR == 0
+}
+
 use crate::magic::{bishop_attacks, rook_attacks};
 
 pub fn attacked_by(bb: &[u64; 12], occ: u64, white: bool) -> u64 {

@@ -1,7 +1,7 @@
 use crate::backend::{default_search_backend, parse_search_backend_name, search_backend_available};
 use crate::board::{
-    all_occ, attacked_by, bit, has_non_pawn, is_attacked, is_white_piece, move_ec, move_er,
-    move_from, move_promotion, move_sc, move_sr, move_to, piece_on, piece_type,
+    all_occ, attacked_by, bit, has_non_pawn, is_attacked, is_dead_position, is_white_piece,
+    move_ec, move_er, move_from, move_promotion, move_sc, move_sr, move_to, piece_on, piece_type,
     promotion_piece_index, see, BoardState, Move, BK, BP, BR, EMPTY_SQ, INF, KING_ATTACKS, MATE,
     MAX_PLY, QS_DEPTH, WK, WP, WR,
 };
@@ -1463,6 +1463,9 @@ impl Searcher {
     }
 
     fn draw_status(&self, st: &BoardState, ply: usize, minimum_ply: usize) -> DrawStatus {
+        if is_dead_position(st) {
+            return DrawStatus::Automatic;
+        }
         if ply < minimum_ply {
             return DrawStatus::None;
         }
