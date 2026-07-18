@@ -123,7 +123,36 @@ def engine_args(engine):
     for arg in engine.get("args", []):
         args.append(f"arg={arg}")
     for key, value in engine.get("options", {}).items():
+        if key.lower() == "syzygypath" and value and value.lower() != "<empty>":
+            path = Path(value).expanduser()
+            if not path.is_absolute():
+                path = path.resolve()
+            value = str(path)
         args.append(f"option.{key}={value}")
+    return args
+
+
+def engine_limit_args(run_cfg):
+    limits = []
+    if "time_control" in run_cfg:
+        limits.append(("tc", run_cfg["time_control"]))
+    if "nodes" in run_cfg:
+        limits.append(("nodes", int(run_cfg["nodes"])))
+    if "depth" in run_cfg:
+        limits.append(("depth", int(run_cfg["depth"])))
+    if "move_time" in run_cfg:
+        limits.append(("st", run_cfg["move_time"]))
+    if len(limits) != 1:
+        raise RuntimeError(
+            "configure exactly one of time_control, nodes, depth, or move_time"
+        )
+
+    name, value = limits[0]
+    args = [f"{name}={value}"]
+    if name in {"nodes", "depth"}:
+        args.insert(0, "tc=inf")
+    if name in {"tc", "st"}:
+        args.append(f"timemargin={int(run_cfg.get('timemargin_ms', 2000))}")
     return args
 
 
@@ -601,8 +630,7 @@ def run_batches(config_path, run_id, explicit_workers=None, explicit_max_pairs=N
         args.extend(
             [
                 "-each",
-                f"tc={cfg['run']['time_control']}",
-                f"timemargin={int(cfg['run'].get('timemargin_ms', 2000))}",
+                *engine_limit_args(cfg["run"]),
                 "-openings",
                 f"file={batch_openings}",
                 f"format={cfg['run'].get('opening_format', 'epd')}",

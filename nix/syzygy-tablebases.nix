@@ -4,50 +4,85 @@ let
   inherit (pkgs) lib;
 
   baseUrl = "https://tablebase.lichess.ovh/tables/standard";
-  entries = builtins.fromJSON (builtins.readFile ./syzygy-3-4-5.json);
+  entries3To5 = builtins.fromJSON (builtins.readFile ./syzygy-3-4-5.json);
+  entries6 = builtins.fromJSON (builtins.readFile ./syzygy-6.json);
 
-  fileSource = entry:
+  fileSource =
+    sourcePrefix: entry:
     pkgs.fetchurl {
-      name = entry.name;
-      url = "${baseUrl}/${if lib.hasSuffix ".rtbw" entry.name then "3-4-5-wdl" else "3-4-5-dtz"}/${entry.name}";
-      hash = entry.hash;
+      inherit (entry) name hash;
+      url = "${baseUrl}/${sourcePrefix}-${
+        if lib.hasSuffix ".rtbw" entry.name then "wdl" else "dtz"
+      }/${entry.name}";
     };
 
-  linkedFiles = map (entry: entry // { src = fileSource entry; }) entries;
-  totalBytes = lib.foldl' (total: entry: total + entry.bytes) 0 entries;
+  addSources = sourcePrefix: map (entry: entry // { src = fileSource sourcePrefix entry; });
 
-  syzygy-3-4-5 = pkgs.runCommand "syzygy-3-4-5" {
-    preferLocalBuild = true;
-    passthru = {
+  sourced3To5 = addSources "3-4-5" entries3To5;
+  sourced6 = addSources "6" entries6;
+
+  mkSyzygy =
+    {
+      name,
+      directory,
+      pieceLabel,
+      maxPieces,
+      entries,
+    }:
+    let
       fileCount = builtins.length entries;
-      inherit totalBytes;
-    };
-    meta = {
-      description = "Syzygy 3-4-5 piece WDL and DTZ tablebases from the Lichess mirror";
-      homepage = "https://tablebase.lichess.ovh/tables/standard/";
-      platforms = lib.platforms.all;
-    };
-  } ''
-    table_dir="$out/share/syzygy/3-4-5"
-    mkdir -p "$table_dir"
-    ${lib.concatMapStringsSep "\n" (entry: ''
-      ln -s ${entry.src} "$table_dir/${entry.name}"
-    '') linkedFiles}
+      totalBytes = lib.foldl' (total: entry: total + entry.bytes) 0 entries;
+    in
+    pkgs.runCommand name
+      {
+        preferLocalBuild = true;
+        passthru = {
+          inherit fileCount maxPieces totalBytes;
+        };
+        meta = {
+          description = "Syzygy ${pieceLabel} WDL and DTZ tablebases from the Lichess mirror";
+          homepage = "https://tablebase.lichess.ovh/tables/standard/";
+          platforms = lib.platforms.all;
+        };
+      }
+      ''
+              table_dir="$out/share/syzygy/${directory}"
+              mkdir -p "$table_dir"
+              ${lib.concatMapStringsSep "\n" (entry: ''
+                ln -s ${entry.src} "$table_dir/${entry.name}"
+              '') entries}
 
-    cat > "$table_dir/README.txt" <<'EOF'
-Syzygy 3-4-5 piece WDL+DTZ tablebases.
+              cat > "$table_dir/README.txt" <<'EOF'
+        Syzygy ${pieceLabel} WDL+DTZ tablebases.
 
-Source: https://tablebase.lichess.ovh/tables/standard/
-Files: 290
-Bytes: 983957920
+        Source: https://tablebase.lichess.ovh/tables/standard/
+        Files: ${toString fileCount}
+        Bytes: ${toString totalBytes}
 
-Each file is fetched by Nix as a fixed-output derivation with the SHA-256
-hash pinned in nix/syzygy-3-4-5.json.
-Use this directory as Ember's UCI SyzygyPath.
-EOF
-  '';
+        Each file is fetched by Nix as a fixed-output derivation with its SHA-256
+        hash pinned in the corresponding manifest under nix/.
+        Use this directory as Ember's UCI SyzygyPath.
+        EOF
+      '';
+
+  syzygy-3-4-5 = mkSyzygy {
+    name = "syzygy-3-4-5";
+    directory = "3-4-5";
+    pieceLabel = "3-4-5 piece";
+    maxPieces = 5;
+    entries = sourced3To5;
+  };
+
+  syzygy-3-4-5-6 = mkSyzygy {
+    name = "syzygy-3-4-5-6";
+    directory = "3-4-5-6";
+    pieceLabel = "3-4-5-6 piece";
+    maxPieces = 6;
+    entries = sourced3To5 ++ sourced6;
+  };
 in
 {
-  inherit syzygy-3-4-5;
+  inherit syzygy-3-4-5 syzygy-3-4-5-6;
+  syzygy-6 = syzygy-3-4-5-6;
   syzygy = syzygy-3-4-5;
 }

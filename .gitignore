@@ -40,6 +40,8 @@ test_output/
 benchmark_results/
 results/
 /result
+/ember-lichess-windows.zip
+/ember-lichess-windows.zip.sha256
 .elo-remote/
 ratings/ccrl/
 __pycache__/

@@ -18,11 +18,19 @@ const MIN_HASH_MB: usize = 1;
 const MAX_HASH_MB: usize = 4096;
 const MIN_THREADS: usize = 1;
 const MAX_THREADS: usize = 256;
+const STARTPOS_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 struct SearchTask {
     handle: thread::JoinHandle<()>,
     stopped: Arc<AtomicBool>,
     rx: mpsc::Receiver<(String, i32, u64, f64)>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SearchLimits {
+    soft_seconds: f64,
+    hard_seconds: f64,
+    depth: i32,
 }
 
 fn try_load_book(engine: &mut Engine, path: &std::path::Path) -> bool {
@@ -271,7 +279,7 @@ fn main() {
                     continue;
                 }
 
-                let (tl, depth) = parse_go_params(&parts, &engine);
+                let limits = parse_go_params(&parts, &engine);
 
                 let st = engine.st;
                 let shared_tt = Arc::clone(&engine.shared_tt);
@@ -307,7 +315,11 @@ fn main() {
                         if let Some(tp) = trace_path {
                             search_engine.set_trace_file(&tp);
                         }
-                        let result = search_engine.find_best_move(tl, depth);
+                        let result = search_engine.find_best_move_with_time_limits(
+                            limits.soft_seconds,
+                            limits.hard_seconds,
+                            limits.depth,
+                        );
                         tx.send(result).ok();
                     })
                     .expect("failed to spawn search thread");
@@ -462,12 +474,14 @@ fn reset_engine(engine: &mut Engine) {
     let book = engine.book.take();
     let num_threads = engine.num_threads;
     let chess960 = engine.st.chess960;
+    let syzygy = engine.searcher.syzygy.clone();
     #[cfg(feature = "decision-trace")]
     let trace = std::mem::take(&mut engine.trace);
     let tt_mb = engine.searcher.tt_mb;
     *engine = Engine::new();
     engine.book = book;
     engine.num_threads = num_threads;
+    engine.searcher.syzygy = syzygy;
     set_chess960_mode(engine, chess960);
     #[cfg(feature = "decision-trace")]
     {
@@ -481,7 +495,10 @@ fn parse_position(engine: &mut Engine, parts: &[&str]) {
         return;
     }
     if parts[1] == "startpos" {
-        reset_engine(engine);
+        // `ucinewgame` owns the search-state reset. Normal UCI clients send a
+        // complete `position startpos moves ...` command before every move, so
+        // resetting here would discard useful TT and correction-history state.
+        engine.set_fen(STARTPOS_FEN);
         let mut i = 2;
         if i < parts.len() && parts[i] == "moves" {
             i += 1;
@@ -546,7 +563,7 @@ fn clamp_time_limit(tl: f64) -> f64 {
     tl.max(0.05).min(60.0)
 }
 
-fn parse_go_params(parts: &[&str], engine: &Engine) -> (f64, i32) {
+fn parse_go_params(parts: &[&str], engine: &Engine) -> SearchLimits {
     let mut wtime = 300000f64;
     let mut btime = 300000f64;
     let mut winc = 0f64;
@@ -594,23 +611,33 @@ fn parse_go_params(parts: &[&str], engine: &Engine) -> (f64, i32) {
         i += 1;
     }
 
+    let remaining_ms = if engine.st.w { wtime } else { btime };
     let tl = if movetime > 0.0 {
         movetime / 1000.0
     } else if depth < 64 {
         1_000_000_000.0
     } else {
-        let t = if engine.st.w { wtime } else { btime };
         let inc = if engine.st.w { winc } else { binc };
         let moves_left = if movestogo > 0 {
             movestogo as f64
         } else {
             30.0
         };
-        (t / (moves_left + 2.0) + inc * 0.8) / 1000.0
+        (remaining_ms / (moves_left + 2.0) + inc * 0.8) / 1000.0
     };
-    let tl = if depth < 64 { tl } else { clamp_time_limit(tl) };
+    let soft_seconds = if depth < 64 { tl } else { clamp_time_limit(tl) };
+    let hard_seconds = if movetime > 0.0 || depth < 64 {
+        soft_seconds
+    } else {
+        let clock_quarter = (remaining_ms.max(0.0) / 4000.0).max(soft_seconds);
+        clamp_time_limit((soft_seconds * 3.0).min(clock_quarter))
+    };
 
-    (tl, depth)
+    SearchLimits {
+        soft_seconds,
+        hard_seconds,
+        depth,
+    }
 }
 
 #[cfg(test)]
@@ -631,6 +658,67 @@ mod tests {
             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
             "g1f3 must not be applied after the illegal e2e5 prefix"
         );
+    }
+
+    #[test]
+    fn position_startpos_preserves_search_context_within_game() {
+        // python-chess/lichess-bot sends the complete move list as
+        // `position startpos moves ...` before every search. Reconstructing the
+        // board must not discard information learned on earlier moves. That
+        // made shallow searches less stable in both investigated games:
+        // https://lichess.org/xMs5Nkx3 and https://lichess.org/VIPYcetR.
+        let mut engine = Engine::new();
+        let shared_tt = Arc::clone(&engine.shared_tt);
+        engine.searcher.history[12][28] = 1_234;
+        engine.searcher.corr_hist[321] = -87;
+
+        parse_position(
+            &mut engine,
+            &["position", "startpos", "moves", "e2e4", "e7e5"],
+        );
+
+        assert!(
+            Arc::ptr_eq(&shared_tt, &engine.shared_tt),
+            "position must preserve the transposition table allocated by ucinewgame"
+        );
+        assert_eq!(engine.searcher.history[12][28], 1_234);
+        assert_eq!(engine.searcher.corr_hist[321], -87);
+        assert_eq!(
+            board_to_fen(&engine.st),
+            "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2"
+        );
+    }
+
+    #[test]
+    fn clock_search_reserves_time_to_finish_the_crossing_iteration() {
+        // At 8+0.08, increasing NPS can leave Ember at the same completed
+        // depth: depth N finishes sooner, but N+1 is still aborted at the one
+        // allocation boundary. The same quantization amplified the shallow
+        // instability investigated in https://lichess.org/xMs5Nkx3 and
+        // https://lichess.org/VIPYcetR. Clock searches need a soft target plus
+        // a larger hard limit so one iteration may cross the target intact.
+        let engine = Engine::new();
+        let limits = parse_go_params(
+            &[
+                "go", "wtime", "8000", "btime", "8000", "winc", "80", "binc", "80",
+            ],
+            &engine,
+        );
+
+        assert!((limits.soft_seconds - 0.314).abs() < 0.002);
+        assert!(
+            limits.hard_seconds >= limits.soft_seconds * 2.0,
+            "clock search needs iteration-overrun reserve: {limits:?}"
+        );
+    }
+
+    #[test]
+    fn fixed_movetime_remains_an_exact_hard_limit() {
+        let engine = Engine::new();
+        let limits = parse_go_params(&["go", "movetime", "500"], &engine);
+
+        assert_eq!(limits.soft_seconds, 0.5);
+        assert_eq!(limits.hard_seconds, 0.5);
     }
 
     #[test]
@@ -683,6 +771,21 @@ mod tests {
             engine.searcher.rep_stack[engine.searcher.rep_stack_len - 1],
             recomputed,
             "root repetition hash must match the refreshed Chess960 hash"
+        );
+    }
+
+    #[test]
+    fn reset_preserves_loaded_syzygy_tables() {
+        let mut engine = Engine::new();
+        engine.searcher.syzygy.tables = Some(std::sync::Arc::new(shakmaty_syzygy::Tablebase::<
+            shakmaty::Chess,
+        >::new()));
+
+        reset_engine(&mut engine);
+
+        assert!(
+            engine.searcher.syzygy.is_loaded(),
+            "ucinewgame must preserve the configured SyzygyPath"
         );
     }
 }

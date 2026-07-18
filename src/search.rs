@@ -1,9 +1,9 @@
 use crate::backend::{default_search_backend, parse_search_backend_name, search_backend_available};
 use crate::board::{
-    all_occ, attacked_by, bit, has_non_pawn, is_attacked, is_white_piece, move_ec, move_er,
-    move_from, move_promotion, move_sc, move_sr, move_to, piece_on, piece_type,
+    all_occ, attacked_by, bit, has_non_pawn, is_attacked, is_dead_position, is_white_piece,
+    move_ec, move_er, move_from, move_promotion, move_sc, move_sr, move_to, piece_on, piece_type,
     promotion_piece_index, see, BoardState, Move, BK, BP, BR, EMPTY_SQ, INF, KING_ATTACKS, MATE,
-    MAX_PLY, QS_DEPTH, WK, WP, WR,
+    MAX_HALF_MOVE_CLOCK, MAX_PLY, QS_DEPTH, WK, WP, WR,
 };
 use crate::evaluate::{current_nnue_net, evaluate, evaluate_nnue_acc_with_backend};
 use crate::movegen::{
@@ -27,6 +27,13 @@ use std::time::Instant;
 pub use crate::backend::SearchBackendKind;
 
 const SEARCH_BACKEND_ENV: &str = "EMBER_SEARCH_BACKEND";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DrawStatus {
+    None,
+    Claimable,
+    Automatic,
+}
 
 static SEARCH_BACKEND: OnceLock<SearchBackendKind> = OnceLock::new();
 static SEARCH_BACKEND_OVERRIDE: AtomicU8 = AtomicU8::new(0);
@@ -407,14 +414,14 @@ macro_rules! qsearch_mode_body {
         let ks = $st.king_sq($st.w);
         let in_check = crate::board::is_attacked(&$st.bb, ks, !$st.w);
 
-        if !in_check && $this.syzygy.can_probe_wdl($st) {
-            if let Some(cutoff) = $this.syzygy.probe_cutoff($st, $beta, $alpha) {
-                return cutoff;
-            }
+        if let Some(score) = $this.draw_score($st, $ply, 2, in_check) {
+            return score;
         }
 
-        if $ply >= 2 && ($this.is_repetition() || $st.halfmove_clock >= 100) {
-            return 0;
+        if !in_check {
+            if let Some(score) = $this.syzygy.probe_search_score($st, $ply) {
+                return score;
+            }
         }
 
         if !in_check {
@@ -572,17 +579,25 @@ macro_rules! negamax_mode_body {
 
         let h = $st.hash;
 
+        let ks = $st.king_sq($st.w);
+        let in_check = crate::board::is_attacked(&$st.bb, ks, !$st.w);
+        if let Some(score) = $this.draw_score($st, $ply, 1, in_check) {
+            return score;
+        }
+
+        if $ply > 0 && !in_check && $can_null {
+            if let Some(score) = $this.syzygy.probe_search_score($st, $ply) {
+                return score;
+            }
+        }
+
         let tt_data = $this.shared_tt.get_depth(h);
         let tt_move = tt_data.and_then(|(_, _, _, best)| best);
         let tt_score = tt_data.map(|(_, s, _, _)| score_from_tt(s, $ply));
         let tt_depth = tt_data.map(|(d, _, _, _)| d).unwrap_or(-1);
         let tt_flag = tt_data.map(|(_, _, f, _)| f);
 
-        let ks = $st.king_sq($st.w);
-        let in_check = crate::board::is_attacked(&$st.bb, ks, !$st.w);
         let is_pv = beta - $alpha > 1;
-        let is_root = $ply == 0;
-
         let ext = if in_check && $depth < 16 { 1 } else { 0 };
         let actual_depth = $depth + ext;
 
@@ -603,25 +618,7 @@ macro_rules! negamax_mode_body {
             tactical_king_pressure($st)
         };
 
-        let tb_available = !in_check && $this.syzygy.can_probe_wdl($st);
-
-        let eval_score = if tb_available {
-            $this
-                .probe_syzygy($st)
-                .unwrap_or_else(|| $eval.static_eval::<CHESS960>($this, $st, $ply))
-        } else {
-            $eval.static_eval::<CHESS960>($this, $st, $ply)
-        };
-
-        if tb_available && !is_pv && !is_root {
-            if let Some(cutoff) = $this.syzygy.probe_cutoff($st, beta, $alpha) {
-                return cutoff;
-            }
-        }
-
-        if $ply > 0 && ($this.is_repetition() || $st.halfmove_clock >= 100) {
-            return 0;
-        }
+        let eval_score = $eval.static_eval::<CHESS960>($this, $st, $ply);
 
         if actual_depth <= 0 {
             return $this.$qsearch_mode::<CHESS960, E>(
@@ -1399,12 +1396,6 @@ impl Searcher {
         }
     }
 
-    pub fn probe_syzygy(&self, st: &BoardState) -> Option<i32> {
-        self.syzygy
-            .probe_wdl(st)
-            .and_then(SyzygyTables::wdl_to_score)
-    }
-
     pub fn update_correction_history(&mut self, st: &BoardState, score: i32, depth: i32) {
         if !self.corr_hist_enabled() || depth < 3 || score.abs() > MATE / 2 {
             return;
@@ -1419,17 +1410,72 @@ impl Searcher {
         }
     }
 
-    fn is_repetition(&self) -> bool {
-        if self.rep_stack_len < 4 {
-            return false;
+    fn repetition_count(&self, reversible_plies: usize) -> u8 {
+        let len = self.rep_stack_len.min(self.rep_stack.len());
+        if len == 0 {
+            return 0;
         }
-        let last = self.rep_stack[self.rep_stack_len - 1];
-        for i in (0..self.rep_stack_len - 1).rev() {
-            if self.rep_stack[i] == last {
-                return true;
+
+        let current_idx = len - 1;
+        let reversible_plies = reversible_plies.min(current_idx);
+        let earliest_idx = current_idx - reversible_plies;
+        let current = self.rep_stack[current_idx];
+        let mut occurrences = 0u8;
+        let mut idx = current_idx;
+
+        loop {
+            if self.rep_stack[idx] == current {
+                occurrences += 1;
+                if occurrences == 5 {
+                    break;
+                }
             }
+            if idx < 2 || idx - 2 < earliest_idx {
+                break;
+            }
+            idx -= 2;
         }
-        false
+
+        occurrences
+    }
+
+    #[cfg(test)]
+    fn is_repetition(&self) -> bool {
+        self.repetition_count(usize::MAX) >= 3
+    }
+
+    fn draw_status(&self, st: &BoardState, ply: usize, minimum_ply: usize) -> DrawStatus {
+        if is_dead_position(st) {
+            return DrawStatus::Automatic;
+        }
+        if ply < minimum_ply {
+            return DrawStatus::None;
+        }
+
+        let repetitions = self.repetition_count(usize::from(st.halfmove_clock));
+        if st.halfmove_clock >= MAX_HALF_MOVE_CLOCK || repetitions >= 5 {
+            DrawStatus::Automatic
+        } else if st.halfmove_clock >= 100 || repetitions >= 3 {
+            DrawStatus::Claimable
+        } else {
+            DrawStatus::None
+        }
+    }
+
+    fn draw_score(
+        &self,
+        st: &BoardState,
+        ply: usize,
+        minimum_ply: usize,
+        in_check: bool,
+    ) -> Option<i32> {
+        if self.draw_status(st, ply, minimum_ply) == DrawStatus::None {
+            return None;
+        }
+        if in_check && generate_moves(st, st.w, &st.cr, st.ep).is_empty() {
+            return Some(-MATE + ply as i32);
+        }
+        Some(0)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2544,6 +2590,37 @@ struct ThreadResult {
     nodes: u64,
 }
 
+#[derive(Clone, Copy)]
+pub struct LazySmpSearchLimits {
+    pub soft_time: f64,
+    pub hard_time: f64,
+    pub depth: i32,
+}
+
+fn select_lazy_smp_result(results: &[ThreadResult]) -> Option<&ThreadResult> {
+    let max_depth = results.iter().map(|result| result.depth).max()?;
+    let near_deep_floor = max_depth.saturating_sub(1).max(1);
+
+    results
+        .iter()
+        .filter(|result| result.depth >= near_deep_floor)
+        .max_by(|a, b| {
+            let a_support = results
+                .iter()
+                .filter(|result| result.depth >= near_deep_floor && result.best_move == a.best_move)
+                .count();
+            let b_support = results
+                .iter()
+                .filter(|result| result.depth >= near_deep_floor && result.best_move == b.best_move)
+                .count();
+
+            a_support
+                .cmp(&b_support)
+                .then_with(|| a.depth.cmp(&b.depth))
+                .then_with(|| a.score.cmp(&b.score))
+        })
+}
+
 fn diversify_lazy_smp_root_moves(moves: &mut [Move], thread_id: usize) {
     if moves.len() <= 1 || thread_id == 0 {
         return;
@@ -2636,8 +2713,7 @@ pub fn lazy_smp_search(
     shared_tt: Arc<SharedTT>,
     st: &BoardState,
     root_moves: &[Move],
-    time_limit: f64,
-    depth_limit: i32,
+    limits: LazySmpSearchLimits,
     num_threads: usize,
     root_searcher: &Searcher,
 ) -> (Move, i32, i32, u64) {
@@ -2680,8 +2756,8 @@ pub fn lazy_smp_search(
                 let init_eval = searcher.corrected_eval(&st);
                 let mut prev_score = init_eval;
 
-                for depth in 1..=depth_limit {
-                    if searcher.time_up(start, time_limit) {
+                for depth in 1..=limits.depth {
+                    if searcher.time_up(start, limits.hard_time) {
                         break;
                     }
 
@@ -2720,7 +2796,7 @@ pub fn lazy_smp_search(
                         let mut loop_alpha = alpha;
 
                         for &mv in &sorted {
-                            if searcher.time_up(start, time_limit) {
+                            if searcher.time_up(start, limits.hard_time) {
                                 break;
                             }
                             let mut s = st;
@@ -2746,7 +2822,7 @@ pub fn lazy_smp_search(
                                     -loop_alpha,
                                     true,
                                     start,
-                                    time_limit,
+                                    limits.hard_time,
                                     &mut nd,
                                 )
                             } else {
@@ -2758,7 +2834,7 @@ pub fn lazy_smp_search(
                                     -loop_alpha,
                                     true,
                                     start,
-                                    time_limit,
+                                    limits.hard_time,
                                     &mut nd,
                                 );
                                 if sc > loop_alpha && sc < beta {
@@ -2770,7 +2846,7 @@ pub fn lazy_smp_search(
                                         -loop_alpha,
                                         true,
                                         start,
-                                        time_limit,
+                                        limits.hard_time,
                                         &mut nd,
                                     )
                                 } else {
@@ -2797,7 +2873,7 @@ pub fn lazy_smp_search(
                         }
 
                         if stopped.load(Ordering::Relaxed)
-                            || start.elapsed().as_secs_f64() > time_limit
+                            || start.elapsed().as_secs_f64() > limits.hard_time
                         {
                             break 'asp;
                         }
@@ -2826,7 +2902,7 @@ pub fn lazy_smp_search(
                     global_nodes.fetch_add(nd, Ordering::Relaxed);
                     let elapsed = start.elapsed().as_secs_f64();
 
-                    if elapsed <= time_limit {
+                    if elapsed <= limits.hard_time {
                         let prev = global_best_depth.fetch_max(depth, Ordering::SeqCst);
                         if prev < depth {
                             let score_str = if asp_score.abs() > 90_000 {
@@ -2866,6 +2942,9 @@ pub fn lazy_smp_search(
                         best_depth = depth;
                         prev_score = best_score;
                         searcher.update_correction_history(&st, best_score, best_depth);
+                        if elapsed >= limits.soft_time {
+                            break;
+                        }
                     } else {
                         break;
                     }
@@ -2890,10 +2969,7 @@ pub fn lazy_smp_search(
     }
 
     let lock = results.lock().unwrap();
-    let best = lock
-        .iter()
-        .max_by(|a, b| a.depth.cmp(&b.depth).then_with(|| a.score.cmp(&b.score)))
-        .unwrap_or(&lock[0]);
+    let best = select_lazy_smp_result(&lock).unwrap_or(&lock[0]);
 
     let best_depth = best.depth;
     let total_nodes: u64 = lock.iter().map(|r| r.nodes).sum();
@@ -3134,6 +3210,69 @@ mod tests {
         assert_eq!(sorted_thread_one, sorted_original);
     }
 
+    fn completed_thread(best_move: Move, score: i32, depth: i32) -> ThreadResult {
+        ThreadResult {
+            best_move,
+            score,
+            depth,
+            nodes: 1,
+        }
+    }
+
+    #[test]
+    fn lazy_smp_does_not_let_deepest_outlier_repeat_draw_game_kh7() {
+        // https://lichess.org/xMs5Nkx3 before 49...Kh7:
+        // 2r3k1/5q2/2p3pb/4Qp1p/pB1P3P/P1P5/4RKP1/8 b - - 19 49
+        // 49...Bg7 held the evaluation near equality; the played 49...Kh7
+        // conceded a substantial white advantage. A one-ply-deeper dissenting
+        // Lazy SMP worker must not overrule two current-depth votes for Bg7.
+        let st = state_from_fen("2r3k1/5q2/2p3pb/4Qp1p/pB1P3P/P1P5/4RKP1/8 b - - 19 49");
+        let bg7 = legal_move(&st, "h6g7");
+        let kh7 = legal_move(&st, "g8h7");
+        let results = [
+            completed_thread(bg7, -72, 14),
+            completed_thread(bg7, -68, 14),
+            completed_thread(kh7, -61, 15),
+        ];
+
+        assert_eq!(select_lazy_smp_result(&results).unwrap().best_move, bg7);
+    }
+
+    #[test]
+    fn lazy_smp_does_not_let_deepest_outlier_repeat_loss_game_kf7() {
+        // https://lichess.org/VIPYcetR before 22...Kf7:
+        // 1r1qk3/Q1p5/5n2/3n1pp1/2BP3r/2P1P3/P2B3P/R3K2R b KQ - 0 22
+        // 22...Ne7 was the resilient move; 22...Kf7 was the first major error.
+        let st = state_from_fen("1r1qk3/Q1p5/5n2/3n1pp1/2BP3r/2P1P3/P2B3P/R3K2R b KQ - 0 22");
+        let ne7 = legal_move(&st, "d5e7");
+        let kf7 = legal_move(&st, "e8f7");
+        let results = [
+            completed_thread(ne7, -31, 12),
+            completed_thread(ne7, -28, 12),
+            completed_thread(kf7, -20, 13),
+        ];
+
+        assert_eq!(select_lazy_smp_result(&results).unwrap().best_move, ne7);
+    }
+
+    #[test]
+    fn lazy_smp_does_not_let_deepest_outlier_repeat_loss_game_g4() {
+        // https://lichess.org/VIPYcetR before 28...g4:
+        // 1r1q4/Q1p5/1n2B1k1/5ppr/3Pn3/2P1P1R1/P2B3P/2K2R2 b - - 12 28
+        // 28...Kh6 resisted; 28...g4 allowed the forcing Bxf5+/Rxg4+
+        // sequence. Prefer the supported near-deep result to a deepest outlier.
+        let st = state_from_fen("1r1q4/Q1p5/1n2B1k1/5ppr/3Pn3/2P1P1R1/P2B3P/2K2R2 b - - 12 28");
+        let kh6 = legal_move(&st, "g6h6");
+        let g4 = legal_move(&st, "g5g4");
+        let results = [
+            completed_thread(kh6, -205, 13),
+            completed_thread(kh6, -198, 13),
+            completed_thread(g4, -187, 14),
+        ];
+
+        assert_eq!(select_lazy_smp_result(&results).unwrap().best_move, kh6);
+    }
+
     #[test]
     fn root_search_resets_previous_timeout_state() {
         let mut engine = Engine::new();
@@ -3183,6 +3322,31 @@ mod tests {
             engine.searcher.is_repetition(),
             "Threefold repetition should be detected even after 20+ moves of history"
         );
+    }
+
+    #[test]
+    fn draw_status_distinguishes_claimable_and_automatic_thresholds() {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(1));
+        let mut searcher = Searcher::new(shared_tt, stopped);
+        let mut st = state_from_fen("7k/8/8/8/8/8/8/KQ6 w - - 99 1");
+        searcher.rep_stack = vec![st.hash];
+        searcher.rep_stack_len = 1;
+
+        assert_eq!(searcher.draw_status(&st, 1, 1), DrawStatus::None);
+        st.halfmove_clock = 100;
+        assert_eq!(searcher.draw_status(&st, 1, 1), DrawStatus::Claimable);
+        st.halfmove_clock = 150;
+        assert_eq!(searcher.draw_status(&st, 1, 1), DrawStatus::Automatic);
+
+        st.halfmove_clock = 8;
+        searcher.rep_stack = vec![7, 1, 7, 2, 7];
+        searcher.rep_stack_len = searcher.rep_stack.len();
+        assert_eq!(searcher.draw_status(&st, 1, 1), DrawStatus::Claimable);
+
+        searcher.rep_stack = vec![7, 1, 7, 2, 7, 3, 7, 4, 7];
+        searcher.rep_stack_len = searcher.rep_stack.len();
+        assert_eq!(searcher.draw_status(&st, 1, 1), DrawStatus::Automatic);
     }
 
     #[test]

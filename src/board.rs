@@ -3,6 +3,7 @@ pub const MATE: i32 = 100_000;
 pub const INF: i32 = 1_000_000;
 pub const MAX_PLY: usize = 128;
 pub const QS_DEPTH: i32 = 0;
+pub const MAX_HALF_MOVE_CLOCK: u8 = 150;
 
 pub const WP: usize = 0;
 pub const WN: usize = 1;
@@ -184,7 +185,7 @@ pub struct BoardState {
     pub castling_rooks: [Option<usize>; 4],
     pub ep: Option<usize>,
     pub mc: usize,
-    pub halfmove_clock: u32,
+    pub halfmove_clock: u8,
     pub chess960: bool,
     pub hash: u64,
 }
@@ -355,6 +356,25 @@ pub fn has_non_pawn(bb: &[u64; 12], white: bool) -> bool {
     } else {
         bb[BN] | bb[BB] | bb[BR] | bb[BQ] != 0
     }
+}
+
+#[inline(always)]
+pub fn is_dead_position(st: &BoardState) -> bool {
+    if st.bb[WP] | st.bb[BP] | st.bb[WR] | st.bb[BR] | st.bb[WQ] | st.bb[BQ] != 0 {
+        return false;
+    }
+
+    let knights = st.bb[WN] | st.bb[BN];
+    let bishops = st.bb[WB] | st.bb[BB];
+    if (knights | bishops).count_ones() <= 1 {
+        return true;
+    }
+    if knights != 0 {
+        return false;
+    }
+
+    const ONE_SQUARE_COLOR: u64 = 0xAA55_AA55_AA55_AA55;
+    bishops & ONE_SQUARE_COLOR == 0 || bishops & !ONE_SQUARE_COLOR == 0
 }
 
 use crate::magic::{bishop_attacks, rook_attacks};

@@ -1,0 +1,38 @@
+[engine]
+# Ember's transposition-table memory in MiB. Valid range: 1-4096.
+hash_mb = 1024
+ponder = true
+book = "<embedded>"
+
+[benchmark]
+depth = 10
+repeats = 2
+timeout_seconds = 180
+
+[lichess]
+url = "https://lichess.org"
+challenge_timeout_seconds = 60
+availability_poll_seconds = 15
+opponent_retry_seconds = 300
+# 0 means wait indefinitely until one bot in the pool becomes available.
+opponent_wait_timeout_seconds = 0
+game_poll_seconds = 10
+game_timeout_seconds = 21600
+
+[[games]]
+opponents = [
+  "Lynx_BOT",
+  "pawn_git",
+  "simbelmyne-bot",
+  "CubixChess",
+  "bot_adario",
+]
+variant = "standard"
+base_seconds = 180
+increment_seconds = 2
+mode = "casual"
+color = "random"
+# Analysis metadata only; mode above controls whether Lichess rates the game.
+scoring = false
+# Free-form analysis labels copied into the result record.
+tags = ["default-smoke"]

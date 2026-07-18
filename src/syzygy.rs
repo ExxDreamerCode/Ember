@@ -1,13 +1,29 @@
 use shakmaty::{
-    Bitboard, Board, ByColor, ByRole, CastlingMode, Chess, Color as SColor, FromSetup, Setup,
+    uci::UciMove, Bitboard, Board, ByColor, ByRole, CastlingMode, Chess, Color as SColor,
+    FromSetup, Setup, Square,
 };
-use shakmaty_syzygy::{Dtz, MaybeRounded, Tablebase, Wdl};
+use shakmaty_syzygy::{AmbiguousWdl, Dtz, MaybeRounded, Tablebase, Wdl};
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::board::BoardState;
+use crate::board::{move_to_uci, BoardState, Move, MATE, MAX_PLY};
+
+// Keep tablebase results below mate scores while making them decisive against
+// any normal evaluation. The ply adjustment preserves the usual preference
+// for reaching a winning tablebase sooner and delaying a losing one.
+const TB_WIN_SCORE: i32 = MATE - MAX_PLY as i32;
+
+fn exact_search_score(wdl: AmbiguousWdl, ply: usize) -> Option<i32> {
+    let ply = ply.min(MAX_PLY) as i32;
+    match wdl {
+        AmbiguousWdl::Win => Some(TB_WIN_SCORE - ply),
+        AmbiguousWdl::Loss => Some(-TB_WIN_SCORE + ply),
+        AmbiguousWdl::Draw | AmbiguousWdl::CursedWin | AmbiguousWdl::BlessedLoss => Some(0),
+        AmbiguousWdl::MaybeWin | AmbiguousWdl::MaybeLoss => None,
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 struct MaterialSideKey {
@@ -158,13 +174,7 @@ impl SyzygyCapabilities {
 }
 
 fn to_shakmaty_board(st: &BoardState) -> Board {
-    let shift = |ember_sq: usize| -> u64 {
-        let col = ember_sq & 7;
-        let ember_rank = ember_sq >> 3;
-        let shak_rank = 7 - ember_rank;
-        let shak_sq = shak_rank * 8 + col;
-        1u64 << shak_sq
-    };
+    let shift = |ember_sq: usize| -> u64 { 1u64 << to_shakmaty_square(ember_sq) as u32 };
 
     let mut white_bb = [0u64; 6];
     let mut black_bb = [0u64; 6];
@@ -206,6 +216,13 @@ fn to_shakmaty_board(st: &BoardState) -> Board {
     .unwrap_or_else(Board::empty)
 }
 
+fn to_shakmaty_square(ember_sq: usize) -> Square {
+    let col = ember_sq & 7;
+    let ember_rank = ember_sq >> 3;
+    let shak_rank = 7 - ember_rank;
+    Square::new((shak_rank * 8 + col) as u32)
+}
+
 fn board_to_chess(st: &BoardState) -> Option<Chess> {
     let board = to_shakmaty_board(st);
     let color = if st.w { SColor::White } else { SColor::Black };
@@ -213,11 +230,11 @@ fn board_to_chess(st: &BoardState) -> Option<Chess> {
         board,
         turn: color,
         castling_rights: Bitboard(0),
-        ep_square: None,
+        ep_square: st.ep.map(to_shakmaty_square),
         promoted: Bitboard(0),
         pockets: None,
         remaining_checks: None,
-        halfmoves: 0,
+        halfmoves: st.halfmove_clock.into(),
         fullmoves: std::num::NonZeroU32::MIN,
     };
     Chess::from_setup(setup, CastlingMode::Standard).ok()
@@ -297,7 +314,6 @@ impl SyzygyTables {
             && st.bb[crate::board::WK].count_ones() == 1
             && st.bb[crate::board::BK].count_ones() == 1
             && st.cr.iter().all(|&right| !right)
-            && st.ep.is_none()
     }
 
     pub fn can_probe_wdl(&self, st: &BoardState) -> bool {
@@ -316,17 +332,18 @@ impl SyzygyTables {
     }
 
     pub fn can_probe_dtz(&self, st: &BoardState) -> bool {
-        self.is_loaded() && Self::pieces_ok(st) && Self::piece_count(st) <= self.max_pieces() && {
+        if !self.is_loaded() || !Self::pieces_ok(st) {
+            return false;
+        }
+        let piece_count = Self::piece_count(st);
+        if piece_count == 2 {
+            return true;
+        }
+        piece_count <= self.max_pieces() && {
             let material = MaterialKey::from_board(st);
             self.capabilities.wdl_materials.contains(&material)
                 && self.capabilities.dtz_materials.contains(&material)
         }
-    }
-
-    pub fn can_probe_dtz_after_one_move(&self, st: &BoardState) -> bool {
-        self.is_loaded()
-            && Self::piece_count(st) >= 2
-            && Self::piece_count(st) <= self.max_pieces().saturating_add(1)
     }
 
     pub fn probe_wdl(&self, st: &BoardState) -> Option<Wdl> {
@@ -336,6 +353,15 @@ impl SyzygyTables {
         let tables = self.tables.as_ref()?;
         let chess = board_to_chess(st)?;
         tables.probe_wdl_after_zeroing(&chess).ok()
+    }
+
+    pub fn probe_wdl_50(&self, st: &BoardState) -> Option<AmbiguousWdl> {
+        if !self.can_probe_dtz(st) {
+            return None;
+        }
+        let tables = self.tables.as_ref()?;
+        let chess = board_to_chess(st)?;
+        tables.probe_wdl(&chess).ok()
     }
 
     pub fn probe_dtz(&self, st: &BoardState) -> Option<Dtz> {
@@ -349,64 +375,45 @@ impl SyzygyTables {
         }
     }
 
-    pub fn wdl_to_score(wdl: Wdl) -> Option<i32> {
-        match wdl {
-            Wdl::Win => Some(100_000),
-            Wdl::Loss => Some(-100_000),
-            Wdl::Draw => Some(0),
-            Wdl::CursedWin => Some(99_999),
-            Wdl::BlessedLoss => Some(-99_999),
+    /// Returns the library's canonical Syzygy root move. The dependency's
+    /// selector handles captures, pawn moves, DTZ rounding, and the extra ply
+    /// for non-zeroing moves; duplicating that recurrence here caused the
+    /// previous zeroing and off-by-one bugs.
+    pub fn probe_root_move(&self, st: &BoardState, legal_moves: &[Move]) -> Option<Move> {
+        if legal_moves.is_empty() || !self.can_probe_dtz(st) {
+            return None;
         }
+        let tables = self.tables.as_ref()?;
+        let chess = board_to_chess(st)?;
+        let (best, _) = tables.best_move(&chess).ok()??;
+        let best_uci = UciMove::from_standard(best).to_string();
+        legal_moves
+            .iter()
+            .copied()
+            .find(|mv| move_to_uci(st, *mv) == best_uci)
     }
 
-    pub fn probe_wdl_value(&self, st: &BoardState) -> Option<i32> {
-        let wdl = self.probe_wdl(st)?;
-        match wdl {
-            Wdl::Win => Some(100_000),
-            Wdl::Loss => Some(-100_000),
-            Wdl::Draw => Some(0),
-            Wdl::CursedWin => Some(100_000),
-            Wdl::BlessedLoss => Some(-100_000),
-        }
+    /// Exact, 50-move-aware score for interior search. Rounded boundary
+    /// results are deliberately left to normal search instead of being used
+    /// as false alpha-beta bounds.
+    pub fn probe_search_score(&self, st: &BoardState, ply: usize) -> Option<i32> {
+        exact_search_score(self.probe_wdl_50(st)?, ply)
     }
 
-    pub fn probe_decisive(&self, st: &BoardState) -> Option<(i32, bool)> {
-        let wdl = self.probe_wdl(st)?;
-        match wdl {
-            Wdl::Win => Some((100_000, true)),
-            Wdl::Loss => Some((-100_000, true)),
-            Wdl::Draw => Some((0, true)),
-            Wdl::CursedWin => Some((100_000, false)),
-            Wdl::BlessedLoss => Some((-100_000, false)),
-        }
-    }
-
-    pub fn probe_cutoff(&self, st: &BoardState, beta: i32, alpha: i32) -> Option<i32> {
-        let wdl = self.probe_wdl(st)?;
-        match wdl {
-            Wdl::Win | Wdl::CursedWin => Some(beta),
-            Wdl::Loss | Wdl::BlessedLoss => Some(alpha),
-            Wdl::Draw => Some(0),
-        }
-    }
-
-    pub fn dtz_bonus(&self, st: &BoardState) -> Option<i32> {
-        let dtz = self.probe_dtz(st)?;
-        let val: i32 = dtz.0;
-        if val > 0 {
-            Some(-val)
-        } else if val < 0 {
-            Some(val)
-        } else {
-            Some(0)
-        }
+    pub fn probe_root_score(&self, st: &BoardState) -> Option<i32> {
+        let wdl = self.probe_wdl_50(st)?;
+        exact_search_score(wdl, 0).or_else(|| Some(wdl.signum()))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::SyzygyTables;
+    use super::{board_to_chess, exact_search_score, SyzygyTables};
+    use crate::board::move_to_uci;
     use crate::engine::Engine;
+    use crate::movegen::generate_moves;
+    use shakmaty::{Position, Square};
+    use shakmaty_syzygy::{AmbiguousWdl, Dtz, Wdl};
     use std::fs::{self, File};
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -430,6 +437,41 @@ mod tests {
     fn fake_table(dir: &Path, name: &str) {
         let file = File::create(dir.join(name)).unwrap();
         file.set_len(16).unwrap();
+    }
+
+    #[test]
+    fn converted_position_preserves_the_halfmove_clock() {
+        let engine = engine_from_fen("7k/8/8/8/8/8/8/1Q2K3 w - - 73 1");
+        let chess = board_to_chess(&engine.st).expect("valid Syzygy position");
+
+        assert_eq!(chess.halfmoves(), 73);
+    }
+
+    #[test]
+    fn converted_position_preserves_en_passant() {
+        let engine = engine_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
+        let chess = board_to_chess(&engine.st).expect("valid Syzygy position");
+
+        assert_eq!(chess.maybe_ep_square(), Some(Square::D6));
+    }
+
+    #[test]
+    fn dependency_dtz_recurrence_counts_the_root_ply() {
+        assert_eq!((-Dtz(-2)).add_plies(1), Dtz(3));
+        assert_eq!((-Dtz(2)).add_plies(1), Dtz(-3));
+        assert_eq!(Dtz::before_zeroing(Wdl::Win), Dtz(1));
+        assert_eq!(Dtz::before_zeroing(Wdl::CursedWin), Dtz(101));
+        assert_eq!(Dtz::before_zeroing(Wdl::BlessedLoss), Dtz(-101));
+    }
+
+    #[test]
+    fn interior_scores_are_exact_and_rule_50_aware() {
+        assert!(exact_search_score(AmbiguousWdl::Win, 7).unwrap() > 0);
+        assert!(exact_search_score(AmbiguousWdl::Loss, 7).unwrap() < 0);
+        assert_eq!(exact_search_score(AmbiguousWdl::CursedWin, 7), Some(0));
+        assert_eq!(exact_search_score(AmbiguousWdl::BlessedLoss, 7), Some(0));
+        assert_eq!(exact_search_score(AmbiguousWdl::MaybeWin, 7), None);
+        assert_eq!(exact_search_score(AmbiguousWdl::MaybeLoss, 7), None);
     }
 
     #[test]
@@ -457,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn fast_check_rejects_state_not_representable_in_syzygy() {
+    fn fast_check_accepts_en_passant_but_rejects_castling() {
         let dir = temp_syzygy_dir();
         fake_table(&dir, "KRvKR.rtbw");
 
@@ -470,8 +512,68 @@ mod tests {
 
         assert!(syzygy.can_probe_wdl(&no_rights.st));
         assert!(!syzygy.can_probe_wdl(&castling.st));
-        assert!(!SyzygyTables::pieces_ok(&ep.st));
+        assert!(SyzygyTables::pieces_ok(&ep.st));
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn known_six_piece_root_moves_when_tables_are_available() {
+        let Ok(path) = std::env::var("EMBER_TEST_SYZYGY_PATH") else {
+            eprintln!("skipping real Syzygy regressions: EMBER_TEST_SYZYGY_PATH is unset");
+            return;
+        };
+        let mut syzygy = SyzygyTables::new();
+        syzygy.load(&path).expect("load regression Syzygy tables");
+        if syzygy.max_pieces() < 6 {
+            eprintln!("skipping six-piece regressions: tablebase has fewer than six pieces");
+            return;
+        }
+
+        let cases: &[(&str, &[&str])] = &[
+            ("8/1r6/7R/3k2p1/5pK1/8/8/8 w - - 0 43", &["h6a6"]),
+            ("8/2b4k/p7/4p3/4K3/1N6/8/8 w - - 4 50", &["e4f5", "b3d2"]),
+            ("8/6k1/8/r5PR/2K4P/8/8/8 b - - 10 65", &["a5a6"]),
+            ("5R2/3k2r1/1K6/1P6/8/8/5p2/8 b - - 1 51", &["g7g2"]),
+            ("4q3/6KP/2N2p2/4k3/8/8/8/8 b - - 14 61", &["e5d6", "e5d5"]),
+            ("1R6/8/7k/8/6p1/1P6/6r1/1K6 b - - 2 62", &["g2f2"]),
+            ("6R1/8/8/1P6/7k/6p1/4r3/2K5 b - - 0 66", &["g3g2"]),
+            ("5k2/8/8/p6P/n2K4/8/5P2/8 w - - 2 47", &["f2f4"]),
+            ("1R6/4P2k/3K4/8/8/6p1/8/4r3 w - - 0 95", &["e7e8q", "e7e8r"]),
+        ];
+
+        for &(fen, expected) in cases {
+            let engine = engine_from_fen(fen);
+            let legal = generate_moves(&engine.st, engine.st.w, &engine.st.cr, engine.st.ep);
+            let best = syzygy
+                .probe_root_move(&engine.st, &legal)
+                .expect("probe canonical root move");
+            let actual = move_to_uci(&engine.st, best);
+            assert!(
+                expected.contains(&actual.as_str()),
+                "expected one of {expected:?}, got {actual} for {fen}"
+            );
+        }
+    }
+
+    #[test]
+    fn zeroing_capture_regression_only_needs_four_piece_tables() {
+        let Ok(path) = std::env::var("EMBER_TEST_SYZYGY_PATH") else {
+            eprintln!("skipping real Syzygy regressions: EMBER_TEST_SYZYGY_PATH is unset");
+            return;
+        };
+        let mut syzygy = SyzygyTables::new();
+        syzygy.load(&path).expect("load regression Syzygy tables");
+        let engine = engine_from_fen("5k2/R7/8/8/5K2/p7/8/8 w - - 0 62");
+        if !syzygy.can_probe_dtz(&engine.st) {
+            eprintln!("skipping zeroing regression: KRvKP tables are unavailable");
+            return;
+        }
+        let legal = generate_moves(&engine.st, engine.st.w, &engine.st.cr, engine.st.ep);
+        let best = syzygy
+            .probe_root_move(&engine.st, &legal)
+            .expect("probe zeroing capture regression");
+
+        assert_eq!(move_to_uci(&engine.st, best), "a7a3");
     }
 }

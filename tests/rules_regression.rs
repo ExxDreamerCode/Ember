@@ -1,11 +1,14 @@
 use std::collections::BTreeSet;
+use std::mem::size_of;
+use std::time::Instant;
 
 use chess_rs_lib::board::{
-    bit, board_to_fen, move_ec, move_er, move_promotion, move_sc, move_sr, move_to_uci, piece_on,
-    sq, EMPTY_SQ, WK, WR,
+    bit, board_to_fen, is_dead_position, move_ec, move_er, move_promotion, move_sc, move_sr,
+    move_to_uci, piece_on, sq, BoardState, EMPTY_SQ, INF, MATE, WK, WR,
 };
 use chess_rs_lib::movegen::{apply_move, generate_moves};
 use chess_rs_lib::syzygy::SyzygyTables;
+use chess_rs_lib::tt::TT_EXACT;
 use chess_rs_lib::zobrist::compute_hash;
 use chess_rs_lib::Engine;
 use shakmaty::{fen::Fen, perft as shakmaty_perft, CastlingMode, Chess, Position};
@@ -16,6 +19,22 @@ fn engine_from_fen(fen: &str, chess960: bool) -> Engine {
     engine.st.chess960 = chess960;
     engine.set_fen(fen);
     engine
+}
+
+fn search_score(engine: &mut Engine, depth: i32, ply: usize, alpha: i32, beta: i32) -> i32 {
+    let mut st = engine.st;
+    let mut nodes = 0;
+    engine.searcher.negamax(
+        &mut st,
+        depth,
+        ply,
+        alpha,
+        beta,
+        true,
+        Instant::now(),
+        30.0,
+        &mut nodes,
+    )
 }
 
 fn ember_legal_moves(fen: &str, chess960: bool) -> BTreeSet<String> {
@@ -317,6 +336,171 @@ fn invalid_fen_does_not_replace_current_position() {
     );
     assert_eq!(compute_hash(&engine.st), before_hash);
     assert_eq!(engine.searcher.rep_stack_len, before_rep_len);
+}
+
+#[test]
+fn malformed_halfmove_clock_is_rejected_without_mutating_state() {
+    let mut engine = Engine::new();
+    let before_fen = board_to_fen(&engine.st);
+    let before_rep_stack = engine.searcher.rep_stack.clone();
+
+    for halfmove in ["not-a-number", "-1"] {
+        let fen = format!("7k/8/8/8/8/8/8/KQ6 w - - {halfmove} 1");
+        assert!(
+            engine.try_set_fen(&fen).is_err(),
+            "accepted invalid FEN: {fen}"
+        );
+        assert_eq!(board_to_fen(&engine.st), before_fen);
+        assert_eq!(engine.searcher.rep_stack, before_rep_stack);
+    }
+}
+
+#[test]
+fn halfmove_clock_does_not_overflow_on_quiet_moves() {
+    let mut engine = engine_from_fen("7k/8/8/8/8/8/8/KQ6 w - - 4294967295 1", false);
+
+    assert!(engine.make_move_uci(7, 1, 7, 2, 0), "Qb1-c1 is legal");
+    assert!(
+        engine.st.halfmove_clock >= 150,
+        "the counter must remain at or beyond the automatic-draw threshold"
+    );
+}
+
+#[test]
+#[cfg(target_pointer_width = "64")]
+fn halfmove_clock_keeps_board_state_compact() {
+    assert_eq!(size_of::<BoardState>(), 264);
+}
+
+#[test]
+fn halfmove_clock_is_preserved_updated_and_adjudicated() {
+    let mut quiet = engine_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 37 12", false);
+    assert_eq!(quiet.st.halfmove_clock, 37);
+    assert_eq!(board_to_fen(&quiet.st), "4k3/8/8/8/8/8/8/R3K3 w - - 37 12");
+    assert!(quiet.make_move_uci(7, 0, 6, 0, 0), "Ra1-a2 is legal");
+    assert_eq!(
+        quiet.st.halfmove_clock, 38,
+        "quiet moves increment the clock"
+    );
+
+    let mut pawn = engine_from_fen("4k3/8/8/8/8/8/4P3/4K3 w - - 88 1", false);
+    assert!(pawn.make_move_uci(6, 4, 4, 4, 0), "e2-e4 is legal");
+    assert_eq!(pawn.st.halfmove_clock, 0, "pawn moves reset the clock");
+
+    let mut capture = engine_from_fen("n3k3/8/8/8/8/8/8/R3K3 w - - 99 1", false);
+    assert!(capture.make_move_uci(7, 0, 0, 0, 0), "Ra1xa8 is legal");
+    assert_eq!(capture.st.halfmove_clock, 0, "captures reset the clock");
+
+    let mut adjudication = engine_from_fen("6k1/8/8/8/8/8/R7/K7 w - - 99 1", false);
+    let (_, score, _, _) = adjudication.find_best_move(1_000_000.0, 1);
+    assert_eq!(score, 0, "a quiet 100th halfmove is scored as a draw");
+}
+
+#[test]
+fn checkmate_on_the_hundredth_halfmove_outranks_the_draw_threshold() {
+    let mut engine = engine_from_fen("7k/8/5KQ1/8/8/8/8/8 w - - 99 1", false);
+    assert!(engine.make_move_uci(2, 6, 1, 6, 0), "Qg7# is legal");
+    assert_eq!(engine.st.halfmove_clock, 100);
+    assert!(engine.is_check());
+    assert!(
+        generate_moves(&engine.st, engine.st.w, &engine.st.cr, engine.st.ep).is_empty(),
+        "Qg7 is checkmate"
+    );
+
+    assert_eq!(
+        search_score(&mut engine, 2, 1, -INF, INF),
+        -MATE + 1,
+        "checkmate must end the game before a draw threshold is considered"
+    );
+}
+
+#[test]
+fn automatic_draw_outranks_a_transposition_table_cutoff() {
+    let mut engine = engine_from_fen("7k/8/8/8/8/8/8/KQ6 w - - 150 1", false);
+    engine
+        .shared_tt
+        .store(engine.st.hash, 8, 1234, TT_EXACT, None);
+
+    assert_eq!(
+        search_score(&mut engine, 2, 1, -1, 0),
+        0,
+        "a cached board score must not override an automatic draw"
+    );
+}
+
+#[test]
+fn twofold_repetition_is_not_adjudicated_as_threefold() {
+    let mut engine = engine_from_fen("7k/8/8/8/8/8/8/KQ6 w - - 0 1", false);
+    let cycle = [(7, 1, 7, 2), (0, 7, 0, 6), (7, 2, 7, 1), (0, 6, 0, 7)];
+    for (sr, sc, er, ec) in cycle {
+        assert!(engine.make_move_uci(sr, sc, er, ec, 0));
+    }
+    assert_eq!(
+        engine
+            .searcher
+            .rep_stack
+            .iter()
+            .filter(|&&hash| hash == engine.st.hash)
+            .count(),
+        2
+    );
+
+    let twofold_score = search_score(&mut engine, 2, 1, -INF, INF);
+    let mut control = engine_from_fen("7k/8/8/8/8/8/8/KQ6 w - - 4 3", false);
+    let control_score = search_score(&mut control, 2, 1, -INF, INF);
+    assert!(
+        control_score > 0,
+        "the material-winning control scores above draw"
+    );
+    assert_eq!(
+        twofold_score, control_score,
+        "a second occurrence is not yet a claimable draw"
+    );
+
+    for (sr, sc, er, ec) in cycle {
+        assert!(engine.make_move_uci(sr, sc, er, ec, 0));
+    }
+    assert_eq!(
+        search_score(&mut engine, 2, 1, -INF, INF),
+        0,
+        "the third occurrence is claimable"
+    );
+}
+
+#[test]
+fn dead_material_is_adjudicated_without_false_minor_piece_draws() {
+    for fen in [
+        "7k/8/8/8/8/8/8/K7 w - - 0 1",
+        "7k/8/8/8/8/8/8/KB6 w - - 0 1",
+        "7k/8/8/8/8/8/8/KN6 w - - 0 1",
+        "7k/8/8/8/8/3b4/8/KB6 w - - 0 1",
+    ] {
+        let engine = engine_from_fen(fen, false);
+        assert!(
+            is_dead_position(&engine.st),
+            "expected dead position: {fen}"
+        );
+    }
+
+    for fen in [
+        "7k/8/8/8/8/8/8/KNN5 w - - 0 1",
+        "7k/8/8/8/8/8/8/KBN5 w - - 0 1",
+        "7k/8/8/8/8/2b5/8/KB6 w - - 0 1",
+        "7k/8/8/8/8/8/P7/K7 w - - 0 1",
+    ] {
+        let engine = engine_from_fen(fen, false);
+        assert!(
+            !is_dead_position(&engine.st),
+            "mating material remains: {fen}"
+        );
+    }
+
+    let mut engine = engine_from_fen("7k/8/8/8/8/8/8/KB6 w - - 0 1", false);
+    assert_eq!(
+        search_score(&mut engine, 2, 1, -INF, INF),
+        0,
+        "K+B versus K is an immediate dead-position draw"
+    );
 }
 
 #[test]
