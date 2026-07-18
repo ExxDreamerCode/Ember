@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
+use std::time::Instant;
 
 use chess_rs_lib::board::{
     bit, board_to_fen, move_ec, move_er, move_promotion, move_sc, move_sr, move_to_uci, piece_on,
-    sq, EMPTY_SQ, WK, WR,
+    sq, EMPTY_SQ, INF, MATE, WK, WR,
 };
 use chess_rs_lib::movegen::{apply_move, generate_moves};
 use chess_rs_lib::syzygy::SyzygyTables;
@@ -16,6 +17,22 @@ fn engine_from_fen(fen: &str, chess960: bool) -> Engine {
     engine.st.chess960 = chess960;
     engine.set_fen(fen);
     engine
+}
+
+fn search_score(engine: &mut Engine, depth: i32, ply: usize, alpha: i32, beta: i32) -> i32 {
+    let mut st = engine.st;
+    let mut nodes = 0;
+    engine.searcher.negamax(
+        &mut st,
+        depth,
+        ply,
+        alpha,
+        beta,
+        true,
+        Instant::now(),
+        30.0,
+        &mut nodes,
+    )
 }
 
 fn ember_legal_moves(fen: &str, chess960: bool) -> BTreeSet<String> {
@@ -323,12 +340,12 @@ fn invalid_fen_does_not_replace_current_position() {
 fn halfmove_clock_is_preserved_updated_and_adjudicated() {
     let mut quiet = engine_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 37 12", false);
     assert_eq!(quiet.st.halfmove_clock, 37);
-    assert_eq!(
-        board_to_fen(&quiet.st),
-        "4k3/8/8/8/8/8/8/R3K3 w - - 37 12"
-    );
+    assert_eq!(board_to_fen(&quiet.st), "4k3/8/8/8/8/8/8/R3K3 w - - 37 12");
     assert!(quiet.make_move_uci(7, 0, 6, 0, 0), "Ra1-a2 is legal");
-    assert_eq!(quiet.st.halfmove_clock, 38, "quiet moves increment the clock");
+    assert_eq!(
+        quiet.st.halfmove_clock, 38,
+        "quiet moves increment the clock"
+    );
 
     let mut pawn = engine_from_fen("4k3/8/8/8/8/8/4P3/4K3 w - - 88 1", false);
     assert!(pawn.make_move_uci(6, 4, 4, 4, 0), "e2-e4 is legal");
@@ -338,10 +355,27 @@ fn halfmove_clock_is_preserved_updated_and_adjudicated() {
     assert!(capture.make_move_uci(7, 0, 0, 0, 0), "Ra1xa8 is legal");
     assert_eq!(capture.st.halfmove_clock, 0, "captures reset the clock");
 
-    let mut adjudication =
-        engine_from_fen("6k1/8/8/8/8/8/R7/K7 w - - 99 1", false);
+    let mut adjudication = engine_from_fen("6k1/8/8/8/8/8/R7/K7 w - - 99 1", false);
     let (_, score, _, _) = adjudication.find_best_move(1_000_000.0, 1);
     assert_eq!(score, 0, "a quiet 100th halfmove is scored as a draw");
+}
+
+#[test]
+fn checkmate_on_the_hundredth_halfmove_outranks_the_draw_threshold() {
+    let mut engine = engine_from_fen("7k/8/5KQ1/8/8/8/8/8 w - - 99 1", false);
+    assert!(engine.make_move_uci(2, 6, 1, 6, 0), "Qg7# is legal");
+    assert_eq!(engine.st.halfmove_clock, 100);
+    assert!(engine.is_check());
+    assert!(
+        generate_moves(&engine.st, engine.st.w, &engine.st.cr, engine.st.ep).is_empty(),
+        "Qg7 is checkmate"
+    );
+
+    assert_eq!(
+        search_score(&mut engine, 2, 1, -INF, INF),
+        -MATE + 1,
+        "checkmate must end the game before a draw threshold is considered"
+    );
 }
 
 #[test]
