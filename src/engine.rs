@@ -541,7 +541,9 @@ impl Engine {
         };
 
         next.halfmove_clock = if parts.len() > 4 {
-            parts[4].parse::<u32>().unwrap_or(0)
+            parts[4]
+                .parse::<u32>()
+                .map_err(|_| "halfmove clock must be a nonnegative integer".to_string())?
         } else {
             0
         };
