@@ -28,6 +28,13 @@ pub use crate::backend::SearchBackendKind;
 
 const SEARCH_BACKEND_ENV: &str = "EMBER_SEARCH_BACKEND";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DrawStatus {
+    None,
+    Claimable,
+    Automatic,
+}
+
 static SEARCH_BACKEND: OnceLock<SearchBackendKind> = OnceLock::new();
 static SEARCH_BACKEND_OVERRIDE: AtomicU8 = AtomicU8::new(0);
 
@@ -1419,17 +1426,60 @@ impl Searcher {
         }
     }
 
-    fn is_repetition(&self) -> bool {
-        if self.rep_stack_len < 4 {
-            return false;
+    fn repetition_count(&self, reversible_plies: u32) -> u8 {
+        let len = self.rep_stack_len.min(self.rep_stack.len());
+        if len == 0 {
+            return 0;
         }
-        let last = self.rep_stack[self.rep_stack_len - 1];
-        for i in (0..self.rep_stack_len - 1).rev() {
-            if self.rep_stack[i] == last {
-                return true;
+
+        let current_idx = len - 1;
+        let reversible_plies = usize::try_from(reversible_plies)
+            .unwrap_or(usize::MAX)
+            .min(current_idx);
+        let earliest_idx = current_idx - reversible_plies;
+        let current = self.rep_stack[current_idx];
+        let mut occurrences = 0u8;
+        let mut idx = current_idx;
+
+        loop {
+            if self.rep_stack[idx] == current {
+                occurrences += 1;
+                if occurrences == 5 {
+                    break;
+                }
             }
+            if idx < 2 || idx - 2 < earliest_idx {
+                break;
+            }
+            idx -= 2;
         }
-        false
+
+        occurrences
+    }
+
+    #[cfg(test)]
+    fn is_repetition(&self) -> bool {
+        self.repetition_count(u32::MAX) >= 3
+    }
+
+    fn draw_status(
+        &self,
+        st: &BoardState,
+        ply: usize,
+        minimum_ply: usize,
+    ) -> DrawStatus {
+        if ply < minimum_ply {
+            return DrawStatus::None;
+        }
+
+        let repetitions = self.repetition_count(st.halfmove_clock);
+        if st.halfmove_clock >= 150 || repetitions >= 5 {
+            DrawStatus::Automatic
+        } else if st.halfmove_clock >= 100 || repetitions >= 3 {
+            DrawStatus::Claimable
+        } else {
+            DrawStatus::None
+        }
     }
 
     fn draw_score(
@@ -1439,7 +1489,7 @@ impl Searcher {
         minimum_ply: usize,
         in_check: bool,
     ) -> Option<i32> {
-        if ply < minimum_ply || (!self.is_repetition() && st.halfmove_clock < 100) {
+        if self.draw_status(st, ply, minimum_ply) == DrawStatus::None {
             return None;
         }
         if in_check && generate_moves(st, st.w, &st.cr, st.ep).is_empty() {
