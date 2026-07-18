@@ -1,9 +1,10 @@
 use std::collections::BTreeSet;
+use std::mem::size_of;
 use std::time::Instant;
 
 use chess_rs_lib::board::{
     bit, board_to_fen, is_dead_position, move_ec, move_er, move_promotion, move_sc, move_sr,
-    move_to_uci, piece_on, sq, EMPTY_SQ, INF, MATE, WK, WR,
+    move_to_uci, piece_on, sq, BoardState, EMPTY_SQ, INF, MATE, WK, WR,
 };
 use chess_rs_lib::movegen::{apply_move, generate_moves};
 use chess_rs_lib::syzygy::SyzygyTables;
@@ -363,6 +364,12 @@ fn halfmove_clock_does_not_overflow_on_quiet_moves() {
         engine.st.halfmove_clock >= 150,
         "the counter must remain at or beyond the automatic-draw threshold"
     );
+}
+
+#[test]
+#[cfg(target_pointer_width = "64")]
+fn halfmove_clock_keeps_board_state_compact() {
+    assert_eq!(size_of::<BoardState>(), 264);
 }
 
 #[test]
