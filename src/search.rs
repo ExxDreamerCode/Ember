@@ -413,8 +413,8 @@ macro_rules! qsearch_mode_body {
             }
         }
 
-        if $ply >= 2 && ($this.is_repetition() || $st.halfmove_clock >= 100) {
-            return 0;
+        if let Some(score) = $this.draw_score($st, $ply, 2, in_check) {
+            return score;
         }
 
         if !in_check {
@@ -619,8 +619,8 @@ macro_rules! negamax_mode_body {
             }
         }
 
-        if $ply > 0 && ($this.is_repetition() || $st.halfmove_clock >= 100) {
-            return 0;
+        if let Some(score) = $this.draw_score($st, $ply, 1, in_check) {
+            return score;
         }
 
         if actual_depth <= 0 {
@@ -1430,6 +1430,22 @@ impl Searcher {
             }
         }
         false
+    }
+
+    fn draw_score(
+        &self,
+        st: &BoardState,
+        ply: usize,
+        minimum_ply: usize,
+        in_check: bool,
+    ) -> Option<i32> {
+        if ply < minimum_ply || (!self.is_repetition() && st.halfmove_clock < 100) {
+            return None;
+        }
+        if in_check && generate_moves(st, st.w, &st.cr, st.ep).is_empty() {
+            return Some(-MATE + ply as i32);
+        }
+        Some(0)
     }
 
     #[allow(clippy::too_many_arguments)]
