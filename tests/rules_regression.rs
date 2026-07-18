@@ -320,6 +320,31 @@ fn invalid_fen_does_not_replace_current_position() {
 }
 
 #[test]
+fn halfmove_clock_is_preserved_updated_and_adjudicated() {
+    let mut quiet = engine_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 37 12", false);
+    assert_eq!(quiet.st.halfmove_clock, 37);
+    assert_eq!(
+        board_to_fen(&quiet.st),
+        "4k3/8/8/8/8/8/8/R3K3 w - - 37 12"
+    );
+    assert!(quiet.make_move_uci(7, 0, 6, 0, 0), "Ra1-a2 is legal");
+    assert_eq!(quiet.st.halfmove_clock, 38, "quiet moves increment the clock");
+
+    let mut pawn = engine_from_fen("4k3/8/8/8/8/8/4P3/4K3 w - - 88 1", false);
+    assert!(pawn.make_move_uci(6, 4, 4, 4, 0), "e2-e4 is legal");
+    assert_eq!(pawn.st.halfmove_clock, 0, "pawn moves reset the clock");
+
+    let mut capture = engine_from_fen("n3k3/8/8/8/8/8/8/R3K3 w - - 99 1", false);
+    assert!(capture.make_move_uci(7, 0, 0, 0, 0), "Ra1xa8 is legal");
+    assert_eq!(capture.st.halfmove_clock, 0, "captures reset the clock");
+
+    let mut adjudication =
+        engine_from_fen("6k1/8/8/8/8/8/R7/K7 w - - 99 1", false);
+    let (_, score, _, _) = adjudication.find_best_move(1_000_000.0, 1);
+    assert_eq!(score, 0, "a quiet 100th halfmove is scored as a draw");
+}
+
+#[test]
 fn repetition_hash_only_includes_legal_en_passant_rights() {
     let legal_ep = engine_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", false);
     let same_without_ep = engine_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - - 0 1", false);
