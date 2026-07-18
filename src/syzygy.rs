@@ -217,7 +217,7 @@ fn board_to_chess(st: &BoardState) -> Option<Chess> {
         promoted: Bitboard(0),
         pockets: None,
         remaining_checks: None,
-        halfmoves: 0,
+        halfmoves: st.halfmove_clock,
         fullmoves: std::num::NonZeroU32::MIN,
     };
     Chess::from_setup(setup, CastlingMode::Standard).ok()
