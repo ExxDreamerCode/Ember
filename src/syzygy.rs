@@ -405,8 +405,9 @@ impl SyzygyTables {
 
 #[cfg(test)]
 mod tests {
-    use super::SyzygyTables;
+    use super::{board_to_chess, SyzygyTables};
     use crate::engine::Engine;
+    use shakmaty::Position;
     use std::fs::{self, File};
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -430,6 +431,14 @@ mod tests {
     fn fake_table(dir: &Path, name: &str) {
         let file = File::create(dir.join(name)).unwrap();
         file.set_len(16).unwrap();
+    }
+
+    #[test]
+    fn converted_position_preserves_the_halfmove_clock() {
+        let engine = engine_from_fen("7k/8/8/8/8/8/8/1Q2K3 w - - 73 1");
+        let chess = board_to_chess(&engine.st).expect("valid Syzygy position");
+
+        assert_eq!(chess.halfmoves(), 73);
     }
 
     #[test]
