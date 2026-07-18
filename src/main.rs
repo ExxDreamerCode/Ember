@@ -1,17 +1,17 @@
 use chess_rs_lib::backend::{
     compiled_search_backends, parse_search_backend_name, search_backend_available,
 };
-use chess_rs_lib::board::{piece_on, piece_type, EMPTY_SQ};
+use chess_rs_lib::board::{EMPTY_SQ, piece_on, piece_type};
 use chess_rs_lib::evaluate;
 use chess_rs_lib::search::{active_search_backend, set_search_backend_override};
 use chess_rs_lib::syzygy::SyzygyTables;
 use chess_rs_lib::time_management::TimeManager;
 use chess_rs_lib::zobrist::compute_hash;
-use chess_rs_lib::{opening_book, Engine, OpeningBook};
+use chess_rs_lib::{Engine, OpeningBook, opening_book};
 use std::io::{self, BufRead};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
 use std::thread;
 
 const MIN_HASH_MB: usize = 1;
@@ -120,11 +120,7 @@ fn main() {
         })
         .expect("failed to spawn stdin thread");
 
-    loop {
-        let event = match event_rx.recv() {
-            Ok(event) => event,
-            Err(_) => break,
-        };
+    while let Ok(event) = event_rx.recv() {
         let trimmed = match event {
             UciEvent::Command(command) => command,
             UciEvent::SearchFinished(id) => {
