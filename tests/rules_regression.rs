@@ -338,6 +338,23 @@ fn invalid_fen_does_not_replace_current_position() {
 }
 
 #[test]
+fn malformed_halfmove_clock_is_rejected_without_mutating_state() {
+    let mut engine = Engine::new();
+    let before_fen = board_to_fen(&engine.st);
+    let before_rep_stack = engine.searcher.rep_stack.clone();
+
+    for halfmove in ["not-a-number", "-1"] {
+        let fen = format!("7k/8/8/8/8/8/8/KQ6 w - - {halfmove} 1");
+        assert!(
+            engine.try_set_fen(&fen).is_err(),
+            "accepted invalid FEN: {fen}"
+        );
+        assert_eq!(board_to_fen(&engine.st), before_fen);
+        assert_eq!(engine.searcher.rep_stack, before_rep_stack);
+    }
+}
+
+#[test]
 fn halfmove_clock_is_preserved_updated_and_adjudicated() {
     let mut quiet = engine_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 37 12", false);
     assert_eq!(quiet.st.halfmove_clock, 37);
