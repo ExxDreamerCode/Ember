@@ -474,12 +474,14 @@ fn reset_engine(engine: &mut Engine) {
     let book = engine.book.take();
     let num_threads = engine.num_threads;
     let chess960 = engine.st.chess960;
+    let syzygy = engine.searcher.syzygy.clone();
     #[cfg(feature = "decision-trace")]
     let trace = std::mem::take(&mut engine.trace);
     let tt_mb = engine.searcher.tt_mb;
     *engine = Engine::new();
     engine.book = book;
     engine.num_threads = num_threads;
+    engine.searcher.syzygy = syzygy;
     set_chess960_mode(engine, chess960);
     #[cfg(feature = "decision-trace")]
     {
@@ -769,6 +771,21 @@ mod tests {
             engine.searcher.rep_stack[engine.searcher.rep_stack_len - 1],
             recomputed,
             "root repetition hash must match the refreshed Chess960 hash"
+        );
+    }
+
+    #[test]
+    fn reset_preserves_loaded_syzygy_tables() {
+        let mut engine = Engine::new();
+        engine.searcher.syzygy.tables = Some(std::sync::Arc::new(shakmaty_syzygy::Tablebase::<
+            shakmaty::Chess,
+        >::new()));
+
+        reset_engine(&mut engine);
+
+        assert!(
+            engine.searcher.syzygy.is_loaded(),
+            "ucinewgame must preserve the configured SyzygyPath"
         );
     }
 }

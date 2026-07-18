@@ -418,9 +418,9 @@ macro_rules! qsearch_mode_body {
             return score;
         }
 
-        if !in_check && $this.syzygy.can_probe_wdl($st) {
-            if let Some(cutoff) = $this.syzygy.probe_cutoff($st, $beta, $alpha) {
-                return cutoff;
+        if !in_check {
+            if let Some(score) = $this.syzygy.probe_search_score($st, $ply) {
+                return score;
             }
         }
 
@@ -585,6 +585,12 @@ macro_rules! negamax_mode_body {
             return score;
         }
 
+        if $ply > 0 && !in_check && $can_null {
+            if let Some(score) = $this.syzygy.probe_search_score($st, $ply) {
+                return score;
+            }
+        }
+
         let tt_data = $this.shared_tt.get_depth(h);
         let tt_move = tt_data.and_then(|(_, _, _, best)| best);
         let tt_score = tt_data.map(|(_, s, _, _)| score_from_tt(s, $ply));
@@ -592,8 +598,6 @@ macro_rules! negamax_mode_body {
         let tt_flag = tt_data.map(|(_, _, f, _)| f);
 
         let is_pv = beta - $alpha > 1;
-        let is_root = $ply == 0;
-
         let ext = if in_check && $depth < 16 { 1 } else { 0 };
         let actual_depth = $depth + ext;
 
@@ -614,21 +618,7 @@ macro_rules! negamax_mode_body {
             tactical_king_pressure($st)
         };
 
-        let tb_available = !in_check && $this.syzygy.can_probe_wdl($st);
-
-        let eval_score = if tb_available {
-            $this
-                .probe_syzygy($st)
-                .unwrap_or_else(|| $eval.static_eval::<CHESS960>($this, $st, $ply))
-        } else {
-            $eval.static_eval::<CHESS960>($this, $st, $ply)
-        };
-
-        if tb_available && !is_pv && !is_root {
-            if let Some(cutoff) = $this.syzygy.probe_cutoff($st, beta, $alpha) {
-                return cutoff;
-            }
-        }
+        let eval_score = $eval.static_eval::<CHESS960>($this, $st, $ply);
 
         if actual_depth <= 0 {
             return $this.$qsearch_mode::<CHESS960, E>(
@@ -1404,12 +1394,6 @@ impl Searcher {
         } else {
             -score
         }
-    }
-
-    pub fn probe_syzygy(&self, st: &BoardState) -> Option<i32> {
-        self.syzygy
-            .probe_wdl(st)
-            .and_then(SyzygyTables::wdl_to_score)
     }
 
     pub fn update_correction_history(&mut self, st: &BoardState, score: i32, depth: i32) {

@@ -662,14 +662,17 @@ impl Engine {
         let soft_time_limit = soft_time_limit.min(time_limit);
         self.searcher.refresh_nnue_net();
         self.searcher.refresh_search_backend();
-        let moves = generate_moves(&self.st, self.st.w, &self.st.cr, self.st.ep);
+        let legal_root_moves = generate_moves(&self.st, self.st.w, &self.st.cr, self.st.ep);
         #[cfg(feature = "decision-trace")]
         let root_fen = board_to_fen(&self.st);
         #[cfg(feature = "decision-trace")]
-        let legal_moves: Vec<String> = moves.iter().map(|mv| move_to_uci(&self.st, *mv)).collect();
+        let legal_moves: Vec<String> = legal_root_moves
+            .iter()
+            .map(|mv| move_to_uci(&self.st, *mv))
+            .collect();
         #[cfg(feature = "decision-trace")]
         let side = if self.st.w { "white" } else { "black" };
-        if moves.is_empty() {
+        if legal_root_moves.is_empty() {
             let ks = self.st.king_sq(self.st.w);
             let in_check = is_attacked(&self.st.bb, ks, !self.st.w);
             if in_check {
@@ -706,6 +709,38 @@ impl Engine {
                 return ("0000".into(), 0, 0, 0.0);
             }
         }
+
+        let tablebase_start = Instant::now();
+        if let Some(best_move) = self
+            .searcher
+            .syzygy
+            .probe_root_move(&self.st, &legal_root_moves)
+        {
+            let mv_str = move_to_uci(&self.st, best_move);
+            let score = self.searcher.syzygy.probe_root_score(&self.st).unwrap_or(0);
+            let elapsed = tablebase_start.elapsed().as_secs_f64();
+            println!(
+                "info depth 1 score cp {} nodes 0 nps 0 time {} pv {}",
+                score,
+                (elapsed * 1000.0) as u64,
+                mv_str
+            );
+            #[cfg(feature = "decision-trace")]
+            self.trace.emit_decision(DecisionTrace {
+                fen: &root_fen,
+                side,
+                legal_moves: &legal_moves,
+                chosen_move: &mv_str,
+                source: "syzygy",
+                depth_reached: 1,
+                score_cp: score,
+                nodes: 0,
+                elapsed_ms: (elapsed * 1000.0) as u128,
+                depth_infos: &[],
+            });
+            return (mv_str, score, 0, elapsed);
+        }
+        let moves = legal_root_moves;
 
         if !self.st.chess960 {
             if let Some(ref book) = self.book {
@@ -795,34 +830,7 @@ impl Engine {
             let mut asp_score = -INF;
 
             'asp: loop {
-                let use_syzygy_dtz =
-                    depth >= 2 && self.searcher.syzygy.can_probe_dtz_after_one_move(&self.st);
-                let sorted = if use_syzygy_dtz {
-                    let mut with_dtz: Vec<(i32, Move)> = moves
-                        .iter()
-                        .map(|&mv| {
-                            let old = self.st;
-                            apply_move(
-                                &mut self.st,
-                                move_sr(mv),
-                                move_sc(mv),
-                                move_er(mv),
-                                move_ec(mv),
-                                move_promotion(mv),
-                            );
-                            let bonus = self.searcher.syzygy.dtz_bonus(&self.st).unwrap_or(0);
-                            self.st = old;
-                            (bonus, mv)
-                        })
-                        .collect();
-                    with_dtz.sort_unstable_by_key(|b| std::cmp::Reverse(b.0));
-                    if asp_best != with_dtz[0].1 {
-                        if let Some(pos) = with_dtz.iter().position(|&(_, m)| m == asp_best) {
-                            with_dtz.swap(0, pos);
-                        }
-                    }
-                    with_dtz.into_iter().map(|(_, mv)| mv).collect()
-                } else if let Some(s) = sort_tactical_root_moves(&self.st, &moves, asp_best) {
+                let sorted = if let Some(s) = sort_tactical_root_moves(&self.st, &moves, asp_best) {
                     s
                 } else if let Some(s) = sort_sparse_root_moves(&self.st, &moves, asp_best) {
                     s
