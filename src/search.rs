@@ -2808,6 +2808,16 @@ impl LazySmpPool {
             return (root_moves[0], 0, 0, 0);
         };
         let total_nodes = results.iter().map(|result| result.nodes).sum();
+        if best.depth > 0 {
+            print_lazy_smp_info(
+                &job,
+                best.best_move,
+                best.score,
+                best.depth,
+                total_nodes,
+                job.start.elapsed().as_secs_f64(),
+            );
+        }
         (best.best_move, best.score, best.depth, total_nodes)
     }
 
@@ -2866,6 +2876,46 @@ fn diversify_lazy_smp_root_moves(moves: &mut [Move], thread_id: usize) {
     }
     let offset = thread_id % moves.len();
     moves.rotate_left(offset);
+}
+
+fn print_lazy_smp_info(
+    job: &LazySmpSearchJob,
+    best_move: Move,
+    score: i32,
+    depth: i32,
+    nodes: u64,
+    elapsed: f64,
+) {
+    let score_str = if score.abs() > 90_000 {
+        let mate_in = (MATE - score.abs()) / 2 + 1;
+        if score > 0 {
+            format!("mate {mate_in}")
+        } else {
+            format!("mate -{mate_in}")
+        }
+    } else {
+        format!("cp {score}")
+    };
+    let pv_line = extract_pv_line(&job.shared_tt, &job.st, best_move);
+    let pv_str = pv_line
+        .iter()
+        .map(|mv| crate::board::move_to_uci(&job.st, *mv))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let nps = if elapsed > 0.0 {
+        (nodes as f64 / elapsed) as i64
+    } else {
+        0
+    };
+    println!(
+        "info depth {} score {} nodes {} nps {} time {} pv {}",
+        depth,
+        score_str,
+        nodes,
+        nps,
+        (elapsed * 1000.0) as u64,
+        pv_str
+    );
 }
 
 pub fn extract_pv_line(shared_tt: &SharedTT, st: &BoardState, first_move: Move) -> Vec<Move> {
@@ -3128,47 +3178,18 @@ fn run_lazy_smp_worker(
             break;
         }
 
+        total_nodes += nd;
+        job.global_nodes.fetch_add(nd, Ordering::Relaxed);
         if stopped.load(Ordering::Relaxed) {
             break;
         }
-        total_nodes += nd;
-        job.global_nodes.fetch_add(nd, Ordering::Relaxed);
         let elapsed = start.elapsed().as_secs_f64();
 
         if elapsed <= limits.hard_time {
             let prev = job.global_best_depth.fetch_max(depth, Ordering::SeqCst);
             if prev < depth {
-                let score_str = if asp_score.abs() > 90_000 {
-                    let mate_in = (MATE - asp_score.abs()) / 2 + 1;
-                    if asp_score > 0 {
-                        format!("mate {mate_in}")
-                    } else {
-                        format!("mate -{mate_in}")
-                    }
-                } else {
-                    format!("cp {asp_score}")
-                };
-                let pv_line = extract_pv_line(&searcher.shared_tt, &st, asp_best);
-                let pv_str = pv_line
-                    .iter()
-                    .map(|m| crate::board::move_to_uci(&st, *m))
-                    .collect::<Vec<_>>()
-                    .join(" ");
                 let global_nodes = job.global_nodes.load(Ordering::Relaxed);
-                let nps = if elapsed > 0.0 {
-                    (global_nodes as f64 / elapsed) as i64
-                } else {
-                    0
-                };
-                println!(
-                    "info depth {} score {} nodes {} nps {} time {} pv {}",
-                    depth,
-                    score_str,
-                    global_nodes,
-                    nps,
-                    (elapsed * 1000.0) as u64,
-                    pv_str
-                );
+                print_lazy_smp_info(job, asp_best, asp_score, depth, global_nodes, elapsed);
             }
             best_move = asp_best;
             best_score = asp_score;
