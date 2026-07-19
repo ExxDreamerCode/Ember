@@ -3475,6 +3475,35 @@ mod tests {
     }
 
     #[test]
+    fn lazy_smp_uses_the_caller_start_time() {
+        let st = state_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1");
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(128));
+        let root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
+        let root_moves = generate_moves(&st, st.w, &st.cr, st.ep);
+
+        let (_, _, depth, nodes) = lazy_smp_search(
+            &LazySmpPool::new(),
+            shared_tt,
+            &st,
+            &root_moves,
+            |_, _| 0,
+            LazySmpSearchLimits {
+                soft_time: 0.010,
+                hard_time: 0.010,
+                depth: 4,
+                start: Instant::now() - Duration::from_secs(1),
+            },
+            2,
+            &root,
+        );
+
+        assert_eq!(depth, 0, "workers ignored the expired caller clock");
+        assert_eq!(nodes, 0, "workers searched after the caller clock expired");
+        assert!(stopped.load(Ordering::Relaxed));
+    }
+
+    #[test]
     fn lazy_smp_counts_work_from_an_interrupted_iteration() {
         static DEEP_ROOT_SEARCH_STARTED: AtomicBool = AtomicBool::new(false);
 
