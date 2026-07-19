@@ -3460,6 +3460,65 @@ mod tests {
     }
 
     #[test]
+    fn lazy_smp_helper_cannot_end_the_leader_iteration_at_soft_time() {
+        use std::sync::atomic::AtomicUsize;
+
+        static EXPECTED_ROOT_MOVES: AtomicUsize = AtomicUsize::new(0);
+        static HELPER_ROOT_VISITS: AtomicUsize = AtomicUsize::new(0);
+        static LEADER_ROOT_VISITS: AtomicUsize = AtomicUsize::new(0);
+
+        fn delay_leader_until_the_helper_finishes(_: &BoardState, _: Move) -> i32 {
+            if std::thread::current().name() == Some("rts-0") {
+                let deadline = Instant::now() + Duration::from_secs(1);
+                let expected = EXPECTED_ROOT_MOVES.load(Ordering::SeqCst);
+                while HELPER_ROOT_VISITS.load(Ordering::SeqCst) < expected
+                    && Instant::now() < deadline
+                {
+                    std::thread::yield_now();
+                }
+                LEADER_ROOT_VISITS.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(5));
+            } else {
+                HELPER_ROOT_VISITS.fetch_add(1, Ordering::SeqCst);
+            }
+            0
+        }
+
+        let st = state_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1");
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(128));
+        let root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
+        let root_moves = generate_moves(&st, st.w, &st.cr, st.ep);
+
+        EXPECTED_ROOT_MOVES.store(root_moves.len(), Ordering::SeqCst);
+        HELPER_ROOT_VISITS.store(0, Ordering::SeqCst);
+        LEADER_ROOT_VISITS.store(0, Ordering::SeqCst);
+        let (_, _, depth, _) = lazy_smp_search(
+            &LazySmpPool::new(),
+            shared_tt,
+            &st,
+            &root_moves,
+            delay_leader_until_the_helper_finishes,
+            LazySmpSearchLimits {
+                soft_time: 0.0,
+                hard_time: 10.0,
+                depth: 1,
+            },
+            2,
+            &root,
+        );
+
+        assert_eq!(depth, 1);
+        assert!(stopped.load(Ordering::Relaxed));
+        assert_eq!(HELPER_ROOT_VISITS.load(Ordering::SeqCst), root_moves.len());
+        assert_eq!(
+            LEADER_ROOT_VISITS.load(Ordering::SeqCst),
+            root_moves.len(),
+            "a helper stopped the leader before its crossing iteration completed"
+        );
+    }
+
+    #[test]
     fn lazy_smp_pool_reuses_workers_with_a_fresh_stop_token() {
         let pool = LazySmpPool::new();
         let st = state_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1");
