@@ -20,6 +20,7 @@ pub mod bitboard;
 pub mod nnue;
 mod simd;
 pub mod syzygy;
+pub mod time_management;
 pub mod types;
 
 pub use board::piece_type as ptype;

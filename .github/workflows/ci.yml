@@ -47,6 +47,11 @@ jobs:
         env:
           RUST_BACKTRACE: 1
 
+      - name: Run Python tool tests
+        run: >
+          nix develop .#ci --command python3 -m unittest discover
+          -s tools/tests -p 'test_*.py'
+
       - name: Run release regression tests
         run: |
           nix develop .#ci --command bash -c "

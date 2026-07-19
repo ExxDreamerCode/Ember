@@ -3,9 +3,11 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import queue
 import re
 import statistics
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -39,15 +41,66 @@ def sha256_file(path):
 
 def run_engine(binary, input_text, timeout):
     start = time.perf_counter()
-    proc = subprocess.run(
+    proc = subprocess.Popen(
         [str(binary)],
-        input=input_text,
-        text=True,
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        timeout=timeout,
+        text=True,
+        bufsize=1,
     )
-    return proc, time.perf_counter() - start
+    lines = queue.Queue()
+
+    def collect_stdout():
+        for line in proc.stdout:
+            lines.put(line)
+
+    reader = threading.Thread(target=collect_stdout, daemon=True)
+    reader.start()
+    output = []
+    deadline = time.monotonic() + timeout
+
+    try:
+        for command in input_text.splitlines():
+            if command and command != "quit":
+                proc.stdin.write(command + "\n")
+        proc.stdin.flush()
+
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired([str(binary)], timeout, "".join(output))
+            try:
+                line = lines.get(timeout=min(0.5, remaining))
+            except queue.Empty:
+                if proc.poll() is not None:
+                    break
+                continue
+            output.append(line)
+            if line.startswith("bestmove "):
+                break
+
+        if proc.poll() is None:
+            proc.stdin.write("quit\n")
+            proc.stdin.flush()
+            proc.wait(timeout=max(1.0, deadline - time.monotonic()))
+        reader.join(timeout=1.0)
+        while not lines.empty():
+            output.append(lines.get_nowait())
+    except Exception:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        proc.stdin.close()
+        proc.stdout.close()
+        raise
+
+    proc.stdin.close()
+    proc.stdout.close()
+    completed = subprocess.CompletedProcess(
+        [str(binary)], proc.returncode, stdout="".join(output)
+    )
+    return completed, time.perf_counter() - start
 
 
 def parse_last_info(output):

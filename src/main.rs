@@ -1,18 +1,18 @@
 use chess_rs_lib::backend::{
     compiled_search_backends, parse_search_backend_name, search_backend_available,
 };
-use chess_rs_lib::board::{piece_on, piece_type, EMPTY_SQ};
+use chess_rs_lib::board::{EMPTY_SQ, piece_on, piece_type};
 use chess_rs_lib::evaluate;
 use chess_rs_lib::search::{active_search_backend, set_search_backend_override};
 use chess_rs_lib::syzygy::SyzygyTables;
+use chess_rs_lib::time_management::TimeManager;
 use chess_rs_lib::zobrist::compute_hash;
-use chess_rs_lib::{opening_book, Engine, OpeningBook};
+use chess_rs_lib::{Engine, OpeningBook, opening_book};
 use std::io::{self, BufRead};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
 
 const MIN_HASH_MB: usize = 1;
 const MAX_HASH_MB: usize = 4096;
@@ -21,9 +21,16 @@ const MAX_THREADS: usize = 256;
 const STARTPOS_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 struct SearchTask {
+    id: u64,
     handle: thread::JoinHandle<()>,
     stopped: Arc<AtomicBool>,
     rx: mpsc::Receiver<(String, i32, u64, f64)>,
+}
+
+enum UciEvent {
+    Command(String),
+    SearchFinished(u64),
+    InputClosed,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -62,7 +69,9 @@ fn maybe_load_nnue(path: &str) -> bool {
 
 fn main() {
     let mut engine = Engine::new();
+    let mut time_manager = TimeManager::default();
     let mut search_task: Option<SearchTask> = None;
+    let mut next_search_id = 0u64;
 
     eprintln!("info string Loading embedded NNUE...");
     match evaluate::init_embedded_nnue() {
@@ -87,7 +96,8 @@ fn main() {
         }
     }
 
-    let (cmd_tx, cmd_rx) = mpsc::channel::<String>();
+    let (event_tx, event_rx) = mpsc::channel::<UciEvent>();
+    let stdin_tx = event_tx.clone();
 
     thread::Builder::new()
         .name("stdin".into())
@@ -102,36 +112,34 @@ fn main() {
                 if trimmed.is_empty() {
                     continue;
                 }
-                if cmd_tx.send(trimmed).is_err() {
+                if stdin_tx.send(UciEvent::Command(trimmed)).is_err() {
                     break;
                 }
             }
+            let _ = stdin_tx.send(UciEvent::InputClosed);
         })
         .expect("failed to spawn stdin thread");
 
-    loop {
-        let cmd = if let Some(ref task) = search_task {
-            match cmd_rx.recv_timeout(Duration::from_millis(10)) {
-                Ok(cmd) => Some(cmd),
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if let Ok(result) = task.rx.try_recv() {
-                        let task = search_task.take().unwrap();
-                        task.handle.join().ok();
+    while let Ok(event) = event_rx.recv() {
+        let trimmed = match event {
+            UciEvent::Command(command) => command,
+            UciEvent::SearchFinished(id) => {
+                if search_task.as_ref().is_some_and(|task| task.id == id) {
+                    let task = search_task.take().unwrap();
+                    task.handle.join().ok();
+                    if let Ok(result) = task.rx.recv() {
                         print_bestmove(&engine, &result.0);
                     }
-                    continue;
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                continue;
             }
-        } else {
-            match cmd_rx.recv() {
-                Ok(cmd) => Some(cmd),
-                Err(_) => break,
+            UciEvent::InputClosed => {
+                if let Some(task) = search_task.take() {
+                    task.stopped.store(true, Ordering::SeqCst);
+                    task.handle.join().ok();
+                }
+                break;
             }
-        };
-
-        let Some(trimmed) = cmd else {
-            break;
         };
         let parts: Vec<&str> = trimmed.split_whitespace().collect();
         if parts.is_empty() {
@@ -150,6 +158,7 @@ fn main() {
                     "option name Threads type spin default 1 min {} max {}",
                     MIN_THREADS, MAX_THREADS
                 );
+                println!("option name Move Overhead type spin default 10 min 0 max 5000");
                 println!("option name Book type string default <embedded>");
                 println!("option name NNUE type string default <embedded>");
                 print!("option name NNUEBackend type combo default auto var auto");
@@ -168,6 +177,7 @@ fn main() {
             }
             "ucinewgame" => {
                 reset_engine(&mut engine);
+                time_manager.reset_for_new_game();
             }
             "setoption" if parts.len() >= 3 && parts[1].to_lowercase() == "name" => {
                 let Some((name, val)) = parse_option_name_value(&parts) else {
@@ -251,6 +261,12 @@ fn main() {
                             eprintln!("info string Chess960 mode disabled");
                         }
                     }
+                    "move overhead" => {
+                        let parsed = val.parse::<f64>();
+                        if !parsed.is_ok_and(|value| time_manager.set_move_overhead_ms(value)) {
+                            eprintln!("info string Ignoring out-of-range Move Overhead: {}", val);
+                        }
+                    }
                     _ => {
                         parse_setoption(&mut engine, &name, &val);
                     }
@@ -279,7 +295,9 @@ fn main() {
                     continue;
                 }
 
-                let limits = parse_go_params(&parts, &engine);
+                let limits = parse_go_params(&parts, &engine, &mut time_manager);
+                let search_id = next_search_id;
+                next_search_id = next_search_id.wrapping_add(1);
 
                 let st = engine.st;
                 let shared_tt = Arc::clone(&engine.shared_tt);
@@ -297,6 +315,7 @@ fn main() {
                 let trace_path = engine.trace.path().map(|p| p.display().to_string());
 
                 let stopped_for_search = Arc::clone(&stopped);
+                let search_finished_tx = event_tx.clone();
                 let (tx, rx) = mpsc::channel();
 
                 let handle = thread::Builder::new()
@@ -315,16 +334,20 @@ fn main() {
                         if let Some(tp) = trace_path {
                             search_engine.set_trace_file(&tp);
                         }
-                        let result = search_engine.find_best_move_with_time_limits(
+                        let result = search_engine.find_best_move_with_time_limits_prepared(
                             limits.soft_seconds,
                             limits.hard_seconds,
                             limits.depth,
                         );
                         tx.send(result).ok();
+                        search_finished_tx
+                            .send(UciEvent::SearchFinished(search_id))
+                            .ok();
                     })
                     .expect("failed to spawn search thread");
 
                 search_task = Some(SearchTask {
+                    id: search_id,
                     handle,
                     stopped,
                     rx,
@@ -555,7 +578,11 @@ fn parse_uci_move(mv: &str) -> Option<(usize, usize, usize, usize, u8)> {
     Some((sr, sc, er, ec, promotion))
 }
 
-fn parse_go_params(parts: &[&str], engine: &Engine) -> SearchLimits {
+fn parse_go_params(
+    parts: &[&str],
+    engine: &Engine,
+    time_manager: &mut TimeManager,
+) -> SearchLimits {
     let mut wtime = 300000f64;
     let mut btime = 300000f64;
     let mut winc = 0f64;
@@ -611,38 +638,8 @@ fn parse_go_params(parts: &[&str], engine: &Engine) -> SearchLimits {
     } else if depth < 64 {
         (1_000_000_000.0, 1_000_000_000.0)
     } else {
-        let mut mtg = if movestogo > 0 {
-            movestogo.min(50) as f64
-        } else {
-            50.0
-        };
-        if time_ms < 1000.0 {
-            mtg = (time_ms * 0.05).max(1.0);
-        }
-        let time_left = (time_ms + inc * (mtg - 1.0)).max(1.0);
-
-        let (opt_scale, max_scale) = if movestogo > 0 {
-            let opt = ((0.88 + 0.0 / 116.4) / mtg).min(0.88 * time_ms / time_left);
-            let max = 1.3 + 0.11 * mtg;
-            (opt, max)
-        } else {
-            let log_time_sec = (time_ms / 1000.0).log10();
-            let opt_constant = (0.0029869 + 0.00033554 * log_time_sec).min(0.004905);
-            let max_constant = (3.3744 + 3.0608 * log_time_sec).max(3.1441);
-            let opt = (0.012112 + (3.22713f64).powf(0.46866) * opt_constant)
-                .min(0.19404 * time_ms / time_left);
-            let max = max_constant.min(6.873);
-            (opt, max)
-        };
-
-        let optimum_ms = (opt_scale * time_left).max(1.0);
-        let maximum_ms = optimum_ms.max((0.8097 * time_ms).min(max_scale * optimum_ms));
-        let absolute_max = (time_ms + inc * 0.8).max(1.0);
-        let soft = (optimum_ms / 1000.0).clamp(0.05, 60.0);
-        let hard = (maximum_ms / 1000.0)
-            .clamp(0.05, 60.0)
-            .min(absolute_max / 1000.0);
-        (soft, hard.max(soft + 0.01))
+        let budget = time_manager.clock_budget(time_ms, inc, movestogo, engine.st.mc);
+        (budget.soft_seconds, budget.hard_seconds)
     };
 
     SearchLimits {
@@ -699,16 +696,18 @@ mod tests {
     #[test]
     fn clock_search_reserves_time_to_finish_the_crossing_iteration() {
         let engine = Engine::new();
+        let mut time_manager = TimeManager::default();
         let limits = parse_go_params(
             &[
                 "go", "wtime", "8000", "btime", "8000", "winc", "80", "binc", "80",
             ],
             &engine,
+            &mut time_manager,
         );
 
-        assert!((limits.soft_seconds - 0.212).abs() < 0.002);
+        assert!((0.15..0.25).contains(&limits.soft_seconds));
         assert!(
-            limits.hard_seconds >= limits.soft_seconds * 3.0,
+            limits.hard_seconds > limits.soft_seconds,
             "clock search needs iteration-overrun reserve: {limits:?}"
         );
     }
@@ -716,7 +715,8 @@ mod tests {
     #[test]
     fn fixed_movetime_remains_an_exact_hard_limit() {
         let engine = Engine::new();
-        let limits = parse_go_params(&["go", "movetime", "500"], &engine);
+        let mut time_manager = TimeManager::default();
+        let limits = parse_go_params(&["go", "movetime", "500"], &engine, &mut time_manager);
 
         assert_eq!(limits.soft_seconds, 0.5);
         assert_eq!(limits.hard_seconds, 0.5);

@@ -2713,11 +2713,12 @@ pub fn lazy_smp_search(
     shared_tt: Arc<SharedTT>,
     st: &BoardState,
     root_moves: &[Move],
+    root_depth_extension: fn(&BoardState, Move) -> i32,
     limits: LazySmpSearchLimits,
     num_threads: usize,
     root_searcher: &Searcher,
 ) -> (Move, i32, i32, u64) {
-    let stopped = Arc::new(AtomicBool::new(false));
+    let stopped = Arc::clone(&root_searcher.stopped);
     let all_moves = root_moves.to_vec();
 
     let results = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -2812,11 +2813,12 @@ pub fn lazy_smp_search(
                             let h = s.hash;
                             searcher.rep_stack.push(h);
                             searcher.rep_stack_len += 1;
+                            let root_ext = root_depth_extension(&st, mv);
 
                             let score = if cur_score == -INF {
                                 -searcher.negamax(
                                     &mut s,
-                                    depth - 1,
+                                    depth - 1 + root_ext,
                                     1,
                                     -beta,
                                     -loop_alpha,
@@ -2828,7 +2830,7 @@ pub fn lazy_smp_search(
                             } else {
                                 let sc = -searcher.negamax(
                                     &mut s,
-                                    depth - 1,
+                                    depth - 1 + root_ext,
                                     1,
                                     -loop_alpha - 1,
                                     -loop_alpha,
@@ -2840,7 +2842,7 @@ pub fn lazy_smp_search(
                                 if sc > loop_alpha && sc < beta {
                                     -searcher.negamax(
                                         &mut s,
-                                        depth - 1,
+                                        depth - 1 + root_ext,
                                         1,
                                         -beta,
                                         -loop_alpha,
@@ -2943,6 +2945,7 @@ pub fn lazy_smp_search(
                         prev_score = best_score;
                         searcher.update_correction_history(&st, best_score, best_depth);
                         if elapsed >= limits.soft_time {
+                            stopped.store(true, Ordering::SeqCst);
                             break;
                         }
                     } else {
@@ -3184,6 +3187,101 @@ mod tests {
         assert_eq!(worker.corr_hist[123], 17);
         assert_eq!(worker.corr_hist[456], -23);
         assert_eq!(worker.syzygy.tables.is_some(), root.syzygy.tables.is_some());
+    }
+
+    #[test]
+    fn lazy_smp_honors_the_root_searcher_stop_token() {
+        let st = state_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1");
+        let stopped = Arc::new(AtomicBool::new(true));
+        let shared_tt = Arc::new(SharedTT::new(128));
+        let root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
+        let root_moves = generate_moves(&st, st.w, &st.cr, st.ep);
+
+        let (_, _, depth, nodes) = lazy_smp_search(
+            shared_tt,
+            &st,
+            &root_moves,
+            |_, _| 0,
+            LazySmpSearchLimits {
+                soft_time: 10.0,
+                hard_time: 10.0,
+                depth: 4,
+            },
+            2,
+            &root,
+        );
+
+        assert_eq!(depth, 0, "workers searched despite an external stop");
+        assert_eq!(nodes, 0, "workers counted nodes despite an external stop");
+    }
+
+    #[test]
+    fn lazy_smp_soft_completion_signals_the_root_searcher() {
+        let st = state_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1");
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(128));
+        let root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
+        let root_moves = generate_moves(&st, st.w, &st.cr, st.ep);
+
+        let (_, _, depth, _) = lazy_smp_search(
+            shared_tt,
+            &st,
+            &root_moves,
+            |_, _| 0,
+            LazySmpSearchLimits {
+                soft_time: 0.0,
+                hard_time: 10.0,
+                depth: 4,
+            },
+            2,
+            &root,
+        );
+
+        assert!(depth >= 1, "no worker completed the crossing iteration");
+        assert!(
+            stopped.load(Ordering::Relaxed),
+            "the first crossing iteration did not stop sibling workers"
+        );
+    }
+
+    #[test]
+    fn lazy_smp_applies_root_depth_extension_policy() {
+        use std::sync::atomic::AtomicUsize;
+
+        static EXTENSION_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+        fn count_extension_calls(_: &BoardState, _: Move) -> i32 {
+            EXTENSION_CALLS.fetch_add(1, Ordering::SeqCst);
+            0
+        }
+
+        let st = state_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1");
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(128));
+        let root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
+        let root_moves = generate_moves(&st, st.w, &st.cr, st.ep);
+
+        EXTENSION_CALLS.store(0, Ordering::SeqCst);
+        let (_, _, depth, _) = lazy_smp_search(
+            shared_tt,
+            &st,
+            &root_moves,
+            count_extension_calls,
+            LazySmpSearchLimits {
+                soft_time: 10.0,
+                hard_time: 10.0,
+                depth: 1,
+            },
+            1,
+            &root,
+        );
+
+        assert_eq!(depth, 1);
+        assert_eq!(
+            EXTENSION_CALLS.load(Ordering::SeqCst),
+            root_moves.len(),
+            "Lazy SMP did not consult the root extension policy for every root move"
+        );
     }
 
     #[test]

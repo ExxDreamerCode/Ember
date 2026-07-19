@@ -363,7 +363,9 @@ class UciEngine:
                 self.proc.kill()
 
 
-INFO_RE = re.compile(r"\bdepth\s+(\d+).*?(?:\bmultipv\s+(\d+))?.*?\bscore\s+(cp|mate)\s+(-?\d+).*?\bpv\s+(\S+)(.*)")
+INFO_DEPTH_RE = re.compile(r"\bdepth\s+(\d+)\b")
+INFO_MULTIPV_RE = re.compile(r"\bmultipv\s+(\d+)\b")
+INFO_SCORE_RE = re.compile(r"\bscore\s+(cp|mate)\s+(-?\d+)\b")
 
 
 def score_to_cp(kind, value):
@@ -381,13 +383,18 @@ def parse_stockfish(lines):
         if line.startswith("bestmove "):
             bestmove = line.split()[1]
             continue
-        match = INFO_RE.search(line)
-        if not match:
+        depth_match = INFO_DEPTH_RE.search(line)
+        score_match = INFO_SCORE_RE.search(line)
+        pv_offset = line.find(" pv ")
+        if not depth_match or not score_match or pv_offset < 0:
             continue
-        depth = int(match.group(1))
-        multipv = int(match.group(2) or 1)
-        score_cp = score_to_cp(match.group(3), match.group(4))
-        pv = (match.group(5) + match.group(6)).strip().split()
+        pv = line[pv_offset + 4 :].split()
+        if not pv:
+            continue
+        depth = int(depth_match.group(1))
+        multipv_match = INFO_MULTIPV_RE.search(line)
+        multipv = int(multipv_match.group(1)) if multipv_match else 1
+        score_cp = score_to_cp(score_match.group(1), score_match.group(2))
         infos[multipv] = {
             "depth": depth,
             "multipv": multipv,
