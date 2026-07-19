@@ -2655,6 +2655,7 @@ struct LazySmpSearchJob {
     stopped: Arc<AtomicBool>,
     st: BoardState,
     root_moves: Arc<Vec<Move>>,
+    num_threads: usize,
     root_depth_extension: fn(&BoardState, Move) -> i32,
     limits: LazySmpSearchLimits,
     root_context: Arc<LazySmpRootContext>,
@@ -2774,6 +2775,7 @@ impl LazySmpPool {
             stopped: Arc::clone(&root_searcher.stopped),
             st: *st,
             root_moves: Arc::new(root_moves.to_vec()),
+            num_threads,
             root_depth_extension,
             limits,
             root_context: Arc::new(LazySmpRootContext::from_searcher(root_searcher)),
@@ -2870,12 +2872,34 @@ fn select_lazy_smp_result(results: &[ThreadResult]) -> Option<&ThreadResult> {
         })
 }
 
-fn diversify_lazy_smp_root_moves(moves: &mut [Move], thread_id: usize) {
-    if moves.len() <= 1 || thread_id == 0 {
-        return;
+fn lazy_smp_root_moves(root_moves: &[Move], thread_id: usize, num_threads: usize) -> Vec<Move> {
+    if (4..=8).contains(&num_threads) && root_moves.len() >= num_threads && thread_id > 0 {
+        let helper_count = num_threads - 1;
+        let helper_lane = thread_id - 1;
+        let mut moves = Vec::with_capacity(root_moves.len());
+
+        // Give each helper a disjoint prefix of non-PV root moves, then let it
+        // search the complete root so every worker still produces a full vote.
+        for (index, &mv) in root_moves.iter().enumerate() {
+            if index > 0 && (index - 1) % helper_count == helper_lane {
+                moves.push(mv);
+            }
+        }
+        for (index, &mv) in root_moves.iter().enumerate() {
+            if index == 0 || (index - 1) % helper_count != helper_lane {
+                moves.push(mv);
+            }
+        }
+        debug_assert_eq!(moves.len(), root_moves.len());
+        return moves;
     }
-    let offset = thread_id % moves.len();
-    moves.rotate_left(offset);
+
+    let mut moves = root_moves.to_vec();
+    if moves.len() > 1 && thread_id > 0 {
+        let offset = thread_id % moves.len();
+        moves.rotate_left(offset);
+    }
+    moves
 }
 
 fn print_lazy_smp_info(
@@ -3030,8 +3054,7 @@ fn run_lazy_smp_worker(
     let start = job.start;
     let stopped = &job.stopped;
     let root_hash = st.hash;
-    let mut my_moves = (*job.root_moves).clone();
-    diversify_lazy_smp_root_moves(&mut my_moves, thread_id);
+    let mut my_moves = lazy_smp_root_moves(&job.root_moves, thread_id, job.num_threads);
 
     let mut best_move = my_moves[0];
     let mut best_score = 0i32;
