@@ -3175,7 +3175,8 @@ fn run_lazy_smp_worker(
             best_depth = depth;
             prev_score = best_score;
             searcher.update_correction_history(&st, best_score, best_depth);
-            if elapsed >= limits.soft_time {
+            // Helpers can finish useful work until the leader coordinates the stop.
+            if thread_id == 0 && elapsed >= limits.soft_time {
                 stopped.store(true, Ordering::SeqCst);
                 break;
             }
