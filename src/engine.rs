@@ -7,7 +7,7 @@ use crate::board::{
 };
 use crate::book::OpeningBook;
 use crate::movegen::{apply_move, generate_moves};
-use crate::search::{lazy_smp_search, LazySmpSearchLimits, Searcher};
+use crate::search::{lazy_smp_search, LazySmpPool, LazySmpSearchLimits, Searcher};
 use crate::time_management::threads_for_time_budget;
 #[cfg(feature = "decision-trace")]
 use crate::trace::{DecisionTrace, DepthInfo, TraceLogger};
@@ -29,6 +29,7 @@ pub struct Engine {
     pub st: BoardState,
     pub searcher: Searcher,
     pub shared_tt: Arc<SharedTT>,
+    pub search_pool: Arc<LazySmpPool>,
     pub num_threads: usize,
     pub stopped: Arc<AtomicBool>,
     pub book: Option<OpeningBook>,
@@ -366,10 +367,12 @@ impl Engine {
     pub fn new() -> Self {
         let stopped = Arc::new(AtomicBool::new(false));
         let shared_tt = Arc::new(SharedTT::new(DEFAULT_HASH_MB));
+        let search_pool = Arc::new(LazySmpPool::new());
         let mut e = Engine {
             st: BoardState::empty(),
             searcher: Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped)),
             shared_tt,
+            search_pool,
             num_threads: 1,
             stopped,
             book: None,
@@ -385,6 +388,7 @@ impl Engine {
         st: BoardState,
         searcher: Searcher,
         shared_tt: Arc<SharedTT>,
+        search_pool: Arc<LazySmpPool>,
         num_threads: usize,
         stopped: Arc<AtomicBool>,
         book: Option<OpeningBook>,
@@ -393,6 +397,7 @@ impl Engine {
             st,
             searcher,
             shared_tt,
+            search_pool,
             num_threads,
             stopped,
             book,
@@ -856,6 +861,7 @@ impl Engine {
                 .unwrap_or_else(|| moves.clone());
 
             let (best_move, best_score, best_depth, total_nodes) = lazy_smp_search(
+                &self.search_pool,
                 Arc::clone(&self.shared_tt),
                 &self.st,
                 &threaded_moves,
@@ -864,6 +870,7 @@ impl Engine {
                     soft_time: soft_time_limit,
                     hard_time: time_limit,
                     depth: depth_limit,
+                    start,
                 },
                 search_threads,
                 &self.searcher,
