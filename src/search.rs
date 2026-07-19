@@ -3245,6 +3245,46 @@ mod tests {
     }
 
     #[test]
+    fn lazy_smp_applies_root_depth_extension_policy() {
+        use std::sync::atomic::AtomicUsize;
+
+        static EXTENSION_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+        fn count_extension_calls(_: &BoardState, _: Move) -> i32 {
+            EXTENSION_CALLS.fetch_add(1, Ordering::SeqCst);
+            0
+        }
+
+        let st = state_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1");
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(128));
+        let root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
+        let root_moves = generate_moves(&st, st.w, &st.cr, st.ep);
+
+        EXTENSION_CALLS.store(0, Ordering::SeqCst);
+        let (_, _, depth, _) = lazy_smp_search(
+            shared_tt,
+            &st,
+            &root_moves,
+            count_extension_calls,
+            LazySmpSearchLimits {
+                soft_time: 10.0,
+                hard_time: 10.0,
+                depth: 1,
+            },
+            1,
+            &root,
+        );
+
+        assert_eq!(depth, 1);
+        assert_eq!(
+            EXTENSION_CALLS.load(Ordering::SeqCst),
+            root_moves.len(),
+            "Lazy SMP did not consult the root extension policy for every root move"
+        );
+    }
+
+    #[test]
     fn lazy_smp_root_diversification_changes_nonzero_worker_order() {
         let original = vec![
             encode_move(0, 0, 0, 0, 0),
