@@ -315,6 +315,7 @@ fn main() {
 
                 let st = engine.st;
                 let shared_tt = Arc::clone(&engine.shared_tt);
+                let search_pool = Arc::clone(&engine.search_pool);
                 let stopped = Arc::new(AtomicBool::new(false));
                 let num_threads = engine.num_threads;
                 let book = engine.book.clone();
@@ -340,6 +341,7 @@ fn main() {
                             st,
                             search_searcher,
                             shared_tt,
+                            search_pool,
                             num_threads,
                             stopped_for_search,
                             book,
@@ -519,6 +521,7 @@ fn set_chess960_mode(engine: &mut Engine, enable: bool) {
 fn reset_engine(engine: &mut Engine) {
     let book = engine.book.take();
     let num_threads = engine.num_threads;
+    let search_pool = Arc::clone(&engine.search_pool);
     let chess960 = engine.st.chess960;
     let syzygy = engine.searcher.syzygy.clone();
     #[cfg(feature = "decision-trace")]
@@ -526,6 +529,7 @@ fn reset_engine(engine: &mut Engine) {
     let tt_mb = engine.searcher.tt_mb;
     *engine = Engine::new();
     engine.book = book;
+    engine.search_pool = search_pool;
     engine.num_threads = num_threads;
     engine.searcher.syzygy = syzygy;
     set_chess960_mode(engine, chess960);
