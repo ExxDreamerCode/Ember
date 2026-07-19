@@ -2713,6 +2713,7 @@ pub fn lazy_smp_search(
     shared_tt: Arc<SharedTT>,
     st: &BoardState,
     root_moves: &[Move],
+    root_depth_extension: fn(&BoardState, Move) -> i32,
     limits: LazySmpSearchLimits,
     num_threads: usize,
     root_searcher: &Searcher,
@@ -2812,11 +2813,12 @@ pub fn lazy_smp_search(
                             let h = s.hash;
                             searcher.rep_stack.push(h);
                             searcher.rep_stack_len += 1;
+                            let root_ext = root_depth_extension(&st, mv);
 
                             let score = if cur_score == -INF {
                                 -searcher.negamax(
                                     &mut s,
-                                    depth - 1,
+                                    depth - 1 + root_ext,
                                     1,
                                     -beta,
                                     -loop_alpha,
@@ -2828,7 +2830,7 @@ pub fn lazy_smp_search(
                             } else {
                                 let sc = -searcher.negamax(
                                     &mut s,
-                                    depth - 1,
+                                    depth - 1 + root_ext,
                                     1,
                                     -loop_alpha - 1,
                                     -loop_alpha,
@@ -2840,7 +2842,7 @@ pub fn lazy_smp_search(
                                 if sc > loop_alpha && sc < beta {
                                     -searcher.negamax(
                                         &mut s,
-                                        depth - 1,
+                                        depth - 1 + root_ext,
                                         1,
                                         -beta,
                                         -loop_alpha,
@@ -3199,6 +3201,7 @@ mod tests {
             shared_tt,
             &st,
             &root_moves,
+            |_, _| 0,
             LazySmpSearchLimits {
                 soft_time: 10.0,
                 hard_time: 10.0,
@@ -3224,6 +3227,7 @@ mod tests {
             shared_tt,
             &st,
             &root_moves,
+            |_, _| 0,
             LazySmpSearchLimits {
                 soft_time: 0.0,
                 hard_time: 10.0,

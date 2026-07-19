@@ -192,6 +192,10 @@ fn root_rook_invasion_score(st: &BoardState, mv: Move) -> Option<i32> {
     Some(600_000)
 }
 
+fn root_depth_extension(st: &BoardState, mv: Move) -> i32 {
+    i32::from(root_rook_invasion_score(st, mv).is_some())
+}
+
 fn rook_attacks_enemy_non_pawn_on_rank(st: &BoardState, rook_sq: usize, rook: u8) -> bool {
     let moving_white = rook < 6;
     let row = rook_sq / 8;
@@ -791,6 +795,7 @@ impl Engine {
                 Arc::clone(&self.shared_tt),
                 &self.st,
                 &threaded_moves,
+                root_depth_extension,
                 LazySmpSearchLimits {
                     soft_time: soft_time_limit,
                     hard_time: time_limit,
@@ -875,7 +880,7 @@ impl Engine {
                     let h = self.st.hash;
                     self.searcher.rep_stack.push(h);
                     self.searcher.rep_stack_len += 1;
-                    let root_ext = i32::from(root_rook_invasion_score(&old, mv).is_some());
+                    let root_ext = root_depth_extension(&old, mv);
 
                     let score = if cur_score == -INF {
                         -self.searcher.negamax(
