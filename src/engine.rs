@@ -19,6 +19,12 @@ use std::time::Instant;
 
 const DEFAULT_HASH_MB: usize = 256;
 
+#[derive(Clone, Copy)]
+enum SearchTimerStart {
+    BeforeSetup(Instant),
+    AfterSetup,
+}
+
 pub struct Engine {
     pub st: BoardState,
     pub searcher: Searcher,
@@ -668,11 +674,57 @@ impl Engine {
         self.find_best_move_with_time_limits_prepared(soft_time_limit, time_limit, depth_limit)
     }
 
+    pub fn find_best_move_with_time_limits_started_at(
+        &mut self,
+        soft_time_limit: f64,
+        time_limit: f64,
+        depth_limit: i32,
+        start: Instant,
+    ) -> (String, i32, u64, f64) {
+        self.searcher.stopped.store(false, Ordering::SeqCst);
+        self.find_best_move_with_time_limits_prepared_started_at(
+            soft_time_limit,
+            time_limit,
+            depth_limit,
+            start,
+        )
+    }
+
     pub fn find_best_move_with_time_limits_prepared(
         &mut self,
         soft_time_limit: f64,
         time_limit: f64,
         depth_limit: i32,
+    ) -> (String, i32, u64, f64) {
+        self.find_best_move_with_time_limits_prepared_with_timer(
+            soft_time_limit,
+            time_limit,
+            depth_limit,
+            SearchTimerStart::AfterSetup,
+        )
+    }
+
+    pub fn find_best_move_with_time_limits_prepared_started_at(
+        &mut self,
+        soft_time_limit: f64,
+        time_limit: f64,
+        depth_limit: i32,
+        start: Instant,
+    ) -> (String, i32, u64, f64) {
+        self.find_best_move_with_time_limits_prepared_with_timer(
+            soft_time_limit,
+            time_limit,
+            depth_limit,
+            SearchTimerStart::BeforeSetup(start),
+        )
+    }
+
+    fn find_best_move_with_time_limits_prepared_with_timer(
+        &mut self,
+        soft_time_limit: f64,
+        time_limit: f64,
+        depth_limit: i32,
+        timer_start: SearchTimerStart,
     ) -> (String, i32, u64, f64) {
         let soft_time_limit = soft_time_limit.min(time_limit);
         self.searcher.refresh_nnue_net();
@@ -725,7 +777,10 @@ impl Engine {
             }
         }
 
-        let tablebase_start = Instant::now();
+        let tablebase_start = match timer_start {
+            SearchTimerStart::BeforeSetup(start) => start,
+            SearchTimerStart::AfterSetup => Instant::now(),
+        };
         if let Some(best_move) = self
             .searcher
             .syzygy
@@ -762,9 +817,15 @@ impl Engine {
                 if let Some(bm) = book.pick_move(&self.st, &moves) {
                     let mv_str = move_to_uci(&self.st, bm);
                     let eval_score = self.searcher.corrected_eval(&self.st);
+                    let elapsed = match timer_start {
+                        SearchTimerStart::BeforeSetup(start) => start.elapsed().as_secs_f64(),
+                        SearchTimerStart::AfterSetup => 0.0,
+                    };
                     println!(
-                        "info depth 1 score cp {} nodes 0 nps 0 time 0 pv {}",
-                        eval_score, mv_str
+                        "info depth 1 score cp {} nodes 0 nps 0 time {} pv {}",
+                        eval_score,
+                        (elapsed * 1000.0) as u64,
+                        mv_str
                     );
                     #[cfg(feature = "decision-trace")]
                     self.trace.emit_decision(DecisionTrace {
@@ -776,17 +837,20 @@ impl Engine {
                         depth_reached: 1,
                         score_cp: eval_score,
                         nodes: 0,
-                        elapsed_ms: 0,
+                        elapsed_ms: (elapsed * 1000.0) as u128,
                         depth_infos: &[],
                     });
-                    return (mv_str, eval_score, 0, 0.0);
+                    return (mv_str, eval_score, 0, elapsed);
                 }
             }
         }
 
         let search_threads = threads_for_time_budget(self.num_threads, soft_time_limit);
         if search_threads > 1 {
-            let start = Instant::now();
+            let start = match timer_start {
+                SearchTimerStart::BeforeSetup(start) => start,
+                SearchTimerStart::AfterSetup => Instant::now(),
+            };
             let threaded_moves = sort_tactical_root_moves(&self.st, &moves, NO_MOVE)
                 .or_else(|| sort_sparse_root_moves(&self.st, &moves, NO_MOVE))
                 .unwrap_or_else(|| moves.clone());
@@ -816,7 +880,10 @@ impl Engine {
         self.searcher.history = [[0i32; 64]; 64];
         self.searcher.init_nnue_stack(&self.st);
 
-        let start = Instant::now();
+        let start = match timer_start {
+            SearchTimerStart::BeforeSetup(start) => start,
+            SearchTimerStart::AfterSetup => Instant::now(),
+        };
         let mut best_move = moves[0];
         let mut best_score = 0i32;
         let mut total_nodes = 0u64;
@@ -1043,6 +1110,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
 
     fn engine_from_fen(fen: &str) -> Engine {
         let mut engine = Engine::new();
@@ -1112,5 +1180,25 @@ mod tests {
                 "threads={threads} should pick a forcing sparse-endgame root move, got {best_move}"
             );
         }
+    }
+
+    #[test]
+    fn caller_supplied_start_time_is_used_for_clock_search() {
+        let mut engine =
+            engine_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        let expired_start = Instant::now() - Duration::from_millis(50);
+
+        let (_, _, nodes, elapsed) = engine.find_best_move_with_time_limits_prepared_started_at(
+            0.005,
+            0.010,
+            64,
+            expired_start,
+        );
+
+        assert_eq!(nodes, 0, "search ignored the already-expired clock");
+        assert!(
+            elapsed >= 0.050,
+            "reported elapsed time must include the caller's start point: {elapsed}"
+        );
     }
 }

@@ -1,4 +1,4 @@
-const DEFAULT_MOVE_OVERHEAD_MS: f64 = 10.0;
+const DEFAULT_MOVE_OVERHEAD_MS: f64 = 7.0;
 const MAX_MOVE_OVERHEAD_MS: f64 = 5_000.0;
 const MAX_SEARCH_TIME_MS: f64 = 60_000.0;
 const SINGLE_THREAD_BUDGET_MS: f64 = 25.0;
@@ -97,10 +97,19 @@ impl TimeManager {
         // The GUI cannot grant the next increment before this move returns.
         // Keep both limits inside the current clock after communication slack.
         let spendable_ms = (time_ms - overhead_ms).max(1.0);
-        let soft_ms = optimum_ms.min(spendable_ms).min(MAX_SEARCH_TIME_MS);
+        let mut soft_ms = optimum_ms.min(spendable_ms).min(MAX_SEARCH_TIME_MS);
+        if time_ms < 1_000.0 && increment_ms > 0.0 {
+            soft_ms = soft_ms.min(increment_ms);
+        }
+        let short_increment_hard_cap_ms = if time_ms <= 1_000.0 && increment_ms <= 10.0 {
+            35.0
+        } else {
+            MAX_SEARCH_TIME_MS
+        };
         let hard_ms = maximum_ms
             .min(spendable_ms)
             .min(MAX_SEARCH_TIME_MS)
+            .min(short_increment_hard_cap_ms)
             .max(soft_ms);
 
         TimeBudget {
