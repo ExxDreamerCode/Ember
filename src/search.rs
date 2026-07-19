@@ -3451,6 +3451,60 @@ mod tests {
     }
 
     #[test]
+    fn lazy_smp_counts_work_from_an_interrupted_iteration() {
+        static DEEP_ROOT_SEARCH_STARTED: AtomicBool = AtomicBool::new(false);
+
+        fn start_a_deep_root_search(_: &BoardState, _: Move) -> i32 {
+            DEEP_ROOT_SEARCH_STARTED.store(true, Ordering::SeqCst);
+            12
+        }
+
+        let st = state_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(128));
+        let root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
+        let root_moves = generate_moves(&st, st.w, &st.cr, st.ep);
+        DEEP_ROOT_SEARCH_STARTED.store(false, Ordering::SeqCst);
+
+        let stop_token = Arc::clone(&stopped);
+        let stopper = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while !DEEP_ROOT_SEARCH_STARTED.load(Ordering::SeqCst) && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            let search_started = DEEP_ROOT_SEARCH_STARTED.load(Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(5));
+            stop_token.store(true, Ordering::SeqCst);
+            search_started
+        });
+
+        let (_, _, depth, nodes) = lazy_smp_search(
+            &LazySmpPool::new(),
+            shared_tt,
+            &st,
+            &root_moves,
+            start_a_deep_root_search,
+            LazySmpSearchLimits {
+                soft_time: 10.0,
+                hard_time: 10.0,
+                depth: 1,
+            },
+            1,
+            &root,
+        );
+
+        assert!(
+            stopper.join().expect("stopper thread completed"),
+            "the root search did not start"
+        );
+        assert_eq!(depth, 0, "the interrupted iteration was not completed");
+        assert!(
+            nodes > 0,
+            "interrupted search work disappeared from the total"
+        );
+    }
+
+    #[test]
     fn lazy_smp_soft_completion_signals_the_root_searcher() {
         let st = state_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1");
         let stopped = Arc::new(AtomicBool::new(false));
