@@ -3713,27 +3713,44 @@ mod tests {
     }
 
     #[test]
-    fn lazy_smp_root_diversification_changes_nonzero_worker_order() {
+    fn lazy_smp_helpers_prioritize_distinct_root_lanes() {
         let original = vec![
             encode_move(0, 0, 0, 0, 0),
             encode_move(0, 1, 0, 1, 0),
             encode_move(0, 2, 0, 2, 0),
             encode_move(0, 3, 0, 3, 0),
         ];
-        let mut thread_zero = original.clone();
-        let mut thread_one = original.clone();
-
-        diversify_lazy_smp_root_moves(&mut thread_zero, 0);
-        diversify_lazy_smp_root_moves(&mut thread_one, 1);
+        let thread_zero = lazy_smp_root_moves(&original, 0, 4);
+        let thread_one = lazy_smp_root_moves(&original, 1, 4);
+        let thread_two = lazy_smp_root_moves(&original, 2, 4);
+        let thread_three = lazy_smp_root_moves(&original, 3, 4);
 
         assert_eq!(thread_zero, original);
-        assert_ne!(thread_one, original);
+        assert_eq!(thread_one[0], original[1]);
+        assert_eq!(thread_two[0], original[2]);
+        assert_eq!(thread_three[0], original[3]);
 
         let mut sorted_original = original.clone();
-        let mut sorted_thread_one = thread_one;
         sorted_original.sort_unstable();
-        sorted_thread_one.sort_unstable();
-        assert_eq!(sorted_thread_one, sorted_original);
+        for mut helper_moves in [thread_one, thread_two, thread_three] {
+            helper_moves.sort_unstable();
+            assert_eq!(helper_moves, sorted_original);
+        }
+    }
+
+    #[test]
+    fn lazy_smp_many_helpers_keep_rotated_root_order() {
+        let original = (0..16)
+            .map(|square| {
+                let row = square / 8;
+                let col = square % 8;
+                encode_move(row, col, row, col, 0)
+            })
+            .collect::<Vec<_>>();
+        let mut expected = original.clone();
+        expected.rotate_left(1);
+
+        assert_eq!(lazy_smp_root_moves(&original, 1, 12), expected);
     }
 
     fn completed_thread(best_move: Move, score: i32, depth: i32) -> ThreadResult {
