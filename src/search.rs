@@ -2810,6 +2810,16 @@ impl LazySmpPool {
         let total_nodes = results.iter().map(|result| result.nodes).sum();
         (best.best_move, best.score, best.depth, total_nodes)
     }
+
+    #[cfg(test)]
+    fn worker_ids(&self) -> Vec<std::thread::ThreadId> {
+        self.workers
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|worker| worker.handle.as_ref().map(|handle| handle.thread().id()))
+            .collect()
+    }
 }
 
 impl Drop for LazySmpPool {
@@ -3446,6 +3456,61 @@ mod tests {
             stopped.load(Ordering::Relaxed),
             "the first crossing iteration did not stop sibling workers"
         );
+    }
+
+    #[test]
+    fn lazy_smp_pool_reuses_workers_with_a_fresh_stop_token() {
+        let pool = LazySmpPool::new();
+        let st = state_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1");
+        let root_moves = generate_moves(&st, st.w, &st.cr, st.ep);
+
+        let first_stopped = Arc::new(AtomicBool::new(false));
+        let first_tt = Arc::new(SharedTT::new(128));
+        let first_root = Searcher::new(Arc::clone(&first_tt), Arc::clone(&first_stopped));
+        let (first_move, _, first_depth, _) = lazy_smp_search(
+            &pool,
+            first_tt,
+            &st,
+            &root_moves,
+            |_, _| 0,
+            LazySmpSearchLimits {
+                soft_time: 0.0,
+                hard_time: 10.0,
+                depth: 4,
+            },
+            2,
+            &first_root,
+        );
+
+        assert!(root_moves.contains(&first_move));
+        assert!(first_depth >= 1);
+        assert!(first_stopped.load(Ordering::Relaxed));
+        let first_worker_ids = pool.worker_ids();
+        assert_eq!(first_worker_ids.len(), 2);
+
+        let second_stopped = Arc::new(AtomicBool::new(false));
+        let second_tt = Arc::new(SharedTT::new(128));
+        let second_root = Searcher::new(Arc::clone(&second_tt), Arc::clone(&second_stopped));
+        let (second_move, _, second_depth, second_nodes) = lazy_smp_search(
+            &pool,
+            second_tt,
+            &st,
+            &root_moves,
+            |_, _| 0,
+            LazySmpSearchLimits {
+                soft_time: 10.0,
+                hard_time: 10.0,
+                depth: 1,
+            },
+            2,
+            &second_root,
+        );
+
+        assert!(root_moves.contains(&second_move));
+        assert_eq!(second_depth, 1);
+        assert!(second_nodes > 0);
+        assert!(!second_stopped.load(Ordering::Relaxed));
+        assert_eq!(pool.worker_ids(), first_worker_ids);
     }
 
     #[test]
