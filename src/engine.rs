@@ -870,6 +870,7 @@ impl Engine {
                     soft_time: soft_time_limit,
                     hard_time: time_limit,
                     depth: depth_limit,
+                    start,
                 },
                 search_threads,
                 &self.searcher,

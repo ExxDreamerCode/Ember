@@ -2595,6 +2595,7 @@ pub struct LazySmpSearchLimits {
     pub soft_time: f64,
     pub hard_time: f64,
     pub depth: i32,
+    pub start: Instant,
 }
 
 #[derive(Clone)]
@@ -2767,7 +2768,6 @@ impl LazySmpPool {
         assert!(!root_moves.is_empty());
         let num_threads = num_threads.max(1);
         let _search_guard = self.search_lock.lock().unwrap();
-        let start = Instant::now();
         self.ensure_workers(num_threads);
 
         let job = Arc::new(LazySmpSearchJob {
@@ -2779,7 +2779,7 @@ impl LazySmpPool {
             root_depth_extension,
             limits,
             root_context: Arc::new(LazySmpRootContext::from_searcher(root_searcher)),
-            start,
+            start: limits.start,
             global_best_depth: Arc::new(AtomicI32::new(0)),
             global_nodes: Arc::new(AtomicU64::new(0)),
         });
@@ -3464,6 +3464,7 @@ mod tests {
                 soft_time: 10.0,
                 hard_time: 10.0,
                 depth: 4,
+                start: Instant::now(),
             },
             2,
             &root,
@@ -3511,6 +3512,7 @@ mod tests {
                 soft_time: 10.0,
                 hard_time: 10.0,
                 depth: 1,
+                start: Instant::now(),
             },
             1,
             &root,
@@ -3545,6 +3547,7 @@ mod tests {
                 soft_time: 0.0,
                 hard_time: 10.0,
                 depth: 4,
+                start: Instant::now(),
             },
             2,
             &root,
@@ -3601,6 +3604,7 @@ mod tests {
                 soft_time: 0.0,
                 hard_time: 10.0,
                 depth: 1,
+                start: Instant::now(),
             },
             2,
             &root,
@@ -3635,6 +3639,7 @@ mod tests {
                 soft_time: 0.0,
                 hard_time: 10.0,
                 depth: 4,
+                start: Instant::now(),
             },
             2,
             &first_root,
@@ -3659,6 +3664,7 @@ mod tests {
                 soft_time: 10.0,
                 hard_time: 10.0,
                 depth: 1,
+                start: Instant::now(),
             },
             2,
             &second_root,
@@ -3699,6 +3705,7 @@ mod tests {
                 soft_time: 10.0,
                 hard_time: 10.0,
                 depth: 1,
+                start: Instant::now(),
             },
             1,
             &root,
