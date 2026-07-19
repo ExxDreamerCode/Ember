@@ -91,8 +91,12 @@ def run_engine(binary, input_text, timeout):
         if proc.poll() is None:
             proc.kill()
             proc.wait()
+        proc.stdin.close()
+        proc.stdout.close()
         raise
 
+    proc.stdin.close()
+    proc.stdout.close()
     completed = subprocess.CompletedProcess(
         [str(binary)], proc.returncode, stdout="".join(output)
     )
