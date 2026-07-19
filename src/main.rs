@@ -1,23 +1,25 @@
 use chess_rs_lib::backend::{
     compiled_search_backends, parse_search_backend_name, search_backend_available,
 };
-use chess_rs_lib::board::{EMPTY_SQ, piece_on, piece_type};
+use chess_rs_lib::board::{piece_on, piece_type, EMPTY_SQ};
 use chess_rs_lib::evaluate;
 use chess_rs_lib::search::{active_search_backend, set_search_backend_override};
 use chess_rs_lib::syzygy::SyzygyTables;
 use chess_rs_lib::time_management::TimeManager;
 use chess_rs_lib::zobrist::compute_hash;
-use chess_rs_lib::{Engine, OpeningBook, opening_book};
+use chess_rs_lib::{opening_book, Engine, OpeningBook};
 use std::io::{self, BufRead};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread;
+use std::time::Instant;
 
 const MIN_HASH_MB: usize = 1;
 const MAX_HASH_MB: usize = 4096;
 const MIN_THREADS: usize = 1;
 const MAX_THREADS: usize = 256;
+const SHORT_SYNC_SEARCH_LIMIT_SECONDS: f64 = 0.050;
 const STARTPOS_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 struct SearchTask {
@@ -38,6 +40,7 @@ struct SearchLimits {
     soft_seconds: f64,
     hard_seconds: f64,
     depth: i32,
+    clock_managed: bool,
 }
 
 fn try_load_book(engine: &mut Engine, path: &std::path::Path) -> bool {
@@ -158,7 +161,7 @@ fn main() {
                     "option name Threads type spin default 1 min {} max {}",
                     MIN_THREADS, MAX_THREADS
                 );
-                println!("option name Move Overhead type spin default 10 min 0 max 5000");
+                println!("option name Move Overhead type spin default 7 min 0 max 5000");
                 println!("option name Book type string default <embedded>");
                 println!("option name NNUE type string default <embedded>");
                 print!("option name NNUEBackend type combo default auto var auto");
@@ -296,6 +299,17 @@ fn main() {
                 }
 
                 let limits = parse_go_params(&parts, &engine, &mut time_manager);
+                let search_start = Instant::now();
+                if limits.clock_managed && limits.hard_seconds <= SHORT_SYNC_SEARCH_LIMIT_SECONDS {
+                    let result = engine.find_best_move_with_time_limits_started_at(
+                        limits.soft_seconds,
+                        limits.hard_seconds,
+                        limits.depth,
+                        search_start,
+                    );
+                    print_bestmove(&engine, &result.0);
+                    continue;
+                }
                 let search_id = next_search_id;
                 next_search_id = next_search_id.wrapping_add(1);
 
@@ -334,11 +348,20 @@ fn main() {
                         if let Some(tp) = trace_path {
                             search_engine.set_trace_file(&tp);
                         }
-                        let result = search_engine.find_best_move_with_time_limits_prepared(
-                            limits.soft_seconds,
-                            limits.hard_seconds,
-                            limits.depth,
-                        );
+                        let result = if limits.clock_managed {
+                            search_engine.find_best_move_with_time_limits_prepared_started_at(
+                                limits.soft_seconds,
+                                limits.hard_seconds,
+                                limits.depth,
+                                search_start,
+                            )
+                        } else {
+                            search_engine.find_best_move_with_time_limits_prepared(
+                                limits.soft_seconds,
+                                limits.hard_seconds,
+                                limits.depth,
+                            )
+                        };
                         tx.send(result).ok();
                         search_finished_tx
                             .send(UciEvent::SearchFinished(search_id))
@@ -632,20 +655,21 @@ fn parse_go_params(
 
     let time_ms = if engine.st.w { wtime } else { btime };
     let inc = if engine.st.w { winc } else { binc };
-    let (soft_seconds, hard_seconds) = if movetime > 0.0 {
+    let (soft_seconds, hard_seconds, clock_managed) = if movetime > 0.0 {
         let t = movetime / 1000.0;
-        (t, t)
+        (t, t, true)
     } else if depth < 64 {
-        (1_000_000_000.0, 1_000_000_000.0)
+        (1_000_000_000.0, 1_000_000_000.0, false)
     } else {
         let budget = time_manager.clock_budget(time_ms, inc, movestogo, engine.st.mc);
-        (budget.soft_seconds, budget.hard_seconds)
+        (budget.soft_seconds, budget.hard_seconds, true)
     };
 
     SearchLimits {
         soft_seconds,
         hard_seconds,
         depth,
+        clock_managed,
     }
 }
 

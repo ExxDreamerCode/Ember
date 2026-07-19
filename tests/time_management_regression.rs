@@ -67,7 +67,7 @@ fn move_overhead_rejects_invalid_values() {
     assert!(!manager.set_move_overhead_ms(-1.0));
     assert!(!manager.set_move_overhead_ms(f64::NAN));
     assert!(!manager.set_move_overhead_ms(5_001.0));
-    assert_eq!(manager.move_overhead_ms(), 10.0);
+    assert_eq!(manager.move_overhead_ms(), 7.0);
     assert!(manager.set_move_overhead_ms(25.0));
     assert_eq!(manager.move_overhead_ms(), 25.0);
 }
