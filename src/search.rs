@@ -2804,10 +2804,10 @@ impl LazySmpPool {
                 Err(_) => break,
             }
         }
-        let Some(best) = select_lazy_smp_result(&results) else {
-            return (root_moves[0], 0, 0, 0);
-        };
         let total_nodes = results.iter().map(|result| result.nodes).sum();
+        let Some(best) = select_lazy_smp_result(&results) else {
+            return (root_moves[0], 0, 0, total_nodes);
+        };
         if best.depth > 0 {
             print_lazy_smp_info(
                 &job,
