@@ -228,13 +228,44 @@ fn active_ponder_search_ignores_move_time_until_ponderhit() {
 }
 
 #[test]
-fn searched_principal_variation_supplies_a_ponder_move() {
+fn disabled_ponder_option_suppresses_principal_variation_ponder_move() {
     let (mut child, rx) = spawn_ember();
     let mut stdin = child.stdin.take().expect("capture Ember stdin");
     writeln!(stdin, "uci").unwrap();
     writeln!(stdin, "setoption name Hash value 16").unwrap();
     writeln!(stdin, "setoption name Threads value 1").unwrap();
     writeln!(stdin, "setoption name Book value").unwrap();
+    writeln!(stdin, "setoption name Ponder value true").unwrap();
+    writeln!(stdin, "setoption name Ponder value false").unwrap();
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(wait_for_line(&rx, "readyok", Duration::from_secs(2)).is_some());
+
+    writeln!(stdin, "position startpos").unwrap();
+    writeln!(stdin, "go depth 4").unwrap();
+    stdin.flush().unwrap();
+    let bestmove = wait_for_line(&rx, "bestmove ", Duration::from_secs(2))
+        .expect("fixed-depth search did not return a move");
+    assert!(
+        !bestmove.contains(" ponder "),
+        "disabled Ponder option must suppress the GUI ponder move: {bestmove}"
+    );
+
+    writeln!(stdin, "quit").unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+    assert!(child.wait().expect("wait for Ember").success());
+}
+
+#[test]
+fn enabled_ponder_option_supplies_principal_variation_ponder_move() {
+    let (mut child, rx) = spawn_ember();
+    let mut stdin = child.stdin.take().expect("capture Ember stdin");
+    writeln!(stdin, "uci").unwrap();
+    writeln!(stdin, "setoption name Hash value 16").unwrap();
+    writeln!(stdin, "setoption name Threads value 1").unwrap();
+    writeln!(stdin, "setoption name Book value").unwrap();
+    writeln!(stdin, "setoption name Ponder value true").unwrap();
     writeln!(stdin, "isready").unwrap();
     stdin.flush().unwrap();
     assert!(wait_for_line(&rx, "readyok", Duration::from_secs(2)).is_some());
@@ -246,7 +277,7 @@ fn searched_principal_variation_supplies_a_ponder_move() {
         .expect("fixed-depth search did not return a move");
     assert!(
         bestmove.contains(" ponder "),
-        "principal variation was not exposed to the GUI: {bestmove}"
+        "enabled Ponder option should expose the principal variation to the GUI: {bestmove}"
     );
 
     writeln!(stdin, "quit").unwrap();

@@ -75,22 +75,32 @@ struct SearchLimits {
     ponder: bool,
 }
 
-fn apply_search_completion(engine: &mut Engine, task: &mut SearchTask, emit_bestmove: bool) {
+fn apply_search_completion(
+    engine: &mut Engine,
+    task: &mut SearchTask,
+    emit_bestmove: bool,
+    ponder_enabled: bool,
+) {
     if let Some(completion) = task.completion.take() {
         engine.searcher.import_learning(&completion.learning);
         if emit_bestmove {
-            print_bestmove(engine, &completion.result.0);
+            print_bestmove(engine, &completion.result.0, ponder_enabled);
         }
     }
 }
 
-fn cancel_search(engine: &mut Engine, task: &mut Option<SearchTask>, emit_bestmove: bool) {
+fn cancel_search(
+    engine: &mut Engine,
+    task: &mut Option<SearchTask>,
+    emit_bestmove: bool,
+    ponder_enabled: bool,
+) {
     let Some(mut running) = task.take() else {
         return;
     };
     running.request_stop();
     running.collect_completion();
-    apply_search_completion(engine, &mut running, emit_bestmove);
+    apply_search_completion(engine, &mut running, emit_bestmove, ponder_enabled);
 }
 
 fn try_load_book(engine: &mut Engine, path: &std::path::Path) -> bool {
@@ -125,6 +135,7 @@ fn main() {
     let mut time_manager = TimeManager::default();
     let mut search_task: Option<SearchTask> = None;
     let mut next_search_id = 0u64;
+    let mut ponder_enabled = false;
 
     eprintln!("info string Loading embedded NNUE...");
     match evaluate::init_embedded_nnue() {
@@ -186,12 +197,12 @@ fn main() {
                     };
                 if should_emit {
                     let mut task = search_task.take().unwrap();
-                    apply_search_completion(&mut engine, &mut task, true);
+                    apply_search_completion(&mut engine, &mut task, true, ponder_enabled);
                 }
                 continue;
             }
             UciEvent::InputClosed => {
-                cancel_search(&mut engine, &mut search_task, false);
+                cancel_search(&mut engine, &mut search_task, false, ponder_enabled);
                 break;
             }
         };
@@ -231,7 +242,7 @@ fn main() {
                 println!("readyok");
             }
             "ucinewgame" => {
-                cancel_search(&mut engine, &mut search_task, false);
+                cancel_search(&mut engine, &mut search_task, false, ponder_enabled);
                 reset_engine(&mut engine);
                 time_manager.reset_for_new_game();
             }
@@ -323,6 +334,10 @@ fn main() {
                             eprintln!("info string Ignoring out-of-range Move Overhead: {}", val);
                         }
                     }
+                    "ponder" => match parse_check_value(&val) {
+                        Some(enable) => ponder_enabled = enable,
+                        None => eprintln!("info string Ignoring invalid Ponder value: {}", val),
+                    },
                     _ => {
                         parse_setoption(&mut engine, &name, &val);
                     }
@@ -340,7 +355,7 @@ fn main() {
                 );
             }
             "position" => {
-                cancel_search(&mut engine, &mut search_task, false);
+                cancel_search(&mut engine, &mut search_task, false, ponder_enabled);
                 parse_position(&mut engine, &parts);
             }
             "go" => {
@@ -360,7 +375,7 @@ fn main() {
                         limits.depth,
                         search_start,
                     );
-                    print_bestmove(&engine, &result.0);
+                    print_bestmove(&engine, &result.0, ponder_enabled);
                     continue;
                 }
                 let search_id = next_search_id;
@@ -450,14 +465,14 @@ fn main() {
                 };
                 if should_emit {
                     let mut task = search_task.take().unwrap();
-                    apply_search_completion(&mut engine, &mut task, true);
+                    apply_search_completion(&mut engine, &mut task, true, ponder_enabled);
                 }
             }
             "stop" => {
-                cancel_search(&mut engine, &mut search_task, true);
+                cancel_search(&mut engine, &mut search_task, true, ponder_enabled);
             }
             "quit" => {
-                cancel_search(&mut engine, &mut search_task, false);
+                cancel_search(&mut engine, &mut search_task, false, ponder_enabled);
                 break;
             }
             _ => {}
@@ -465,7 +480,7 @@ fn main() {
     }
 }
 
-fn print_bestmove(engine: &Engine, best_move: &str) {
+fn print_bestmove(engine: &Engine, best_move: &str, ponder_enabled: bool) {
     let normalized = if best_move.len() >= 4 && best_move != "0000" {
         let mut normalized = best_move.to_string();
         if normalized.len() == 4 {
@@ -486,11 +501,13 @@ fn print_bestmove(engine: &Engine, best_move: &str) {
     };
 
     if let Some(best_move) = normalized {
-        if let Some(ponder_move) = engine.ponder_move_after(&best_move) {
-            println!("bestmove {} ponder {}", best_move, ponder_move);
-        } else {
-            println!("bestmove {}", best_move);
+        if ponder_enabled {
+            if let Some(ponder_move) = engine.ponder_move_after(&best_move) {
+                println!("bestmove {} ponder {}", best_move, ponder_move);
+                return;
+            }
         }
+        println!("bestmove {}", best_move);
     } else {
         println!("bestmove 0000");
     }
@@ -512,6 +529,14 @@ fn parse_option_name_value(parts: &[&str]) -> Option<(String, String)> {
         .map(|idx| parts.get(idx + 1..).unwrap_or(&[]).join(" "))
         .unwrap_or_default();
     Some((name, value))
+}
+
+fn parse_check_value(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
 }
 
 fn set_nnue_backend(value: &str) {
