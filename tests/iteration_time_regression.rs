@@ -42,6 +42,19 @@ fn volatile_search_can_use_more_than_the_nominal_budget() {
 }
 
 #[test]
+fn bullet_search_can_finish_a_valuable_iteration() {
+    let decision = iteration_time_decision(
+        0.010,
+        0.035,
+        30,
+        timing(0.0096, 0.005, 0.002, 240, 0, 0.40, 1.0),
+    );
+
+    assert_eq!(decision.target_seconds, 0.0165);
+    assert!(!decision.stop);
+}
+
+#[test]
 fn worker_disagreement_extends_the_search_target() {
     let agreed = iteration_time_decision(10.0, 40.0, 30, timing(4.0, 1.0, 0.5, 20, 1, 0.90, 0.0));
     let split = iteration_time_decision(10.0, 40.0, 30, timing(4.0, 1.0, 0.5, 20, 1, 0.90, 1.0));
