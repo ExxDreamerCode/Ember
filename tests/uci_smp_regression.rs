@@ -42,6 +42,23 @@ fn info_number(line: &str, field: &str) -> Option<u64> {
         .and_then(|pair| pair[1].parse().ok())
 }
 
+fn wait_for_info_time_at_least(rx: &Receiver<String>, minimum_ms: u64, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+        match rx.recv_timeout(remaining) {
+            Ok(line)
+                if line.starts_with("info ")
+                    && info_number(&line, "time").is_some_and(|time| time >= minimum_ms) =>
+            {
+                return true;
+            }
+            Ok(_) => {}
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
 #[test]
 fn immediate_stop_interrupts_lazy_smp_search() {
     let (mut child, rx) = spawn_ember();
@@ -130,4 +147,110 @@ fn completed_lazy_smp_search_emits_final_aggregate_info() {
         depth_one_nodes.last() >= depth_one_nodes.first(),
         "final aggregate node count went backwards: {depth_one_nodes:?}"
     );
+}
+
+#[test]
+fn completed_ponder_search_waits_for_ponderhit() {
+    let (mut child, rx) = spawn_ember();
+    let mut stdin = child.stdin.take().expect("capture Ember stdin");
+    writeln!(stdin, "uci").unwrap();
+    stdin.flush().unwrap();
+    assert!(
+        wait_for_line(&rx, "option name Ponder ", Duration::from_secs(2)).is_some(),
+        "Ember did not advertise UCI pondering"
+    );
+    writeln!(stdin, "setoption name Hash value 16").unwrap();
+    writeln!(stdin, "setoption name Threads value 4").unwrap();
+    writeln!(stdin, "setoption name Book value").unwrap();
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(
+        wait_for_line(&rx, "readyok", Duration::from_secs(2)).is_some(),
+        "Ember did not finish UCI initialization"
+    );
+
+    writeln!(stdin, "position startpos").unwrap();
+    writeln!(stdin, "go ponder depth 1").unwrap();
+    stdin.flush().unwrap();
+    assert!(
+        wait_for_line(&rx, "bestmove ", Duration::from_millis(250)).is_none(),
+        "a completed ponder search must not move before ponderhit"
+    );
+
+    writeln!(stdin, "ponderhit").unwrap();
+    stdin.flush().unwrap();
+    assert!(
+        wait_for_line(&rx, "bestmove ", Duration::from_secs(2)).is_some(),
+        "ponderhit did not release the completed result"
+    );
+
+    writeln!(stdin, "quit").unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+    assert!(child.wait().expect("wait for Ember").success());
+}
+
+#[test]
+fn active_ponder_search_ignores_move_time_until_ponderhit() {
+    let (mut child, rx) = spawn_ember();
+    let mut stdin = child.stdin.take().expect("capture Ember stdin");
+    writeln!(stdin, "uci").unwrap();
+    writeln!(stdin, "setoption name Hash value 16").unwrap();
+    writeln!(stdin, "setoption name Threads value 4").unwrap();
+    writeln!(stdin, "setoption name Book value").unwrap();
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(wait_for_line(&rx, "readyok", Duration::from_secs(2)).is_some());
+
+    writeln!(stdin, "position startpos").unwrap();
+    writeln!(stdin, "go ponder movetime 50").unwrap();
+    stdin.flush().unwrap();
+    assert!(
+        wait_for_info_time_at_least(&rx, 100, Duration::from_secs(2)),
+        "Lazy SMP did not keep searching beyond the ordinary hard time while pondering"
+    );
+    assert!(
+        wait_for_line(&rx, "bestmove ", Duration::from_millis(150)).is_none(),
+        "pondering stopped at the ordinary hard time"
+    );
+
+    writeln!(stdin, "ponderhit").unwrap();
+    stdin.flush().unwrap();
+    assert!(
+        wait_for_line(&rx, "bestmove ", Duration::from_secs(2)).is_some(),
+        "active ponder search did not finish after ponderhit"
+    );
+
+    writeln!(stdin, "quit").unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+    assert!(child.wait().expect("wait for Ember").success());
+}
+
+#[test]
+fn searched_principal_variation_supplies_a_ponder_move() {
+    let (mut child, rx) = spawn_ember();
+    let mut stdin = child.stdin.take().expect("capture Ember stdin");
+    writeln!(stdin, "uci").unwrap();
+    writeln!(stdin, "setoption name Hash value 16").unwrap();
+    writeln!(stdin, "setoption name Threads value 1").unwrap();
+    writeln!(stdin, "setoption name Book value").unwrap();
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(wait_for_line(&rx, "readyok", Duration::from_secs(2)).is_some());
+
+    writeln!(stdin, "position startpos").unwrap();
+    writeln!(stdin, "go depth 4").unwrap();
+    stdin.flush().unwrap();
+    let bestmove = wait_for_line(&rx, "bestmove ", Duration::from_secs(2))
+        .expect("fixed-depth search did not return a move");
+    assert!(
+        bestmove.contains(" ponder "),
+        "principal variation was not exposed to the GUI: {bestmove}"
+    );
+
+    writeln!(stdin, "quit").unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+    assert!(child.wait().expect("wait for Ember").success());
 }
