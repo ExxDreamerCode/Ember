@@ -36,6 +36,7 @@ class BattleRunnerTests(unittest.TestCase):
             config.games[0].opponents,
             ["Lynx_BOT", "pawn_git", "simbelmyne-bot", "CubixChess", "bot_adario"],
         )
+        self.assertEqual(config.challenge_timeout_seconds, 15)
         self.assertEqual(config.opponent_wait_timeout_seconds, 0)
         self.assertEqual(config.games[0].mode, "casual")
         self.assertFalse(config.games[0].scoring)
@@ -175,6 +176,24 @@ class BattleRunnerTests(unittest.TestCase):
         request = client.session.request.call_args
         self.assertEqual(request.args[:2], ("POST", "https://lichess.example/api/challenge/Lynx_BOT"))
         self.assertEqual(request.kwargs["data"]["keepAliveStream"], "true")
+        self.assertEqual(request.kwargs["timeout"], (30, 60))
+        response.close.assert_called_once()
+
+    def test_challenge_stream_enforces_acceptance_timeout(self) -> None:
+        response = mock.Mock(status_code=200, headers={})
+        response.iter_lines.return_value = iter(['{"challenge":{"id":"abc123"}}'])
+        client = battle_runner.LichessClient("https://lichess.example", "secret")
+        client.session.request = mock.Mock(return_value=response)
+        game = battle_runner.load_config(WINDOWS_DIR / "battle.toml").games[0]
+
+        with mock.patch.object(battle_runner.time, "monotonic", side_effect=[100.0, 100.0, 116.0]):
+            challenge_id, outcome, initial = client.create_challenge(game, timeout_seconds=15)
+
+        self.assertEqual(challenge_id, "abc123")
+        self.assertEqual(outcome, "timeout")
+        self.assertEqual(initial["challenge"]["id"], "abc123")
+        request = client.session.request.call_args
+        self.assertEqual(request.kwargs["timeout"], (30, 15))
         response.close.assert_called_once()
 
     def test_challenge_rejection_includes_lichess_error_and_closes_stream(self) -> None:
@@ -245,6 +264,30 @@ class BattleRunnerTests(unittest.TestCase):
         self.assertEqual(result["attempts"][0]["status"], "REJECTED")
         self.assertEqual(result["attempts"][1]["status"], "ACCEPTED")
 
+    def test_timeout_pool_candidate_is_cancelled_before_next_ready_bot(self) -> None:
+        config = battle_runner.load_config(WINDOWS_DIR / "battle.toml")
+        game = config.games[0]
+        client = mock.Mock()
+        client.opponents_status.return_value = {
+            "lynx_bot": {"id": "lynx_bot", "online": True, "playing": False},
+            "pawn_git": {"id": "pawn_git", "online": True, "playing": False},
+        }
+        client.create_challenge.side_effect = [
+            ("challenge-timeout", "timeout", {"challenge": {"id": "challenge-timeout"}}),
+            ("game1234", "accepted", {"challenge": {"id": "game1234"}}),
+        ]
+        process = mock.Mock()
+        process.poll.return_value = None
+
+        result = battle_runner.wait_for_opponent_and_challenge(
+            client, game, config, process, "[1/1]"
+        )
+
+        self.assertEqual(result["opponent"], "pawn_git")
+        self.assertEqual(result["attempts"][0]["status"], "TIMEOUT")
+        self.assertEqual(result["attempts"][1]["status"], "ACCEPTED")
+        client.cancel_challenge.assert_called_once_with("challenge-timeout")
+
     def test_game_monitor_retries_transient_disconnect(self) -> None:
         client = mock.Mock()
         client.game_json.side_effect = [
@@ -283,6 +326,7 @@ class BattleRunnerTests(unittest.TestCase):
             path.write_text(old_style + "\n", encoding="utf-8")
             config = battle_runner.load_config(path)
         self.assertEqual(config.games[0].opponents, ["Lynx_BOT"])
+        self.assertEqual(config.challenge_timeout_seconds, 15)
         self.assertEqual(config.availability_poll_seconds, 15)
         self.assertEqual(config.opponent_retry_seconds, 300)
         self.assertEqual(config.opponent_wait_timeout_seconds, 0)

@@ -11,7 +11,9 @@ timeout_seconds = 180
 
 [lichess]
 url = "https://lichess.org"
-challenge_timeout_seconds = 60
+# Per-opponent direct challenge acceptance timeout. If it expires, the runner
+# cancels that challenge and tries the next ready opponent in the pool.
+challenge_timeout_seconds = 15
 availability_poll_seconds = 15
 opponent_retry_seconds = 300
 # 0 means wait indefinitely until one bot in the pool becomes available.

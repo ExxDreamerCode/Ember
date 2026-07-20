@@ -139,13 +139,14 @@ machine busy. It changes no Windows service, autostart, scheduled task, power,
 sleep, registry, PATH, or firewall setting. Keep the console and machine awake.
 
 The default battle is one casual, non-scoring 3+2 standard game against the
-first ready bot in a configured opponent pool. Busy, offline, rate-limited, or
-declining bots are bypassed. If the whole pool is unavailable, the runner waits
-and polls until one is ready. Games are direct challenges and strictly
-sequential. Temporary monitoring disconnects are retried without stopping an
-active game. The scoring flag and tags are analysis metadata; mode selects
-casual or rated. Results are written below results/. Syzygy and lichess-bot
-matchmaking are off.
+first ready bot in a configured opponent pool. Busy, offline, rate-limited,
+declining, or non-responding bots are bypassed. Unaccepted challenges are
+canceled after challenge_timeout_seconds, then the runner tries the next ready
+bot. If the whole pool is unavailable, the runner waits and polls until one is
+ready. Games are direct challenges and strictly sequential. Temporary
+monitoring disconnects are retried without stopping an active game. The scoring
+flag and tags are analysis metadata; mode selects casual or rated. Results are
+written below results/. Syzygy and lichess-bot matchmaking are off.
 EOF
 
     chmod -R u+w "$bundle"
