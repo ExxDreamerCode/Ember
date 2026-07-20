@@ -33,6 +33,49 @@ fn stable_search_keeps_its_nominal_budget_before_predicting() {
 }
 
 #[test]
+fn predicted_overrun_can_stop_near_the_nominal_budget() {
+    let decision = iteration_time_decision(10.0, 40.0, 30, timing(9.1, 2.0, 0.6, 20, 3, 0.80, 0.0));
+
+    assert!(decision.predicted_next_seconds > decision.target_seconds - 9.1);
+    assert!(decision.stop);
+}
+
+#[test]
+fn fast_search_does_not_stop_before_its_nominal_budget() {
+    let decision = iteration_time_decision(
+        0.100,
+        0.400,
+        30,
+        timing(0.091, 0.020, 0.006, 20, 3, 0.80, 0.0),
+    );
+
+    assert!(decision.predicted_next_seconds > decision.target_seconds - 0.091);
+    assert!(!decision.stop);
+}
+
+#[test]
+fn fast_search_can_use_a_partial_iteration_before_the_hard_limit() {
+    let decision = iteration_time_decision(
+        0.100,
+        0.120,
+        30,
+        timing(0.090, 0.020, 0.006, 160, 0, 0.50, 0.0),
+    );
+
+    assert!(0.090 + decision.predicted_next_seconds > 0.120);
+    assert!(!decision.stop);
+}
+
+#[test]
+fn iteration_that_cannot_finish_before_the_hard_limit_is_not_started() {
+    let decision =
+        iteration_time_decision(10.0, 40.0, 30, timing(9.0, 10.0, 2.0, 240, 0, 0.40, 1.0));
+
+    assert_eq!(decision.predicted_next_seconds, 40.0);
+    assert!(decision.stop);
+}
+
+#[test]
 fn volatile_search_can_use_more_than_the_nominal_budget() {
     let decision =
         iteration_time_decision(10.0, 40.0, 30, timing(6.0, 2.0, 0.6, 240, 0, 0.40, 1.0));
