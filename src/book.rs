@@ -14,6 +14,16 @@ struct BookMove {
     weight: u16,
 }
 
+pub const DEFAULT_BOOK_MIN_MOVE_WEIGHT: u16 = 2;
+pub const DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE: u16 = 10;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BookChoice {
+    pub mv: Move,
+    pub weight: u16,
+    pub total_weight: u32,
+}
+
 #[derive(Clone)]
 pub struct OpeningBook {
     entries: HashMap<u64, Vec<BookMove>>,
@@ -53,40 +63,89 @@ impl OpeningBook {
     }
 
     pub fn pick_move(&self, st: &BoardState, moves: &[Move]) -> Option<Move> {
+        self.pick_move_with_confidence(st, moves, 1, 0)
+            .map(|choice| choice.mv)
+    }
+
+    pub fn pick_move_with_confidence(
+        &self,
+        st: &BoardState,
+        moves: &[Move],
+        min_weight: u16,
+        min_weight_permille: u16,
+    ) -> Option<BookChoice> {
+        let min_weight_permille = min_weight_permille.min(1000) as u32;
+        let candidates: Vec<BookChoice> = self
+            .legal_choices(st, moves)?
+            .into_iter()
+            .filter(|choice| choice.weight >= min_weight)
+            .filter(|choice| {
+                min_weight_permille == 0
+                    || (choice.weight as u64) * 1000
+                        >= (choice.total_weight as u64) * (min_weight_permille as u64)
+            })
+            .collect();
+        pick_weighted_choice(&candidates)
+    }
+
+    fn legal_choices(&self, st: &BoardState, moves: &[Move]) -> Option<Vec<BookChoice>> {
         let hash = polyglot_hash(st);
         let bmoves = self.entries.get(&hash)?;
         if bmoves.is_empty() {
             return None;
         }
 
-        let mut candidates: Vec<(Move, u32)> = Vec::new();
+        let mut legal: Vec<(Move, u16)> = Vec::new();
         let mut total_weight = 0u32;
 
         for bm in bmoves {
             if let Some(m) = match_polyglot_move(bm.raw_move, moves, st) {
-                let w = bm.weight as u32;
-                candidates.push((m, w));
-                total_weight += w;
+                legal.push((m, bm.weight));
+                total_weight += bm.weight as u32;
             }
         }
-        if candidates.is_empty() {
+        if legal.is_empty() {
             return None;
         }
 
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .subsec_nanos();
-        let r = nanos % total_weight;
-        let mut cumulative = 0;
-        for (m, w) in &candidates {
-            cumulative += w;
-            if r < cumulative {
-                return Some(*m);
-            }
-        }
-        Some(candidates[0].0)
+        Some(
+            legal
+                .into_iter()
+                .map(|(mv, weight)| BookChoice {
+                    mv,
+                    weight,
+                    total_weight,
+                })
+                .collect(),
+        )
     }
+}
+
+fn pick_weighted_choice(candidates: &[BookChoice]) -> Option<BookChoice> {
+    if candidates.is_empty() {
+        return None;
+    }
+    let total_weight = candidates
+        .iter()
+        .map(|choice| choice.weight as u32)
+        .sum::<u32>();
+    if total_weight == 0 {
+        return None;
+    }
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    let r = nanos % total_weight;
+    let mut cumulative = 0u32;
+    for choice in candidates {
+        cumulative += choice.weight as u32;
+        if r < cumulative {
+            return Some(*choice);
+        }
+    }
+    Some(candidates[0])
 }
 
 fn match_polyglot_move(pm: u16, legal: &[Move], st: &BoardState) -> Option<Move> {

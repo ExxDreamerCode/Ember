@@ -5,7 +5,9 @@ use crate::board::{
     move_to_uci, piece_from_char, piece_type, sq, sq_c, BoardState, Move, BK, BP, BQ, BR, EMPTY_SQ,
     INF, MATE, MAX_HALF_MOVE_CLOCK, NO_MOVE, WK, WP, WQ, WR,
 };
-use crate::book::OpeningBook;
+use crate::book::{
+    OpeningBook, DEFAULT_BOOK_MIN_MOVE_WEIGHT, DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE,
+};
 use crate::movegen::{apply_move, generate_moves};
 use crate::search::{lazy_smp_search, LazySmpPool, LazySmpSearchLimits, Searcher};
 use crate::time_management::{iteration_time_decision, threads_for_time_budget, IterationTiming};
@@ -33,8 +35,30 @@ pub struct Engine {
     pub num_threads: usize,
     pub stopped: Arc<AtomicBool>,
     pub book: Option<OpeningBook>,
+    pub book_min_move_weight: u16,
+    pub book_min_move_weight_permille: u16,
     #[cfg(feature = "decision-trace")]
     pub trace: TraceLogger,
+}
+
+pub struct EngineBookConfig {
+    pub book: Option<OpeningBook>,
+    pub min_move_weight: u16,
+    pub min_move_weight_permille: u16,
+}
+
+impl EngineBookConfig {
+    pub fn new(
+        book: Option<OpeningBook>,
+        min_move_weight: u16,
+        min_move_weight_permille: u16,
+    ) -> Self {
+        Self {
+            book,
+            min_move_weight,
+            min_move_weight_permille,
+        }
+    }
 }
 
 fn set_castling_rook_by_side(st: &mut BoardState, white: bool, kingside: bool) {
@@ -787,6 +811,8 @@ impl Engine {
             num_threads: 1,
             stopped,
             book: None,
+            book_min_move_weight: DEFAULT_BOOK_MIN_MOVE_WEIGHT,
+            book_min_move_weight_permille: DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE,
             #[cfg(feature = "decision-trace")]
             trace: TraceLogger::from_env(),
         };
@@ -802,7 +828,7 @@ impl Engine {
         search_pool: Arc<LazySmpPool>,
         num_threads: usize,
         stopped: Arc<AtomicBool>,
-        book: Option<OpeningBook>,
+        book_config: EngineBookConfig,
     ) -> Self {
         Engine {
             st,
@@ -811,7 +837,9 @@ impl Engine {
             search_pool,
             num_threads,
             stopped,
-            book,
+            book: book_config.book,
+            book_min_move_weight: book_config.min_move_weight,
+            book_min_move_weight_permille: book_config.min_move_weight_permille,
             #[cfg(feature = "decision-trace")]
             trace: TraceLogger::default(),
         }
@@ -1232,8 +1260,13 @@ impl Engine {
 
         if !self.st.chess960 {
             if let Some(ref book) = self.book {
-                if let Some(bm) = book.pick_move(&self.st, &moves) {
-                    let mv_str = move_to_uci(&self.st, bm);
+                if let Some(choice) = book.pick_move_with_confidence(
+                    &self.st,
+                    &moves,
+                    self.book_min_move_weight,
+                    self.book_min_move_weight_permille,
+                ) {
+                    let mv_str = move_to_uci(&self.st, choice.mv);
                     let eval_score = self.searcher.corrected_eval(&self.st);
                     let elapsed = match timer_start {
                         SearchTimerStart::BeforeSetup(start) => start.elapsed().as_secs_f64(),
@@ -1633,13 +1666,16 @@ mod tests {
                 b'n' => b'N',
                 _ => 0,
             });
-        assert!(engine.make_move_uci(
-            8 - usize::from(bytes[1] - b'0'),
-            usize::from(bytes[0] - b'a'),
-            8 - usize::from(bytes[3] - b'0'),
-            usize::from(bytes[2] - b'a'),
-            promotion,
-        ));
+        assert!(
+            engine.make_move_uci(
+                8 - usize::from(bytes[1] - b'0'),
+                usize::from(bytes[0] - b'a'),
+                8 - usize::from(bytes[3] - b'0'),
+                usize::from(bytes[2] - b'a'),
+                promotion,
+            ),
+            "expected legal move {uci}"
+        );
     }
 
     #[test]
@@ -1920,6 +1956,28 @@ mod tests {
                 "threads={threads} should pick a forcing sparse-endgame root move, got {best_move}"
             );
         }
+    }
+
+    #[test]
+    fn book_confidence_cutoff_rejects_weight_one_tail_move() {
+        let mut engine = Engine::new();
+        engine.book = Some(
+            OpeningBook::load_from_bytes(crate::opening_book::BOOK_DATA, "<embedded>").unwrap(),
+        );
+        for mv in [
+            "e2e4", "e7e6", "d2d4", "d7d5", "e4e5", "c7c5", "c2c3", "c5d4", "c3d4", "b8c6", "g1f3",
+            "g8e7", "f1d3", "e7f5", "d3f5", "e6f5", "b1c3", "f8e7",
+        ] {
+            play_uci(&mut engine, mv);
+        }
+
+        let (_best_move, _score, nodes, _elapsed) =
+            engine.find_best_move_with_time_limits(0.01, 0.01, 1);
+
+        assert!(
+            nodes > 0,
+            "the weight-one 10.h4 book tail should be rejected so search starts"
+        );
     }
 
     #[test]

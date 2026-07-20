@@ -25,4 +25,4 @@ pub mod types;
 
 pub use board::piece_type as ptype;
 pub use book::OpeningBook;
-pub use engine::Engine;
+pub use engine::{Engine, EngineBookConfig};

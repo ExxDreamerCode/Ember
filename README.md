@@ -158,6 +158,8 @@ echo -e "uci\nisready\nquit" | cargo run --release
 | `Hash`      | spin   | 256          | 1–4096   | Размер TT в мегабайтах            |
 | `Threads`   | spin   | 1            | 1-256        | Количество потоков     |
 | `Book`      | string | `<embedded>` | —        | Путь к дебютной книге .bin        |
+| `BookMinMoveWeight` | spin | 2 | 1-65535 | Минимальный абсолютный вес хода из книги |
+| `BookMinMoveWeightPermille` | spin | 10 | 0-1000 | Минимальная доля веса хода в промилле |
 | `NNUE`      | string | `<embedded>` | —        | Путь к файлу нейросети .nnue      |
 | `NNUEBackend` | combo | `auto` | `auto`, доступные backend-ы | Backend для NNUE-поиска |
 | `TraceFile` | string | `<empty>`    | —        | Путь к TraceBack файлу .jsonl     |
