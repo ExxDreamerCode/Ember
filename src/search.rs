@@ -3987,9 +3987,9 @@ mod tests {
         assert_eq!(lazy_smp_root_moves(&original, 1, 12), expected);
     }
 
-    fn completed_thread(best_move: Move, score: i32, depth: i32) -> ThreadResult {
+    fn completed_thread(thread_id: usize, best_move: Move, score: i32, depth: i32) -> ThreadResult {
         ThreadResult {
-            thread_id: 0,
+            thread_id,
             best_move,
             score,
             depth,
@@ -4009,9 +4009,9 @@ mod tests {
         let bg7 = legal_move(&st, "h6g7");
         let kh7 = legal_move(&st, "g8h7");
         let results = [
-            completed_thread(bg7, -72, 14),
-            completed_thread(bg7, -68, 14),
-            completed_thread(kh7, -61, 15),
+            completed_thread(0, bg7, -72, 14),
+            completed_thread(1, bg7, -68, 14),
+            completed_thread(2, kh7, -61, 15),
         ];
 
         assert_eq!(select_lazy_smp_result(&results).unwrap().best_move, bg7);
@@ -4026,9 +4026,9 @@ mod tests {
         let ne7 = legal_move(&st, "d5e7");
         let kf7 = legal_move(&st, "e8f7");
         let results = [
-            completed_thread(ne7, -31, 12),
-            completed_thread(ne7, -28, 12),
-            completed_thread(kf7, -20, 13),
+            completed_thread(0, ne7, -31, 12),
+            completed_thread(1, ne7, -28, 12),
+            completed_thread(2, kf7, -20, 13),
         ];
 
         assert_eq!(select_lazy_smp_result(&results).unwrap().best_move, ne7);
@@ -4044,12 +4044,54 @@ mod tests {
         let kh6 = legal_move(&st, "g6h6");
         let g4 = legal_move(&st, "g5g4");
         let results = [
-            completed_thread(kh6, -205, 13),
-            completed_thread(kh6, -198, 13),
-            completed_thread(g4, -187, 14),
+            completed_thread(0, kh6, -205, 13),
+            completed_thread(1, kh6, -198, 13),
+            completed_thread(2, g4, -187, 14),
         ];
 
         assert_eq!(select_lazy_smp_result(&results).unwrap().best_move, kh6);
+    }
+
+    #[test]
+    fn lazy_smp_keeps_principal_recapture_from_game_ffzk_y782() {
+        // https://lichess.org/ffzkY782 before 31.Re1:
+        // 4r1k1/q3nppp/2p1p2P/1p2B3/pP1rn3/3N2P1/P4PB1/2QR2K1 w - - 0 31
+        // The principal worker found 31.Bxe4, which Stockfish evaluates as
+        // equal, but helper consensus replaced it with a losing quiet move.
+        let st = state_from_fen("4r1k1/q3nppp/2p1p2P/1p2B3/pP1rn3/3N2P1/P4PB1/2QR2K1 w - - 0 31");
+        let bxe4 = legal_move(&st, "g2e4");
+        let qe3 = legal_move(&st, "c1e3");
+        let qb2 = legal_move(&st, "c1b2");
+        let results = [
+            completed_thread(8, qe3, 0, 19),
+            completed_thread(7, bxe4, -91, 18),
+            completed_thread(3, qb2, -56, 20),
+            completed_thread(11, qe3, 0, 18),
+            completed_thread(2, qb2, -56, 20),
+            completed_thread(5, qe3, 0, 19),
+            completed_thread(4, bxe4, -72, 17),
+            completed_thread(6, qe3, 0, 18),
+            completed_thread(1, qe3, 0, 18),
+            completed_thread(9, qe3, 0, 18),
+            completed_thread(10, qe3, 0, 19),
+            completed_thread(0, bxe4, -126, 19),
+        ];
+
+        assert_eq!(select_lazy_smp_result(&results).unwrap().best_move, bxe4);
+    }
+
+    #[test]
+    fn lazy_smp_uses_consensus_when_principal_has_no_result() {
+        let st = state_from_fen("2r3k1/5q2/2p3pb/4Qp1p/pB1P3P/P1P5/4RKP1/8 b - - 19 49");
+        let bg7 = legal_move(&st, "h6g7");
+        let kh7 = legal_move(&st, "g8h7");
+        let results = [
+            completed_thread(1, bg7, -72, 14),
+            completed_thread(2, bg7, -68, 14),
+            completed_thread(3, kh7, -61, 15),
+        ];
+
+        assert_eq!(select_lazy_smp_result(&results).unwrap().best_move, bg7);
     }
 
     #[test]
