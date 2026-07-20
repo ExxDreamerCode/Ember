@@ -3,6 +3,7 @@ const MAX_MOVE_OVERHEAD_MS: f64 = 5_000.0;
 const MAX_SEARCH_TIME_MS: f64 = 60_000.0;
 const SINGLE_THREAD_BUDGET_MS: f64 = 25.0;
 const REDUCED_SMP_BUDGET_MS: f64 = 100.0;
+const EARLY_PREDICTION_BUDGET_MS: f64 = 500.0;
 const REDUCED_SMP_THREADS: usize = 4;
 
 #[derive(Clone, Copy, Debug)]
@@ -94,9 +95,19 @@ pub fn iteration_time_decision(
     // A stable but shallow PV can still be wrong. Prediction may avoid an
     // expensive extra iteration, but it must not take ordinary positions
     // below the nominal budget that the clock manager already approved.
-    let prediction_boundary = timing.elapsed_seconds >= soft_seconds
-        && predicted_next_seconds >= (target_seconds - timing.elapsed_seconds).max(0.0);
-    let stop = timing.elapsed_seconds >= target_seconds || (stable_enough && prediction_boundary);
+    let prediction_floor = if stable_enough { 0.90 } else { 0.95 };
+    let predicted_target_overrun =
+        predicted_next_seconds >= (target_seconds - timing.elapsed_seconds).max(0.0);
+    let soft_ms = soft_seconds * 1_000.0;
+    let prediction_boundary = if soft_ms < EARLY_PREDICTION_BUDGET_MS {
+        stable_enough && timing.elapsed_seconds >= soft_seconds && predicted_target_overrun
+    } else {
+        timing.elapsed_seconds >= soft_seconds * prediction_floor && predicted_target_overrun
+    };
+    let hard_boundary = soft_ms >= EARLY_PREDICTION_BUDGET_MS
+        && timing.previous_iteration_seconds > 0.0
+        && timing.elapsed_seconds + predicted_next_seconds >= hard_seconds;
+    let stop = timing.elapsed_seconds >= target_seconds || hard_boundary || prediction_boundary;
 
     IterationDecision {
         target_seconds,
