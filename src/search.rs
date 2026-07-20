@@ -4072,6 +4072,68 @@ mod tests {
         assert_eq!(lazy_smp_root_moves(&original, 1, 12), expected);
     }
 
+    #[test]
+    fn lazy_smp_assigns_a_helper_to_verify_game_ffzk_y782_recapture() {
+        let st = state_from_fen("4r1k1/q3nppp/2p1p2P/1p2B3/pP1rn3/3N2P1/P4PB1/2QR2K1 w - - 0 31");
+        let bxe4 = legal_move(&st, "g2e4");
+        let qb2 = legal_move(&st, "c1b2");
+        let re1 = legal_move(&st, "d1e1");
+        let root_moves = [bxe4, qb2, re1];
+
+        assert_eq!(
+            lazy_smp_worker_root_moves(&st, &root_moves, 1, 12),
+            vec![bxe4]
+        );
+        assert_eq!(
+            lazy_smp_worker_root_moves(&st, &root_moves, 0, 12),
+            root_moves
+        );
+    }
+
+    #[test]
+    fn lazy_smp_tactical_verifier_does_not_inflate_worker_disagreement() {
+        let st = state_from_fen("4r1k1/q3nppp/2p1p2P/1p2B3/pP1rn3/3N2P1/P4PB1/2QR2K1 w - - 0 31");
+        let bxe4 = legal_move(&st, "g2e4");
+        let qe3 = legal_move(&st, "c1e3");
+        let root_moves = Arc::new(vec![bxe4, qe3]);
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(1));
+        let verification_tt = Arc::new(SharedTT::new(1));
+        let root_searcher = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
+        let job = LazySmpSearchJob {
+            shared_tt,
+            verification_move: Some(bxe4),
+            verification_tt: Some(verification_tt),
+            stopped,
+            st,
+            root_moves,
+            num_threads: 3,
+            root_depth_extension: |_, _| 0,
+            limits: LazySmpSearchLimits {
+                soft_time: 1.0,
+                hard_time: 2.0,
+                depth: 20,
+                start: Instant::now(),
+            },
+            root_context: Arc::new(LazySmpRootContext::from_searcher(&root_searcher)),
+            start: Instant::now(),
+            global_best_depth: Arc::new(AtomicI32::new(0)),
+            global_nodes: Arc::new(AtomicU64::new(0)),
+            worker_best_moves: (0..3).map(|_| AtomicU64::new(0)).collect(),
+            worker_depths: (0..3).map(|_| AtomicI32::new(0)).collect(),
+        };
+        job.worker_best_moves[1].store(u64::from(bxe4), Ordering::Relaxed);
+        job.worker_depths[1].store(22, Ordering::Release);
+        job.worker_best_moves[2].store(u64::from(qe3), Ordering::Relaxed);
+        job.worker_depths[2].store(17, Ordering::Release);
+
+        assert_eq!(lazy_smp_worker_disagreement(&job, 0, qe3, 17), 0.0);
+        assert!(!Arc::ptr_eq(
+            &job.shared_tt,
+            job.verification_tt.as_ref().unwrap()
+        ));
+    }
+
     fn completed_thread(thread_id: usize, best_move: Move, score: i32, depth: i32) -> ThreadResult {
         ThreadResult {
             thread_id,
@@ -4182,6 +4244,48 @@ mod tests {
                 .unwrap()
                 .best_move,
             bxe4
+        );
+    }
+
+    #[test]
+    fn lazy_smp_keeps_deeper_root_recapture_from_game_ffzk_y782() {
+        // A dedicated helper can search Bxe4 more deeply than workers that
+        // compare every root move. Keep its better score over the principal
+        // worker's losing quiet alternative.
+        let st = state_from_fen("4r1k1/q3nppp/2p1p2P/1p2B3/pP1rn3/3N2P1/P4PB1/2QR2K1 w - - 0 31");
+        let bxe4 = legal_move(&st, "g2e4");
+        let qb2 = legal_move(&st, "c1b2");
+        let re1 = legal_move(&st, "d1e1");
+        let results = [
+            completed_thread(0, qb2, -128, 17),
+            completed_thread(1, bxe4, -65, 18),
+            completed_thread(2, re1, -124, 17),
+        ];
+
+        assert!(see(&st.bb, move_from(bxe4), move_to(bxe4)) >= -25);
+        assert_eq!(
+            select_lazy_smp_result(&results, &st, &[bxe4, qb2, re1])
+                .unwrap()
+                .best_move,
+            bxe4
+        );
+    }
+
+    #[test]
+    fn lazy_smp_rejects_a_worse_tactical_verification() {
+        let st = state_from_fen("4r1k1/q3nppp/2p1p2P/1p2B3/pP1rn3/3N2P1/P4PB1/2QR2K1 w - - 0 31");
+        let bxe4 = legal_move(&st, "g2e4");
+        let qe3 = legal_move(&st, "c1e3");
+        let results = [
+            completed_thread(0, qe3, -20, 17),
+            completed_thread(1, bxe4, -125, 18),
+        ];
+
+        assert_eq!(
+            select_lazy_smp_result(&results, &st, &[bxe4, qe3])
+                .unwrap()
+                .best_move,
+            qe3
         );
     }
 
