@@ -83,11 +83,15 @@ fn root_side_has_major(st: &BoardState, white: bool) -> bool {
     (st.bb[rook] | st.bb[queen]) != 0
 }
 
+fn root_has_queen(st: &BoardState) -> bool {
+    (st.bb[WQ] | st.bb[BQ]) != 0
+}
+
 fn root_promotion_race(st: &BoardState) -> bool {
     let mut white_pawns = st.bb[WP];
     while white_pawns != 0 {
-        let sq = white_pawns.trailing_zeros() as usize;
-        if sq / 8 <= 2 {
+        let square = white_pawns.trailing_zeros() as usize;
+        if square / 8 <= 2 {
             return true;
         }
         white_pawns &= white_pawns - 1;
@@ -95,8 +99,8 @@ fn root_promotion_race(st: &BoardState) -> bool {
 
     let mut black_pawns = st.bb[BP];
     while black_pawns != 0 {
-        let sq = black_pawns.trailing_zeros() as usize;
-        if sq / 8 >= 5 {
+        let square = black_pawns.trailing_zeros() as usize;
+        if square / 8 >= 5 {
             return true;
         }
         black_pawns &= black_pawns - 1;
@@ -230,10 +234,63 @@ fn rook_attacks_enemy_non_pawn_on_rank(st: &BoardState, rook_sq: usize, rook: u8
 fn root_order_score(st: &BoardState, mv: Move, preferred: Move) -> i32 {
     let mut score = root_forcing_score(st, mv).unwrap_or(0);
     score += root_rook_invasion_score(st, mv).unwrap_or(0);
+    if root_minor_king_zone_capture(st, mv) {
+        score += 1_500_000;
+    }
     if mv == preferred {
         score += 500_000;
     }
     score
+}
+
+fn sort_root_moves(st: &BoardState, moves: &[Move], preferred: Move) -> Vec<Move> {
+    let sparse_endgame = root_non_king_piece_count(st) <= 8
+        && (root_side_has_major(st, st.w) || root_promotion_race(st));
+    let has_rook_invasion = moves
+        .iter()
+        .any(|&mv| root_rook_invasion_score(st, mv).is_some());
+    let has_reduced_rook_check = root_non_king_piece_count(st) <= 12
+        && !root_has_queen(st)
+        && moves.iter().any(|&mv| {
+            let attacker = st.mailbox[move_from(mv)];
+            attacker != EMPTY_SQ && piece_type(attacker) == 3 && root_move_gives_check(st, mv)
+        });
+    let has_minor_tactic = moves.iter().any(|&mv| root_minor_king_zone_capture(st, mv));
+    let has_queen_capture = moves
+        .iter()
+        .any(|&mv| root_move_is_capture(st, mv) && piece_type(st.mailbox[move_to(mv)]) == 4);
+    let use_tactical_order = has_minor_tactic
+        || has_queen_capture
+        || has_reduced_rook_check
+        || ((sparse_endgame || has_rook_invasion)
+            && moves
+                .iter()
+                .any(|&mv| root_order_score(st, mv, NO_MOVE) >= 600_000));
+
+    if !use_tactical_order {
+        let mut ordered = moves.to_vec();
+        if let Some(position) = ordered.iter().position(|&mv| mv == preferred) {
+            ordered.swap(0, position);
+        }
+        return ordered;
+    }
+
+    let mut scored: Vec<(i32, usize, Move)> = moves
+        .iter()
+        .enumerate()
+        .map(|(idx, &mv)| (root_order_score(st, mv, preferred), idx, mv))
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    scored.into_iter().map(|(_, _, mv)| mv).collect()
+}
+
+fn tt_root_move(searcher: &Searcher, st: &BoardState, moves: &[Move]) -> Move {
+    searcher
+        .shared_tt
+        .get_depth(st.hash)
+        .and_then(|(_, _, _, best_move)| best_move)
+        .filter(|best_move| moves.contains(best_move))
+        .unwrap_or(NO_MOVE)
 }
 
 fn root_enemy_pawn_attacks_square(st: &BoardState, target: usize) -> bool {
@@ -313,48 +370,6 @@ fn root_minor_king_zone_capture(st: &BoardState, mv: Move) -> bool {
     }
 
     !root_enemy_pawn_attacks_square(st, to)
-}
-
-fn sort_tactical_root_moves(st: &BoardState, moves: &[Move], preferred: Move) -> Option<Vec<Move>> {
-    let mut scored = Vec::with_capacity(moves.len());
-    let mut has_tactical = false;
-    for (idx, &mv) in moves.iter().enumerate() {
-        let tactical = root_minor_king_zone_capture(st, mv);
-        has_tactical |= tactical;
-        let bonus = if tactical { 1_500_000 } else { 0 };
-        scored.push((root_order_score(st, mv, preferred) + bonus, idx, mv));
-    }
-    if !has_tactical {
-        return None;
-    }
-
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    Some(scored.into_iter().map(|(_, _, mv)| mv).collect())
-}
-
-fn sort_sparse_root_moves(st: &BoardState, moves: &[Move], preferred: Move) -> Option<Vec<Move>> {
-    let sparse_endgame = root_non_king_piece_count(st) <= 8
-        && (root_side_has_major(st, st.w) || root_promotion_race(st));
-    let has_rook_invasion = moves
-        .iter()
-        .any(|&mv| root_rook_invasion_score(st, mv).is_some());
-
-    if !sparse_endgame && !has_rook_invasion {
-        return None;
-    }
-
-    let mut scored: Vec<(i32, usize, Move)> = moves
-        .iter()
-        .enumerate()
-        .map(|(idx, &mv)| (root_order_score(st, mv, preferred), idx, mv))
-        .collect();
-    let has_priority = scored.iter().any(|(score, _, _)| *score >= 600_000);
-    if !has_priority {
-        return None;
-    }
-
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    Some(scored.into_iter().map(|(_, _, mv)| mv).collect())
 }
 
 impl Default for Engine {
@@ -851,20 +866,18 @@ impl Engine {
         }
 
         let search_threads = threads_for_time_budget(self.num_threads, soft_time_limit);
+        let preferred = tt_root_move(&self.searcher, &self.st, &moves);
+        let ordered_moves = sort_root_moves(&self.st, &moves, preferred);
         if search_threads > 1 {
             let start = match timer_start {
                 SearchTimerStart::BeforeSetup(start) => start,
                 SearchTimerStart::AfterSetup => Instant::now(),
             };
-            let threaded_moves = sort_tactical_root_moves(&self.st, &moves, NO_MOVE)
-                .or_else(|| sort_sparse_root_moves(&self.st, &moves, NO_MOVE))
-                .unwrap_or_else(|| moves.clone());
-
             let (best_move, best_score, best_depth, total_nodes) = lazy_smp_search(
                 &self.search_pool,
                 Arc::clone(&self.shared_tt),
                 &self.st,
-                &threaded_moves,
+                &ordered_moves,
                 root_depth_extension,
                 LazySmpSearchLimits {
                     soft_time: soft_time_limit,
@@ -890,7 +903,7 @@ impl Engine {
             SearchTimerStart::BeforeSetup(start) => start,
             SearchTimerStart::AfterSetup => Instant::now(),
         };
-        let mut best_move = moves[0];
+        let mut best_move = ordered_moves[0];
         let mut best_score = 0i32;
         let mut total_nodes = 0u64;
 
@@ -918,19 +931,7 @@ impl Engine {
             let mut asp_score = -INF;
 
             'asp: loop {
-                let sorted = if let Some(s) = sort_tactical_root_moves(&self.st, &moves, asp_best) {
-                    s
-                } else if let Some(s) = sort_sparse_root_moves(&self.st, &moves, asp_best) {
-                    s
-                } else {
-                    let mut s = moves.clone();
-                    if asp_best != moves[0] {
-                        if let Some(pos) = s.iter().position(|&m| m == asp_best) {
-                            s.swap(0, pos);
-                        }
-                    }
-                    s
-                };
+                let sorted = sort_root_moves(&self.st, &ordered_moves, asp_best);
 
                 let mut cur_best = sorted[0];
                 let mut cur_score = -INF;
@@ -1049,6 +1050,13 @@ impl Engine {
                 best_score = asp_score;
                 best_depth = depth;
                 prev_score = best_score;
+                self.searcher.shared_tt.store(
+                    self.st.hash,
+                    depth,
+                    best_score,
+                    crate::tt::TT_EXACT,
+                    Some(best_move),
+                );
                 let nps = if elapsed > 0.0 {
                     (total_nodes as f64 / elapsed) as i64
                 } else {
@@ -1130,10 +1138,10 @@ mod tests {
     }
 
     #[test]
-    fn sparse_endgame_root_ordering_prioritizes_reported_mating_check() {
+    fn root_ordering_prioritizes_reported_mating_check() {
         let engine = engine_from_fen("8/5k2/3Q4/7p/8/1p6/3p1P1P/3B2K1 w - - 52 78");
         let moves = root_moves(&engine);
-        let sorted = sort_sparse_root_moves(&engine.st, &moves, NO_MOVE).expect("sparse ordering");
+        let sorted = sort_root_moves(&engine.st, &moves, NO_MOVE);
         let mating_check = *moves
             .iter()
             .find(|mv| move_to_uci(&engine.st, **mv) == "d1h5")
@@ -1152,18 +1160,18 @@ mod tests {
     }
 
     #[test]
-    fn sparse_root_ordering_does_not_activate_in_opening_positions() {
+    fn root_ordering_preserves_quiet_opening_order() {
         let engine = engine_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
         let moves = root_moves(&engine);
 
-        assert!(sort_sparse_root_moves(&engine.st, &moves, NO_MOVE).is_none());
+        assert_eq!(sort_root_moves(&engine.st, &moves, NO_MOVE), moves);
     }
 
     #[test]
-    fn sparse_root_ordering_handles_promotion_race_without_major_piece() {
+    fn root_ordering_handles_promotion_race_without_major_piece() {
         let engine = engine_from_fen("8/P4k2/8/8/8/8/8/6K1 w - - 0 1");
         let moves = root_moves(&engine);
-        let sorted = sort_sparse_root_moves(&engine.st, &moves, NO_MOVE).expect("promotion race");
+        let sorted = sort_root_moves(&engine.st, &moves, NO_MOVE);
 
         assert!(sorted
             .first()

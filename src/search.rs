@@ -3133,8 +3133,7 @@ fn run_lazy_smp_worker(
     let limits = job.limits;
     let start = job.start;
     let stopped = &job.stopped;
-    let root_hash = st.hash;
-    let mut my_moves = lazy_smp_root_moves(&job.root_moves, thread_id, job.num_threads);
+    let my_moves = lazy_smp_root_moves(&job.root_moves, thread_id, job.num_threads);
 
     let mut best_move = my_moves[0];
     let mut best_score = 0i32;
@@ -3160,15 +3159,6 @@ fn run_lazy_smp_worker(
 
         let mut asp_best = best_move;
         let mut asp_score = -INF;
-
-        if let Some((tt_d, _, _, Some(tt_mv))) = searcher.shared_tt.get_depth(root_hash) {
-            if tt_d >= 1 && !my_moves.contains(&tt_mv) {
-                let legal_root = generate_moves(&st, st.w, &st.cr, st.ep);
-                if legal_root.contains(&tt_mv) {
-                    my_moves.push(tt_mv);
-                }
-            }
-        }
 
         'asp: loop {
             let mut sorted = my_moves.clone();
@@ -3298,6 +3288,15 @@ fn run_lazy_smp_worker(
             best_score = asp_score;
             best_depth = depth;
             prev_score = best_score;
+            if thread_id == 0 {
+                searcher.shared_tt.store(
+                    st.hash,
+                    depth,
+                    score_to_tt(best_score, 0),
+                    TT_EXACT,
+                    Some(best_move),
+                );
+            }
             searcher.update_correction_history(&st, best_score, best_depth);
             // Helpers can finish useful work until the leader coordinates the stop.
             if thread_id == 0 && elapsed >= limits.soft_time {
