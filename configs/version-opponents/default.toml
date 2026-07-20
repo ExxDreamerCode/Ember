@@ -1,0 +1,60 @@
+[run]
+name = "search-continuity-opponents"
+seed = 20260719
+scenario_count = 64
+workers = "auto"
+worker_multiplier = 0.5
+time_controls = ["1+0.01", "3+0.03", "8+0.08", "15+0.15"]
+ponder_modes = [false, true]
+timemargin_ms = 50
+opening_source = "polyglot"
+polyglot_book = "src/book.bin"
+book_min_plies = 8
+book_max_plies = 20
+opening_format = "epd"
+max_moves = 220
+bootstrap_samples = 20000
+randomization_samples = 50000
+results_dir = "results/version-opponents"
+
+[build]
+repo = "."
+binary = "target/release/ember"
+command = ["cargo", "build", "--locked", "--release", "--bin", "ember"]
+
+[baseline]
+name = "Ember-aca5c437"
+revision = "aca5c4377491636e9fce9e444e71f7363d88afba"
+
+[baseline.options]
+Hash = "64"
+Threads = "1"
+Book = ""
+
+[candidate]
+name = "Ember-139e23ce"
+revision = "139e23cec7eb36cd617b1fd4c3b9ff99ae79525d"
+
+[candidate.options]
+Hash = "64"
+Threads = "1"
+Book = ""
+
+[selection]
+opponent_file = "ratings/opponents.toml"
+weaker_opponents = [
+  "Stockfish-UCI-1600",
+  "Stockfish-UCI-2000",
+  "Stockfish-UCI-2400",
+  "Stockfish-UCI-2800",
+  "Blunder-7.2.0",
+  "Rudim 3.0.4",
+  "Crafty 25.2 4CPU",
+]
+stronger_opponents = [
+  "Stockfish-UCI-3190",
+  "Stockfish-Unlimited",
+  "Rodent III 0.276 4CPU",
+  "Senpai 3.0.2",
+  "Rybka 4 4CPU",
+]
