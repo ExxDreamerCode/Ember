@@ -3517,6 +3517,8 @@ mod tests {
         root.rep_stack_len = 4;
         root.corr_hist[123] = 17;
         root.corr_hist[456] = -23;
+        root.history[12][28] = 1_234;
+        root.counter_move[7][31] = Some(encode_move(6, 0, 5, 0, 0));
         root.syzygy = SyzygyTables::new();
 
         root.copy_root_context_to(&mut worker);
@@ -3525,7 +3527,34 @@ mod tests {
         assert_eq!(worker.rep_stack_len, root.rep_stack_len);
         assert_eq!(worker.corr_hist[123], 17);
         assert_eq!(worker.corr_hist[456], -23);
+        assert_eq!(worker.history[12][28], 1_234);
+        assert_eq!(worker.counter_move[7][31], root.counter_move[7][31]);
         assert_eq!(worker.syzygy.tables.is_some(), root.syzygy.tables.is_some());
+    }
+
+    #[test]
+    fn search_learning_is_aged_between_moves_and_cleared_between_games() {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(1));
+        let mut searcher = Searcher::new(shared_tt, stopped);
+        let reply = encode_move(6, 0, 5, 0, 0);
+        searcher.killers[2][0] = Some(reply);
+        searcher.history[12][28] = 1_600;
+        searcher.counter_move[7][31] = Some(reply);
+        searcher.corr_hist[123] = 19;
+
+        searcher.prepare_for_search();
+
+        assert_eq!(searcher.killers[2][0], None);
+        assert_eq!(searcher.history[12][28], 1_300);
+        assert_eq!(searcher.counter_move[7][31], Some(reply));
+        assert_eq!(searcher.corr_hist[123], 19);
+
+        searcher.clear_learning();
+
+        assert_eq!(searcher.history[12][28], 0);
+        assert_eq!(searcher.counter_move[7][31], None);
+        assert_eq!(searcher.corr_hist[123], 0);
     }
 
     #[test]
