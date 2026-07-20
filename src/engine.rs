@@ -1249,6 +1249,18 @@ mod tests {
     }
 
     #[test]
+    fn reduced_rook_check_capture_gets_the_tactical_root_extension() {
+        let engine = engine_from_fen("8/5k2/2pp2p1/5pP1/P2P4/3n4/2r5/1KB4R b - - 4 46");
+        let clearance = root_move(&engine, "c2c1");
+        let non_capture = root_move(&engine, "c2c4");
+
+        assert!(root_reduced_rook_check_capture(&engine.st, clearance));
+        assert_eq!(root_depth_extension(&engine.st, clearance), 3);
+        assert!(!root_reduced_rook_check_capture(&engine.st, non_capture));
+        assert_eq!(root_depth_extension(&engine.st, non_capture), 0);
+    }
+
+    #[test]
     fn root_ordering_prioritizes_the_forced_queen_recapture() {
         let engine = engine_from_fen("1r4k1/2p2p2/2np1bp1/pp6/2Q3P1/2P2N2/PPP2P2/1KBR4 b - - 0 22");
         let moves = root_moves(&engine);
