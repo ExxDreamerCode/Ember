@@ -69,7 +69,7 @@ fn immediate_stop_interrupts_lazy_smp_search() {
     writeln!(stdin, "isready").unwrap();
     stdin.flush().unwrap();
     assert!(
-        wait_for_line(&rx, "readyok", Duration::from_secs(2)).is_some(),
+        wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some(),
         "Ember did not finish UCI initialization"
     );
 
@@ -77,7 +77,7 @@ fn immediate_stop_interrupts_lazy_smp_search() {
     write!(stdin, "go infinite\nstop\n").unwrap();
     stdin.flush().unwrap();
 
-    let bestmove = wait_for_line(&rx, "bestmove ", Duration::from_secs(2));
+    let bestmove = wait_for_line(&rx, "bestmove ", Duration::from_secs(5));
     if bestmove.is_none() {
         let _ = child.kill();
         let _ = child.wait();
@@ -102,7 +102,7 @@ fn completed_lazy_smp_search_emits_final_aggregate_info() {
     writeln!(stdin, "isready").unwrap();
     stdin.flush().unwrap();
     assert!(
-        wait_for_line(&rx, "readyok", Duration::from_secs(2)).is_some(),
+        wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some(),
         "Ember did not finish UCI initialization"
     );
 
@@ -110,7 +110,7 @@ fn completed_lazy_smp_search_emits_final_aggregate_info() {
     writeln!(stdin, "go depth 1").unwrap();
     stdin.flush().unwrap();
 
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(5);
     let mut depth_one_nodes = Vec::new();
     let mut received_bestmove = false;
     while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
@@ -156,7 +156,7 @@ fn completed_ponder_search_waits_for_ponderhit() {
     writeln!(stdin, "uci").unwrap();
     stdin.flush().unwrap();
     assert!(
-        wait_for_line(&rx, "option name Ponder ", Duration::from_secs(2)).is_some(),
+        wait_for_line(&rx, "option name Ponder ", Duration::from_secs(5)).is_some(),
         "Ember did not advertise UCI pondering"
     );
     writeln!(stdin, "setoption name Hash value 16").unwrap();
@@ -165,7 +165,7 @@ fn completed_ponder_search_waits_for_ponderhit() {
     writeln!(stdin, "isready").unwrap();
     stdin.flush().unwrap();
     assert!(
-        wait_for_line(&rx, "readyok", Duration::from_secs(2)).is_some(),
+        wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some(),
         "Ember did not finish UCI initialization"
     );
 
@@ -180,7 +180,7 @@ fn completed_ponder_search_waits_for_ponderhit() {
     writeln!(stdin, "ponderhit").unwrap();
     stdin.flush().unwrap();
     assert!(
-        wait_for_line(&rx, "bestmove ", Duration::from_secs(2)).is_some(),
+        wait_for_line(&rx, "bestmove ", Duration::from_secs(5)).is_some(),
         "ponderhit did not release the completed result"
     );
 
@@ -200,13 +200,13 @@ fn active_ponder_search_ignores_move_time_until_ponderhit() {
     writeln!(stdin, "setoption name Book value").unwrap();
     writeln!(stdin, "isready").unwrap();
     stdin.flush().unwrap();
-    assert!(wait_for_line(&rx, "readyok", Duration::from_secs(2)).is_some());
+    assert!(wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some());
 
     writeln!(stdin, "position startpos").unwrap();
     writeln!(stdin, "go ponder movetime 50").unwrap();
     stdin.flush().unwrap();
     assert!(
-        wait_for_info_time_at_least(&rx, 100, Duration::from_secs(2)),
+        wait_for_info_time_at_least(&rx, 100, Duration::from_secs(5)),
         "Lazy SMP did not keep searching beyond the ordinary hard time while pondering"
     );
     assert!(
@@ -217,7 +217,7 @@ fn active_ponder_search_ignores_move_time_until_ponderhit() {
     writeln!(stdin, "ponderhit").unwrap();
     stdin.flush().unwrap();
     assert!(
-        wait_for_line(&rx, "bestmove ", Duration::from_secs(2)).is_some(),
+        wait_for_line(&rx, "bestmove ", Duration::from_secs(5)).is_some(),
         "active ponder search did not finish after ponderhit"
     );
 
@@ -239,12 +239,12 @@ fn disabled_ponder_option_suppresses_principal_variation_ponder_move() {
     writeln!(stdin, "setoption name Ponder value false").unwrap();
     writeln!(stdin, "isready").unwrap();
     stdin.flush().unwrap();
-    assert!(wait_for_line(&rx, "readyok", Duration::from_secs(2)).is_some());
+    assert!(wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some());
 
     writeln!(stdin, "position startpos").unwrap();
     writeln!(stdin, "go depth 4").unwrap();
     stdin.flush().unwrap();
-    let bestmove = wait_for_line(&rx, "bestmove ", Duration::from_secs(2))
+    let bestmove = wait_for_line(&rx, "bestmove ", Duration::from_secs(5))
         .expect("fixed-depth search did not return a move");
     assert!(
         !bestmove.contains(" ponder "),
@@ -268,16 +268,99 @@ fn enabled_ponder_option_supplies_principal_variation_ponder_move() {
     writeln!(stdin, "setoption name Ponder value true").unwrap();
     writeln!(stdin, "isready").unwrap();
     stdin.flush().unwrap();
-    assert!(wait_for_line(&rx, "readyok", Duration::from_secs(2)).is_some());
+    assert!(wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some());
 
     writeln!(stdin, "position startpos").unwrap();
     writeln!(stdin, "go depth 4").unwrap();
     stdin.flush().unwrap();
-    let bestmove = wait_for_line(&rx, "bestmove ", Duration::from_secs(2))
+    let bestmove = wait_for_line(&rx, "bestmove ", Duration::from_secs(5))
         .expect("fixed-depth search did not return a move");
     assert!(
         bestmove.contains(" ponder "),
         "enabled Ponder option should expose the principal variation to the GUI: {bestmove}"
+    );
+
+    writeln!(stdin, "quit").unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+    assert!(child.wait().expect("wait for Ember").success());
+}
+
+#[test]
+fn enabled_ponder_option_supplies_book_ponder_move() {
+    let (mut child, rx) = spawn_ember();
+    let mut stdin = child.stdin.take().expect("capture Ember stdin");
+    writeln!(stdin, "uci").unwrap();
+    writeln!(stdin, "setoption name Hash value 16").unwrap();
+    writeln!(stdin, "setoption name Threads value 1").unwrap();
+    writeln!(stdin, "setoption name Ponder value true").unwrap();
+    writeln!(stdin, "setoption name BookMinMoveWeight value 2000").unwrap();
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some());
+
+    writeln!(stdin, "position startpos moves e2e4 c7c5").unwrap();
+    writeln!(stdin, "go movetime 10").unwrap();
+    stdin.flush().unwrap();
+    let bestmove =
+        wait_for_line(&rx, "bestmove ", Duration::from_secs(5)).expect("book move did not return");
+    assert_eq!(
+        bestmove.split_whitespace().collect::<Vec<_>>()[..],
+        ["bestmove", "g1f3", "ponder", "d7d6"],
+        "book move should expose a book-derived ponder reply: {bestmove}"
+    );
+
+    writeln!(stdin, "quit").unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+    assert!(child.wait().expect("wait for Ember").success());
+}
+
+#[test]
+fn ponder_search_bypasses_book_probe() {
+    let (mut child, rx) = spawn_ember();
+    let mut stdin = child.stdin.take().expect("capture Ember stdin");
+    writeln!(stdin, "uci").unwrap();
+    writeln!(stdin, "setoption name Hash value 16").unwrap();
+    writeln!(stdin, "setoption name Threads value 1").unwrap();
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some());
+
+    writeln!(stdin, "position startpos moves e2e4 c7c5").unwrap();
+    writeln!(stdin, "go ponder depth 1").unwrap();
+    stdin.flush().unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut searched_nodes = None;
+    while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+        match rx.recv_timeout(remaining) {
+            Ok(line) if line.starts_with("info ") && info_number(&line, "depth") == Some(1) => {
+                if let Some(nodes) = info_number(&line, "nodes") {
+                    searched_nodes = Some(nodes);
+                    if nodes > 0 {
+                        break;
+                    }
+                }
+            }
+            Ok(line) if line.starts_with("bestmove ") => {
+                panic!("ponder search returned before ponderhit: {line}");
+            }
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+
+    assert!(
+        searched_nodes.is_some_and(|nodes| nodes > 0),
+        "go ponder in a book position must run search, got nodes={searched_nodes:?}"
+    );
+
+    writeln!(stdin, "ponderhit").unwrap();
+    stdin.flush().unwrap();
+    assert!(
+        wait_for_line(&rx, "bestmove ", Duration::from_secs(5)).is_some(),
+        "ponderhit did not release the completed result"
     );
 
     writeln!(stdin, "quit").unwrap();

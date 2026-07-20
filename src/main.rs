@@ -396,8 +396,13 @@ fn main() {
                 let stopped = Arc::new(AtomicBool::new(false));
                 let pondering = Arc::new(AtomicBool::new(limits.ponder));
                 let num_threads = engine.num_threads;
+                let book = if limits.ponder {
+                    None
+                } else {
+                    engine.book.clone()
+                };
                 let book_config = EngineBookConfig::new(
-                    engine.book.clone(),
+                    book,
                     engine.book_min_move_weight,
                     engine.book_min_move_weight_permille,
                 );

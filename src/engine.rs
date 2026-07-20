@@ -1621,13 +1621,31 @@ impl Engine {
             move_ec(root_move),
             move_promotion(root_move),
         );
-        let reply = self
+        let replies = generate_moves(&child, child.w, &child.cr, child.ep);
+        if let Some(reply) = self
             .shared_tt
             .get_depth(child.hash)
-            .and_then(|(_, _, _, best)| best)?;
-        generate_moves(&child, child.w, &child.cr, child.ep)
-            .contains(&reply)
-            .then(|| move_to_uci(&child, reply))
+            .and_then(|(_, _, _, best)| best)
+        {
+            if replies.contains(&reply) {
+                return Some(move_to_uci(&child, reply));
+            }
+        }
+
+        if !child.chess960 {
+            if let Some(ref book) = self.book {
+                if let Some(choice) = book.pick_move_with_confidence(
+                    &child,
+                    &replies,
+                    self.book_min_move_weight,
+                    self.book_min_move_weight_permille,
+                ) {
+                    return Some(move_to_uci(&child, choice.mv));
+                }
+            }
+        }
+
+        None
     }
 }
 
@@ -1956,6 +1974,23 @@ mod tests {
                 "threads={threads} should pick a forcing sparse-endgame root move, got {best_move}"
             );
         }
+    }
+
+    #[test]
+    fn embedded_book_ponder_fallback_uses_book_reply_without_tt() {
+        let mut engine = Engine::new();
+        engine.book = Some(
+            OpeningBook::load_from_bytes(crate::opening_book::BOOK_DATA, "<embedded>").unwrap(),
+        );
+
+        let ponder = engine
+            .ponder_move_after("e2e4")
+            .expect("embedded book should provide a black reply after 1.e4");
+
+        assert!(
+            ["c7c5", "e7e5", "e7e6", "c7c6", "d7d6"].contains(&ponder.as_str()),
+            "unexpected embedded-book ponder reply after 1.e4: {ponder}"
+        );
     }
 
     #[test]
