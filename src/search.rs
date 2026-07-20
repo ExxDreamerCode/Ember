@@ -28,6 +28,8 @@ use std::time::Instant;
 pub use crate::backend::SearchBackendKind;
 
 const SEARCH_BACKEND_ENV: &str = "EMBER_SEARCH_BACKEND";
+const LAZY_SMP_VERIFICATION_MARGIN_CP: i32 = 25;
+const LAZY_SMP_VERIFICATION_TT_MB: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DrawStatus {
@@ -2703,6 +2705,8 @@ impl LazySmpRootContext {
 
 struct LazySmpSearchJob {
     shared_tt: Arc<SharedTT>,
+    verification_move: Option<Move>,
+    verification_tt: Option<Arc<SharedTT>>,
     stopped: Arc<AtomicBool>,
     st: BoardState,
     root_moves: Arc<Vec<Move>>,
@@ -2754,6 +2758,11 @@ fn spawn_lazy_smp_worker(thread_id: usize) -> std::io::Result<LazySmpWorker> {
                             &job.st,
                             initialize_learning,
                         );
+                        if thread_id == 1 {
+                            if let Some(verification_tt) = &job.verification_tt {
+                                searcher.shared_tt = Arc::clone(verification_tt);
+                            }
+                        }
                         let result = run_lazy_smp_worker(searcher, thread_id, &job);
                         let _ = result_tx.send(result);
                     }
@@ -2855,8 +2864,19 @@ impl LazySmpPool {
         let _search_guard = self.search_lock.lock().unwrap();
         self.ensure_workers(num_threads);
 
+        let verification_move = if num_threads > 1 {
+            lazy_smp_verification_move(st, root_moves)
+        } else {
+            None
+        };
+        // Keep the forced-line result independent of horizon-sensitive writes
+        // from workers that are comparing the complete root.
+        let verification_tt =
+            verification_move.map(|_| Arc::new(SharedTT::new(LAZY_SMP_VERIFICATION_TT_MB)));
         let job = Arc::new(LazySmpSearchJob {
             shared_tt,
+            verification_move,
+            verification_tt,
             stopped: Arc::clone(&root_searcher.stopped),
             st: *st,
             root_moves: Arc::new(root_moves.to_vec()),
@@ -2901,7 +2921,7 @@ impl LazySmpPool {
         {
             root_searcher.import_learning(&learning);
         }
-        let Some(best) = select_lazy_smp_result(&results) else {
+        let Some(best) = select_lazy_smp_result(&results, st, root_moves) else {
             return (root_moves[0], 0, 0, total_nodes);
         };
         if best.depth > 0 {
@@ -2942,19 +2962,49 @@ impl Drop for LazySmpPool {
     }
 }
 
-fn select_lazy_smp_result(results: &[ThreadResult]) -> Option<&ThreadResult> {
+fn select_lazy_smp_result<'a>(
+    results: &'a [ThreadResult],
+    st: &BoardState,
+    root_moves: &[Move],
+) -> Option<&'a ThreadResult> {
+    let max_depth = results.iter().map(|result| result.depth).max()?;
+    let near_deep_floor = max_depth.saturating_sub(1).max(1);
+    let principal = results
+        .iter()
+        .find(|result| result.thread_id == 0 && result.depth > 0);
+
+    // A helper can spend the whole search verifying a tactically ordered root
+    // capture. Accept its deeper result only within a small score-noise margin
+    // of the principal worker's alternative.
+    if let Some(root_move) = lazy_smp_verification_move(st, root_moves) {
+        if let Some(tactical) = results
+            .iter()
+            .filter(|result| {
+                result.thread_id == 1
+                    && result.depth >= near_deep_floor
+                    && result.best_move == root_move
+                    && principal.is_none_or(|principal| {
+                        result.score.saturating_add(LAZY_SMP_VERIFICATION_MARGIN_CP)
+                            >= principal.score
+                    })
+            })
+            .max_by(|a, b| {
+                a.depth
+                    .cmp(&b.depth)
+                    .then_with(|| a.score.cmp(&b.score))
+                    .then_with(|| b.thread_id.cmp(&a.thread_id))
+            })
+        {
+            return Some(tactical);
+        }
+    }
+
     // Thread zero owns time management, persistent learning, and the root TT
     // entry. Helpers diversify the root and feed the shared TT, but their
     // horizon-dependent votes must not replace the principal search result.
-    if let Some(principal) = results
-        .iter()
-        .find(|result| result.thread_id == 0 && result.depth > 0)
-    {
+    if let Some(principal) = principal {
         return Some(principal);
     }
-
-    let max_depth = results.iter().map(|result| result.depth).max()?;
-    let near_deep_floor = max_depth.saturating_sub(1).max(1);
 
     results
         .iter()
@@ -2974,6 +3024,33 @@ fn select_lazy_smp_result(results: &[ThreadResult]) -> Option<&ThreadResult> {
                 .then_with(|| a.depth.cmp(&b.depth))
                 .then_with(|| a.score.cmp(&b.score))
         })
+}
+
+fn lazy_smp_verification_move(st: &BoardState, root_moves: &[Move]) -> Option<Move> {
+    let &root_move = root_moves.first()?;
+    let attacker = st.mailbox[move_from(root_move)];
+    let victim = st.mailbox[move_to(root_move)];
+    let verifies_minor_exchange = attacker != EMPTY_SQ
+        && victim != EMPTY_SQ
+        && piece_type(attacker) == 2
+        && piece_type(victim) == 1
+        && see(&st.bb, move_from(root_move), move_to(root_move)) >= -25;
+    verifies_minor_exchange.then_some(root_move)
+}
+
+fn lazy_smp_worker_root_moves(
+    st: &BoardState,
+    root_moves: &[Move],
+    thread_id: usize,
+    num_threads: usize,
+) -> Vec<Move> {
+    if thread_id == 1 && num_threads > 1 {
+        if let Some(root_move) = lazy_smp_verification_move(st, root_moves) {
+            return vec![root_move];
+        }
+    }
+
+    lazy_smp_root_moves(root_moves, thread_id, num_threads)
 }
 
 fn lazy_smp_root_moves(root_moves: &[Move], thread_id: usize, num_threads: usize) -> Vec<Move> {
@@ -3154,10 +3231,18 @@ fn lazy_smp_worker_disagreement(
     best_move: Move,
     depth: i32,
 ) -> f64 {
+    let verification_thread = job.verification_move.map(|_| 1);
+    if verification_thread == Some(thread_id) {
+        return 0.0;
+    }
+
     let mut comparable = 0usize;
     let mut different = 0usize;
     for other in 0..job.num_threads {
-        if other == thread_id || job.worker_depths[other].load(Ordering::Acquire) < depth {
+        if other == thread_id
+            || verification_thread == Some(other)
+            || job.worker_depths[other].load(Ordering::Acquire) < depth
+        {
             continue;
         }
         let other_move = job.worker_best_moves[other].load(Ordering::Relaxed) as Move;
@@ -3183,7 +3268,7 @@ fn run_lazy_smp_worker(
     let limits = job.limits;
     let start = job.start;
     let stopped = &job.stopped;
-    let my_moves = lazy_smp_root_moves(&job.root_moves, thread_id, job.num_threads);
+    let my_moves = lazy_smp_worker_root_moves(&st, &job.root_moves, thread_id, job.num_threads);
 
     let mut best_move = my_moves[0];
     let mut best_score = 0i32;
@@ -4014,7 +4099,12 @@ mod tests {
             completed_thread(2, kh7, -61, 15),
         ];
 
-        assert_eq!(select_lazy_smp_result(&results).unwrap().best_move, bg7);
+        assert_eq!(
+            select_lazy_smp_result(&results, &st, &[bg7, kh7])
+                .unwrap()
+                .best_move,
+            bg7
+        );
     }
 
     #[test]
@@ -4031,7 +4121,12 @@ mod tests {
             completed_thread(2, kf7, -20, 13),
         ];
 
-        assert_eq!(select_lazy_smp_result(&results).unwrap().best_move, ne7);
+        assert_eq!(
+            select_lazy_smp_result(&results, &st, &[ne7, kf7])
+                .unwrap()
+                .best_move,
+            ne7
+        );
     }
 
     #[test]
@@ -4049,7 +4144,12 @@ mod tests {
             completed_thread(2, g4, -187, 14),
         ];
 
-        assert_eq!(select_lazy_smp_result(&results).unwrap().best_move, kh6);
+        assert_eq!(
+            select_lazy_smp_result(&results, &st, &[kh6, g4])
+                .unwrap()
+                .best_move,
+            kh6
+        );
     }
 
     #[test]
@@ -4077,7 +4177,12 @@ mod tests {
             completed_thread(0, bxe4, -126, 19),
         ];
 
-        assert_eq!(select_lazy_smp_result(&results).unwrap().best_move, bxe4);
+        assert_eq!(
+            select_lazy_smp_result(&results, &st, &[bxe4, qe3, qb2])
+                .unwrap()
+                .best_move,
+            bxe4
+        );
     }
 
     #[test]
@@ -4091,7 +4196,12 @@ mod tests {
             completed_thread(3, kh7, -61, 15),
         ];
 
-        assert_eq!(select_lazy_smp_result(&results).unwrap().best_move, bg7);
+        assert_eq!(
+            select_lazy_smp_result(&results, &st, &[bg7, kh7])
+                .unwrap()
+                .best_move,
+            bg7
+        );
     }
 
     #[test]
