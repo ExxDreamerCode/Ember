@@ -1213,10 +1213,40 @@ impl Searcher {
     pub fn copy_root_context_to(&self, dst: &mut Searcher) {
         dst.rep_stack = self.rep_stack.clone();
         dst.rep_stack_len = self.rep_stack_len;
-        dst.corr_hist = self.corr_hist;
+        dst.import_learning(&self.export_learning());
         dst.nnue_net = self.nnue_net.clone();
         dst.search_backend = self.search_backend;
         dst.syzygy = self.syzygy.clone();
+    }
+
+    pub fn export_learning(&self) -> SearchLearning {
+        SearchLearning {
+            history: self.history,
+            counter_move: self.counter_move,
+            corr_hist: self.corr_hist,
+        }
+    }
+
+    pub fn import_learning(&mut self, learning: &SearchLearning) {
+        self.history = learning.history;
+        self.counter_move = learning.counter_move;
+        self.corr_hist = learning.corr_hist;
+    }
+
+    pub fn prepare_for_search(&mut self) {
+        self.killers = [[None; 2]; MAX_PLY];
+        for row in &mut self.history {
+            for value in row {
+                *value = *value * 13 / 16;
+            }
+        }
+    }
+
+    pub fn clear_learning(&mut self) {
+        self.killers = [[None; 2]; MAX_PLY];
+        self.history = [[0; 64]; 64];
+        self.counter_move = [[None; 64]; 13];
+        self.corr_hist = [0; CORR_HIST_SIZE * 2];
     }
 
     #[cfg(feature = "search-debug")]
@@ -2583,11 +2613,20 @@ fn env_flag(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[derive(Clone)]
+pub struct SearchLearning {
+    history: [[i32; 64]; 64],
+    counter_move: [[Option<Move>; 64]; 13],
+    corr_hist: [i32; CORR_HIST_SIZE * 2],
+}
+
 struct ThreadResult {
+    thread_id: usize,
     best_move: Move,
     score: i32,
     depth: i32,
     nodes: u64,
+    learning: Option<Box<SearchLearning>>,
 }
 
 #[derive(Clone, Copy)]
@@ -2602,11 +2641,11 @@ pub struct LazySmpSearchLimits {
 struct LazySmpRootContext {
     rep_stack: Vec<u64>,
     rep_stack_len: usize,
-    corr_hist: [i32; CORR_HIST_SIZE * 2],
     nnue_net: Option<Arc<NNUENet>>,
     search_backend: SearchBackendKind,
     syzygy: SyzygyTables,
     tt_mb: usize,
+    learning: SearchLearning,
 }
 
 impl LazySmpRootContext {
@@ -2614,11 +2653,11 @@ impl LazySmpRootContext {
         Self {
             rep_stack: searcher.rep_stack.clone(),
             rep_stack_len: searcher.rep_stack_len,
-            corr_hist: searcher.corr_hist,
             nnue_net: searcher.nnue_net.clone(),
             search_backend: searcher.search_backend,
             syzygy: searcher.syzygy.clone(),
             tt_mb: searcher.tt_mb,
+            learning: searcher.export_learning(),
         }
     }
 
@@ -2628,15 +2667,16 @@ impl LazySmpRootContext {
         shared_tt: Arc<SharedTT>,
         stopped: Arc<AtomicBool>,
         st: &BoardState,
+        initialize_learning: bool,
     ) {
         searcher.shared_tt = shared_tt;
         searcher.stopped = stopped;
-        searcher.killers = [[None; 2]; MAX_PLY];
-        searcher.history = [[0; 64]; 64];
-        searcher.counter_move = [[None; 64]; 13];
+        if initialize_learning {
+            searcher.import_learning(&self.learning);
+        }
+        searcher.prepare_for_search();
         searcher.rep_stack.clone_from(&self.rep_stack);
         searcher.rep_stack_len = self.rep_stack_len;
-        searcher.corr_hist = self.corr_hist;
         searcher.search_backend = self.search_backend;
         searcher.syzygy = self.syzygy.clone();
         searcher.tt_mb = self.tt_mb;
@@ -2670,6 +2710,9 @@ enum LazySmpWorkerCommand {
         job: Arc<LazySmpSearchJob>,
         result_tx: mpsc::Sender<ThreadResult>,
     },
+    ClearLearning {
+        done_tx: mpsc::Sender<()>,
+    },
     Shutdown,
 }
 
@@ -2688,6 +2731,7 @@ fn spawn_lazy_smp_worker(thread_id: usize) -> std::io::Result<LazySmpWorker> {
             while let Ok(command) = command_rx.recv() {
                 match command {
                     LazySmpWorkerCommand::Search { job, result_tx } => {
+                        let initialize_learning = searcher.is_none();
                         let searcher = searcher.get_or_insert_with(|| {
                             Searcher::new(Arc::clone(&job.shared_tt), Arc::clone(&job.stopped))
                         });
@@ -2696,9 +2740,16 @@ fn spawn_lazy_smp_worker(thread_id: usize) -> std::io::Result<LazySmpWorker> {
                             Arc::clone(&job.shared_tt),
                             Arc::clone(&job.stopped),
                             &job.st,
+                            initialize_learning,
                         );
                         let result = run_lazy_smp_worker(searcher, thread_id, &job);
                         let _ = result_tx.send(result);
+                    }
+                    LazySmpWorkerCommand::ClearLearning { done_tx } => {
+                        if let Some(searcher) = searcher.as_mut() {
+                            searcher.clear_learning();
+                        }
+                        let _ = done_tx.send(());
                     }
                     LazySmpWorkerCommand::Shutdown => break,
                 }
@@ -2754,6 +2805,28 @@ impl LazySmpPool {
         }
     }
 
+    pub fn clear_learning(&self) {
+        let _search_guard = self.search_lock.lock().unwrap();
+        let workers = self.workers.lock().unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+        let mut sent = 0;
+        for worker in workers.iter() {
+            if worker
+                .command_tx
+                .send(LazySmpWorkerCommand::ClearLearning {
+                    done_tx: done_tx.clone(),
+                })
+                .is_ok()
+            {
+                sent += 1;
+            }
+        }
+        drop(done_tx);
+        for _ in 0..sent {
+            let _ = done_rx.recv();
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn search(
         &self,
@@ -2763,7 +2836,7 @@ impl LazySmpPool {
         root_depth_extension: fn(&BoardState, Move) -> i32,
         limits: LazySmpSearchLimits,
         num_threads: usize,
-        root_searcher: &Searcher,
+        root_searcher: &mut Searcher,
     ) -> (Move, i32, i32, u64) {
         assert!(!root_moves.is_empty());
         let num_threads = num_threads.max(1);
@@ -2807,6 +2880,13 @@ impl LazySmpPool {
             }
         }
         let total_nodes = results.iter().map(|result| result.nodes).sum();
+        if let Some(learning) = results
+            .iter_mut()
+            .find(|result| result.thread_id == 0)
+            .and_then(|result| result.learning.take())
+        {
+            root_searcher.import_learning(&learning);
+        }
         let Some(best) = select_lazy_smp_result(&results) else {
             return (root_moves[0], 0, 0, total_nodes);
         };
@@ -3031,7 +3111,7 @@ pub fn lazy_smp_search(
     root_depth_extension: fn(&BoardState, Move) -> i32,
     limits: LazySmpSearchLimits,
     num_threads: usize,
-    root_searcher: &Searcher,
+    root_searcher: &mut Searcher,
 ) -> (Move, i32, i32, u64) {
     pool.search(
         shared_tt,
@@ -3230,10 +3310,12 @@ fn run_lazy_smp_worker(
     }
 
     ThreadResult {
+        thread_id,
         best_move,
         score: best_score,
         depth: best_depth,
         nodes: total_nodes,
+        learning: (thread_id == 0).then(|| Box::new(searcher.export_learning())),
     }
 }
 
@@ -3451,7 +3533,7 @@ mod tests {
         let st = state_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1");
         let stopped = Arc::new(AtomicBool::new(true));
         let shared_tt = Arc::new(SharedTT::new(128));
-        let root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
+        let mut root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
         let root_moves = generate_moves(&st, st.w, &st.cr, st.ep);
 
         let (_, _, depth, nodes) = lazy_smp_search(
@@ -3467,7 +3549,7 @@ mod tests {
                 start: Instant::now(),
             },
             2,
-            &root,
+            &mut root,
         );
 
         assert_eq!(depth, 0, "workers searched despite an external stop");
@@ -3479,7 +3561,7 @@ mod tests {
         let st = state_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1");
         let stopped = Arc::new(AtomicBool::new(false));
         let shared_tt = Arc::new(SharedTT::new(128));
-        let root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
+        let mut root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
         let root_moves = generate_moves(&st, st.w, &st.cr, st.ep);
 
         let (_, _, depth, nodes) = lazy_smp_search(
@@ -3495,7 +3577,7 @@ mod tests {
                 start: Instant::now() - Duration::from_secs(1),
             },
             2,
-            &root,
+            &mut root,
         );
 
         assert_eq!(depth, 0, "workers ignored the expired caller clock");
@@ -3515,7 +3597,7 @@ mod tests {
         let st = state_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
         let stopped = Arc::new(AtomicBool::new(false));
         let shared_tt = Arc::new(SharedTT::new(128));
-        let root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
+        let mut root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
         let root_moves = generate_moves(&st, st.w, &st.cr, st.ep);
         DEEP_ROOT_SEARCH_STARTED.store(false, Ordering::SeqCst);
 
@@ -3544,7 +3626,7 @@ mod tests {
                 start: Instant::now(),
             },
             1,
-            &root,
+            &mut root,
         );
 
         assert!(
@@ -3563,7 +3645,7 @@ mod tests {
         let st = state_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1");
         let stopped = Arc::new(AtomicBool::new(false));
         let shared_tt = Arc::new(SharedTT::new(128));
-        let root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
+        let mut root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
         let root_moves = generate_moves(&st, st.w, &st.cr, st.ep);
 
         let (_, _, depth, _) = lazy_smp_search(
@@ -3579,7 +3661,7 @@ mod tests {
                 start: Instant::now(),
             },
             2,
-            &root,
+            &mut root,
         );
 
         assert!(depth >= 1, "no worker completed the crossing iteration");
@@ -3617,7 +3699,7 @@ mod tests {
         let st = state_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1");
         let stopped = Arc::new(AtomicBool::new(false));
         let shared_tt = Arc::new(SharedTT::new(128));
-        let root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
+        let mut root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
         let root_moves = generate_moves(&st, st.w, &st.cr, st.ep);
 
         EXPECTED_ROOT_MOVES.store(root_moves.len(), Ordering::SeqCst);
@@ -3636,7 +3718,7 @@ mod tests {
                 start: Instant::now(),
             },
             2,
-            &root,
+            &mut root,
         );
 
         assert_eq!(depth, 1);
@@ -3657,7 +3739,7 @@ mod tests {
 
         let first_stopped = Arc::new(AtomicBool::new(false));
         let first_tt = Arc::new(SharedTT::new(128));
-        let first_root = Searcher::new(Arc::clone(&first_tt), Arc::clone(&first_stopped));
+        let mut first_root = Searcher::new(Arc::clone(&first_tt), Arc::clone(&first_stopped));
         let (first_move, _, first_depth, _) = lazy_smp_search(
             &pool,
             first_tt,
@@ -3671,7 +3753,7 @@ mod tests {
                 start: Instant::now(),
             },
             2,
-            &first_root,
+            &mut first_root,
         );
 
         assert!(root_moves.contains(&first_move));
@@ -3682,7 +3764,7 @@ mod tests {
 
         let second_stopped = Arc::new(AtomicBool::new(false));
         let second_tt = Arc::new(SharedTT::new(128));
-        let second_root = Searcher::new(Arc::clone(&second_tt), Arc::clone(&second_stopped));
+        let mut second_root = Searcher::new(Arc::clone(&second_tt), Arc::clone(&second_stopped));
         let (second_move, _, second_depth, second_nodes) = lazy_smp_search(
             &pool,
             second_tt,
@@ -3696,7 +3778,7 @@ mod tests {
                 start: Instant::now(),
             },
             2,
-            &second_root,
+            &mut second_root,
         );
 
         assert!(root_moves.contains(&second_move));
@@ -3720,7 +3802,7 @@ mod tests {
         let st = state_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1");
         let stopped = Arc::new(AtomicBool::new(false));
         let shared_tt = Arc::new(SharedTT::new(128));
-        let root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
+        let mut root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
         let root_moves = generate_moves(&st, st.w, &st.cr, st.ep);
 
         EXTENSION_CALLS.store(0, Ordering::SeqCst);
@@ -3737,7 +3819,7 @@ mod tests {
                 start: Instant::now(),
             },
             1,
-            &root,
+            &mut root,
         );
 
         assert_eq!(depth, 1);
@@ -3791,10 +3873,12 @@ mod tests {
 
     fn completed_thread(best_move: Move, score: i32, depth: i32) -> ThreadResult {
         ThreadResult {
+            thread_id: 0,
             best_move,
             score,
             depth,
             nodes: 1,
+            learning: None,
         }
     }
 

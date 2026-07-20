@@ -3,7 +3,7 @@ use chess_rs_lib::backend::{
 };
 use chess_rs_lib::board::{piece_on, piece_type, EMPTY_SQ};
 use chess_rs_lib::evaluate;
-use chess_rs_lib::search::{active_search_backend, set_search_backend_override};
+use chess_rs_lib::search::{active_search_backend, set_search_backend_override, SearchLearning};
 use chess_rs_lib::syzygy::SyzygyTables;
 use chess_rs_lib::time_management::TimeManager;
 use chess_rs_lib::zobrist::compute_hash;
@@ -26,7 +26,12 @@ struct SearchTask {
     id: u64,
     handle: thread::JoinHandle<()>,
     stopped: Arc<AtomicBool>,
-    rx: mpsc::Receiver<(String, i32, u64, f64)>,
+    rx: mpsc::Receiver<SearchCompletion>,
+}
+
+struct SearchCompletion {
+    result: (String, i32, u64, f64),
+    learning: SearchLearning,
 }
 
 enum UciEvent {
@@ -130,8 +135,9 @@ fn main() {
                 if search_task.as_ref().is_some_and(|task| task.id == id) {
                     let task = search_task.take().unwrap();
                     task.handle.join().ok();
-                    if let Ok(result) = task.rx.recv() {
-                        print_bestmove(&engine, &result.0);
+                    if let Ok(completion) = task.rx.recv() {
+                        engine.searcher.import_learning(&completion.learning);
+                        print_bestmove(&engine, &completion.result.0);
                     }
                 }
                 continue;
@@ -364,7 +370,8 @@ fn main() {
                                 limits.depth,
                             )
                         };
-                        tx.send(result).ok();
+                        let learning = search_engine.searcher.export_learning();
+                        tx.send(SearchCompletion { result, learning }).ok();
                         search_finished_tx
                             .send(UciEvent::SearchFinished(search_id))
                             .ok();
@@ -382,8 +389,9 @@ fn main() {
                 if let Some(task) = search_task.take() {
                     task.stopped.store(true, Ordering::SeqCst);
                     task.handle.join().ok();
-                    if let Ok((best_move, _, _, _)) = task.rx.recv() {
-                        print_bestmove(&engine, &best_move);
+                    if let Ok(completion) = task.rx.recv() {
+                        engine.searcher.import_learning(&completion.learning);
+                        print_bestmove(&engine, &completion.result.0);
                     }
                 }
             }
@@ -391,8 +399,9 @@ fn main() {
                 if let Some(task) = search_task.take() {
                     task.stopped.store(true, Ordering::SeqCst);
                     task.handle.join().ok();
-                    if let Ok((best_move, _, _, _)) = task.rx.recv() {
-                        print_bestmove(&engine, &best_move);
+                    if let Ok(completion) = task.rx.recv() {
+                        engine.searcher.import_learning(&completion.learning);
+                        print_bestmove(&engine, &completion.result.0);
                     }
                 }
                 break;
@@ -527,6 +536,7 @@ fn reset_engine(engine: &mut Engine) {
     #[cfg(feature = "decision-trace")]
     let trace = std::mem::take(&mut engine.trace);
     let tt_mb = engine.searcher.tt_mb;
+    search_pool.clear_learning();
     *engine = Engine::new();
     engine.book = book;
     engine.search_pool = search_pool;

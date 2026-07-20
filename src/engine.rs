@@ -3,7 +3,7 @@ use crate::board::board_to_fen;
 use crate::board::{
     bit, is_attacked, move_ec, move_er, move_from, move_promotion, move_sc, move_sr, move_to,
     move_to_uci, piece_from_char, piece_type, sq, sq_c, BoardState, Move, BK, BP, BQ, BR, EMPTY_SQ,
-    INF, MATE, MAX_HALF_MOVE_CLOCK, MAX_PLY, NO_MOVE, WK, WP, WQ, WR,
+    INF, MATE, MAX_HALF_MOVE_CLOCK, NO_MOVE, WK, WP, WQ, WR,
 };
 use crate::book::OpeningBook;
 use crate::movegen::{apply_move, generate_moves};
@@ -873,7 +873,7 @@ impl Engine {
                     start,
                 },
                 search_threads,
-                &self.searcher,
+                &mut self.searcher,
             );
 
             let mv_str = move_to_uci(&self.st, best_move);
@@ -883,8 +883,7 @@ impl Engine {
             return (mv_str, best_score, total_nodes, elapsed);
         }
 
-        self.searcher.killers = [[None; 2]; MAX_PLY];
-        self.searcher.history = [[0i32; 64]; 64];
+        self.searcher.prepare_for_search();
         self.searcher.init_nnue_stack(&self.st);
 
         let start = match timer_start {
