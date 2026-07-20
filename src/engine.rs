@@ -135,6 +135,16 @@ fn root_move_is_capture(st: &BoardState, mv: Move) -> bool {
     fpi != EMPTY_SQ && piece_type(fpi) == 0 && Some(to) == st.ep && move_sc(mv) != move_ec(mv)
 }
 
+fn root_reduced_rook_check_capture(st: &BoardState, mv: Move) -> bool {
+    let attacker = st.mailbox[move_from(mv)];
+    root_non_king_piece_count(st) <= 12
+        && !root_has_queen(st)
+        && attacker != EMPTY_SQ
+        && piece_type(attacker) == 3
+        && root_move_is_capture(st, mv)
+        && root_move_gives_check(st, mv)
+}
+
 fn root_move_is_promotion(st: &BoardState, mv: Move) -> bool {
     if move_promotion(mv) != 0 {
         return true;
@@ -204,7 +214,11 @@ fn root_rook_invasion_score(st: &BoardState, mv: Move) -> Option<i32> {
 }
 
 fn root_depth_extension(st: &BoardState, mv: Move) -> i32 {
-    i32::from(root_rook_invasion_score(st, mv).is_some())
+    if root_reduced_rook_check_capture(st, mv) {
+        3
+    } else {
+        i32::from(root_rook_invasion_score(st, mv).is_some())
+    }
 }
 
 fn rook_attacks_enemy_non_pawn_on_rank(st: &BoardState, rook_sq: usize, rook: u8) -> bool {
