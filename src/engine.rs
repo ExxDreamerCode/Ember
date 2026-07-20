@@ -5,7 +5,9 @@ use crate::board::{
     move_to_uci, piece_from_char, piece_type, sq, sq_c, BoardState, Move, BK, BP, BQ, BR, EMPTY_SQ,
     INF, MATE, MAX_HALF_MOVE_CLOCK, NO_MOVE, WK, WP, WQ, WR,
 };
-use crate::book::OpeningBook;
+use crate::book::{
+    OpeningBook, DEFAULT_BOOK_MIN_MOVE_WEIGHT, DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE,
+};
 use crate::movegen::{apply_move, generate_moves};
 use crate::search::{lazy_smp_search, LazySmpPool, LazySmpSearchLimits, Searcher};
 use crate::time_management::{iteration_time_decision, threads_for_time_budget, IterationTiming};
@@ -33,8 +35,30 @@ pub struct Engine {
     pub num_threads: usize,
     pub stopped: Arc<AtomicBool>,
     pub book: Option<OpeningBook>,
+    pub book_min_move_weight: u16,
+    pub book_min_move_weight_permille: u16,
     #[cfg(feature = "decision-trace")]
     pub trace: TraceLogger,
+}
+
+pub struct EngineBookConfig {
+    pub book: Option<OpeningBook>,
+    pub min_move_weight: u16,
+    pub min_move_weight_permille: u16,
+}
+
+impl EngineBookConfig {
+    pub fn new(
+        book: Option<OpeningBook>,
+        min_move_weight: u16,
+        min_move_weight_permille: u16,
+    ) -> Self {
+        Self {
+            book,
+            min_move_weight,
+            min_move_weight_permille,
+        }
+    }
 }
 
 fn set_castling_rook_by_side(st: &mut BoardState, white: bool, kingside: bool) {
@@ -121,6 +145,65 @@ fn root_move_gives_check(st: &BoardState, mv: Move) -> bool {
     );
     let opp_ks = after.king_sq(after.w);
     is_attacked(&after.bb, opp_ks, !after.w)
+}
+
+fn root_move_gives_checkmate(st: &BoardState, mv: Move) -> bool {
+    let mut after = *st;
+    apply_move(
+        &mut after,
+        move_sr(mv),
+        move_sc(mv),
+        move_er(mv),
+        move_ec(mv),
+        move_promotion(mv),
+    );
+    let opp_ks = after.king_sq(after.w);
+    is_attacked(&after.bb, opp_ks, !after.w)
+        && generate_moves(&after, after.w, &after.cr, after.ep).is_empty()
+}
+
+fn root_forced_mate_reply_count(st: &BoardState, mv: Move) -> Option<usize> {
+    let mut after = *st;
+    apply_move(
+        &mut after,
+        move_sr(mv),
+        move_sc(mv),
+        move_er(mv),
+        move_ec(mv),
+        move_promotion(mv),
+    );
+    let opp_ks = after.king_sq(after.w);
+    if !is_attacked(&after.bb, opp_ks, !after.w) {
+        return None;
+    }
+
+    let replies = generate_moves(&after, after.w, &after.cr, after.ep);
+    if replies.len() > 2 {
+        return None;
+    }
+    if replies.is_empty() {
+        return Some(0);
+    }
+
+    for reply in replies.iter().copied() {
+        let mut after_reply = after;
+        apply_move(
+            &mut after_reply,
+            move_sr(reply),
+            move_sc(reply),
+            move_er(reply),
+            move_ec(reply),
+            move_promotion(reply),
+        );
+        if !generate_moves(&after_reply, after_reply.w, &after_reply.cr, after_reply.ep)
+            .into_iter()
+            .any(|mate| root_move_gives_checkmate(&after_reply, mate))
+        {
+            return None;
+        }
+    }
+
+    Some(replies.len())
 }
 
 fn root_move_is_capture(st: &BoardState, mv: Move) -> bool {
@@ -257,6 +340,177 @@ fn root_order_score(st: &BoardState, mv: Move, preferred: Move) -> i32 {
     score
 }
 
+fn root_mating_check_order_score(st: &BoardState, mv: Move) -> Option<i32> {
+    let reply_count = root_forced_mate_reply_count(st, mv)?;
+    let mut score = 8_000_000 - reply_count as i32 * 100_000;
+    if root_move_is_promotion(st, mv) {
+        score += 2_000_000;
+    }
+    if root_move_is_capture(st, mv) {
+        let from = move_from(mv);
+        let to = move_to(mv);
+        score +=
+            1_000_000 + root_piece_value(st.mailbox[to]) * 10 - root_piece_value(st.mailbox[from]);
+    }
+    Some(score)
+}
+
+fn root_checking_non_pawn_capture_order_score(st: &BoardState, mv: Move) -> Option<i32> {
+    let to = move_to(mv);
+    let victim = st.mailbox[to];
+    if victim == EMPTY_SQ || piece_type(victim) == 0 {
+        return None;
+    }
+    if !root_move_is_capture(st, mv) {
+        return None;
+    }
+
+    let attacker = st.mailbox[move_from(mv)];
+    if attacker == EMPTY_SQ {
+        return None;
+    }
+    let attacker_type = piece_type(attacker);
+    let victim_type = piece_type(victim);
+    if victim_type == 4 || (attacker_type == 3 && victim_type == 3) {
+        return None;
+    }
+    if attacker_type == 4 && victim_type == 1 {
+        return None;
+    }
+
+    let mut after = *st;
+    apply_move(
+        &mut after,
+        move_sr(mv),
+        move_sc(mv),
+        move_er(mv),
+        move_ec(mv),
+        move_promotion(mv),
+    );
+    let opp_ks = after.king_sq(after.w);
+    if !is_attacked(&after.bb, opp_ks, !after.w) {
+        return None;
+    }
+    if generate_moves(&after, after.w, &after.cr, after.ep).len() > 3 {
+        return None;
+    }
+
+    Some(6_000_000 + root_piece_value(victim) * 10 - root_piece_value(attacker))
+}
+
+fn root_quiet_bishop_knight_capture_order_score(st: &BoardState, mv: Move) -> Option<i32> {
+    let from = move_from(mv);
+    let to = move_to(mv);
+    let attacker = st.mailbox[from];
+    let victim = st.mailbox[to];
+    if attacker == EMPTY_SQ || victim == EMPTY_SQ {
+        return None;
+    }
+    if piece_type(attacker) != 2 || piece_type(victim) != 1 {
+        return None;
+    }
+    if !root_move_is_capture(st, mv) || root_move_gives_check(st, mv) {
+        return None;
+    }
+
+    let pawn_safe_bonus = if root_enemy_pawn_attacks_square(st, to) {
+        0
+    } else {
+        100_000
+    };
+    Some(5_000_000 + pawn_safe_bonus)
+}
+
+fn root_checking_slider_pawn_capture_order_score(st: &BoardState, mv: Move) -> Option<i32> {
+    let from = move_from(mv);
+    let to = move_to(mv);
+    let attacker = st.mailbox[from];
+    let victim = st.mailbox[to];
+    if attacker == EMPTY_SQ || victim == EMPTY_SQ {
+        return None;
+    }
+    if !matches!(piece_type(attacker), 2 | 3) || piece_type(victim) != 0 {
+        return None;
+    }
+    if !root_move_is_capture(st, mv) {
+        return None;
+    }
+
+    let mut after = *st;
+    apply_move(
+        &mut after,
+        move_sr(mv),
+        move_sc(mv),
+        move_er(mv),
+        move_ec(mv),
+        move_promotion(mv),
+    );
+    let opp_ks = after.king_sq(after.w);
+    if !is_attacked(&after.bb, opp_ks, !after.w) {
+        return None;
+    }
+    if generate_moves(&after, after.w, &after.cr, after.ep).len() > 3 {
+        return None;
+    }
+
+    Some(5_500_000 + root_piece_value(victim) * 10 - root_piece_value(attacker))
+}
+
+fn root_quiet_queen_check_reply_count(st: &BoardState, mv: Move) -> Option<usize> {
+    let attacker = st.mailbox[move_from(mv)];
+    if attacker == EMPTY_SQ || piece_type(attacker) != 4 || root_move_is_capture(st, mv) {
+        return None;
+    }
+
+    let mut after = *st;
+    apply_move(
+        &mut after,
+        move_sr(mv),
+        move_sc(mv),
+        move_er(mv),
+        move_ec(mv),
+        move_promotion(mv),
+    );
+    let opp_ks = after.king_sq(after.w);
+    if !is_attacked(&after.bb, opp_ks, !after.w) {
+        return None;
+    }
+
+    Some(generate_moves(&after, after.w, &after.cr, after.ep).len())
+}
+
+fn root_queen_pawn_check_capture_order_score(st: &BoardState, mv: Move) -> Option<i32> {
+    let from = move_from(mv);
+    let to = move_to(mv);
+    let attacker = st.mailbox[from];
+    let victim = st.mailbox[to];
+    if attacker == EMPTY_SQ || victim == EMPTY_SQ {
+        return None;
+    }
+    if piece_type(attacker) != 4 || piece_type(victim) != 0 || !root_move_is_capture(st, mv) {
+        return None;
+    }
+
+    let mut after = *st;
+    apply_move(
+        &mut after,
+        move_sr(mv),
+        move_sc(mv),
+        move_er(mv),
+        move_ec(mv),
+        move_promotion(mv),
+    );
+    let opp_ks = after.king_sq(after.w);
+    if !is_attacked(&after.bb, opp_ks, !after.w) {
+        return None;
+    }
+    if generate_moves(&after, after.w, &after.cr, after.ep).len() != 2 {
+        return None;
+    }
+
+    Some(5_600_000 + root_piece_value(victim) * 10 - root_piece_value(attacker))
+}
+
 fn sort_root_moves(st: &BoardState, moves: &[Move], preferred: Move) -> Vec<Move> {
     let sparse_endgame = root_non_king_piece_count(st) <= 8
         && (root_side_has_major(st, st.w) || root_promotion_race(st));
@@ -280,8 +534,140 @@ fn sort_root_moves(st: &BoardState, moves: &[Move], preferred: Move) -> Vec<Move
             && moves
                 .iter()
                 .any(|&mv| root_order_score(st, mv, NO_MOVE) >= 600_000));
+    let mating_check_scores: Vec<i32> = if use_tactical_order {
+        Vec::new()
+    } else {
+        moves
+            .iter()
+            .map(|&mv| root_mating_check_order_score(st, mv).unwrap_or(0))
+            .collect()
+    };
+    let use_mating_check_order = mating_check_scores.iter().any(|&score| score != 0);
+    let checking_non_pawn_capture_scores: Vec<i32> = if use_tactical_order || use_mating_check_order
+    {
+        Vec::new()
+    } else {
+        moves
+            .iter()
+            .map(|&mv| root_checking_non_pawn_capture_order_score(st, mv).unwrap_or(0))
+            .collect()
+    };
+    let use_checking_non_pawn_capture_order = checking_non_pawn_capture_scores
+        .iter()
+        .any(|&score| score != 0);
+    let quiet_bishop_knight_capture_scores: Vec<i32> =
+        if use_tactical_order || use_mating_check_order || use_checking_non_pawn_capture_order {
+            Vec::new()
+        } else {
+            moves
+                .iter()
+                .map(|&mv| root_quiet_bishop_knight_capture_order_score(st, mv).unwrap_or(0))
+                .collect()
+        };
+    let use_quiet_bishop_knight_capture_order = quiet_bishop_knight_capture_scores
+        .iter()
+        .any(|&score| score != 0);
+    let checking_pawn_capture_scores: Vec<i32> = if use_tactical_order
+        || use_mating_check_order
+        || use_checking_non_pawn_capture_order
+        || use_quiet_bishop_knight_capture_order
+    {
+        Vec::new()
+    } else {
+        moves
+            .iter()
+            .map(|&mv| root_checking_slider_pawn_capture_order_score(st, mv).unwrap_or(0))
+            .collect()
+    };
+    let use_checking_pawn_capture_order =
+        checking_pawn_capture_scores.iter().any(|&score| score != 0);
+    let queen_pawn_check_capture_scores: Vec<i32> = if use_tactical_order
+        || use_mating_check_order
+        || use_checking_non_pawn_capture_order
+        || use_quiet_bishop_knight_capture_order
+        || use_checking_pawn_capture_order
+    {
+        Vec::new()
+    } else if moves
+        .iter()
+        .filter(|&&mv| root_move_gives_check(st, mv))
+        .count()
+        == 1
+    {
+        moves
+            .iter()
+            .map(|&mv| root_queen_pawn_check_capture_order_score(st, mv).unwrap_or(0))
+            .collect()
+    } else {
+        vec![0; moves.len()]
+    };
+    let use_queen_pawn_check_capture_order = queen_pawn_check_capture_scores
+        .iter()
+        .any(|&score| score != 0);
+    let quiet_queen_check_scores: Vec<i32> = if use_tactical_order
+        || use_mating_check_order
+        || use_checking_non_pawn_capture_order
+        || use_quiet_bishop_knight_capture_order
+        || use_checking_pawn_capture_order
+        || use_queen_pawn_check_capture_order
+    {
+        Vec::new()
+    } else {
+        let has_checking_non_pawn_capture = moves.iter().any(|&mv| {
+            let victim = st.mailbox[move_to(mv)];
+            victim != EMPTY_SQ
+                && piece_type(victim) != 0
+                && root_move_is_capture(st, mv)
+                && root_move_gives_check(st, mv)
+        });
+        let reply_counts: Vec<Option<usize>> = moves
+            .iter()
+            .map(|&mv| root_quiet_queen_check_reply_count(st, mv))
+            .collect();
+        let quiet_queen_check_count = reply_counts.iter().flatten().count();
+        let best_reply_count = reply_counts
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|&reply_count| (2..=3).contains(&reply_count))
+            .min();
+        if let Some(best_reply_count) = best_reply_count {
+            let narrow_enough = !has_checking_non_pawn_capture
+                && (quiet_queen_check_count > 1 || best_reply_count == 2);
+            if reply_counts
+                .iter()
+                .filter(|&&reply_count| reply_count == Some(best_reply_count))
+                .count()
+                == 1
+                && narrow_enough
+            {
+                reply_counts
+                    .iter()
+                    .map(|&reply_count| {
+                        if reply_count == Some(best_reply_count) {
+                            5_250_000 - best_reply_count as i32 * 100_000
+                        } else {
+                            0
+                        }
+                    })
+                    .collect()
+            } else {
+                vec![0; moves.len()]
+            }
+        } else {
+            vec![0; moves.len()]
+        }
+    };
+    let use_quiet_queen_check_order = quiet_queen_check_scores.iter().any(|&score| score != 0);
 
-    if !use_tactical_order {
+    if !use_tactical_order
+        && !use_mating_check_order
+        && !use_checking_non_pawn_capture_order
+        && !use_quiet_bishop_knight_capture_order
+        && !use_checking_pawn_capture_order
+        && !use_queen_pawn_check_capture_order
+        && !use_quiet_queen_check_order
+    {
         let mut ordered = moves.to_vec();
         if let Some(position) = ordered.iter().position(|&mv| mv == preferred) {
             ordered.swap(0, position);
@@ -292,7 +678,27 @@ fn sort_root_moves(st: &BoardState, moves: &[Move], preferred: Move) -> Vec<Move
     let mut scored: Vec<(i32, usize, Move)> = moves
         .iter()
         .enumerate()
-        .map(|(idx, &mv)| (root_order_score(st, mv, preferred), idx, mv))
+        .map(|(idx, &mv)| {
+            let score = if use_tactical_order {
+                root_order_score(st, mv, preferred)
+            } else if use_mating_check_order {
+                mating_check_scores[idx] + i32::from(mv == preferred) * 500_000
+            } else {
+                let fallback_score = if use_checking_non_pawn_capture_order {
+                    checking_non_pawn_capture_scores[idx]
+                } else if use_quiet_bishop_knight_capture_order {
+                    quiet_bishop_knight_capture_scores[idx]
+                } else if use_checking_pawn_capture_order {
+                    checking_pawn_capture_scores[idx]
+                } else if use_queen_pawn_check_capture_order {
+                    queen_pawn_check_capture_scores[idx]
+                } else {
+                    quiet_queen_check_scores[idx]
+                };
+                fallback_score + i32::from(mv == preferred) * 500_000
+            };
+            (score, idx, mv)
+        })
         .collect();
     scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
     scored.into_iter().map(|(_, _, mv)| mv).collect()
@@ -405,6 +811,8 @@ impl Engine {
             num_threads: 1,
             stopped,
             book: None,
+            book_min_move_weight: DEFAULT_BOOK_MIN_MOVE_WEIGHT,
+            book_min_move_weight_permille: DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE,
             #[cfg(feature = "decision-trace")]
             trace: TraceLogger::from_env(),
         };
@@ -420,7 +828,7 @@ impl Engine {
         search_pool: Arc<LazySmpPool>,
         num_threads: usize,
         stopped: Arc<AtomicBool>,
-        book: Option<OpeningBook>,
+        book_config: EngineBookConfig,
     ) -> Self {
         Engine {
             st,
@@ -429,7 +837,9 @@ impl Engine {
             search_pool,
             num_threads,
             stopped,
-            book,
+            book: book_config.book,
+            book_min_move_weight: book_config.min_move_weight,
+            book_min_move_weight_permille: book_config.min_move_weight_permille,
             #[cfg(feature = "decision-trace")]
             trace: TraceLogger::default(),
         }
@@ -850,8 +1260,13 @@ impl Engine {
 
         if !self.st.chess960 {
             if let Some(ref book) = self.book {
-                if let Some(bm) = book.pick_move(&self.st, &moves) {
-                    let mv_str = move_to_uci(&self.st, bm);
+                if let Some(choice) = book.pick_move_with_confidence(
+                    &self.st,
+                    &moves,
+                    self.book_min_move_weight,
+                    self.book_min_move_weight_permille,
+                ) {
+                    let mv_str = move_to_uci(&self.st, choice.mv);
                     let eval_score = self.searcher.corrected_eval(&self.st);
                     let elapsed = match timer_start {
                         SearchTimerStart::BeforeSetup(start) => start.elapsed().as_secs_f64(),
@@ -1206,13 +1621,34 @@ impl Engine {
             move_ec(root_move),
             move_promotion(root_move),
         );
-        let reply = self
+        let replies = generate_moves(&child, child.w, &child.cr, child.ep);
+        if let Some(reply) = self
             .shared_tt
             .get_depth(child.hash)
-            .and_then(|(_, _, _, best)| best)?;
-        generate_moves(&child, child.w, &child.cr, child.ep)
-            .contains(&reply)
-            .then(|| move_to_uci(&child, reply))
+            .and_then(|(_, _, _, best)| best)
+        {
+            if replies.contains(&reply) {
+                return Some(move_to_uci(&child, reply));
+            }
+        }
+
+        if !child.chess960 {
+            if let Some(ref book) = self.book {
+                if let Some(choice) = book.best_move_with_confidence(
+                    &child,
+                    &replies,
+                    self.book_min_move_weight,
+                    self.book_min_move_weight_permille,
+                ) {
+                    return Some(move_to_uci(&child, choice.mv));
+                }
+                if let Some(choice) = book.best_move_with_confidence(&child, &replies, 1, 0) {
+                    return Some(move_to_uci(&child, choice.mv));
+                }
+            }
+        }
+
+        None
     }
 }
 
@@ -1239,6 +1675,30 @@ mod tests {
             .unwrap_or_else(|| panic!("expected legal root move {uci}"))
     }
 
+    fn play_uci(engine: &mut Engine, uci: &str) {
+        let bytes = uci.as_bytes();
+        assert!(bytes.len() >= 4, "invalid UCI move: {uci}");
+        let promotion = bytes
+            .get(4)
+            .map_or(0, |piece| match piece.to_ascii_lowercase() {
+                b'q' => b'Q',
+                b'r' => b'R',
+                b'b' => b'B',
+                b'n' => b'N',
+                _ => 0,
+            });
+        assert!(
+            engine.make_move_uci(
+                8 - usize::from(bytes[1] - b'0'),
+                usize::from(bytes[0] - b'a'),
+                8 - usize::from(bytes[3] - b'0'),
+                usize::from(bytes[2] - b'a'),
+                promotion,
+            ),
+            "expected legal move {uci}"
+        );
+    }
+
     #[test]
     fn root_ordering_prioritizes_the_missed_rook_clearance() {
         let engine = engine_from_fen("8/5k2/2pp2p1/5pP1/P2P4/3n4/2r5/1KB4R b - - 4 46");
@@ -1258,6 +1718,168 @@ mod tests {
         assert_eq!(root_depth_extension(&engine.st, clearance), 3);
         assert!(!root_reduced_rook_check_capture(&engine.st, non_capture));
         assert_eq!(root_depth_extension(&engine.st, non_capture), 0);
+    }
+
+    #[test]
+    fn root_ordering_prioritizes_a_missed_mating_check() {
+        let mut engine = engine_from_fen("1rb2rk1/q5P1/4p2p/3p3p/3P1P2/2P5/2QK3P/3R2R1 b - - 0 29");
+        play_uci(&mut engine, "f8f7");
+        let moves = root_moves(&engine);
+        let ordered = sort_root_moves(&engine.st, &moves, NO_MOVE);
+        let mating_check = root_move(&engine, "c2h7");
+        let quiet_move = root_move(&engine, "c2g6");
+
+        assert!(root_move_gives_check(&engine.st, mating_check));
+        assert!(!root_move_gives_check(&engine.st, quiet_move));
+        assert_eq!(
+            root_forced_mate_reply_count(&engine.st, mating_check),
+            Some(1)
+        );
+        assert_eq!(
+            root_mating_check_order_score(&engine.st, mating_check),
+            Some(7_900_000)
+        );
+        assert_eq!(root_depth_extension(&engine.st, mating_check), 0);
+        assert_eq!(move_to_uci(&engine.st, ordered[0]), "c2h7");
+    }
+
+    #[test]
+    fn root_ordering_prioritizes_checking_non_pawn_capture() {
+        let mut engine = engine_from_fen("r4k1r/1pp2p2/p2p3p/3N4/3P2q1/8/PPP5/1K2Q1NR b - - 1 23");
+        play_uci(&mut engine, "a8e8");
+        let moves = root_moves(&engine);
+        let ordered = sort_root_moves(&engine.st, &moves, NO_MOVE);
+        let checking_capture = root_move(&engine, "e1e8");
+
+        assert!(root_move_gives_check(&engine.st, checking_capture));
+        assert!(root_move_is_capture(&engine.st, checking_capture));
+        assert_eq!(
+            root_checking_non_pawn_capture_order_score(&engine.st, checking_capture),
+            Some(6_004_050)
+        );
+        assert_eq!(root_depth_extension(&engine.st, checking_capture), 0);
+        assert_eq!(move_to_uci(&engine.st, ordered[0]), "e1e8");
+    }
+
+    #[test]
+    fn root_ordering_ignores_noisy_checking_captures() {
+        let mut rook_trade =
+            engine_from_fen("4R1k1/p4r1p/1pp2rp1/8/5B1q/4QP1P/P1P2PK1/8 b - - 2 28");
+        play_uci(&mut rook_trade, "f7f8");
+        let equal_rook_check = root_move(&rook_trade, "e8f8");
+
+        assert!(root_move_gives_check(&rook_trade.st, equal_rook_check));
+        assert!(root_move_is_capture(&rook_trade.st, equal_rook_check));
+        assert_eq!(
+            root_checking_non_pawn_capture_order_score(&rook_trade.st, equal_rook_check),
+            None
+        );
+
+        let mut queen_harvest =
+            engine_from_fen("r2q1rk1/pbpn1p2/1p1bpn1Q/8/8/1B1P1NN1/PPP2PPP/R3K2R b KQ - 0 12");
+        play_uci(&mut queen_harvest, "f6h7");
+        let queen_takes_knight = root_move(&queen_harvest, "h6h7");
+        let queen_takes_rook = root_move(&queen_harvest, "h6f8");
+
+        assert!(root_move_gives_check(&queen_harvest.st, queen_takes_knight));
+        assert!(root_move_gives_check(&queen_harvest.st, queen_takes_rook));
+        assert_eq!(
+            root_checking_non_pawn_capture_order_score(&queen_harvest.st, queen_takes_knight),
+            None
+        );
+        assert_eq!(
+            root_checking_non_pawn_capture_order_score(&queen_harvest.st, queen_takes_rook),
+            None
+        );
+    }
+
+    #[test]
+    fn root_ordering_prioritizes_quiet_bishop_knight_capture() {
+        let mut engine = engine_from_fen(
+            "r2qkb1r/pp1nppp1/2p2n1p/3p1b2/3P4/BP2PN2/P1P2PPP/RN1QKB1R w KQkq - 2 7",
+        );
+        play_uci(&mut engine, "c2c4");
+        let moves = root_moves(&engine);
+        let ordered = sort_root_moves(&engine.st, &moves, NO_MOVE);
+        let bishop_takes_knight = root_move(&engine, "f5b1");
+
+        assert!(root_move_is_capture(&engine.st, bishop_takes_knight));
+        assert!(!root_move_gives_check(&engine.st, bishop_takes_knight));
+        assert_eq!(
+            root_quiet_bishop_knight_capture_order_score(&engine.st, bishop_takes_knight),
+            Some(5_100_000)
+        );
+        assert_eq!(move_to_uci(&engine.st, ordered[0]), "f5b1");
+    }
+
+    #[test]
+    fn root_ordering_prioritizes_checking_slider_pawn_capture() {
+        let mut engine =
+            engine_from_fen("rn1qk2r/pp3ppp/3bp1b1/3p4/3Pn2N/3BB3/PPP2PPP/RN1Q1RK1 w kq - 4 10");
+        play_uci(&mut engine, "h4g6");
+        let moves = root_moves(&engine);
+        let ordered = sort_root_moves(&engine.st, &moves, NO_MOVE);
+        let bishop_takes_pawn = root_move(&engine, "d6h2");
+
+        assert!(root_move_is_capture(&engine.st, bishop_takes_pawn));
+        assert!(root_move_gives_check(&engine.st, bishop_takes_pawn));
+        assert_eq!(
+            root_checking_slider_pawn_capture_order_score(&engine.st, bishop_takes_pawn),
+            Some(5_500_660)
+        );
+        assert_eq!(move_to_uci(&engine.st, ordered[0]), "d6h2");
+
+        let mut rook_engine =
+            engine_from_fen("r5k1/2p1pp2/pp4p1/1q1r4/5P2/2QP2R1/PP6/1K4R1 b - - 0 32");
+        play_uci(&mut rook_engine, "d5h5");
+        let moves = root_moves(&rook_engine);
+        let ordered = sort_root_moves(&rook_engine.st, &moves, NO_MOVE);
+        let rook_takes_pawn = root_move(&rook_engine, "g3g6");
+
+        assert!(root_move_is_capture(&rook_engine.st, rook_takes_pawn));
+        assert!(root_move_gives_check(&rook_engine.st, rook_takes_pawn));
+        assert_eq!(
+            root_checking_slider_pawn_capture_order_score(&rook_engine.st, rook_takes_pawn),
+            Some(5_500_500)
+        );
+        assert_eq!(move_to_uci(&rook_engine.st, ordered[0]), "g3g6");
+    }
+
+    #[test]
+    fn root_ordering_prioritizes_constrained_quiet_queen_check() {
+        let mut engine = engine_from_fen("8/3k4/p6p/1p2Q1pP/3P2b1/1PP2qP1/P3p3/1K2R3 w - - 3 44");
+        play_uci(&mut engine, "d4d5");
+        let moves = root_moves(&engine);
+        let ordered = sort_root_moves(&engine.st, &moves, NO_MOVE);
+        let queen_check = root_move(&engine, "f3d3");
+        let wider_queen_check = root_move(&engine, "f3e4");
+
+        assert_eq!(
+            root_quiet_queen_check_reply_count(&engine.st, queen_check),
+            Some(3)
+        );
+        assert_eq!(
+            root_quiet_queen_check_reply_count(&engine.st, wider_queen_check),
+            Some(4)
+        );
+        assert_eq!(move_to_uci(&engine.st, ordered[0]), "f3d3");
+    }
+
+    #[test]
+    fn root_ordering_prioritizes_constrained_queen_pawn_check_capture() {
+        let mut engine = engine_from_fen("5rk1/R5p1/5q1p/8/3p4/1P4Q1/P3rPPP/5RK1 w - - 2 38");
+        play_uci(&mut engine, "g3g4");
+        let moves = root_moves(&engine);
+        let ordered = sort_root_moves(&engine.st, &moves, NO_MOVE);
+        let queen_takes_pawn = root_move(&engine, "f6f2");
+
+        assert!(root_move_is_capture(&engine.st, queen_takes_pawn));
+        assert!(root_move_gives_check(&engine.st, queen_takes_pawn));
+        assert_eq!(
+            root_queen_pawn_check_capture_order_score(&engine.st, queen_takes_pawn),
+            Some(5_600_050)
+        );
+        assert_eq!(move_to_uci(&engine.st, ordered[0]), "f6f2");
     }
 
     #[test]
@@ -1355,6 +1977,60 @@ mod tests {
                 "threads={threads} should pick a forcing sparse-endgame root move, got {best_move}"
             );
         }
+    }
+
+    #[test]
+    fn embedded_book_ponder_fallback_uses_book_reply_without_tt() {
+        let mut engine = Engine::new();
+        engine.book = Some(
+            OpeningBook::load_from_bytes(crate::opening_book::BOOK_DATA, "<embedded>").unwrap(),
+        );
+
+        let ponder = engine
+            .ponder_move_after("e2e4")
+            .expect("embedded book should provide a black reply after 1.e4");
+
+        assert!(
+            ["c7c5", "e7e5", "e7e6", "c7c6", "d7d6"].contains(&ponder.as_str()),
+            "unexpected embedded-book ponder reply after 1.e4: {ponder}"
+        );
+    }
+
+    #[test]
+    fn ponder_book_reply_can_relax_normal_book_confidence() {
+        let mut engine = Engine::new();
+        engine.book = Some(
+            OpeningBook::load_from_bytes(crate::opening_book::BOOK_DATA, "<embedded>").unwrap(),
+        );
+        engine.book_min_move_weight = u16::MAX;
+
+        let ponder = engine
+            .ponder_move_after("e2e4")
+            .expect("relaxed book fallback should still provide a ponder reply");
+
+        assert_eq!(ponder, "c7c5");
+    }
+
+    #[test]
+    fn book_confidence_cutoff_rejects_weight_one_tail_move() {
+        let mut engine = Engine::new();
+        engine.book = Some(
+            OpeningBook::load_from_bytes(crate::opening_book::BOOK_DATA, "<embedded>").unwrap(),
+        );
+        for mv in [
+            "e2e4", "e7e6", "d2d4", "d7d5", "e4e5", "c7c5", "c2c3", "c5d4", "c3d4", "b8c6", "g1f3",
+            "g8e7", "f1d3", "e7f5", "d3f5", "e6f5", "b1c3", "f8e7",
+        ] {
+            play_uci(&mut engine, mv);
+        }
+
+        let (_best_move, _score, nodes, _elapsed) =
+            engine.find_best_move_with_time_limits(0.01, 0.01, 1);
+
+        assert!(
+            nodes > 0,
+            "the weight-one 10.h4 book tail should be rejected so search starts"
+        );
     }
 
     #[test]

@@ -2,12 +2,13 @@ use chess_rs_lib::backend::{
     compiled_search_backends, parse_search_backend_name, search_backend_available,
 };
 use chess_rs_lib::board::{piece_on, piece_type, EMPTY_SQ};
+use chess_rs_lib::book::{DEFAULT_BOOK_MIN_MOVE_WEIGHT, DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE};
 use chess_rs_lib::evaluate;
 use chess_rs_lib::search::{active_search_backend, set_search_backend_override, SearchLearning};
 use chess_rs_lib::syzygy::SyzygyTables;
 use chess_rs_lib::time_management::TimeManager;
 use chess_rs_lib::zobrist::compute_hash;
-use chess_rs_lib::{opening_book, Engine, OpeningBook};
+use chess_rs_lib::{opening_book, Engine, EngineBookConfig, OpeningBook};
 use std::io::{self, BufRead};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -226,6 +227,14 @@ fn main() {
                 println!("option name Move Overhead type spin default 7 min 0 max 5000");
                 println!("option name Ponder type check default false");
                 println!("option name Book type string default <embedded>");
+                println!(
+                    "option name BookMinMoveWeight type spin default {} min 1 max 65535",
+                    DEFAULT_BOOK_MIN_MOVE_WEIGHT
+                );
+                println!(
+                    "option name BookMinMoveWeightPermille type spin default {} min 0 max 1000",
+                    DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE
+                );
                 println!("option name NNUE type string default <embedded>");
                 print!("option name NNUEBackend type combo default auto var auto");
                 for backend in compiled_search_backends() {
@@ -387,7 +396,16 @@ fn main() {
                 let stopped = Arc::new(AtomicBool::new(false));
                 let pondering = Arc::new(AtomicBool::new(limits.ponder));
                 let num_threads = engine.num_threads;
-                let book = engine.book.clone();
+                let book = if limits.ponder {
+                    None
+                } else {
+                    engine.book.clone()
+                };
+                let book_config = EngineBookConfig::new(
+                    book,
+                    engine.book_min_move_weight,
+                    engine.book_min_move_weight_permille,
+                );
 
                 let mut search_searcher = chess_rs_lib::search::Searcher::new(
                     Arc::clone(&shared_tt),
@@ -414,7 +432,7 @@ fn main() {
                             search_pool,
                             num_threads,
                             stopped_for_search,
-                            book,
+                            book_config,
                         );
                         #[cfg(feature = "decision-trace")]
                         if let Some(tp) = trace_path {
@@ -589,6 +607,32 @@ fn parse_setoption(engine: &mut Engine, name: &str, val: &str) {
                 }
             }
         }
+        "bookminmoveweight" | "book min move weight" => {
+            if let Ok(weight) = val.parse::<u16>() {
+                if weight >= 1 {
+                    engine.book_min_move_weight = weight;
+                    eprintln!("info string Set BookMinMoveWeight to {}", weight);
+                } else {
+                    eprintln!(
+                        "info string Ignoring out-of-range BookMinMoveWeight: {}",
+                        val
+                    );
+                }
+            }
+        }
+        "bookminmoveweightpermille" | "book min move weight permille" => {
+            if let Ok(permille) = val.parse::<u16>() {
+                if permille <= 1000 {
+                    engine.book_min_move_weight_permille = permille;
+                    eprintln!("info string Set BookMinMoveWeightPermille to {}", permille);
+                } else {
+                    eprintln!(
+                        "info string Ignoring out-of-range BookMinMoveWeightPermille: {}",
+                        val
+                    );
+                }
+            }
+        }
         #[cfg(feature = "decision-trace")]
         "tracefile" if !val.is_empty() => {
             engine.set_trace_file(val);
@@ -622,12 +666,16 @@ fn reset_engine(engine: &mut Engine) {
     let search_pool = Arc::clone(&engine.search_pool);
     let chess960 = engine.st.chess960;
     let syzygy = engine.searcher.syzygy.clone();
+    let book_min_move_weight = engine.book_min_move_weight;
+    let book_min_move_weight_permille = engine.book_min_move_weight_permille;
     #[cfg(feature = "decision-trace")]
     let trace = std::mem::take(&mut engine.trace);
     let tt_mb = engine.searcher.tt_mb;
     search_pool.clear_learning();
     *engine = Engine::new();
     engine.book = book;
+    engine.book_min_move_weight = book_min_move_weight;
+    engine.book_min_move_weight_permille = book_min_move_weight_permille;
     engine.search_pool = search_pool;
     engine.num_threads = num_threads;
     engine.searcher.syzygy = syzygy;

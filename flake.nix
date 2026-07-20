@@ -17,6 +17,8 @@
           f (import nixpkgs {
             inherit system;
             overlays = [ (import rust-overlay) ];
+            config.allowUnfreePredicate = pkg:
+              builtins.elem (nixpkgs.lib.getName pkg) [ "ccrl-crafty" ];
           }));
     in
     {
@@ -213,6 +215,7 @@
       devShells = forAllSystems (pkgs:
         let
           rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+          ccrlOpponents = import ./nix/ccrl-opponents.nix { inherit pkgs; };
 
           blunder-7-2-0 = pkgs.buildGoModule {
             pname = "blunder";
@@ -258,6 +261,7 @@
               fairymax
               ffmpeg
               blunder-7-2-0
+              ccrlOpponents.ccrl-opponents
             ];
 
             shellHook = ''

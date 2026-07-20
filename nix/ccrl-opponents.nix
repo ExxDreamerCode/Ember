@@ -314,6 +314,195 @@ let
     };
   };
 
+  rudim-3-0-4 = stdenv.mkDerivation {
+    pname = "ccrl-rudim";
+    version = "3.0.4";
+
+    src = pkgs.fetchurl {
+      url = "https://github.com/znxftw/rudim/releases/download/v3.0.4/linux-x64.zip";
+      hash = "sha256-3Av+bLvTeREJihin0d4INv42K7XcpGthsBh2yTjCYLw=";
+    };
+
+    nativeBuildInputs = [ pkgs.autoPatchelfHook pkgs.unzip ];
+    buildInputs = [ stdenv.cc.cc.lib ];
+
+    unpackPhase = ''
+      runHook preUnpack
+      unzip -q "$src"
+      runHook postUnpack
+    '';
+
+    installPhase = ''
+      runHook preInstall
+      install -Dm755 Rudim "$out/bin/ccrl-rudim-3.0.4"
+      runHook postInstall
+    '';
+
+    meta = {
+      description = "Rudim 3.0.4 UCI chess engine, packaged from the upstream Linux release";
+      homepage = "https://github.com/znxftw/rudim";
+      license = lib.licenses.gpl3Only;
+      platforms = [ "x86_64-linux" ];
+    };
+  };
+
+  crafty-25-2 = stdenv.mkDerivation {
+    pname = "ccrl-crafty";
+    version = "25.2";
+
+    src = pkgs.fetchurl {
+      url = "https://craftychess.com/downloads/source/crafty-25.2.zip";
+      hash = "sha256-M34AurecM3Ofuqcc0mxl+YaIbuDYzhgfLLYvLv0xdxA=";
+      # The upstream server's certificate has expired. The fixed hash still
+      # authenticates the exact source archive used by this derivation.
+      curlOptsList = [ "--insecure" ];
+    };
+
+    nativeBuildInputs = [ pkgs.unzip ];
+
+    unpackPhase = ''
+      runHook preUnpack
+      unzip -q "$src"
+      runHook postUnpack
+    '';
+
+    buildPhase = ''
+      runHook preBuild
+      make target=UNIX CC="$CC" \
+        opt='-DCPUS=4' \
+        CFLAGS='-Wall -Wno-array-bounds -pipe -O3 -mpopcnt -pthread' \
+        LDFLAGS='-pthread -lstdc++' \
+        crafty-make
+      runHook postBuild
+    '';
+
+    installPhase = ''
+      runHook preInstall
+      install -Dm755 crafty "$out/bin/ccrl-crafty-25.2"
+      install -Dm644 crafty.hlp "$out/share/ccrl-crafty-25.2/crafty.hlp"
+      runHook postInstall
+    '';
+
+    meta = {
+      description = "Crafty 25.2 XBoard chess engine, built for at most four search threads";
+      homepage = "https://craftychess.com/";
+      license = lib.licenses.unfreeRedistributable;
+      platforms = [ "x86_64-linux" ];
+    };
+  };
+
+  rodent-iii-0-276 = stdenv.mkDerivation {
+    pname = "ccrl-rodent-iii";
+    version = "0.276";
+
+    src = pkgs.fetchurl {
+      url = "https://github.com/nescitus/Rodent_III/archive/caea47bb3fa781dcdafe31530fa65869af4478e3.tar.gz";
+      hash = "sha256-rOYOHP/1dotVXaOrGINebUIXy37sqczpK1FWdNCDB80=";
+    };
+
+    buildPhase = ''
+      runHook preBuild
+      make -C sources PREFIX="$out" CXX="$CXX" native=no lto=yes build
+      runHook postBuild
+    '';
+
+    installPhase = ''
+      runHook preInstall
+      install -Dm755 sources/rodentIII \
+        "$out/bin/ccrl-rodent-iii-0.276"
+      mkdir -p "$out/share/rodentIII/books" \
+        "$out/share/rodentIII/personalities"
+      cp -R --no-preserve=mode,ownership books/. \
+        "$out/share/rodentIII/books/"
+      cp -R --no-preserve=mode,ownership personalities/. \
+        "$out/share/rodentIII/personalities/"
+      install -Dm644 sources/basic.ini \
+        "$out/share/rodentIII/personalities/basic.ini"
+      runHook postInstall
+    '';
+
+    meta = {
+      description = "Rodent III 0.276 UCI chess engine, built from its exact upstream revision";
+      homepage = "https://github.com/nescitus/Rodent_III";
+      license = lib.licenses.gpl3Plus;
+      platforms = [ "x86_64-linux" ];
+    };
+  };
+
+  senpai-3-0-2 = stdenv.mkDerivation {
+    pname = "ccrl-senpai";
+    version = "3.0.2";
+
+    src = pkgs.fetchurl {
+      url = "https://www.amateurschach.de/download/_senpai-versions.zip";
+      hash = "sha256-M6FKlB7ckx6vO7i7KXhHLX4vNnn++77r6r2IfaobIT4=";
+    };
+
+    nativeBuildInputs = [ pkgs.makeWrapper pkgs.rustc pkgs.unzip ];
+
+    unpackPhase = ''
+      runHook preUnpack
+      unzip -q "$src"
+      cd v3.0.2
+      runHook postUnpack
+    '';
+
+    buildPhase = ''
+      runHook preBuild
+      rustc --edition 2024 -C codegen-units=1 \
+        -A dead_code -A unused_variables -A non_camel_case_types \
+        -A non_snake_case -A non_upper_case_globals \
+        -C opt-level=3 -C target-cpu=x86-64 -C strip=symbols -C lto=fat \
+        src/main.rs -o senpai-3.0.2
+      runHook postBuild
+    '';
+
+    installPhase = ''
+      runHook preInstall
+      install -Dm755 senpai-3.0.2 \
+        "$out/share/ccrl-senpai-3.0.2/senpai-3.0.2"
+      install -Dm644 eval "$out/share/ccrl-senpai-3.0.2/eval"
+      makeWrapper "$out/share/ccrl-senpai-3.0.2/senpai-3.0.2" \
+        "$out/bin/ccrl-senpai-3.0.2" \
+        --chdir "$out/share/ccrl-senpai-3.0.2"
+      runHook postInstall
+    '';
+
+    meta = {
+      description = "Senpai 3.0.2 UCI chess engine, built from the author's source archive";
+      homepage = "https://www.amateurschach.de/";
+      license = lib.licenses.gpl3Only;
+      platforms = [ "x86_64-linux" ];
+    };
+  };
+
+  rybka-4 = pkgs.writeShellApplication {
+    name = "ccrl-rybka-4";
+    runtimeInputs = [ pkgs.wine64Packages.stable ];
+    text = ''
+      if [ -z "''${RYBKA4_EXE:-}" ]; then
+        echo "ccrl-rybka-4: set RYBKA4_EXE to your licensed Rybka 4 executable" >&2
+        exit 2
+      fi
+      if [ ! -f "$RYBKA4_EXE" ]; then
+        echo "ccrl-rybka-4: RYBKA4_EXE does not name a file: $RYBKA4_EXE" >&2
+        exit 2
+      fi
+
+      if command -v wine64 >/dev/null 2>&1; then
+        wine_command=wine64
+      else
+        wine_command=wine
+      fi
+      exec "$wine_command" "$RYBKA4_EXE" "$@"
+    '';
+    meta = {
+      description = "Launcher for a user-supplied licensed Rybka 4 64-bit UCI executable";
+      homepage = "https://shop.chessbase.com/en/products/rybka_4";
+      platforms = [ "x86_64-linux" ];
+    };
+  };
+
 in
 onlyX86_64 {
   ccrl-seawall-20250322 = seawall-20250322;
@@ -325,6 +514,11 @@ onlyX86_64 {
   ccrl-puffin-5-0 = puffin-5-0;
   ccrl-revolver-2-0 = revolver-2-0;
   ccrl-knightx-4-92 = knightx-4-92;
+  ccrl-rudim-3-0-4 = rudim-3-0-4;
+  ccrl-crafty-25-2 = crafty-25-2;
+  ccrl-rodent-iii-0-276 = rodent-iii-0-276;
+  ccrl-senpai-3-0-2 = senpai-3-0-2;
+  ccrl-rybka-4 = rybka-4;
 
   ccrl-opponents = pkgs.symlinkJoin {
     name = "ccrl-opponents";
@@ -338,6 +532,11 @@ onlyX86_64 {
       puffin-5-0
       revolver-2-0
       knightx-4-92
+      rudim-3-0-4
+      crafty-25-2
+      rodent-iii-0-276
+      senpai-3-0-2
+      rybka-4
     ];
   };
 }

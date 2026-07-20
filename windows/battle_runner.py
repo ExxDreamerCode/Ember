@@ -294,7 +294,7 @@ def load_config(path: Path) -> BattleConfig:
         benchmark_repeats=require_int(benchmark, "repeats", 1, 20),
         benchmark_timeout_seconds=require_int(benchmark, "timeout_seconds", 10, 3600),
         lichess_url=url.rstrip("/"),
-        challenge_timeout_seconds=require_int(lichess, "challenge_timeout_seconds", 20, 3600),
+        challenge_timeout_seconds=require_int(lichess, "challenge_timeout_seconds", 5, 3600),
         availability_poll_seconds=require_int(
             lichess_with_defaults, "availability_poll_seconds", 5, 300
         ),
@@ -627,6 +627,7 @@ class LichessClient:
         self, game: GameSpec, timeout_seconds: int, opponent: str | None = None
     ) -> tuple[str | None, str, dict[str, Any]]:
         opponent = opponent or game.opponent
+        deadline = time.monotonic() + timeout_seconds
         payload = {
             "rated": "true" if game.mode == "rated" else "false",
             "clock.limit": str(game.base_seconds),
@@ -640,7 +641,7 @@ class LichessClient:
             f"/api/challenge/{opponent}",
             data=payload,
             stream=True,
-            timeout=(30, timeout_seconds + 30),
+            timeout=(30, timeout_seconds),
             attempts=1,
         )
         if response.status_code in {400, 404, 409}:
@@ -658,7 +659,20 @@ class LichessClient:
         initial: dict[str, Any] = {}
         done = "unknown"
         try:
-            for raw_line in response.iter_lines(decode_unicode=True):
+            lines = response.iter_lines(decode_unicode=True)
+            while True:
+                if time.monotonic() >= deadline:
+                    done = "timeout"
+                    break
+                try:
+                    raw_line = next(lines)
+                except StopIteration:
+                    break
+                except requests.RequestException:
+                    if time.monotonic() >= deadline:
+                        done = "timeout"
+                        break
+                    raise
                 if not raw_line:
                     continue
                 message = json.loads(raw_line)
@@ -979,6 +993,7 @@ def print_plan(config: BattleConfig, threads: int, engine_info: dict[str, Any]) 
         f"  Opponent selection: first ready bot from each pool; poll every "
         f"{config.availability_poll_seconds}s and wait {wait_text}"
     )
+    print(f"  Challenge accept timeout: {config.challenge_timeout_seconds}s per opponent")
     print("\nThis will use all detected logical CPUs and can make the home machine busy.")
     print("No service, autostart, power, sleep, registry, PATH, or firewall setting will be changed.")
 
