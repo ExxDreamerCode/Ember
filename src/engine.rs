@@ -691,6 +691,7 @@ impl Engine {
         depth_limit: i32,
     ) -> (String, i32, u64, f64) {
         self.searcher.stopped.store(false, Ordering::SeqCst);
+        self.searcher.pondering.store(false, Ordering::SeqCst);
         self.find_best_move_with_time_limits_prepared(soft_time_limit, time_limit, depth_limit)
     }
 
@@ -702,6 +703,7 @@ impl Engine {
         start: Instant,
     ) -> (String, i32, u64, f64) {
         self.searcher.stopped.store(false, Ordering::SeqCst);
+        self.searcher.pondering.store(false, Ordering::SeqCst);
         self.find_best_move_with_time_limits_prepared_started_at(
             soft_time_limit,
             time_limit,
@@ -917,7 +919,9 @@ impl Engine {
         let mut depth_infos = Vec::new();
 
         for depth in 1..=depth_limit {
-            if start.elapsed().as_secs_f64() > time_limit {
+            if !self.searcher.pondering.load(Ordering::Relaxed)
+                && start.elapsed().as_secs_f64() > time_limit
+            {
                 break;
             }
 
@@ -943,7 +947,9 @@ impl Engine {
                 let mut loop_alpha = alpha;
 
                 for &mv in &sorted {
-                    if start.elapsed().as_secs_f64() > time_limit {
+                    if !self.searcher.pondering.load(Ordering::Relaxed)
+                        && start.elapsed().as_secs_f64() > time_limit
+                    {
                         break;
                     }
                     let old = self.st;
@@ -1025,7 +1031,8 @@ impl Engine {
                 }
 
                 if self.searcher.stopped.load(Ordering::Relaxed)
-                    || start.elapsed().as_secs_f64() > time_limit
+                    || (!self.searcher.pondering.load(Ordering::Relaxed)
+                        && start.elapsed().as_secs_f64() > time_limit)
                 {
                     break 'asp;
                 }
@@ -1054,7 +1061,7 @@ impl Engine {
             total_nodes += nd;
             let elapsed = start.elapsed().as_secs_f64();
 
-            if elapsed <= time_limit {
+            if elapsed <= time_limit || self.searcher.pondering.load(Ordering::Relaxed) {
                 let score_change_cp = asp_score.saturating_sub(prev_score).abs();
                 if best_depth == 0 || asp_best != best_move {
                     stable_iterations = 0;
@@ -1121,7 +1128,7 @@ impl Engine {
                     elapsed_ms: (elapsed * 1000.0) as u128,
                     pv: pv_str,
                 });
-                if time_decision.stop {
+                if !self.searcher.pondering.load(Ordering::Relaxed) && time_decision.stop {
                     break;
                 }
             } else {
@@ -1147,6 +1154,51 @@ impl Engine {
             depth_infos: &depth_infos,
         });
         (mv_str, best_score, total_nodes, elapsed)
+    }
+
+    pub fn ponder_move_after(&self, best_move: &str) -> Option<String> {
+        let bytes = best_move.as_bytes();
+        if bytes.len() < 4
+            || !(b'a'..=b'h').contains(&bytes[0])
+            || !(b'1'..=b'8').contains(&bytes[1])
+            || !(b'a'..=b'h').contains(&bytes[2])
+            || !(b'1'..=b'8').contains(&bytes[3])
+        {
+            return None;
+        }
+        let promotion = bytes
+            .get(4)
+            .map_or(0, |piece| match piece.to_ascii_lowercase() {
+                b'q' => b'Q',
+                b'r' => b'R',
+                b'b' => b'B',
+                b'n' => b'N',
+                _ => 0,
+            });
+        let root_move = self.legal_move_from_uci(
+            8 - usize::from(bytes[1] - b'0'),
+            usize::from(bytes[0] - b'a'),
+            8 - usize::from(bytes[3] - b'0'),
+            usize::from(bytes[2] - b'a'),
+            promotion,
+        )?;
+
+        let mut child = self.st;
+        apply_move(
+            &mut child,
+            move_sr(root_move),
+            move_sc(root_move),
+            move_er(root_move),
+            move_ec(root_move),
+            move_promotion(root_move),
+        );
+        let reply = self
+            .shared_tt
+            .get_depth(child.hash)
+            .and_then(|(_, _, _, best)| best)?;
+        generate_moves(&child, child.w, &child.cr, child.ep)
+            .contains(&reply)
+            .then(|| move_to_uci(&child, reply))
     }
 }
 

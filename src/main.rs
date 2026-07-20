@@ -24,9 +24,35 @@ const STARTPOS_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -
 
 struct SearchTask {
     id: u64,
-    handle: thread::JoinHandle<()>,
+    handle: Option<thread::JoinHandle<()>>,
     stopped: Arc<AtomicBool>,
+    pondering: Arc<AtomicBool>,
     rx: mpsc::Receiver<SearchCompletion>,
+    completion: Option<SearchCompletion>,
+}
+
+impl SearchTask {
+    fn request_stop(&self) {
+        self.pondering.store(false, Ordering::SeqCst);
+        self.stopped.store(true, Ordering::SeqCst);
+    }
+
+    fn collect_completion(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.join().ok();
+        }
+        if self.completion.is_none() {
+            self.completion = self.rx.recv().ok();
+        }
+    }
+
+    fn has_finished(&self) -> bool {
+        self.completion.is_some()
+            || self
+                .handle
+                .as_ref()
+                .is_some_and(thread::JoinHandle::is_finished)
+    }
 }
 
 struct SearchCompletion {
@@ -46,6 +72,25 @@ struct SearchLimits {
     hard_seconds: f64,
     depth: i32,
     clock_managed: bool,
+    ponder: bool,
+}
+
+fn apply_search_completion(engine: &mut Engine, task: &mut SearchTask, emit_bestmove: bool) {
+    if let Some(completion) = task.completion.take() {
+        engine.searcher.import_learning(&completion.learning);
+        if emit_bestmove {
+            print_bestmove(engine, &completion.result.0);
+        }
+    }
+}
+
+fn cancel_search(engine: &mut Engine, task: &mut Option<SearchTask>, emit_bestmove: bool) {
+    let Some(mut running) = task.take() else {
+        return;
+    };
+    running.request_stop();
+    running.collect_completion();
+    apply_search_completion(engine, &mut running, emit_bestmove);
 }
 
 fn try_load_book(engine: &mut Engine, path: &std::path::Path) -> bool {
@@ -132,21 +177,21 @@ fn main() {
         let trimmed = match event {
             UciEvent::Command(command) => command,
             UciEvent::SearchFinished(id) => {
-                if search_task.as_ref().is_some_and(|task| task.id == id) {
-                    let task = search_task.take().unwrap();
-                    task.handle.join().ok();
-                    if let Ok(completion) = task.rx.recv() {
-                        engine.searcher.import_learning(&completion.learning);
-                        print_bestmove(&engine, &completion.result.0);
-                    }
+                let should_emit =
+                    if let Some(task) = search_task.as_mut().filter(|task| task.id == id) {
+                        task.collect_completion();
+                        !task.pondering.load(Ordering::Relaxed)
+                    } else {
+                        false
+                    };
+                if should_emit {
+                    let mut task = search_task.take().unwrap();
+                    apply_search_completion(&mut engine, &mut task, true);
                 }
                 continue;
             }
             UciEvent::InputClosed => {
-                if let Some(task) = search_task.take() {
-                    task.stopped.store(true, Ordering::SeqCst);
-                    task.handle.join().ok();
-                }
+                cancel_search(&mut engine, &mut search_task, false);
                 break;
             }
         };
@@ -168,6 +213,7 @@ fn main() {
                     MIN_THREADS, MAX_THREADS
                 );
                 println!("option name Move Overhead type spin default 7 min 0 max 5000");
+                println!("option name Ponder type check default false");
                 println!("option name Book type string default <embedded>");
                 println!("option name NNUE type string default <embedded>");
                 print!("option name NNUEBackend type combo default auto var auto");
@@ -185,6 +231,7 @@ fn main() {
                 println!("readyok");
             }
             "ucinewgame" => {
+                cancel_search(&mut engine, &mut search_task, false);
                 reset_engine(&mut engine);
                 time_manager.reset_for_new_game();
             }
@@ -293,10 +340,7 @@ fn main() {
                 );
             }
             "position" => {
-                if let Some(task) = search_task.take() {
-                    task.stopped.store(true, Ordering::SeqCst);
-                    task.handle.join().ok();
-                }
+                cancel_search(&mut engine, &mut search_task, false);
                 parse_position(&mut engine, &parts);
             }
             "go" => {
@@ -306,7 +350,10 @@ fn main() {
 
                 let limits = parse_go_params(&parts, &engine, &mut time_manager);
                 let search_start = Instant::now();
-                if limits.clock_managed && limits.hard_seconds <= SHORT_SYNC_SEARCH_LIMIT_SECONDS {
+                if !limits.ponder
+                    && limits.clock_managed
+                    && limits.hard_seconds <= SHORT_SYNC_SEARCH_LIMIT_SECONDS
+                {
                     let result = engine.find_best_move_with_time_limits_started_at(
                         limits.soft_seconds,
                         limits.hard_seconds,
@@ -323,6 +370,7 @@ fn main() {
                 let shared_tt = Arc::clone(&engine.shared_tt);
                 let search_pool = Arc::clone(&engine.search_pool);
                 let stopped = Arc::new(AtomicBool::new(false));
+                let pondering = Arc::new(AtomicBool::new(limits.ponder));
                 let num_threads = engine.num_threads;
                 let book = engine.book.clone();
 
@@ -331,6 +379,7 @@ fn main() {
                     Arc::clone(&stopped),
                 );
                 engine.searcher.copy_root_context_to(&mut search_searcher);
+                search_searcher.pondering = Arc::clone(&pondering);
                 search_searcher.tt_mb = engine.searcher.tt_mb;
                 #[cfg(feature = "decision-trace")]
                 let trace_path = engine.trace.path().map(|p| p.display().to_string());
@@ -380,30 +429,35 @@ fn main() {
 
                 search_task = Some(SearchTask {
                     id: search_id,
-                    handle,
+                    handle: Some(handle),
                     stopped,
+                    pondering,
                     rx,
+                    completion: None,
                 });
             }
-            "stop" => {
-                if let Some(task) = search_task.take() {
-                    task.stopped.store(true, Ordering::SeqCst);
-                    task.handle.join().ok();
-                    if let Ok(completion) = task.rx.recv() {
-                        engine.searcher.import_learning(&completion.learning);
-                        print_bestmove(&engine, &completion.result.0);
+            "ponderhit" => {
+                let should_emit = if let Some(task) = search_task.as_mut() {
+                    task.pondering.store(false, Ordering::SeqCst);
+                    if task.has_finished() {
+                        task.collect_completion();
+                        true
+                    } else {
+                        false
                     }
+                } else {
+                    false
+                };
+                if should_emit {
+                    let mut task = search_task.take().unwrap();
+                    apply_search_completion(&mut engine, &mut task, true);
                 }
             }
+            "stop" => {
+                cancel_search(&mut engine, &mut search_task, true);
+            }
             "quit" => {
-                if let Some(task) = search_task.take() {
-                    task.stopped.store(true, Ordering::SeqCst);
-                    task.handle.join().ok();
-                    if let Ok(completion) = task.rx.recv() {
-                        engine.searcher.import_learning(&completion.learning);
-                        print_bestmove(&engine, &completion.result.0);
-                    }
-                }
+                cancel_search(&mut engine, &mut search_task, false);
                 break;
             }
             _ => {}
@@ -412,21 +466,31 @@ fn main() {
 }
 
 fn print_bestmove(engine: &Engine, best_move: &str) {
-    if best_move.len() >= 4 && best_move != "0000" {
-        if best_move.len() == 4 {
-            let b = best_move.as_bytes();
+    let normalized = if best_move.len() >= 4 && best_move != "0000" {
+        let mut normalized = best_move.to_string();
+        if normalized.len() == 4 {
+            let b = normalized.as_bytes();
             let sc = (b[0] - b'a') as usize;
             let sr = 8 - (b[1] - b'0') as usize;
             let er = 8 - (b[3] - b'0') as usize;
             if sr < 8 && sc < 8 && er < 8 {
                 let piece_idx = piece_on(&engine.st.bb, sr * 8 + sc);
                 if piece_idx != EMPTY_SQ && piece_type(piece_idx) == 0 && (er == 0 || er == 7) {
-                    println!("bestmove {}q", best_move);
-                    return;
+                    normalized.push('q');
                 }
             }
         }
-        println!("bestmove {}", best_move);
+        Some(normalized)
+    } else {
+        None
+    };
+
+    if let Some(best_move) = normalized {
+        if let Some(ponder_move) = engine.ponder_move_after(&best_move) {
+            println!("bestmove {} ponder {}", best_move, ponder_move);
+        } else {
+            println!("bestmove {}", best_move);
+        }
     } else {
         println!("bestmove 0000");
     }
@@ -627,6 +691,7 @@ fn parse_go_params(
     let mut movetime = 0f64;
     let mut depth = 64i32;
     let mut movestogo = 0i32;
+    let mut ponder = false;
 
     let mut i = 1;
     while i < parts.len() {
@@ -662,6 +727,9 @@ fn parse_go_params(
             "infinite" => {
                 movetime = 1_000_000.0;
             }
+            "ponder" => {
+                ponder = true;
+            }
             _ => {}
         }
         i += 1;
@@ -684,6 +752,7 @@ fn parse_go_params(
         hard_seconds,
         depth,
         clock_managed,
+        ponder,
     }
 }
 

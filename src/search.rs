@@ -331,6 +331,7 @@ pub struct Searcher {
     pub rep_stack_len: usize,
     pub tt_mb: usize,
     pub stopped: Arc<AtomicBool>,
+    pub pondering: Arc<AtomicBool>,
     pub nnue_stack: Vec<NNUEAccumulator>,
     pub nnue_net: Option<Arc<NNUENet>>,
     pub search_backend: SearchBackendKind,
@@ -1115,6 +1116,7 @@ impl Searcher {
             rep_stack_len: 0,
             tt_mb: 128,
             stopped,
+            pondering: Arc::new(AtomicBool::new(false)),
             nnue_stack: Vec::new(),
             nnue_net: current_nnue_net(),
             search_backend: active_search_backend(),
@@ -1171,6 +1173,9 @@ impl Searcher {
         if self.stopped.load(Ordering::Relaxed) {
             return true;
         }
+        if self.pondering.load(Ordering::Relaxed) {
+            return false;
+        }
         if start.elapsed().as_secs_f64() > tl {
             self.set_stopped();
             true
@@ -1218,6 +1223,7 @@ impl Searcher {
         dst.nnue_net = self.nnue_net.clone();
         dst.search_backend = self.search_backend;
         dst.syzygy = self.syzygy.clone();
+        dst.pondering = Arc::clone(&self.pondering);
     }
 
     pub fn export_learning(&self) -> SearchLearning {
@@ -2646,6 +2652,7 @@ struct LazySmpRootContext {
     search_backend: SearchBackendKind,
     syzygy: SyzygyTables,
     tt_mb: usize,
+    pondering: Arc<AtomicBool>,
     learning: SearchLearning,
 }
 
@@ -2658,6 +2665,7 @@ impl LazySmpRootContext {
             search_backend: searcher.search_backend,
             syzygy: searcher.syzygy.clone(),
             tt_mb: searcher.tt_mb,
+            pondering: Arc::clone(&searcher.pondering),
             learning: searcher.export_learning(),
         }
     }
@@ -2672,6 +2680,7 @@ impl LazySmpRootContext {
     ) {
         searcher.shared_tt = shared_tt;
         searcher.stopped = stopped;
+        searcher.pondering = Arc::clone(&self.pondering);
         if initialize_learning {
             searcher.import_learning(&self.learning);
         }
@@ -3289,7 +3298,10 @@ fn run_lazy_smp_worker(
                 }
             }
 
-            if stopped.load(Ordering::Relaxed) || start.elapsed().as_secs_f64() > limits.hard_time {
+            if stopped.load(Ordering::Relaxed)
+                || (!searcher.pondering.load(Ordering::Relaxed)
+                    && start.elapsed().as_secs_f64() > limits.hard_time)
+            {
                 break 'asp;
             }
 
@@ -3318,7 +3330,7 @@ fn run_lazy_smp_worker(
         }
         let elapsed = start.elapsed().as_secs_f64();
 
-        if elapsed <= limits.hard_time {
+        if elapsed <= limits.hard_time || searcher.pondering.load(Ordering::Relaxed) {
             let score_change_cp = asp_score.saturating_sub(prev_score).abs();
             if best_depth == 0 || asp_best != best_move {
                 stable_iterations = 0;
@@ -3365,7 +3377,7 @@ fn run_lazy_smp_worker(
             }
             searcher.update_correction_history(&st, best_score, best_depth);
             // Helpers can finish useful work until the leader coordinates the stop.
-            if thread_id == 0 && time_decision.stop {
+            if thread_id == 0 && !searcher.pondering.load(Ordering::Relaxed) && time_decision.stop {
                 stopped.store(true, Ordering::SeqCst);
                 break;
             }
