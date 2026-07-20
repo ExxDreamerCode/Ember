@@ -77,8 +77,13 @@ pub fn iteration_time_decision(
     } else {
         1.0
     };
-    let scale =
-        (stability * score_volatility * effort_factor * disagreement_factor).clamp(0.70, 1.15);
+    let maximum_scale = if soft_seconds * 1_000.0 <= SINGLE_THREAD_BUDGET_MS {
+        1.65
+    } else {
+        1.15
+    };
+    let scale = (stability * score_volatility * effort_factor * disagreement_factor)
+        .clamp(0.70, maximum_scale);
     let mut target_seconds = (soft_seconds * scale).max(soft_seconds).min(hard_seconds);
     if legal_moves == 1 {
         target_seconds = target_seconds.min(0.5).min(hard_seconds);
