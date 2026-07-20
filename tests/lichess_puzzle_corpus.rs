@@ -9,7 +9,7 @@ use chess_rs_lib::{evaluate, Engine};
 // puzzles Ember currently solves; commented rows are mined misses kept for
 // follow-up engine work.
 const CORPUS: &str = include_str!("fixtures/lichess_puzzle_corpus.tsv");
-const EXPECTED_CASES: usize = 870;
+const EXPECTED_CASES: usize = 912;
 const DEFAULT_CORPUS_WORKERS: usize = 4;
 const EXPECTED_HEADER: &str =
     "id\tdepth\tfen_before_blunder\tsetup_move\texpected_move\tthemes\trating\tpopularity\tplays";
@@ -189,7 +189,7 @@ fn solve_case(case: PuzzleCase) -> Result<(), String> {
 }
 
 #[test]
-#[ignore = "runs the full 870-position Lichess corpus in a dedicated CI job"]
+#[ignore = "runs the full Lichess corpus in a dedicated CI job"]
 fn ember_solves_public_lichess_tactic_corpus() {
     init_nnue();
 
