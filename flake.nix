@@ -46,6 +46,7 @@
             runtimeInputs = with pkgs; [
               coreutils
               gnugrep
+              python3
               qemu
               rustToolchain
               stdenv.cc
@@ -59,16 +60,90 @@
               unset RUSTFLAGS
               cargo build --locked --release --bin ember
 
-              output=$(printf 'uci
-isready
-setoption name Book value
-position startpos
-go depth 1
-quit
-'                 | EMBER_SEARCH_BACKEND=auto qemu-x86_64 -cpu Nehalem target/release/ember)
-              printf '%s
-' "$output"
-              grep -q '^bestmove ' <<<"$output"
+              python3 - target/release/ember <<'PY'
+              import os
+              import queue
+              import subprocess
+              import sys
+              import threading
+              import time
+
+              env = os.environ.copy()
+              env["EMBER_SEARCH_BACKEND"] = "auto"
+              process = subprocess.Popen(
+                  ["qemu-x86_64", "-cpu", "Nehalem", sys.argv[1]],
+                  stdin=subprocess.PIPE,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT,
+                  text=True,
+                  bufsize=1,
+                  env=env,
+              )
+              assert process.stdin is not None
+              assert process.stdout is not None
+
+              lines: queue.Queue[str] = queue.Queue()
+
+              def collect_stdout() -> None:
+                  assert process.stdout is not None
+                  for line in process.stdout:
+                      lines.put(line)
+
+              reader = threading.Thread(target=collect_stdout, daemon=True)
+              reader.start()
+
+              commands = [
+                  "uci",
+                  "isready",
+                  "setoption name Book value",
+                  "position startpos",
+                  "go depth 1",
+              ]
+              for command in commands:
+                  process.stdin.write(command + "\n")
+              process.stdin.flush()
+
+              deadline = time.monotonic() + 30.0
+              bestmove_seen = False
+              while True:
+                  remaining = deadline - time.monotonic()
+                  if remaining <= 0:
+                      break
+                  try:
+                      line = lines.get(timeout=min(0.5, remaining))
+                  except queue.Empty:
+                      if process.poll() is not None:
+                          break
+                      continue
+                  print(line, end="")
+                  sys.stdout.flush()
+                  if line.startswith("bestmove "):
+                      bestmove_seen = True
+                      break
+
+              if process.poll() is None:
+                  try:
+                      process.stdin.write("quit\n")
+                      process.stdin.flush()
+                  except BrokenPipeError:
+                      pass
+
+              if not bestmove_seen:
+                  if process.poll() is None:
+                      process.kill()
+                  process.wait()
+                  reader.join(timeout=1.0)
+                  sys.exit("old x86 QEMU smoke did not produce bestmove")
+
+              try:
+                  process.wait(timeout=5.0)
+              except subprocess.TimeoutExpired:
+                  process.kill()
+                  process.wait()
+                  sys.exit("old x86 QEMU smoke did not exit after quit")
+              reader.join(timeout=1.0)
+              sys.exit(process.returncode)
+              PY
             '';
           };
 

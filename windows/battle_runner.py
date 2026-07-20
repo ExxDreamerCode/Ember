@@ -10,9 +10,11 @@ import getpass
 import hashlib
 import json
 import os
+import queue
 import re
 import subprocess
 import sys
+import threading
 import time
 import tomllib
 from dataclasses import asdict, dataclass
@@ -341,42 +343,137 @@ def engine_uci_probe(engine: Path, timeout: int = 30) -> dict[str, Any]:
     return {"identity": identity.removeprefix("id name "), "sha256": sha256_file(engine)}
 
 
+def run_uci_search(
+    engine: Path, commands: Iterable[str], timeout: float
+) -> tuple[subprocess.CompletedProcess[str], float]:
+    started = time.perf_counter()
+    process = subprocess.Popen(
+        [str(engine)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert process.stdin is not None
+    assert process.stdout is not None
+
+    lines: queue.Queue[str] = queue.Queue()
+
+    def collect_stdout() -> None:
+        assert process.stdout is not None
+        for line in process.stdout:
+            lines.put(line)
+
+    reader = threading.Thread(target=collect_stdout, daemon=True)
+    reader.start()
+    output: list[str] = []
+    deadline = time.monotonic() + timeout
+
+    def drain_output() -> None:
+        while not lines.empty():
+            output.append(lines.get_nowait())
+
+    try:
+        for command in commands:
+            try:
+                process.stdin.write(command + "\n")
+            except BrokenPipeError:
+                break
+        try:
+            process.stdin.flush()
+        except BrokenPipeError:
+            pass
+
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired([str(engine)], timeout)
+            try:
+                line = lines.get(timeout=min(0.5, remaining))
+            except queue.Empty:
+                if process.poll() is not None:
+                    break
+                continue
+            output.append(line)
+            if line.startswith("bestmove "):
+                break
+
+        if process.poll() is None:
+            try:
+                process.stdin.write("quit\n")
+                process.stdin.flush()
+            except BrokenPipeError:
+                pass
+            if process.poll() is None:
+                process.wait(timeout=max(1.0, deadline - time.monotonic()))
+        reader.join(timeout=1.0)
+        drain_output()
+    except subprocess.TimeoutExpired as exc:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        reader.join(timeout=1.0)
+        drain_output()
+        exc.output = "".join(output)
+        raise
+    finally:
+        try:
+            process.stdin.close()
+        except BrokenPipeError:
+            pass
+        process.stdout.close()
+
+    completed = subprocess.CompletedProcess(
+        [str(engine)], process.returncode, stdout="".join(output)
+    )
+    return completed, time.perf_counter() - started
+
+
 def run_benchmark(engine: Path, config: BattleConfig, threads: int, output_dir: Path) -> dict[str, Any]:
     samples: list[dict[str, Any]] = []
+    raw_log = output_dir / "benchmark-raw.log"
 
     def search(label: str, position: str, depth: int) -> dict[str, Any]:
-        commands = "\n".join(
-            [
-                "uci",
-                "isready",
-                f"setoption name Hash value {config.hash_mb}",
-                f"setoption name Threads value {threads}",
-                "setoption name Book value",
-                "setoption name SyzygyPath value",
-                "ucinewgame",
-                f"position {position}",
-                f"go depth {depth}",
-                "quit",
-                "",
-            ]
-        )
-        started = time.perf_counter()
-        completed = subprocess.run(
-            [str(engine)],
-            input=commands,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=config.benchmark_timeout_seconds,
-            check=False,
-        )
-        elapsed = time.perf_counter() - started
+        commands = [
+            "uci",
+            "isready",
+            f"setoption name Hash value {config.hash_mb}",
+            f"setoption name Threads value {threads}",
+            "setoption name Book value",
+            "setoption name SyzygyPath value",
+            "ucinewgame",
+            f"position {position}",
+            f"go depth {depth}",
+        ]
+        try:
+            completed, elapsed = run_uci_search(
+                engine, commands, config.benchmark_timeout_seconds
+            )
+        except subprocess.TimeoutExpired as exc:
+            output = exc.output if isinstance(exc.output, str) else ""
+            with raw_log.open("a", encoding="utf-8") as stream:
+                stream.write(
+                    f"===== {label} depth={depth} timeout={exc.timeout} =====\n{output}\n"
+                )
+            raise RunnerError(f"benchmark timed out on {label}; see {raw_log}") from exc
+        except OSError as exc:
+            with raw_log.open("a", encoding="utf-8") as stream:
+                stream.write(
+                    f"===== {label} depth={depth} launch-error =====\n"
+                    f"{type(exc).__name__}: {exc}\n"
+                )
+            raise RunnerError(f"benchmark could not run on {label}; see {raw_log}") from exc
+
+        with raw_log.open("a", encoding="utf-8") as stream:
+            stream.write(
+                f"===== {label} depth={depth} returncode={completed.returncode} =====\n"
+                f"{completed.stdout}\n"
+            )
         info_matches = INFO_RE.findall(completed.stdout)
         if completed.returncode != 0 or not info_matches or "bestmove " not in completed.stdout:
-            raise RunnerError(f"benchmark failed on {label}; see benchmark-raw.log")
+            raise RunnerError(f"benchmark failed on {label}; see {raw_log}")
         nodes, nps = (int(value) for value in info_matches[-1])
-        with (output_dir / "benchmark-raw.log").open("a", encoding="utf-8") as stream:
-            stream.write(f"===== {label} depth={depth} =====\n{completed.stdout}\n")
         return {"position": label, "depth": depth, "nodes": nodes, "nps": nps, "wall_seconds": elapsed}
 
     search("warmup", "startpos", min(5, config.benchmark_depth))

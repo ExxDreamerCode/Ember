@@ -3,12 +3,12 @@ use crate::board::board_to_fen;
 use crate::board::{
     bit, is_attacked, move_ec, move_er, move_from, move_promotion, move_sc, move_sr, move_to,
     move_to_uci, piece_from_char, piece_type, sq, sq_c, BoardState, Move, BK, BP, BQ, BR, EMPTY_SQ,
-    INF, MATE, MAX_HALF_MOVE_CLOCK, MAX_PLY, NO_MOVE, WK, WP, WQ, WR,
+    INF, MATE, MAX_HALF_MOVE_CLOCK, NO_MOVE, WK, WP, WQ, WR,
 };
 use crate::book::OpeningBook;
 use crate::movegen::{apply_move, generate_moves};
 use crate::search::{lazy_smp_search, LazySmpPool, LazySmpSearchLimits, Searcher};
-use crate::time_management::threads_for_time_budget;
+use crate::time_management::{iteration_time_decision, threads_for_time_budget, IterationTiming};
 #[cfg(feature = "decision-trace")]
 use crate::trace::{DecisionTrace, DepthInfo, TraceLogger};
 use crate::tt::SharedTT;
@@ -83,11 +83,15 @@ fn root_side_has_major(st: &BoardState, white: bool) -> bool {
     (st.bb[rook] | st.bb[queen]) != 0
 }
 
+fn root_has_queen(st: &BoardState) -> bool {
+    (st.bb[WQ] | st.bb[BQ]) != 0
+}
+
 fn root_promotion_race(st: &BoardState) -> bool {
     let mut white_pawns = st.bb[WP];
     while white_pawns != 0 {
-        let sq = white_pawns.trailing_zeros() as usize;
-        if sq / 8 <= 2 {
+        let square = white_pawns.trailing_zeros() as usize;
+        if square / 8 <= 2 {
             return true;
         }
         white_pawns &= white_pawns - 1;
@@ -95,8 +99,8 @@ fn root_promotion_race(st: &BoardState) -> bool {
 
     let mut black_pawns = st.bb[BP];
     while black_pawns != 0 {
-        let sq = black_pawns.trailing_zeros() as usize;
-        if sq / 8 >= 5 {
+        let square = black_pawns.trailing_zeros() as usize;
+        if square / 8 >= 5 {
             return true;
         }
         black_pawns &= black_pawns - 1;
@@ -129,6 +133,16 @@ fn root_move_is_capture(st: &BoardState, mv: Move) -> bool {
     }
 
     fpi != EMPTY_SQ && piece_type(fpi) == 0 && Some(to) == st.ep && move_sc(mv) != move_ec(mv)
+}
+
+fn root_reduced_rook_check_capture(st: &BoardState, mv: Move) -> bool {
+    let attacker = st.mailbox[move_from(mv)];
+    root_non_king_piece_count(st) <= 12
+        && !root_has_queen(st)
+        && attacker != EMPTY_SQ
+        && piece_type(attacker) == 3
+        && root_move_is_capture(st, mv)
+        && root_move_gives_check(st, mv)
 }
 
 fn root_move_is_promotion(st: &BoardState, mv: Move) -> bool {
@@ -200,7 +214,11 @@ fn root_rook_invasion_score(st: &BoardState, mv: Move) -> Option<i32> {
 }
 
 fn root_depth_extension(st: &BoardState, mv: Move) -> i32 {
-    i32::from(root_rook_invasion_score(st, mv).is_some())
+    if root_reduced_rook_check_capture(st, mv) {
+        3
+    } else {
+        i32::from(root_rook_invasion_score(st, mv).is_some())
+    }
 }
 
 fn rook_attacks_enemy_non_pawn_on_rank(st: &BoardState, rook_sq: usize, rook: u8) -> bool {
@@ -230,10 +248,63 @@ fn rook_attacks_enemy_non_pawn_on_rank(st: &BoardState, rook_sq: usize, rook: u8
 fn root_order_score(st: &BoardState, mv: Move, preferred: Move) -> i32 {
     let mut score = root_forcing_score(st, mv).unwrap_or(0);
     score += root_rook_invasion_score(st, mv).unwrap_or(0);
+    if root_minor_king_zone_capture(st, mv) {
+        score += 1_500_000;
+    }
     if mv == preferred {
         score += 500_000;
     }
     score
+}
+
+fn sort_root_moves(st: &BoardState, moves: &[Move], preferred: Move) -> Vec<Move> {
+    let sparse_endgame = root_non_king_piece_count(st) <= 8
+        && (root_side_has_major(st, st.w) || root_promotion_race(st));
+    let has_rook_invasion = moves
+        .iter()
+        .any(|&mv| root_rook_invasion_score(st, mv).is_some());
+    let has_reduced_rook_check = root_non_king_piece_count(st) <= 12
+        && !root_has_queen(st)
+        && moves.iter().any(|&mv| {
+            let attacker = st.mailbox[move_from(mv)];
+            attacker != EMPTY_SQ && piece_type(attacker) == 3 && root_move_gives_check(st, mv)
+        });
+    let has_minor_tactic = moves.iter().any(|&mv| root_minor_king_zone_capture(st, mv));
+    let has_queen_capture = moves
+        .iter()
+        .any(|&mv| root_move_is_capture(st, mv) && piece_type(st.mailbox[move_to(mv)]) == 4);
+    let use_tactical_order = has_minor_tactic
+        || has_queen_capture
+        || has_reduced_rook_check
+        || ((sparse_endgame || has_rook_invasion)
+            && moves
+                .iter()
+                .any(|&mv| root_order_score(st, mv, NO_MOVE) >= 600_000));
+
+    if !use_tactical_order {
+        let mut ordered = moves.to_vec();
+        if let Some(position) = ordered.iter().position(|&mv| mv == preferred) {
+            ordered.swap(0, position);
+        }
+        return ordered;
+    }
+
+    let mut scored: Vec<(i32, usize, Move)> = moves
+        .iter()
+        .enumerate()
+        .map(|(idx, &mv)| (root_order_score(st, mv, preferred), idx, mv))
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    scored.into_iter().map(|(_, _, mv)| mv).collect()
+}
+
+fn tt_root_move(searcher: &Searcher, st: &BoardState, moves: &[Move]) -> Move {
+    searcher
+        .shared_tt
+        .get_depth(st.hash)
+        .and_then(|(_, _, _, best_move)| best_move)
+        .filter(|best_move| moves.contains(best_move))
+        .unwrap_or(NO_MOVE)
 }
 
 fn root_enemy_pawn_attacks_square(st: &BoardState, target: usize) -> bool {
@@ -313,48 +384,6 @@ fn root_minor_king_zone_capture(st: &BoardState, mv: Move) -> bool {
     }
 
     !root_enemy_pawn_attacks_square(st, to)
-}
-
-fn sort_tactical_root_moves(st: &BoardState, moves: &[Move], preferred: Move) -> Option<Vec<Move>> {
-    let mut scored = Vec::with_capacity(moves.len());
-    let mut has_tactical = false;
-    for (idx, &mv) in moves.iter().enumerate() {
-        let tactical = root_minor_king_zone_capture(st, mv);
-        has_tactical |= tactical;
-        let bonus = if tactical { 1_500_000 } else { 0 };
-        scored.push((root_order_score(st, mv, preferred) + bonus, idx, mv));
-    }
-    if !has_tactical {
-        return None;
-    }
-
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    Some(scored.into_iter().map(|(_, _, mv)| mv).collect())
-}
-
-fn sort_sparse_root_moves(st: &BoardState, moves: &[Move], preferred: Move) -> Option<Vec<Move>> {
-    let sparse_endgame = root_non_king_piece_count(st) <= 8
-        && (root_side_has_major(st, st.w) || root_promotion_race(st));
-    let has_rook_invasion = moves
-        .iter()
-        .any(|&mv| root_rook_invasion_score(st, mv).is_some());
-
-    if !sparse_endgame && !has_rook_invasion {
-        return None;
-    }
-
-    let mut scored: Vec<(i32, usize, Move)> = moves
-        .iter()
-        .enumerate()
-        .map(|(idx, &mv)| (root_order_score(st, mv, preferred), idx, mv))
-        .collect();
-    let has_priority = scored.iter().any(|(score, _, _)| *score >= 600_000);
-    if !has_priority {
-        return None;
-    }
-
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    Some(scored.into_iter().map(|(_, _, mv)| mv).collect())
 }
 
 impl Default for Engine {
@@ -676,6 +705,7 @@ impl Engine {
         depth_limit: i32,
     ) -> (String, i32, u64, f64) {
         self.searcher.stopped.store(false, Ordering::SeqCst);
+        self.searcher.pondering.store(false, Ordering::SeqCst);
         self.find_best_move_with_time_limits_prepared(soft_time_limit, time_limit, depth_limit)
     }
 
@@ -687,6 +717,7 @@ impl Engine {
         start: Instant,
     ) -> (String, i32, u64, f64) {
         self.searcher.stopped.store(false, Ordering::SeqCst);
+        self.searcher.pondering.store(false, Ordering::SeqCst);
         self.find_best_move_with_time_limits_prepared_started_at(
             soft_time_limit,
             time_limit,
@@ -851,20 +882,18 @@ impl Engine {
         }
 
         let search_threads = threads_for_time_budget(self.num_threads, soft_time_limit);
+        let preferred = tt_root_move(&self.searcher, &self.st, &moves);
+        let ordered_moves = sort_root_moves(&self.st, &moves, preferred);
         if search_threads > 1 {
             let start = match timer_start {
                 SearchTimerStart::BeforeSetup(start) => start,
                 SearchTimerStart::AfterSetup => Instant::now(),
             };
-            let threaded_moves = sort_tactical_root_moves(&self.st, &moves, NO_MOVE)
-                .or_else(|| sort_sparse_root_moves(&self.st, &moves, NO_MOVE))
-                .unwrap_or_else(|| moves.clone());
-
             let (best_move, best_score, best_depth, total_nodes) = lazy_smp_search(
                 &self.search_pool,
                 Arc::clone(&self.shared_tt),
                 &self.st,
-                &threaded_moves,
+                &ordered_moves,
                 root_depth_extension,
                 LazySmpSearchLimits {
                     soft_time: soft_time_limit,
@@ -873,7 +902,7 @@ impl Engine {
                     start,
                 },
                 search_threads,
-                &self.searcher,
+                &mut self.searcher,
             );
 
             let mv_str = move_to_uci(&self.st, best_move);
@@ -883,26 +912,30 @@ impl Engine {
             return (mv_str, best_score, total_nodes, elapsed);
         }
 
-        self.searcher.killers = [[None; 2]; MAX_PLY];
-        self.searcher.history = [[0i32; 64]; 64];
+        self.searcher.prepare_for_search();
         self.searcher.init_nnue_stack(&self.st);
 
         let start = match timer_start {
             SearchTimerStart::BeforeSetup(start) => start,
             SearchTimerStart::AfterSetup => Instant::now(),
         };
-        let mut best_move = moves[0];
+        let mut best_move = ordered_moves[0];
         let mut best_score = 0i32;
         let mut total_nodes = 0u64;
 
         let init_eval = self.searcher.corrected_eval(&self.st);
         let mut prev_score = init_eval;
         let mut best_depth = 0;
+        let mut stable_iterations = 0u32;
+        let mut previous_iteration_seconds = 0.0;
+        let mut previous_completed_elapsed = 0.0;
         #[cfg(feature = "decision-trace")]
         let mut depth_infos = Vec::new();
 
         for depth in 1..=depth_limit {
-            if start.elapsed().as_secs_f64() > time_limit {
+            if !self.searcher.pondering.load(Ordering::Relaxed)
+                && start.elapsed().as_secs_f64() > time_limit
+            {
                 break;
             }
 
@@ -917,28 +950,20 @@ impl Engine {
 
             let mut asp_best = best_move;
             let mut asp_score = -INF;
+            let mut asp_best_nodes = 0u64;
 
             'asp: loop {
-                let sorted = if let Some(s) = sort_tactical_root_moves(&self.st, &moves, asp_best) {
-                    s
-                } else if let Some(s) = sort_sparse_root_moves(&self.st, &moves, asp_best) {
-                    s
-                } else {
-                    let mut s = moves.clone();
-                    if asp_best != moves[0] {
-                        if let Some(pos) = s.iter().position(|&m| m == asp_best) {
-                            s.swap(0, pos);
-                        }
-                    }
-                    s
-                };
+                let sorted = sort_root_moves(&self.st, &ordered_moves, asp_best);
 
                 let mut cur_best = sorted[0];
                 let mut cur_score = -INF;
+                let mut cur_best_nodes = 0u64;
                 let mut loop_alpha = alpha;
 
                 for &mv in &sorted {
-                    if start.elapsed().as_secs_f64() > time_limit {
+                    if !self.searcher.pondering.load(Ordering::Relaxed)
+                        && start.elapsed().as_secs_f64() > time_limit
+                    {
                         break;
                     }
                     let old = self.st;
@@ -955,6 +980,7 @@ impl Engine {
                     self.searcher.rep_stack.push(h);
                     self.searcher.rep_stack_len += 1;
                     let root_ext = root_depth_extension(&old, mv);
+                    let move_nodes_before = nd;
 
                     let score = if cur_score == -INF {
                         -self.searcher.negamax(
@@ -996,6 +1022,7 @@ impl Engine {
                             s
                         }
                     };
+                    let move_nodes = nd.saturating_sub(move_nodes_before);
 
                     self.searcher.rep_stack.pop();
                     self.searcher.rep_stack_len -= 1;
@@ -1007,6 +1034,7 @@ impl Engine {
                     if score > cur_score {
                         cur_score = score;
                         cur_best = mv;
+                        cur_best_nodes = move_nodes;
                     }
                     if score > loop_alpha {
                         loop_alpha = score;
@@ -1017,7 +1045,8 @@ impl Engine {
                 }
 
                 if self.searcher.stopped.load(Ordering::Relaxed)
-                    || start.elapsed().as_secs_f64() > time_limit
+                    || (!self.searcher.pondering.load(Ordering::Relaxed)
+                        && start.elapsed().as_secs_f64() > time_limit)
                 {
                     break 'asp;
                 }
@@ -1036,6 +1065,7 @@ impl Engine {
                 }
                 asp_best = cur_best;
                 asp_score = cur_score;
+                asp_best_nodes = cur_best_nodes;
                 break;
             }
 
@@ -1045,11 +1075,38 @@ impl Engine {
             total_nodes += nd;
             let elapsed = start.elapsed().as_secs_f64();
 
-            if elapsed <= time_limit {
+            if elapsed <= time_limit || self.searcher.pondering.load(Ordering::Relaxed) {
+                let score_change_cp = asp_score.saturating_sub(prev_score).abs();
+                if best_depth == 0 || asp_best != best_move {
+                    stable_iterations = 0;
+                } else {
+                    stable_iterations = stable_iterations.saturating_add(1);
+                }
+                let iteration_seconds = (elapsed - previous_completed_elapsed).max(0.0);
+                let timing = IterationTiming {
+                    elapsed_seconds: elapsed,
+                    iteration_seconds,
+                    previous_iteration_seconds,
+                    score_change_cp,
+                    stable_iterations,
+                    best_move_effort: asp_best_nodes as f64 / nd.max(1) as f64,
+                    worker_disagreement: 0.0,
+                };
+                let time_decision =
+                    iteration_time_decision(soft_time_limit, time_limit, moves.len(), timing);
                 best_move = asp_best;
                 best_score = asp_score;
                 best_depth = depth;
                 prev_score = best_score;
+                previous_iteration_seconds = iteration_seconds;
+                previous_completed_elapsed = elapsed;
+                self.searcher.shared_tt.store(
+                    self.st.hash,
+                    depth,
+                    best_score,
+                    crate::tt::TT_EXACT,
+                    Some(best_move),
+                );
                 let nps = if elapsed > 0.0 {
                     (total_nodes as f64 / elapsed) as i64
                 } else {
@@ -1085,7 +1142,7 @@ impl Engine {
                     elapsed_ms: (elapsed * 1000.0) as u128,
                     pv: pv_str,
                 });
-                if elapsed >= soft_time_limit {
+                if !self.searcher.pondering.load(Ordering::Relaxed) && time_decision.stop {
                     break;
                 }
             } else {
@@ -1112,6 +1169,51 @@ impl Engine {
         });
         (mv_str, best_score, total_nodes, elapsed)
     }
+
+    pub fn ponder_move_after(&self, best_move: &str) -> Option<String> {
+        let bytes = best_move.as_bytes();
+        if bytes.len() < 4
+            || !(b'a'..=b'h').contains(&bytes[0])
+            || !(b'1'..=b'8').contains(&bytes[1])
+            || !(b'a'..=b'h').contains(&bytes[2])
+            || !(b'1'..=b'8').contains(&bytes[3])
+        {
+            return None;
+        }
+        let promotion = bytes
+            .get(4)
+            .map_or(0, |piece| match piece.to_ascii_lowercase() {
+                b'q' => b'Q',
+                b'r' => b'R',
+                b'b' => b'B',
+                b'n' => b'N',
+                _ => 0,
+            });
+        let root_move = self.legal_move_from_uci(
+            8 - usize::from(bytes[1] - b'0'),
+            usize::from(bytes[0] - b'a'),
+            8 - usize::from(bytes[3] - b'0'),
+            usize::from(bytes[2] - b'a'),
+            promotion,
+        )?;
+
+        let mut child = self.st;
+        apply_move(
+            &mut child,
+            move_sr(root_move),
+            move_sc(root_move),
+            move_er(root_move),
+            move_ec(root_move),
+            move_promotion(root_move),
+        );
+        let reply = self
+            .shared_tt
+            .get_depth(child.hash)
+            .and_then(|(_, _, _, best)| best)?;
+        generate_moves(&child, child.w, &child.cr, child.ep)
+            .contains(&reply)
+            .then(|| move_to_uci(&child, reply))
+    }
 }
 
 #[cfg(test)]
@@ -1130,11 +1232,77 @@ mod tests {
         generate_moves(&engine.st, engine.st.w, &engine.st.cr, engine.st.ep)
     }
 
+    fn root_move(engine: &Engine, uci: &str) -> Move {
+        root_moves(engine)
+            .into_iter()
+            .find(|mv| move_to_uci(&engine.st, *mv) == uci)
+            .unwrap_or_else(|| panic!("expected legal root move {uci}"))
+    }
+
     #[test]
-    fn sparse_endgame_root_ordering_prioritizes_reported_mating_check() {
+    fn root_ordering_prioritizes_the_missed_rook_clearance() {
+        let engine = engine_from_fen("8/5k2/2pp2p1/5pP1/P2P4/3n4/2r5/1KB4R b - - 4 46");
+        let moves = root_moves(&engine);
+        let ordered = sort_root_moves(&engine.st, &moves, NO_MOVE);
+
+        assert_eq!(move_to_uci(&engine.st, ordered[0]), "c2c1");
+    }
+
+    #[test]
+    fn reduced_rook_check_capture_gets_the_tactical_root_extension() {
+        let engine = engine_from_fen("8/5k2/2pp2p1/5pP1/P2P4/3n4/2r5/1KB4R b - - 4 46");
+        let clearance = root_move(&engine, "c2c1");
+        let non_capture = root_move(&engine, "c2c4");
+
+        assert!(root_reduced_rook_check_capture(&engine.st, clearance));
+        assert_eq!(root_depth_extension(&engine.st, clearance), 3);
+        assert!(!root_reduced_rook_check_capture(&engine.st, non_capture));
+        assert_eq!(root_depth_extension(&engine.st, non_capture), 0);
+    }
+
+    #[test]
+    fn root_ordering_prioritizes_the_forced_queen_recapture() {
+        let engine = engine_from_fen("1r4k1/2p2p2/2np1bp1/pp6/2Q3P1/2P2N2/PPP2P2/1KBR4 b - - 0 22");
+        let moves = root_moves(&engine);
+        let ordered = sort_root_moves(&engine.st, &moves, NO_MOVE);
+
+        assert_eq!(move_to_uci(&engine.st, ordered[0]), "b5c4");
+    }
+
+    #[test]
+    fn legal_root_tt_move_is_promoted_between_searches() {
+        let engine = engine_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        let moves = root_moves(&engine);
+        let preferred = root_move(&engine, "g1f3");
+        engine
+            .shared_tt
+            .store(engine.st.hash, 8, 12, crate::tt::TT_EXACT, Some(preferred));
+
+        let tt_move = tt_root_move(&engine.searcher, &engine.st, &moves);
+        let ordered = sort_root_moves(&engine.st, &moves, tt_move);
+
+        assert_eq!(tt_move, preferred);
+        assert_eq!(ordered[0], preferred);
+    }
+
+    #[test]
+    fn quiet_root_tt_move_stays_ahead_of_an_unrelated_capture() {
+        let engine =
+            engine_from_fen("rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 2");
+        let moves = root_moves(&engine);
+        let preferred = root_move(&engine, "g1f3");
+        let pawn_capture = root_move(&engine, "e4d5");
+        let ordered = sort_root_moves(&engine.st, &moves, preferred);
+
+        assert_eq!(ordered[0], preferred);
+        assert_ne!(ordered[0], pawn_capture);
+    }
+
+    #[test]
+    fn root_ordering_prioritizes_reported_mating_check() {
         let engine = engine_from_fen("8/5k2/3Q4/7p/8/1p6/3p1P1P/3B2K1 w - - 52 78");
         let moves = root_moves(&engine);
-        let sorted = sort_sparse_root_moves(&engine.st, &moves, NO_MOVE).expect("sparse ordering");
+        let sorted = sort_root_moves(&engine.st, &moves, NO_MOVE);
         let mating_check = *moves
             .iter()
             .find(|mv| move_to_uci(&engine.st, **mv) == "d1h5")
@@ -1153,18 +1321,18 @@ mod tests {
     }
 
     #[test]
-    fn sparse_root_ordering_does_not_activate_in_opening_positions() {
+    fn root_ordering_preserves_quiet_opening_order() {
         let engine = engine_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
         let moves = root_moves(&engine);
 
-        assert!(sort_sparse_root_moves(&engine.st, &moves, NO_MOVE).is_none());
+        assert_eq!(sort_root_moves(&engine.st, &moves, NO_MOVE), moves);
     }
 
     #[test]
-    fn sparse_root_ordering_handles_promotion_race_without_major_piece() {
+    fn root_ordering_handles_promotion_race_without_major_piece() {
         let engine = engine_from_fen("8/P4k2/8/8/8/8/8/6K1 w - - 0 1");
         let moves = root_moves(&engine);
-        let sorted = sort_sparse_root_moves(&engine.st, &moves, NO_MOVE).expect("promotion race");
+        let sorted = sort_root_moves(&engine.st, &moves, NO_MOVE);
 
         assert!(sorted
             .first()

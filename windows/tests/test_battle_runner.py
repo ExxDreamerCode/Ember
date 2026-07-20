@@ -4,7 +4,9 @@ import importlib.util
 import os
 import sys
 import tempfile
+import textwrap
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -43,6 +45,88 @@ class BattleRunnerTests(unittest.TestCase):
             battle_runner.os, "cpu_count", return_value=999
         ):
             self.assertEqual(battle_runner.logical_cpu_count(), 256)
+
+    def test_benchmark_waits_for_async_bestmove(self) -> None:
+        config = replace(
+            battle_runner.load_config(WINDOWS_DIR / "battle.toml"),
+            benchmark_depth=1,
+            benchmark_repeats=1,
+            benchmark_timeout_seconds=5,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            engine = root / "async-engine"
+            engine.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!{sys.executable}
+                    import sys
+                    import threading
+                    import time
+
+                    search_finished = threading.Event()
+
+                    def search():
+                        time.sleep(0.02)
+                        print("info depth 1 score cp 12 nodes 1234 nps 12000", flush=True)
+                        search_finished.set()
+                        print("bestmove e2e4", flush=True)
+
+                    for command in sys.stdin:
+                        command = command.strip()
+                        if command.startswith("go "):
+                            threading.Thread(target=search, daemon=True).start()
+                        elif command == "quit":
+                            if not search_finished.is_set():
+                                raise SystemExit(9)
+                            break
+                    """
+                ),
+                encoding="utf-8",
+            )
+            engine.chmod(0o755)
+
+            result = battle_runner.run_benchmark(engine, config, threads=2, output_dir=root)
+            raw_log = (root / "benchmark-raw.log").read_text(encoding="utf-8")
+
+        expected_searches = len(battle_runner.BENCHMARK_POSITIONS) + 1
+        self.assertEqual(len(result["samples"]), len(battle_runner.BENCHMARK_POSITIONS))
+        self.assertEqual(result["median_nps"], 12000)
+        self.assertEqual(raw_log.count("returncode=0"), expected_searches)
+        self.assertEqual(raw_log.count("bestmove e2e4"), expected_searches)
+
+    def test_failed_benchmark_preserves_raw_engine_output(self) -> None:
+        config = replace(
+            battle_runner.load_config(WINDOWS_DIR / "battle.toml"),
+            benchmark_depth=1,
+            benchmark_repeats=1,
+            benchmark_timeout_seconds=5,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            engine = root / "failing-engine"
+            engine.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!{sys.executable}
+                    import sys
+
+                    for command in sys.stdin:
+                        if command.startswith("go "):
+                            print("info string deliberate benchmark failure", flush=True)
+                            raise SystemExit(7)
+                    """
+                ),
+                encoding="utf-8",
+            )
+            engine.chmod(0o755)
+
+            with self.assertRaisesRegex(battle_runner.RunnerError, "failed on warmup"):
+                battle_runner.run_benchmark(engine, config, threads=2, output_dir=root)
+            raw_log = (root / "benchmark-raw.log").read_text(encoding="utf-8")
+
+        self.assertIn("warmup depth=1 returncode=7", raw_log)
+        self.assertIn("deliberate benchmark failure", raw_log)
 
     def test_parse_search_nps_uses_final_info_before_bestmove(self) -> None:
         value = battle_runner.parse_search_nps(
