@@ -3,7 +3,7 @@ use crate::board::{
     all_occ, attacked_by, bit, has_non_pawn, is_attacked, is_dead_position, is_white_piece,
     move_ec, move_er, move_from, move_promotion, move_sc, move_sr, move_to, piece_on, piece_type,
     promotion_piece_index, see, BoardState, Move, BK, BP, BR, EMPTY_SQ, INF, KING_ATTACKS, MATE,
-    MAX_HALF_MOVE_CLOCK, MAX_PLY, QS_DEPTH, WK, WP, WR,
+    MAX_HALF_MOVE_CLOCK, MAX_PLY, NO_MOVE, QS_DEPTH, WK, WP, WR,
 };
 use crate::evaluate::{current_nnue_net, evaluate, evaluate_nnue_acc_with_backend};
 use crate::movegen::{
@@ -18,6 +18,7 @@ use crate::nnue::{
     Simd512NnueBackend, SimdNnueBackend,
 };
 use crate::syzygy::SyzygyTables;
+use crate::time_management::{iteration_time_decision, IterationTiming};
 use crate::tt::{SharedTT, TT_ALPHA, TT_BETA, TT_EXACT};
 use crate::zobrist::{compute_pawn_hash, ep_hash_square, zobrist};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicU8, Ordering};
@@ -2703,6 +2704,8 @@ struct LazySmpSearchJob {
     start: Instant,
     global_best_depth: Arc<AtomicI32>,
     global_nodes: Arc<AtomicU64>,
+    worker_best_moves: Vec<AtomicU64>,
+    worker_depths: Vec<AtomicI32>,
 }
 
 enum LazySmpWorkerCommand {
@@ -2855,6 +2858,8 @@ impl LazySmpPool {
             start: limits.start,
             global_best_depth: Arc::new(AtomicI32::new(0)),
             global_nodes: Arc::new(AtomicU64::new(0)),
+            worker_best_moves: (0..num_threads).map(|_| AtomicU64::new(0)).collect(),
+            worker_depths: (0..num_threads).map(|_| AtomicI32::new(0)).collect(),
         });
         let (result_tx, result_rx) = mpsc::channel();
 
@@ -3124,6 +3129,32 @@ pub fn lazy_smp_search(
     )
 }
 
+fn lazy_smp_worker_disagreement(
+    job: &LazySmpSearchJob,
+    thread_id: usize,
+    best_move: Move,
+    depth: i32,
+) -> f64 {
+    let mut comparable = 0usize;
+    let mut different = 0usize;
+    for other in 0..job.num_threads {
+        if other == thread_id || job.worker_depths[other].load(Ordering::Acquire) < depth {
+            continue;
+        }
+        let other_move = job.worker_best_moves[other].load(Ordering::Relaxed) as Move;
+        if other_move == NO_MOVE {
+            continue;
+        }
+        comparable += 1;
+        different += usize::from(other_move != best_move);
+    }
+    if comparable == 0 {
+        0.0
+    } else {
+        different as f64 / comparable as f64
+    }
+}
+
 fn run_lazy_smp_worker(
     searcher: &mut Searcher,
     thread_id: usize,
@@ -3142,6 +3173,9 @@ fn run_lazy_smp_worker(
 
     let init_eval = searcher.corrected_eval(&st);
     let mut prev_score = init_eval;
+    let mut stable_iterations = 0u32;
+    let mut previous_iteration_seconds = 0.0;
+    let mut previous_completed_elapsed = 0.0;
 
     for depth in 1..=limits.depth {
         if searcher.time_up(start, limits.hard_time) {
@@ -3159,6 +3193,7 @@ fn run_lazy_smp_worker(
 
         let mut asp_best = best_move;
         let mut asp_score = -INF;
+        let mut asp_best_nodes = 0u64;
 
         'asp: loop {
             let mut sorted = my_moves.clone();
@@ -3170,6 +3205,7 @@ fn run_lazy_smp_worker(
 
             let mut cur_best = sorted[0];
             let mut cur_score = -INF;
+            let mut cur_best_nodes = 0u64;
             let mut loop_alpha = alpha;
 
             for &mv in &sorted {
@@ -3190,6 +3226,7 @@ fn run_lazy_smp_worker(
                 searcher.rep_stack.push(h);
                 searcher.rep_stack_len += 1;
                 let root_ext = (job.root_depth_extension)(&st, mv);
+                let move_nodes_before = nd;
 
                 let score = if cur_score == -INF {
                     -searcher.negamax(
@@ -3231,6 +3268,7 @@ fn run_lazy_smp_worker(
                         sc
                     }
                 };
+                let move_nodes = nd.saturating_sub(move_nodes_before);
 
                 searcher.rep_stack.pop();
                 searcher.rep_stack_len -= 1;
@@ -3241,6 +3279,7 @@ fn run_lazy_smp_worker(
                 if score > cur_score {
                     cur_score = score;
                     cur_best = mv;
+                    cur_best_nodes = move_nodes;
                 }
                 if score > loop_alpha {
                     loop_alpha = score;
@@ -3268,6 +3307,7 @@ fn run_lazy_smp_worker(
             }
             asp_best = cur_best;
             asp_score = cur_score;
+            asp_best_nodes = cur_best_nodes;
             break;
         }
 
@@ -3279,6 +3319,30 @@ fn run_lazy_smp_worker(
         let elapsed = start.elapsed().as_secs_f64();
 
         if elapsed <= limits.hard_time {
+            let score_change_cp = asp_score.saturating_sub(prev_score).abs();
+            if best_depth == 0 || asp_best != best_move {
+                stable_iterations = 0;
+            } else {
+                stable_iterations = stable_iterations.saturating_add(1);
+            }
+            let iteration_seconds = (elapsed - previous_completed_elapsed).max(0.0);
+            job.worker_best_moves[thread_id].store(u64::from(asp_best), Ordering::Relaxed);
+            job.worker_depths[thread_id].store(depth, Ordering::Release);
+            let timing = IterationTiming {
+                elapsed_seconds: elapsed,
+                iteration_seconds,
+                previous_iteration_seconds,
+                score_change_cp,
+                stable_iterations,
+                best_move_effort: asp_best_nodes as f64 / nd.max(1) as f64,
+                worker_disagreement: lazy_smp_worker_disagreement(job, thread_id, asp_best, depth),
+            };
+            let time_decision = iteration_time_decision(
+                limits.soft_time,
+                limits.hard_time,
+                job.root_moves.len(),
+                timing,
+            );
             let prev = job.global_best_depth.fetch_max(depth, Ordering::SeqCst);
             if prev < depth {
                 let global_nodes = job.global_nodes.load(Ordering::Relaxed);
@@ -3288,6 +3352,8 @@ fn run_lazy_smp_worker(
             best_score = asp_score;
             best_depth = depth;
             prev_score = best_score;
+            previous_iteration_seconds = iteration_seconds;
+            previous_completed_elapsed = elapsed;
             if thread_id == 0 {
                 searcher.shared_tt.store(
                     st.hash,
@@ -3299,7 +3365,7 @@ fn run_lazy_smp_worker(
             }
             searcher.update_correction_history(&st, best_score, best_depth);
             // Helpers can finish useful work until the leader coordinates the stop.
-            if thread_id == 0 && elapsed >= limits.soft_time {
+            if thread_id == 0 && time_decision.stop {
                 stopped.store(true, Ordering::SeqCst);
                 break;
             }

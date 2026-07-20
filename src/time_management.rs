@@ -11,6 +11,95 @@ pub struct TimeBudget {
     pub hard_seconds: f64,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct IterationTiming {
+    pub elapsed_seconds: f64,
+    pub iteration_seconds: f64,
+    pub previous_iteration_seconds: f64,
+    pub score_change_cp: i32,
+    pub stable_iterations: u32,
+    pub best_move_effort: f64,
+    pub worker_disagreement: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct IterationDecision {
+    pub target_seconds: f64,
+    pub predicted_next_seconds: f64,
+    pub stop: bool,
+}
+
+pub fn iteration_time_decision(
+    soft_seconds: f64,
+    hard_seconds: f64,
+    legal_moves: usize,
+    timing: IterationTiming,
+) -> IterationDecision {
+    let soft_seconds = soft_seconds.max(0.0).min(hard_seconds);
+    let adaptive = hard_seconds > soft_seconds * 1.05 + 0.001;
+    let growth = if timing.previous_iteration_seconds > 0.0 {
+        (timing.iteration_seconds / timing.previous_iteration_seconds).clamp(1.5, 4.0)
+    } else {
+        2.0
+    };
+    let predicted_next_seconds = (timing.iteration_seconds * growth).max(0.0);
+
+    if !adaptive {
+        return IterationDecision {
+            target_seconds: soft_seconds,
+            predicted_next_seconds,
+            stop: timing.elapsed_seconds >= soft_seconds,
+        };
+    }
+
+    let stability = match timing.stable_iterations {
+        0 => 1.30,
+        1 => 1.15,
+        2 => 1.00,
+        3 => 0.88,
+        _ => 0.75,
+    };
+    let score_volatility = 1.0 + (f64::from(timing.score_change_cp.abs()) / 240.0).clamp(0.0, 0.35);
+    let effort = timing.best_move_effort.clamp(0.0, 1.0);
+    let effort_factor = if effort >= 0.90 {
+        0.80
+    } else if effort >= 0.75 {
+        0.90
+    } else if effort < 0.45 {
+        1.10
+    } else {
+        1.0
+    };
+    let disagreement = timing.worker_disagreement.clamp(0.0, 1.0);
+    let unsettled = timing.stable_iterations < 2 || timing.score_change_cp.abs() > 80;
+    let disagreement_factor = if unsettled {
+        1.0 + 0.15 * disagreement
+    } else {
+        1.0
+    };
+    let scale =
+        (stability * score_volatility * effort_factor * disagreement_factor).clamp(0.70, 1.15);
+    let mut target_seconds = (soft_seconds * scale).max(soft_seconds).min(hard_seconds);
+    if legal_moves == 1 {
+        target_seconds = target_seconds.min(0.5).min(hard_seconds);
+    }
+
+    let stable_enough =
+        timing.stable_iterations >= 2 && timing.score_change_cp.abs() <= 80 && disagreement <= 0.5;
+    // A stable but shallow PV can still be wrong. Prediction may avoid an
+    // expensive extra iteration, but it must not take ordinary positions
+    // below the nominal budget that the clock manager already approved.
+    let prediction_boundary = timing.elapsed_seconds >= soft_seconds
+        && predicted_next_seconds >= (target_seconds - timing.elapsed_seconds).max(0.0);
+    let stop = timing.elapsed_seconds >= target_seconds || (stable_enough && prediction_boundary);
+
+    IterationDecision {
+        target_seconds,
+        predicted_next_seconds,
+        stop,
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct TimeManager {
     move_overhead_ms: f64,

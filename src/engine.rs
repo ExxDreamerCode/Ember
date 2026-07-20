@@ -8,7 +8,7 @@ use crate::board::{
 use crate::book::OpeningBook;
 use crate::movegen::{apply_move, generate_moves};
 use crate::search::{lazy_smp_search, LazySmpPool, LazySmpSearchLimits, Searcher};
-use crate::time_management::threads_for_time_budget;
+use crate::time_management::{iteration_time_decision, threads_for_time_budget, IterationTiming};
 #[cfg(feature = "decision-trace")]
 use crate::trace::{DecisionTrace, DepthInfo, TraceLogger};
 use crate::tt::SharedTT;
@@ -910,6 +910,9 @@ impl Engine {
         let init_eval = self.searcher.corrected_eval(&self.st);
         let mut prev_score = init_eval;
         let mut best_depth = 0;
+        let mut stable_iterations = 0u32;
+        let mut previous_iteration_seconds = 0.0;
+        let mut previous_completed_elapsed = 0.0;
         #[cfg(feature = "decision-trace")]
         let mut depth_infos = Vec::new();
 
@@ -929,12 +932,14 @@ impl Engine {
 
             let mut asp_best = best_move;
             let mut asp_score = -INF;
+            let mut asp_best_nodes = 0u64;
 
             'asp: loop {
                 let sorted = sort_root_moves(&self.st, &ordered_moves, asp_best);
 
                 let mut cur_best = sorted[0];
                 let mut cur_score = -INF;
+                let mut cur_best_nodes = 0u64;
                 let mut loop_alpha = alpha;
 
                 for &mv in &sorted {
@@ -955,6 +960,7 @@ impl Engine {
                     self.searcher.rep_stack.push(h);
                     self.searcher.rep_stack_len += 1;
                     let root_ext = root_depth_extension(&old, mv);
+                    let move_nodes_before = nd;
 
                     let score = if cur_score == -INF {
                         -self.searcher.negamax(
@@ -996,6 +1002,7 @@ impl Engine {
                             s
                         }
                     };
+                    let move_nodes = nd.saturating_sub(move_nodes_before);
 
                     self.searcher.rep_stack.pop();
                     self.searcher.rep_stack_len -= 1;
@@ -1007,6 +1014,7 @@ impl Engine {
                     if score > cur_score {
                         cur_score = score;
                         cur_best = mv;
+                        cur_best_nodes = move_nodes;
                     }
                     if score > loop_alpha {
                         loop_alpha = score;
@@ -1036,6 +1044,7 @@ impl Engine {
                 }
                 asp_best = cur_best;
                 asp_score = cur_score;
+                asp_best_nodes = cur_best_nodes;
                 break;
             }
 
@@ -1046,10 +1055,30 @@ impl Engine {
             let elapsed = start.elapsed().as_secs_f64();
 
             if elapsed <= time_limit {
+                let score_change_cp = asp_score.saturating_sub(prev_score).abs();
+                if best_depth == 0 || asp_best != best_move {
+                    stable_iterations = 0;
+                } else {
+                    stable_iterations = stable_iterations.saturating_add(1);
+                }
+                let iteration_seconds = (elapsed - previous_completed_elapsed).max(0.0);
+                let timing = IterationTiming {
+                    elapsed_seconds: elapsed,
+                    iteration_seconds,
+                    previous_iteration_seconds,
+                    score_change_cp,
+                    stable_iterations,
+                    best_move_effort: asp_best_nodes as f64 / nd.max(1) as f64,
+                    worker_disagreement: 0.0,
+                };
+                let time_decision =
+                    iteration_time_decision(soft_time_limit, time_limit, moves.len(), timing);
                 best_move = asp_best;
                 best_score = asp_score;
                 best_depth = depth;
                 prev_score = best_score;
+                previous_iteration_seconds = iteration_seconds;
+                previous_completed_elapsed = elapsed;
                 self.searcher.shared_tt.store(
                     self.st.hash,
                     depth,
@@ -1092,7 +1121,7 @@ impl Engine {
                     elapsed_ms: (elapsed * 1000.0) as u128,
                     pv: pv_str,
                 });
-                if elapsed >= soft_time_limit {
+                if time_decision.stop {
                     break;
                 }
             } else {
