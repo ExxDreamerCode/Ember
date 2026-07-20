@@ -63,6 +63,7 @@ rating_source = "Stockfish limited strength UCI_Elo setting"
 rating_source_date = "2026-06-06"
 engine_version = "nixpkgs"
 family = "stockfish-limited"
+supports_ponder = true
 required = true
 
 [engine.options]
@@ -84,6 +85,7 @@ rating_source = "Stockfish limited strength UCI_Elo setting"
 rating_source_date = "2026-06-06"
 engine_version = "nixpkgs"
 family = "stockfish-limited"
+supports_ponder = true
 required = true
 
 [engine.options]
@@ -105,6 +107,7 @@ rating_source = "Stockfish limited strength UCI_Elo setting"
 rating_source_date = "2026-06-06"
 engine_version = "nixpkgs"
 family = "stockfish-limited"
+supports_ponder = true
 required = false
 
 [engine.options]
@@ -126,11 +129,76 @@ rating_source = "Stockfish limited strength UCI_Elo setting"
 rating_source_date = "2026-06-06"
 engine_version = "nixpkgs"
 family = "stockfish-limited"
+supports_ponder = true
 required = false
 
 [engine.options]
 UCI_LimitStrength = "true"
 UCI_Elo = "2400"
+Threads = "1"
+Hash = "64"
+
+[[engine]]
+name = "Stockfish-UCI-2800"
+role = "bracket"
+package = "stockfish"
+cmd = "stockfish"
+proto = "uci"
+rating = 2800
+rating_sigma = 400
+rating_scale = "Stockfish UCI_Elo"
+rating_source = "Stockfish limited strength UCI_Elo setting"
+rating_source_date = "2026-07-19"
+engine_version = "nixpkgs"
+family = "stockfish-limited"
+supports_ponder = true
+required = false
+
+[engine.options]
+UCI_LimitStrength = "true"
+UCI_Elo = "2800"
+Threads = "1"
+Hash = "64"
+
+[[engine]]
+name = "Stockfish-UCI-3190"
+role = "bracket"
+package = "stockfish"
+cmd = "stockfish"
+proto = "uci"
+rating = 3190
+rating_sigma = 400
+rating_scale = "Stockfish UCI_Elo"
+rating_source = "Stockfish limited strength UCI_Elo setting"
+rating_source_date = "2026-07-19"
+engine_version = "nixpkgs"
+family = "stockfish-limited"
+supports_ponder = true
+required = false
+
+[engine.options]
+UCI_LimitStrength = "true"
+UCI_Elo = "3190"
+Threads = "1"
+Hash = "64"
+
+[[engine]]
+name = "Stockfish-Unlimited"
+role = "bracket"
+package = "stockfish"
+cmd = "stockfish"
+proto = "uci"
+rating = 3600
+rating_sigma = 500
+rating_scale = "broad comparison prior"
+rating_source = "Unrestricted nixpkgs Stockfish; rating is not an external claim"
+rating_source_date = "2026-07-19"
+engine_version = "nixpkgs"
+family = "stockfish"
+supports_ponder = true
+required = false
+
+[engine.options]
 Threads = "1"
 Hash = "64"
 
@@ -268,3 +336,106 @@ rating_source_date = "2026-07-07"
 engine_version = "4.92"
 family = "knightx"
 required = false
+
+[[engine]]
+name = "Rudim 3.0.4"
+role = "ccrl-replay"
+package = "ccrl-rudim-3-0-4"
+cmd = "ccrl-rudim-3.0.4"
+proto = "uci"
+rating = 3014
+rating_sigma = 23
+rating_scale = "CCRL 40/15"
+rating_source = "CCRL 40/15 complete list"
+rating_source_url = "https://computerchess.org.uk/4040/rating_list_all.html"
+rating_source_date = "2026-07-19"
+engine_version = "3.0.4"
+family = "rudim"
+supports_ponder = false
+required = false
+
+[engine.options]
+Hash = "64"
+
+[[engine]]
+name = "Crafty 25.2 4CPU"
+role = "ccrl-replay"
+package = "ccrl-crafty-25-2"
+cmd = "ccrl-crafty-25.2"
+proto = "xboard"
+rating = 3042
+rating_sigma = 24
+rating_scale = "CCRL 40/15"
+rating_source = "CCRL 40/15 engine details"
+rating_source_url = "https://www.computerchess.org/cgi/engine_details.cgi?each_game=0&eng=Crafty+25.2+64-bit+4CPU&print=Details"
+rating_source_date = "2026-07-19"
+engine_version = "25.2"
+family = "crafty"
+supports_ponder = true
+required = false
+
+[[engine]]
+name = "Rodent III 0.276 4CPU"
+role = "ccrl-replay"
+package = "ccrl-rodent-iii-0-276"
+cmd = "ccrl-rodent-iii-0.276"
+proto = "uci"
+rating = 3109
+rating_sigma = 26
+rating_scale = "CCRL 40/15"
+rating_source = "CCRL 40/15 engine details"
+rating_source_url = "https://www.computerchess.org/cgi/engine_details.cgi?each_game=0&eng=Rodent+III+0.276+64-bit+4CPU&print=Details"
+rating_source_date = "2026-07-19"
+engine_version = "0.276"
+family = "rodent"
+supports_ponder = true
+required = false
+
+[engine.options]
+Threads = "1"
+Hash = "64"
+UseBook = "false"
+
+[[engine]]
+name = "Senpai 3.0.2"
+role = "ccrl-replay"
+package = "ccrl-senpai-3-0-2"
+cmd = "ccrl-senpai-3.0.2"
+proto = "uci"
+rating = 3220
+rating_sigma = 50
+rating_scale = "CCRL 40/15"
+rating_source = "CCRL 40/15 engine details"
+rating_source_url = "https://computerchess.org.uk/4040/cgi/engine_details.cgi?print=Details&each_game=0&eng=Senpai+3.0.2+64-bit"
+rating_source_date = "2026-07-19"
+engine_version = "3.0.2"
+family = "senpai"
+supports_ponder = false
+required = false
+
+[engine.options]
+Threads = "1"
+Hash = "64"
+"Move Overhead" = "100"
+
+[[engine]]
+name = "Rybka 4 4CPU"
+role = "ccrl-replay"
+package = "ccrl-rybka-4"
+cmd = "ccrl-rybka-4"
+proto = "uci"
+rating = 3187
+rating_sigma = 24
+rating_scale = "CCRL 40/15"
+rating_source = "CCRL 40/15 engine details"
+rating_source_url = "https://www.computerchess.org/cgi/engine_details.cgi?eng=Rybka+4+64-bit+4CPU&print=Details"
+rating_source_date = "2026-07-19"
+engine_version = "4"
+family = "rybka"
+supports_ponder = true
+required_env = "RYBKA4_EXE"
+required = false
+
+[engine.options]
+Threads = "1"
+Hash = "64"
