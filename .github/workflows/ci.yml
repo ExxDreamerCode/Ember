@@ -153,3 +153,28 @@ jobs:
             target/debug/deps/*.stdout
             target/debug/deps/*.stderr
           retention-days: 7
+
+  lichess-puzzle-corpus:
+    name: Lichess puzzle corpus
+    runs-on: ubuntu-latest
+
+    env:
+      RUST_BACKTRACE: 1
+      EMBER_LICHESS_CORPUS_THREADS: 4
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Lichess puzzle corpus
+        run: |
+          nix develop .#ci --command bash -c "
+            ulimit -s 65536
+            export RUST_MIN_STACK=16777216
+            cargo test --locked --all-features --test lichess_puzzle_corpus -- --ignored --test-threads=4
+          "
