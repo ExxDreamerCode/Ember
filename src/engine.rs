@@ -1634,12 +1634,15 @@ impl Engine {
 
         if !child.chess960 {
             if let Some(ref book) = self.book {
-                if let Some(choice) = book.pick_move_with_confidence(
+                if let Some(choice) = book.best_move_with_confidence(
                     &child,
                     &replies,
                     self.book_min_move_weight,
                     self.book_min_move_weight_permille,
                 ) {
+                    return Some(move_to_uci(&child, choice.mv));
+                }
+                if let Some(choice) = book.best_move_with_confidence(&child, &replies, 1, 0) {
                     return Some(move_to_uci(&child, choice.mv));
                 }
             }
@@ -1991,6 +1994,21 @@ mod tests {
             ["c7c5", "e7e5", "e7e6", "c7c6", "d7d6"].contains(&ponder.as_str()),
             "unexpected embedded-book ponder reply after 1.e4: {ponder}"
         );
+    }
+
+    #[test]
+    fn ponder_book_reply_can_relax_normal_book_confidence() {
+        let mut engine = Engine::new();
+        engine.book = Some(
+            OpeningBook::load_from_bytes(crate::opening_book::BOOK_DATA, "<embedded>").unwrap(),
+        );
+        engine.book_min_move_weight = u16::MAX;
+
+        let ponder = engine
+            .ponder_move_after("e2e4")
+            .expect("relaxed book fallback should still provide a ponder reply");
+
+        assert_eq!(ponder, "c7c5");
     }
 
     #[test]

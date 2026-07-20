@@ -74,18 +74,41 @@ impl OpeningBook {
         min_weight: u16,
         min_weight_permille: u16,
     ) -> Option<BookChoice> {
-        let min_weight_permille = min_weight_permille.min(1000) as u32;
-        let candidates: Vec<BookChoice> = self
-            .legal_choices(st, moves)?
-            .into_iter()
-            .filter(|choice| choice.weight >= min_weight)
-            .filter(|choice| {
-                min_weight_permille == 0
-                    || (choice.weight as u64) * 1000
-                        >= (choice.total_weight as u64) * (min_weight_permille as u64)
-            })
-            .collect();
+        let candidates = self.confident_choices(st, moves, min_weight, min_weight_permille)?;
         pick_weighted_choice(&candidates)
+    }
+
+    pub fn best_move_with_confidence(
+        &self,
+        st: &BoardState,
+        moves: &[Move],
+        min_weight: u16,
+        min_weight_permille: u16,
+    ) -> Option<BookChoice> {
+        self.confident_choices(st, moves, min_weight, min_weight_permille)?
+            .into_iter()
+            .max_by_key(|choice| (choice.weight, choice.mv))
+    }
+
+    fn confident_choices(
+        &self,
+        st: &BoardState,
+        moves: &[Move],
+        min_weight: u16,
+        min_weight_permille: u16,
+    ) -> Option<Vec<BookChoice>> {
+        let min_weight_permille = min_weight_permille.min(1000) as u32;
+        Some(
+            self.legal_choices(st, moves)?
+                .into_iter()
+                .filter(|choice| choice.weight >= min_weight)
+                .filter(|choice| {
+                    min_weight_permille == 0
+                        || (choice.weight as u64) * 1000
+                            >= (choice.total_weight as u64) * (min_weight_permille as u64)
+                })
+                .collect(),
+        )
     }
 
     fn legal_choices(&self, st: &BoardState, moves: &[Move]) -> Option<Vec<BookChoice>> {
