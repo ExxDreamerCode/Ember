@@ -1260,11 +1260,24 @@ impl Engine {
 
         if !self.st.chess960 {
             if let Some(ref book) = self.book {
-                if let Some(choice) = book.pick_move_with_confidence(
+                if let Some(choice) = book.pick_move_with_quality(
                     &self.st,
                     &moves,
                     self.book_min_move_weight,
                     self.book_min_move_weight_permille,
+                    crate::book::DEFAULT_BOOK_MAX_EVAL_LOSS_CP,
+                    |mv| {
+                        let mut child = self.st;
+                        apply_move(
+                            &mut child,
+                            move_sr(mv),
+                            move_sc(mv),
+                            move_er(mv),
+                            move_ec(mv),
+                            move_promotion(mv),
+                        );
+                        -self.searcher.corrected_eval(&child)
+                    },
                 ) {
                     let mv_str = move_to_uci(&self.st, choice.mv);
                     let eval_score = self.searcher.corrected_eval(&self.st);

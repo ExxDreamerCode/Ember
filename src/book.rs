@@ -16,6 +16,7 @@ struct BookMove {
 
 pub const DEFAULT_BOOK_MIN_MOVE_WEIGHT: u16 = 2;
 pub const DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE: u16 = 10;
+pub const DEFAULT_BOOK_MAX_EVAL_LOSS_CP: i32 = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BookChoice {
@@ -76,6 +77,36 @@ impl OpeningBook {
     ) -> Option<BookChoice> {
         let candidates = self.confident_choices(st, moves, min_weight, min_weight_permille)?;
         pick_weighted_choice(&candidates)
+    }
+
+    pub fn pick_move_with_quality<F>(
+        &self,
+        st: &BoardState,
+        moves: &[Move],
+        min_weight: u16,
+        min_weight_permille: u16,
+        max_eval_loss_cp: i32,
+        mut evaluate: F,
+    ) -> Option<BookChoice>
+    where
+        F: FnMut(Move) -> i32,
+    {
+        let candidates = self.confident_choices(st, moves, min_weight, min_weight_permille)?;
+        let scored = candidates
+            .into_iter()
+            .map(|choice| {
+                let score = evaluate(choice.mv);
+                (choice, score)
+            })
+            .collect::<Vec<_>>();
+        let best_score = scored.iter().map(|(_, score)| *score).max()?;
+        let max_eval_loss_cp = max_eval_loss_cp.max(0);
+        let finalists = scored
+            .into_iter()
+            .filter(|(_, score)| *score >= best_score.saturating_sub(max_eval_loss_cp))
+            .map(|(choice, _)| choice)
+            .collect::<Vec<_>>();
+        pick_uniform_choice(&finalists)
     }
 
     pub fn best_move_with_confidence(
@@ -169,6 +200,17 @@ fn pick_weighted_choice(candidates: &[BookChoice]) -> Option<BookChoice> {
         }
     }
     Some(candidates[0])
+}
+
+fn pick_uniform_choice(candidates: &[BookChoice]) -> Option<BookChoice> {
+    if candidates.is_empty() {
+        return None;
+    }
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as usize;
+    Some(candidates[nanos % candidates.len()])
 }
 
 fn match_polyglot_move(pm: u16, legal: &[Move], st: &BoardState) -> Option<Move> {
