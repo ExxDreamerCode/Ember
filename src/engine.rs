@@ -2047,6 +2047,26 @@ mod tests {
     }
 
     #[test]
+    fn book_quality_window_avoids_the_inferior_f1w14oir_branch() {
+        let mut engine = Engine::new();
+        engine.book = Some(
+            OpeningBook::load_from_bytes(crate::opening_book::BOOK_DATA, "<embedded>").unwrap(),
+        );
+        for mv in ["g1f3", "c7c5", "e2e4", "a7a6"] {
+            play_uci(&mut engine, mv);
+        }
+
+        let (best_move, _score, nodes, _elapsed) =
+            engine.find_best_move_with_time_limits(0.01, 0.01, 1);
+
+        assert_eq!(best_move, "d2d4");
+        assert_eq!(
+            nodes, 0,
+            "the selected continuation should remain a book move"
+        );
+    }
+
+    #[test]
     fn caller_supplied_start_time_is_used_for_clock_search() {
         let mut engine =
             engine_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
