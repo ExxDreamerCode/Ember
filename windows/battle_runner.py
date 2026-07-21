@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import queue
+import random
 import re
 import subprocess
 import sys
@@ -730,6 +731,7 @@ def wait_for_opponent_and_challenge(
     bot_process: subprocess.Popen[Any],
     progress: str,
     event_sink: Callable[[dict[str, Any]], None] | None = None,
+    rng: random.Random | random.SystemRandom | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
     deadline = (
@@ -774,6 +776,7 @@ def wait_for_opponent_and_challenge(
                 availability.append(f"{opponent}=ready")
                 ready.append(opponent)
 
+        (rng or random.SystemRandom()).shuffle(ready)
         for opponent in ready:
             print(f"{progress} Challenging {opponent}...")
             attempt: dict[str, Any] = {"opponent": opponent, "started_at": utc_now()}
@@ -1099,8 +1102,13 @@ def print_plan(config: BattleConfig, threads: int, engine_info: dict[str, Any]) 
     print(f"  Games: {len(config.games)}; sequential only")
     for index, game in enumerate(config.games, 1):
         score_text = "scoring" if game.scoring else "non-scoring"
+        opponents = (
+            ", ".join(game.opponents)
+            if len(game.opponents) <= 5
+            else f"{len(game.opponents)} configured opponents"
+        )
         print(
-            f"    {index}. [{', '.join(game.opponents)}]: "
+            f"    {index}. [{opponents}]: "
             f"{game.variant} {game.base_seconds}+{game.increment_seconds} "
             f"{game.mode} color={game.color} {score_text}"
         )
@@ -1110,7 +1118,7 @@ def print_plan(config: BattleConfig, threads: int, engine_info: dict[str, Any]) 
         else f"for up to {config.opponent_wait_timeout_seconds}s"
     )
     print(
-        f"  Opponent selection: first ready bot from each pool; poll every "
+        f"  Opponent selection: random ready bot from each pool; poll every "
         f"{config.availability_poll_seconds}s and wait {wait_text}"
     )
     print(f"  Challenge accept timeout: {config.challenge_timeout_seconds}s per opponent")

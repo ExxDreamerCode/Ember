@@ -202,8 +202,8 @@ The runner uses all logical CPUs automatically (maximum 256) and can make the
 machine busy. It changes no Windows service, autostart, scheduled task, power,
 sleep, registry, PATH, or firewall setting. Keep the console and machine awake.
 
-The default battle is one casual, non-scoring 3+2 standard game against the
-first ready bot in a configured opponent pool. Busy, offline, rate-limited,
+The default battle is one casual, non-scoring 3+2 standard game against a
+random ready bot in a 50-opponent pool. Busy, offline, rate-limited,
 declining, or non-responding bots are bypassed. Unaccepted challenges are
 canceled after challenge_timeout_seconds, then the runner tries the next ready
 bot. If the whole pool is unavailable, the runner waits and polls until one is

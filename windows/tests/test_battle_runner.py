@@ -32,8 +32,10 @@ class BattleRunnerTests(unittest.TestCase):
         config = battle_runner.load_config(WINDOWS_DIR / "battle.toml")
         self.assertEqual(config.hash_mb, 1024)
         self.assertEqual(config.games[0].opponent, "Lynx_BOT")
+        self.assertEqual(len(config.games[0].opponents), 50)
+        self.assertEqual(len({name.casefold() for name in config.games[0].opponents}), 50)
         self.assertEqual(
-            config.games[0].opponents,
+            config.games[0].opponents[:5],
             ["Lynx_BOT", "pawn_git", "simbelmyne-bot", "CubixChess", "bot_adario"],
         )
         self.assertEqual(config.challenge_timeout_seconds, 15)
@@ -228,7 +230,7 @@ class BattleRunnerTests(unittest.TestCase):
         process.poll.return_value = None
 
         result = battle_runner.wait_for_opponent_and_challenge(
-            client, game, config, process, "[1/1]"
+            client, game, config, process, "[1/1]", rng=mock.Mock()
         )
 
         self.assertTrue(result["accepted"])
@@ -255,9 +257,11 @@ class BattleRunnerTests(unittest.TestCase):
         ]
         process = mock.Mock()
         process.poll.return_value = None
+        rng = mock.Mock()
+        rng.shuffle.side_effect = lambda values: None
 
         result = battle_runner.wait_for_opponent_and_challenge(
-            client, game, config, process, "[1/1]"
+            client, game, config, process, "[1/1]", rng=rng
         )
 
         self.assertEqual(result["opponent"], "pawn_git")
@@ -278,15 +282,44 @@ class BattleRunnerTests(unittest.TestCase):
         ]
         process = mock.Mock()
         process.poll.return_value = None
+        rng = mock.Mock()
+        rng.shuffle.side_effect = lambda values: None
 
         result = battle_runner.wait_for_opponent_and_challenge(
-            client, game, config, process, "[1/1]"
+            client, game, config, process, "[1/1]", rng=rng
         )
 
         self.assertEqual(result["opponent"], "pawn_git")
         self.assertEqual(result["attempts"][0]["status"], "TIMEOUT")
         self.assertEqual(result["attempts"][1]["status"], "ACCEPTED")
         client.cancel_challenge.assert_called_once_with("challenge-timeout")
+
+    def test_ready_opponents_are_randomized_before_challenging(self) -> None:
+        config = battle_runner.load_config(WINDOWS_DIR / "battle.toml")
+        game = replace(config.games[0], opponents=["first", "second"])
+        client = mock.Mock()
+        client.opponents_status.return_value = {
+            "first": {"id": "first", "online": True, "playing": False},
+            "second": {"id": "second", "online": True, "playing": False},
+        }
+        client.create_challenge.return_value = (
+            "game1234",
+            "accepted",
+            {"challenge": {"id": "game1234"}},
+        )
+        process = mock.Mock()
+        process.poll.return_value = None
+        rng = mock.Mock()
+        rng.shuffle.side_effect = lambda values: values.reverse()
+
+        result = battle_runner.wait_for_opponent_and_challenge(
+            client, game, config, process, "[1/1]", rng=rng
+        )
+
+        self.assertEqual(result["opponent"], "second")
+        client.create_challenge.assert_called_once_with(
+            game, config.challenge_timeout_seconds, opponent="second"
+        )
 
     def test_game_monitor_uses_local_finish_event_and_pgn_without_a_client(self) -> None:
         process = mock.Mock()
