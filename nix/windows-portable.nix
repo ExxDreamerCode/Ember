@@ -111,7 +111,7 @@ EOF
     patch -d "$bundle/lichess-bot" -p1 < "${../windows/lichess-bot-rate-limit.patch}"
     grep -F 'control_queue.put_nowait({"type": "ember_control_ready"})' \
       "$bundle/lichess-bot/lib/lichess_bot.py" >/dev/null
-    PYTHONPATH="$bundle/lichess-bot:$site" \
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$bundle/lichess-bot:$site" \
       "${pythonDependencies}/bin/python" - <<'PY'
 from unittest.mock import patch
 
@@ -216,14 +216,22 @@ EOF
 
     chmod -R u+w "$bundle"
 
+    # Python may regenerate bytecode for the local interpreter at any time.
+    # Do not ship or checksum these disposable caches.
+    find "$bundle" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+    find "$bundle" -type d -name __pycache__ -prune -exec rm -rf {} +
+
     # battle.toml is intentionally user-editable. The manifest covers every
-    # other shipped file and never covers future results.
+    # other shipped file and never covers future results or Python caches.
     (
       cd "$bundle"
       find . -type f \
         ! -path './battle.toml' \
         ! -path './SHA256SUMS.txt' \
         ! -path './results/*' \
+        ! -path '*/__pycache__/*' \
+        ! -name '*.pyc' \
+        ! -name '*.pyo' \
         -printf '%P\0' \
         | sort -z \
         | xargs -0 sha256sum > SHA256SUMS.txt
