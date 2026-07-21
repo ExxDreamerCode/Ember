@@ -2999,9 +2999,9 @@ fn select_lazy_smp_result<'a>(
         }
     }
 
-    // Thread zero owns time management, persistent learning, and the root TT
-    // entry. Helpers diversify the root and feed the shared TT, but their
-    // horizon-dependent votes must not replace the principal search result.
+    // Thread zero owns the selected result, persistent learning, and the root
+    // TT entry. Settled helpers can coordinate its stop only when its published
+    // move agrees; their horizon-dependent votes never replace that result.
     if let Some(principal) = principal {
         return Some(principal);
     }
@@ -3225,15 +3225,26 @@ pub fn lazy_smp_search(
     )
 }
 
-fn lazy_smp_worker_disagreement(
+#[derive(Clone, Copy, Debug)]
+struct LazySmpAgreement {
+    disagreement: f64,
+    comparable_workers: usize,
+    principal_agrees: bool,
+}
+
+fn lazy_smp_worker_agreement(
     job: &LazySmpSearchJob,
     thread_id: usize,
     best_move: Move,
     depth: i32,
-) -> f64 {
+) -> LazySmpAgreement {
     let verification_thread = job.verification_move.map(|_| 1);
     if verification_thread == Some(thread_id) {
-        return 0.0;
+        return LazySmpAgreement {
+            disagreement: 0.0,
+            comparable_workers: 0,
+            principal_agrees: false,
+        };
     }
 
     let mut comparable = 0usize;
@@ -3252,11 +3263,55 @@ fn lazy_smp_worker_disagreement(
         comparable += 1;
         different += usize::from(other_move != best_move);
     }
-    if comparable == 0 {
-        0.0
-    } else {
-        different as f64 / comparable as f64
+    LazySmpAgreement {
+        disagreement: if comparable == 0 {
+            0.0
+        } else {
+            different as f64 / comparable as f64
+        },
+        comparable_workers: comparable,
+        principal_agrees: thread_id == 0
+            || (job.worker_depths[0].load(Ordering::Acquire) > 0
+                && job.worker_best_moves[0].load(Ordering::Relaxed) as Move == best_move),
     }
+}
+
+#[cfg(test)]
+fn lazy_smp_worker_disagreement(
+    job: &LazySmpSearchJob,
+    thread_id: usize,
+    best_move: Move,
+    depth: i32,
+) -> f64 {
+    lazy_smp_worker_agreement(job, thread_id, best_move, depth).disagreement
+}
+
+fn lazy_smp_worker_can_coordinate_stop(
+    thread_id: usize,
+    verification_thread: Option<usize>,
+    soft_time: f64,
+    timing: IterationTiming,
+    agreement: LazySmpAgreement,
+    time_decision_stop: bool,
+) -> bool {
+    if !time_decision_stop {
+        return false;
+    }
+    if thread_id == 0 {
+        return true;
+    }
+
+    // A helper may interrupt a long leader iteration only after another
+    // complete root search confirms a settled result. The leader still owns
+    // the final move and persistent learning; helpers merely coordinate the
+    // shared stop token once the nominal allocation has been consumed.
+    verification_thread != Some(thread_id)
+        && timing.elapsed_seconds >= soft_time
+        && timing.stable_iterations >= 2
+        && timing.score_change_cp.abs() <= 80
+        && agreement.comparable_workers > 0
+        && agreement.principal_agrees
+        && agreement.disagreement <= 0.25
 }
 
 fn run_lazy_smp_worker(
@@ -3435,6 +3490,7 @@ fn run_lazy_smp_worker(
             let iteration_seconds = (elapsed - previous_completed_elapsed).max(0.0);
             job.worker_best_moves[thread_id].store(u64::from(asp_best), Ordering::Relaxed);
             job.worker_depths[thread_id].store(depth, Ordering::Release);
+            let agreement = lazy_smp_worker_agreement(job, thread_id, asp_best, depth);
             let timing = IterationTiming {
                 elapsed_seconds: elapsed,
                 iteration_seconds,
@@ -3442,7 +3498,7 @@ fn run_lazy_smp_worker(
                 score_change_cp,
                 stable_iterations,
                 best_move_effort: asp_best_nodes as f64 / nd.max(1) as f64,
-                worker_disagreement: lazy_smp_worker_disagreement(job, thread_id, asp_best, depth),
+                worker_disagreement: agreement.disagreement,
             };
             let time_decision = iteration_time_decision(
                 limits.soft_time,
@@ -3471,8 +3527,17 @@ fn run_lazy_smp_worker(
                 );
             }
             searcher.update_correction_history(&st, best_score, best_depth);
-            // Helpers can finish useful work until the leader coordinates the stop.
-            if thread_id == 0 && !searcher.pondering.load(Ordering::Relaxed) && time_decision.stop {
+            let verification_thread = job.verification_move.map(|_| 1);
+            if !searcher.pondering.load(Ordering::Relaxed)
+                && lazy_smp_worker_can_coordinate_stop(
+                    thread_id,
+                    verification_thread,
+                    limits.soft_time,
+                    timing,
+                    agreement,
+                    time_decision.stop,
+                )
+            {
                 stopped.store(true, Ordering::SeqCst);
                 break;
             }
@@ -3873,7 +3938,7 @@ mod tests {
     }
 
     #[test]
-    fn lazy_smp_helper_cannot_end_the_leader_iteration_at_soft_time() {
+    fn immature_lazy_smp_helper_cannot_end_the_leader_iteration_at_soft_time() {
         use std::sync::atomic::AtomicUsize;
 
         static EXPECTED_ROOT_MOVES: AtomicUsize = AtomicUsize::new(0);
@@ -3930,6 +3995,83 @@ mod tests {
             root_moves.len(),
             "a helper stopped the leader before its crossing iteration completed"
         );
+    }
+
+    #[test]
+    fn settled_lazy_smp_helper_can_coordinate_the_shared_soft_stop() {
+        let timing = IterationTiming {
+            elapsed_seconds: 1.1,
+            iteration_seconds: 0.2,
+            previous_iteration_seconds: 0.15,
+            score_change_cp: 12,
+            stable_iterations: 3,
+            best_move_effort: 0.8,
+            worker_disagreement: 0.0,
+        };
+        let agreement = LazySmpAgreement {
+            disagreement: 0.0,
+            comparable_workers: 2,
+            principal_agrees: true,
+        };
+
+        assert!(lazy_smp_worker_can_coordinate_stop(
+            2, None, 1.0, timing, agreement, true,
+        ));
+        assert!(!lazy_smp_worker_can_coordinate_stop(
+            2,
+            None,
+            1.0,
+            timing,
+            LazySmpAgreement {
+                disagreement: 0.0,
+                comparable_workers: 0,
+                principal_agrees: true,
+            },
+            true,
+        ));
+        assert!(!lazy_smp_worker_can_coordinate_stop(
+            1,
+            Some(1),
+            1.0,
+            timing,
+            agreement,
+            true,
+        ));
+        assert!(!lazy_smp_worker_can_coordinate_stop(
+            2,
+            None,
+            1.0,
+            IterationTiming {
+                elapsed_seconds: 0.9,
+                ..timing
+            },
+            agreement,
+            true,
+        ));
+        assert!(!lazy_smp_worker_can_coordinate_stop(
+            2,
+            None,
+            1.0,
+            timing,
+            LazySmpAgreement {
+                disagreement: 0.5,
+                comparable_workers: 2,
+                principal_agrees: true,
+            },
+            true,
+        ));
+        assert!(!lazy_smp_worker_can_coordinate_stop(
+            2,
+            None,
+            1.0,
+            timing,
+            LazySmpAgreement {
+                disagreement: 0.0,
+                comparable_workers: 2,
+                principal_agrees: false,
+            },
+            true,
+        ));
     }
 
     #[test]
