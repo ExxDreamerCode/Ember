@@ -29,3 +29,7 @@ ccrl-152-bxe3	16	rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1	d2d4 g
 # Lichess F1W14oiR before 30.Qxb5. Qxb5 allowed 30...Qa8 31.bxc5 Qxe4; the stronger continuation found in the investigation was 30.bxc5.
 # DISABLED: deployment-like 12-thread depth-20 search can still choose Qxb5. Keep this visible until a generally safe SMP/search fix makes the row pass without losing Elo or NPS.
 # f1w14oir-30-qxb5	20	2r2r2/q3pk2/4p1p1/1pp4p/1P2P3/p3B2P/PbR1QPP1/1R4K1 w - - 2 30	-	b4c5	lichess,F1W14oiR,smp,tactic	0	0	0
+
+# Lichess sGhFxtv2 before 25.Bh5, https://lichess.org/sGhFxtv2. Ember sees 25...Bxc3 26.bxc3 Qf5+ in its PV but undervalues the damage; deep Stockfish analysis prefers 25.a4, with 25.Bg4 also substantially safer.
+# DISABLED: Bh5 reproduces with both one and twelve threads; the deployment search completed depth 21 and reported only -1.05. Keep the forbidden-move row visible until a general evaluation/search fix passes it without losing Elo or NPS.
+# sghfxtv2-25-bh5	21	r3n1k1/1pp1Prb1/3p3p/p1n5/2P5/2N1P2P/PPKBBqp1/R2Q2R1 w - - 3 25	-	!e2h5	lichess,sGhFxtv2,exposedKing,horizon,tactic	0	0	0
