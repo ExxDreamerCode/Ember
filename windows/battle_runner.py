@@ -9,6 +9,7 @@ import ctypes
 import datetime as dt
 import getpass
 import hashlib
+import itertools
 import json
 import os
 import queue
@@ -119,6 +120,36 @@ def utc_now() -> str:
 
 def timestamp_id() -> str:
     return dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def parse_game_count(value: str) -> int | None:
+    normalized = value.strip().upper()
+    if normalized == "INF":
+        return None
+    try:
+        count = int(normalized)
+    except ValueError as exc:
+        raise ValueError("enter a positive integer or INF") from exc
+    if count < 1:
+        raise ValueError("game count must be positive")
+    return count
+
+
+def prompt_game_count(input_fn: Callable[[str], str] = input) -> int | None:
+    while True:
+        try:
+            return parse_game_count(input_fn("Games to play (positive integer or INF): "))
+        except ValueError as exc:
+            print(f"Invalid game count: {exc}.")
+
+
+def scheduled_games(
+    templates: list[GameSpec], game_count: int | None
+) -> Iterable[tuple[int, GameSpec]]:
+    for index, game in enumerate(itertools.cycle(templates), 1):
+        if game_count is not None and index > game_count:
+            return
+        yield index, game
 
 
 def sha256_file(path: Path) -> str:
@@ -1099,7 +1130,7 @@ def print_plan(config: BattleConfig, threads: int, engine_info: dict[str, Any]) 
     print(f"  Logical CPU threads: {threads} (automatic; Ember cap {MAX_THREADS})")
     print(f"  Hash: {config.hash_mb} MiB")
     print("  Syzygy: disabled")
-    print(f"  Games: {len(config.games)}; sequential only")
+    print(f"  Configured game templates: {len(config.games)}; sequential only")
     for index, game in enumerate(config.games, 1):
         score_text = "scoring" if game.scoring else "non-scoring"
         opponents = (
@@ -1145,6 +1176,7 @@ def run(args: argparse.Namespace) -> int:
     if input("\nType YES to benchmark Ember and begin issuing challenges: ").strip() != "YES":
         print("Canceled; no challenge was issued.")
         return 0
+    game_count = prompt_game_count()
     token = os.environ.get("LICHESS_BOT_TOKEN") or getpass.getpass("Lichess bot token: ")
     if not token:
         raise RunnerError("no Lichess token supplied")
@@ -1160,6 +1192,7 @@ def run(args: argparse.Namespace) -> int:
         "threads": threads,
         "hash_mb": config.hash_mb,
         "engine": engine_info,
+        "requested_games": game_count if game_count is not None else "INF",
         "completed": [],
     }
     write_json_atomic(state_path, state)
@@ -1202,11 +1235,13 @@ def run(args: argparse.Namespace) -> int:
     token = ""
     child_env["LICHESS_BOT_TOKEN"] = ""
 
+    interrupted = False
     try:
         wait_for_bot_ready(bot_log, bot_process)
         state["phase"] = "PLAYING"
         write_json_atomic(state_path, state)
-        for index, game in enumerate(config.games, 1):
+        total_text = str(game_count) if game_count is not None else "INF"
+        for index, game in scheduled_games(config.games, game_count):
             record: dict[str, Any] = {
                 "index": index,
                 "game": asdict(game),
@@ -1215,7 +1250,7 @@ def run(args: argparse.Namespace) -> int:
             }
             append_json_line(events_path, record)
             log_offset = bot_log.stat().st_size if bot_log.exists() else 0
-            progress = f"[{index}/{len(config.games)}]"
+            progress = f"[{index}/{total_text}]"
 
             def record_runtime_event(value: dict[str, Any]) -> None:
                 append_json_line(events_path, {"index": index, **value})
@@ -1283,22 +1318,31 @@ def run(args: argparse.Namespace) -> int:
             state["completed"].append(record)
             write_json_atomic(state_path, state)
             print(f"  Finished: {final_json.get('status')}; weighted game NPS: {nps['weighted_nps']}")
+    except KeyboardInterrupt:
+        interrupted = True
+        state["phase"] = "INTERRUPTED"
+        state["finished_at"] = utc_now()
+        write_json_atomic(state_path, state)
+        print("\nBattle stopped by user; shutting down lichess-bot.")
     finally:
         stop_process(bot_process)
         bot_console.close()
 
-    state["phase"] = "COMPLETE"
-    state["finished_at"] = utc_now()
+    if not interrupted:
+        state["phase"] = "COMPLETE"
+        state["finished_at"] = utc_now()
     write_json_atomic(state_path, state)
     summary = {
         "run": run_dir.name,
         "threads": threads,
         "hash_mb": config.hash_mb,
         "benchmark_median_nps": benchmark["median_nps"],
+        "requested_games": game_count if game_count is not None else "INF",
         "games": state["completed"],
     }
     write_json_atomic(run_dir / "summary.json", summary)
-    print(f"\nBattle complete. Results: {run_dir}")
+    outcome = "stopped" if interrupted else "complete"
+    print(f"\nBattle {outcome}. Results: {run_dir}")
     return 0
 
 

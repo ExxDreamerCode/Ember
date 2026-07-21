@@ -191,8 +191,9 @@ Ember Lichess Windows portable bundle
 1. Extract the complete ZIP to a writable directory.
 2. Edit battle.toml with Notepad. It contains no Lichess token.
 3. Double-click Verify.cmd (Run Battle.cmd also verifies automatically).
-4. Double-click Run Battle.cmd, review the printed plan, type YES, and enter
-   the Lichess token at the masked prompt.
+4. Double-click Run Battle.cmd, review the printed plan, type YES, enter a
+   positive game count or INF, and enter the Lichess token at the masked
+   prompt.
 
 The bot token needs the bot:play and challenge:write permissions. If one
 opponent rejects a challenge, the exact Lichess reason is recorded and the
@@ -202,8 +203,11 @@ The runner uses all logical CPUs automatically (maximum 256) and can make the
 machine busy. It changes no Windows service, autostart, scheduled task, power,
 sleep, registry, PATH, or firewall setting. Keep the console and machine awake.
 
-The default battle is one casual, non-scoring 3+2 standard game against a
-random ready bot in a 50-opponent pool. Busy, offline, rate-limited,
+The default template is a casual, non-scoring 3+2 standard game against a
+random ready bot in a 50-opponent pool. The requested game count repeats the
+configured templates sequentially; INF continues until Ctrl-C. One lichess-bot
+process and control stream are retained for the whole series. Busy, offline,
+rate-limited,
 declining, or non-responding bots are bypassed. Unaccepted challenges are
 canceled after challenge_timeout_seconds, then the runner tries the next ready
 bot. If the whole pool is unavailable, the runner waits and polls until one is
