@@ -393,8 +393,38 @@ pub struct SearchDebug {
     pub disable_lmp: bool,
     pub disable_lmr: bool,
     pub disable_null_move: bool,
+    pub disable_qsearch_check_cap: bool,
+    pub disable_qsearch_delta: bool,
+    pub disable_qsearch_see: bool,
     pub disable_reverse_futility: bool,
     pub disable_see_pruning: bool,
+    trace_roots: bool,
+    stats: SearchDebugStats,
+}
+
+#[cfg(feature = "search-debug")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SearchDebugStats {
+    pub max_ply: usize,
+    pub tt_hits: u64,
+    pub tt_max_depth: i32,
+    pub tt_cutoffs: u64,
+    pub reverse_futility_cutoffs: u64,
+    pub futility_cutoffs: u64,
+    pub null_attempts: u64,
+    pub null_cutoffs: u64,
+    pub iid_reductions: u64,
+    pub lmp_cutoffs: u64,
+    pub history_skips: u64,
+    pub see_skips: u64,
+    pub lmr_searches: u64,
+    pub lmr_researches: u64,
+    pub lmr_reduction_sum: u64,
+    pub lmr_max_reduction: i32,
+    pub qnodes: u64,
+    pub q_delta_cutoffs: u64,
+    pub q_see_skips: u64,
+    pub q_checked_depth_exits: u64,
 }
 
 macro_rules! qsearch_mode_body {
@@ -412,6 +442,11 @@ macro_rules! qsearch_mode_body {
         $eval:ident
     ) => {{
         *$cnt += 1;
+        #[cfg(feature = "search-debug")]
+        {
+            $this.debug.stats.qnodes += 1;
+            $this.debug.stats.max_ply = $this.debug.stats.max_ply.max($ply);
+        }
         if $this.time_up($start, $tl) {
             return 0;
         }
@@ -436,10 +471,18 @@ macro_rules! qsearch_mode_body {
             if stand > $alpha {
                 $alpha = stand;
             }
-            if $depth <= 0 && $alpha - 975 > stand {
+            if $this.qsearch_delta_enabled() && $depth <= 0 && $alpha - 975 > stand {
+                #[cfg(feature = "search-debug")]
+                {
+                    $this.debug.stats.q_delta_cutoffs += 1;
+                }
                 return $alpha;
             }
-        } else if $depth <= -4 {
+        } else if $this.qsearch_check_cap_enabled() && $depth <= -4 {
+            #[cfg(feature = "search-debug")]
+            {
+                $this.debug.stats.q_checked_depth_exits += 1;
+            }
             return $eval.static_eval::<CHESS960>($this, $st, $ply);
         }
 
@@ -483,7 +526,14 @@ macro_rules! qsearch_mode_body {
             let to = move_to(mv);
             let fpi = $st.mailbox[from];
             let tpi = $st.mailbox[to];
-            if !in_check && move_see::<CHESS960>($st, mv, from, to, fpi, tpi) < 0 {
+            if !in_check
+                && $this.qsearch_see_enabled()
+                && move_see::<CHESS960>($st, mv, from, to, fpi, tpi) < 0
+            {
+                #[cfg(feature = "search-debug")]
+                {
+                    $this.debug.stats.q_see_skips += 1;
+                }
                 continue;
             }
             let st_before = *$st;
@@ -559,6 +609,10 @@ macro_rules! negamax_mode_body {
         $eval:ident
     ) => {{
         *$cnt += 1;
+        #[cfg(feature = "search-debug")]
+        {
+            $this.debug.stats.max_ply = $this.debug.stats.max_ply.max($ply);
+        }
         if $this.time_up($start, $tl) {
             return 0;
         }
@@ -601,6 +655,12 @@ macro_rules! negamax_mode_body {
         let tt_depth = tt_data.map(|(d, _, _, _)| d).unwrap_or(-1);
         let tt_flag = tt_data.map(|(_, _, f, _)| f);
 
+        #[cfg(feature = "search-debug")]
+        if tt_data.is_some() {
+            $this.debug.stats.tt_hits += 1;
+            $this.debug.stats.tt_max_depth = $this.debug.stats.tt_max_depth.max(tt_depth);
+        }
+
         let is_pv = beta - $alpha > 1;
         let ext = if in_check && $depth < 16 { 1 } else { 0 };
         let actual_depth = $depth + ext;
@@ -608,9 +668,27 @@ macro_rules! negamax_mode_body {
         if !is_pv && tt_depth >= actual_depth {
             if let (Some(flag), Some(s)) = (tt_flag, tt_score) {
                 match flag {
-                    TT_EXACT => return s,
-                    TT_ALPHA if s <= $alpha => return $alpha,
-                    TT_BETA if s >= beta => return beta,
+                    TT_EXACT => {
+                        #[cfg(feature = "search-debug")]
+                        {
+                            $this.debug.stats.tt_cutoffs += 1;
+                        }
+                        return s;
+                    }
+                    TT_ALPHA if s <= $alpha => {
+                        #[cfg(feature = "search-debug")]
+                        {
+                            $this.debug.stats.tt_cutoffs += 1;
+                        }
+                        return $alpha;
+                    }
+                    TT_BETA if s >= beta => {
+                        #[cfg(feature = "search-debug")]
+                        {
+                            $this.debug.stats.tt_cutoffs += 1;
+                        }
+                        return beta;
+                    }
                     _ => {}
                 }
             }
@@ -634,6 +712,10 @@ macro_rules! negamax_mode_body {
         {
             let margin = 80 + 65 * actual_depth;
             if eval_score - margin >= beta {
+                #[cfg(feature = "search-debug")]
+                {
+                    $this.debug.stats.reverse_futility_cutoffs += 1;
+                }
                 return eval_score - margin;
             }
         }
@@ -652,6 +734,10 @@ macro_rules! negamax_mode_body {
                     $eval,
                 );
                 if q + margin <= $alpha {
+                    #[cfg(feature = "search-debug")]
+                    {
+                        $this.debug.stats.futility_cutoffs += 1;
+                    }
                     return $alpha;
                 }
             }
@@ -668,6 +754,10 @@ macro_rules! negamax_mode_body {
         {
             let total_non_pawn = (all_occ(&$st.bb) & !($st.bb[WP] | $st.bb[BP])).count_ones();
             if total_non_pawn > 4 {
+                #[cfg(feature = "search-debug")]
+                {
+                    $this.debug.stats.null_attempts += 1;
+                }
                 let r = 3 + actual_depth / 4 + ((eval_score - beta) / 200).min(3);
                 let ow = $st.w;
                 let oe = $st.ep;
@@ -707,6 +797,10 @@ macro_rules! negamax_mode_body {
                     return 0;
                 }
                 if s >= beta {
+                    #[cfg(feature = "search-debug")]
+                    {
+                        $this.debug.stats.null_cutoffs += 1;
+                    }
                     return beta;
                 }
             }
@@ -733,6 +827,10 @@ macro_rules! negamax_mode_body {
 
         let actual_depth =
             if $this.iid_reduction_enabled() && tt_move.is_none() && actual_depth >= 4 && is_pv {
+                #[cfg(feature = "search-debug")]
+                {
+                    $this.debug.stats.iid_reductions += 1;
+                }
                 actual_depth - 1
             } else {
                 actual_depth
@@ -829,6 +927,10 @@ macro_rules! negamax_mode_body {
             let is_quiet = !capture && !is_promo;
 
             if !is_pv && !in_check && is_quiet && legal_moves_seen >= lmp_count {
+                #[cfg(feature = "search-debug")]
+                {
+                    $this.debug.stats.lmp_cutoffs += 1;
+                }
                 break;
             }
             if !is_pv && !in_check && legal_moves_seen > 0 && best_score > -MATE / 2 {
@@ -836,11 +938,19 @@ macro_rules! negamax_mode_body {
                     if $this.see_pruning_enabled()
                         && move_see::<CHESS960>($st, mv, from, to, fpi, tpi) < -80 * actual_depth
                     {
+                        #[cfg(feature = "search-debug")]
+                        {
+                            $this.debug.stats.see_skips += 1;
+                        }
                         continue;
                     }
                 } else if is_quiet && $this.history_pruning_enabled() {
                     let (fk, tk) = from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
                     if actual_depth <= 5 && $this.history[fk][tk] < -1024 * actual_depth {
+                        #[cfg(feature = "search-debug")]
+                        {
+                            $this.debug.stats.history_skips += 1;
+                        }
                         continue;
                     }
                 }
@@ -924,6 +1034,13 @@ macro_rules! negamax_mode_body {
                         r
                     }
                 };
+                #[cfg(feature = "search-debug")]
+                {
+                    $this.debug.stats.lmr_searches += 1;
+                    $this.debug.stats.lmr_reduction_sum += r as u64;
+                    $this.debug.stats.lmr_max_reduction =
+                        $this.debug.stats.lmr_max_reduction.max(r);
+                }
                 let s2 = -$this.$negamax_mode::<CHESS960, E>(
                     $st,
                     new_depth - r,
@@ -937,6 +1054,10 @@ macro_rules! negamax_mode_body {
                     $eval,
                 );
                 if s2 > $alpha {
+                    #[cfg(feature = "search-debug")]
+                    {
+                        $this.debug.stats.lmr_researches += 1;
+                    }
                     let s3 = -$this.$negamax_mode::<CHESS960, E>(
                         $st,
                         new_depth,
@@ -1259,6 +1380,73 @@ impl Searcher {
     }
 
     #[cfg(feature = "search-debug")]
+    pub fn reset_debug_stats(&mut self) {
+        self.debug.reset_stats();
+    }
+
+    #[cfg(feature = "search-debug")]
+    pub fn debug_stats(&self) -> SearchDebugStats {
+        self.debug.stats
+    }
+
+    #[cfg(feature = "search-debug")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn emit_debug_root_trace(
+        &self,
+        depth: i32,
+        order: usize,
+        mv: &str,
+        alpha: i32,
+        beta: i32,
+        score: i32,
+        nodes: u64,
+    ) {
+        if !self.debug.trace_roots {
+            return;
+        }
+        let s = self.debug.stats;
+        eprintln!(
+            "info string search-debug root depth={depth} order={order} move={mv} alpha={alpha} beta={beta} score={score} nodes={nodes} seldepth={} tt_hits={} tt_max_depth={} tt_cutoffs={} rfp={} futility={} null={}/{} iid={} lmp={} history={} see={} lmr={}/{} lmr_sum={} lmr_max={} qnodes={} qdelta={} qsee={} qcheck_cap={}",
+            s.max_ply,
+            s.tt_hits,
+            s.tt_max_depth,
+            s.tt_cutoffs,
+            s.reverse_futility_cutoffs,
+            s.futility_cutoffs,
+            s.null_cutoffs,
+            s.null_attempts,
+            s.iid_reductions,
+            s.lmp_cutoffs,
+            s.history_skips,
+            s.see_skips,
+            s.lmr_researches,
+            s.lmr_searches,
+            s.lmr_reduction_sum,
+            s.lmr_max_reduction,
+            s.qnodes,
+            s.q_delta_cutoffs,
+            s.q_see_skips,
+            s.q_checked_depth_exits,
+        );
+    }
+
+    #[cfg(feature = "search-debug")]
+    pub fn emit_debug_aspiration_trace(
+        &self,
+        depth: i32,
+        alpha: i32,
+        beta: i32,
+        score: i32,
+        result: &str,
+    ) {
+        if self.debug.trace_roots {
+            eprintln!(
+                "info string search-debug aspiration depth={depth} alpha={alpha} beta={beta} score={score} result={result}"
+            );
+        }
+    }
+
+    #[cfg(feature = "search-debug")]
     fn corr_hist_enabled(&self) -> bool {
         !self.debug.disable_corr_hist
     }
@@ -1345,6 +1533,36 @@ impl Searcher {
     #[cfg(not(feature = "search-debug"))]
     #[inline(always)]
     fn see_pruning_enabled(&self) -> bool {
+        true
+    }
+
+    #[cfg(feature = "search-debug")]
+    fn qsearch_check_cap_enabled(&self) -> bool {
+        !self.debug.disable_qsearch_check_cap
+    }
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    fn qsearch_check_cap_enabled(&self) -> bool {
+        true
+    }
+
+    #[cfg(feature = "search-debug")]
+    fn qsearch_delta_enabled(&self) -> bool {
+        !self.debug.disable_qsearch_delta
+    }
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    fn qsearch_delta_enabled(&self) -> bool {
+        true
+    }
+
+    #[cfg(feature = "search-debug")]
+    fn qsearch_see_enabled(&self) -> bool {
+        !self.debug.disable_qsearch_see
+    }
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    fn qsearch_see_enabled(&self) -> bool {
         true
     }
 
@@ -2606,9 +2824,18 @@ impl SearchDebug {
             disable_lmp: env_flag("EMBER_DISABLE_LMP"),
             disable_lmr: env_flag("EMBER_DISABLE_LMR"),
             disable_null_move: env_flag("EMBER_DISABLE_NULL_MOVE"),
+            disable_qsearch_check_cap: env_flag("EMBER_DISABLE_QSEARCH_CHECK_CAP"),
+            disable_qsearch_delta: env_flag("EMBER_DISABLE_QSEARCH_DELTA"),
+            disable_qsearch_see: env_flag("EMBER_DISABLE_QSEARCH_SEE"),
             disable_reverse_futility: env_flag("EMBER_DISABLE_REVERSE_FUTILITY"),
             disable_see_pruning: env_flag("EMBER_DISABLE_SEE_PRUNING"),
+            trace_roots: env_flag("EMBER_TRACE_ROOT_SEARCH"),
+            stats: SearchDebugStats::default(),
         }
+    }
+
+    fn reset_stats(&mut self) {
+        self.stats = SearchDebugStats::default();
     }
 }
 
@@ -3682,6 +3909,35 @@ mod tests {
             score > stand_pat + 50,
             "qsearch should improve on stand-pat by searching e5xd6 en passant: stand_pat={stand_pat}, score={score}"
         );
+    }
+
+    #[cfg(feature = "search-debug")]
+    #[test]
+    fn search_debug_stats_are_reset_between_root_moves() {
+        let mut st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(1));
+        let mut searcher = Searcher::new(shared_tt, stopped);
+        let mut nodes = 0u64;
+
+        searcher.qsearch(
+            &mut st,
+            -INF,
+            INF,
+            QS_DEPTH,
+            Instant::now(),
+            10.0,
+            &mut nodes,
+            0,
+        );
+
+        let stats = searcher.debug_stats();
+        assert!(stats.qnodes > 1);
+        assert!(stats.max_ply > 0);
+
+        searcher.reset_debug_stats();
+
+        assert_eq!(searcher.debug_stats(), SearchDebugStats::default());
     }
 
     #[test]

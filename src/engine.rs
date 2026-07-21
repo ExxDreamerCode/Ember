@@ -1388,7 +1388,7 @@ impl Engine {
                 let mut cur_best_nodes = 0u64;
                 let mut loop_alpha = alpha;
 
-                for &mv in &sorted {
+                for (_root_index, &mv) in sorted.iter().enumerate() {
                     if !self.searcher.pondering.load(Ordering::Relaxed)
                         && start.elapsed().as_secs_f64() > time_limit
                     {
@@ -1409,6 +1409,8 @@ impl Engine {
                     self.searcher.rep_stack_len += 1;
                     let root_ext = root_depth_extension(&old, mv);
                     let move_nodes_before = nd;
+                    #[cfg(feature = "search-debug")]
+                    self.searcher.reset_debug_stats();
 
                     let score = if cur_score == -INF {
                         -self.searcher.negamax(
@@ -1452,6 +1454,17 @@ impl Engine {
                     };
                     let move_nodes = nd.saturating_sub(move_nodes_before);
 
+                    #[cfg(feature = "search-debug")]
+                    self.searcher.emit_debug_root_trace(
+                        depth,
+                        _root_index,
+                        &move_to_uci(&old, mv),
+                        loop_alpha,
+                        beta,
+                        score,
+                        move_nodes,
+                    );
+
                     self.searcher.rep_stack.pop();
                     self.searcher.rep_stack_len -= 1;
                     self.st = old;
@@ -1480,12 +1493,23 @@ impl Engine {
                 }
 
                 if cur_score <= alpha {
+                    #[cfg(feature = "search-debug")]
+                    self.searcher
+                        .emit_debug_aspiration_trace(depth, alpha, beta, cur_score, "fail-low");
                     asp_delta = asp_delta.saturating_mul(2).min(INF);
                     alpha = (prev_score - asp_delta).max(-INF);
                     beta = prev_score + init_delta;
                     continue 'asp;
                 }
                 if cur_score >= beta {
+                    #[cfg(feature = "search-debug")]
+                    self.searcher.emit_debug_aspiration_trace(
+                        depth,
+                        alpha,
+                        beta,
+                        cur_score,
+                        "fail-high",
+                    );
                     asp_delta = asp_delta.saturating_mul(2).min(INF);
                     beta = (prev_score + asp_delta).min(INF);
                     asp_best = cur_best;
@@ -1494,6 +1518,9 @@ impl Engine {
                 asp_best = cur_best;
                 asp_score = cur_score;
                 asp_best_nodes = cur_best_nodes;
+                #[cfg(feature = "search-debug")]
+                self.searcher
+                    .emit_debug_aspiration_trace(depth, alpha, beta, cur_score, "exact");
                 break;
             }
 
