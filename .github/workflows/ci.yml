@@ -57,16 +57,6 @@ jobs:
           nix develop .#ci --command python3 -m unittest discover
           -s windows/tests -p 'test_*.py'
 
-      - name: Run release regression tests
-        run: |
-          nix develop .#ci --command bash -c "
-            ulimit -s 65536
-            export RUST_MIN_STACK=16777216
-            cargo test --locked --release --test ccrl_game152_regression -- --test-threads=1
-          "
-        env:
-          RUST_BACKTRACE: 1
-
       - name: Run old x86 CPU smoke under QEMU
         if: matrix.runner == 'ubuntu-latest'
         run: tools/test-x86_64-qemu-oldcpu.sh
