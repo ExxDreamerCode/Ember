@@ -15,6 +15,8 @@ import sys
 import time
 from pathlib import Path
 
+from sprt import pentanomial_counts, pentanomial_sprt
+
 try:
     import tomllib
 except ImportError:  # pragma: no cover
@@ -546,6 +548,18 @@ def selected_p_value(stats, alternative):
 
 def decision(stats, cfg):
     run_cfg = cfg["run"]
+    sprt_cfg = cfg.get("sprt", {})
+    if sprt_cfg.get("enabled", False):
+        min_pairs = int(sprt_cfg.get("min_pairs", run_cfg.get("min_pairs", 1)))
+        if stats["pairs"] < min_pairs:
+            return "continue"
+        state = stats["sprt"]["state"]
+        if state == "accept_h1":
+            return "engine_a_better"
+        if state == "accept_h0":
+            return "engine_b_better"
+        return "continue"
+
     alpha = float(run_cfg.get("alpha", 0.05))
     min_pairs = int(run_cfg.get("min_pairs", 30))
     if stats["pairs"] < min_pairs:
@@ -555,6 +569,12 @@ def decision(stats, cfg):
     if stats["p_less"] is not None and stats["p_less"] <= alpha:
         return "engine_b_better"
     return "continue"
+
+
+def capped_verdict(stats, verdict, max_pairs):
+    if verdict == "continue" and stats["pairs"] >= max_pairs:
+        return "inconclusive"
+    return verdict
 
 
 def write_pair_csv(rd, pairs):
@@ -612,6 +632,21 @@ def write_report(rd, cfg, stats, verdict):
         f"Verdict: **{verdict}**",
         "",
     ]
+    if "sprt" in stats:
+        sprt = stats["sprt"]
+        lines.extend(
+            [
+                "## Sequential test",
+                "",
+                f"Pentanomial: `{sprt['pentanomial']}`",
+                f"Hypotheses: `{sprt['elo0']:.1f}` versus `{sprt['elo1']:.1f}` Elo",
+                f"Alpha / beta: `{sprt['alpha']:.3f}` / `{sprt['beta']:.3f}`",
+                f"LLR: `{sprt['llr']:.6f}`",
+                f"Bounds: `{sprt['lower_bound']:.6f}` to `{sprt['upper_bound']:.6f}`",
+                f"State: **{sprt['state']}**",
+                "",
+            ]
+        )
     (rd / "report.md").write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -622,6 +657,15 @@ def analyze(config_path, run_id, cfg_override=None):
     pairs = pair_games(games, cfg["engine_a"]["name"], cfg["engine_b"]["name"])
     alpha = float(cfg["run"].get("alpha", 0.05))
     stats = analyze_pairs(pairs, alpha)
+    sprt_cfg = cfg.get("sprt", {})
+    if sprt_cfg.get("enabled", False) and pairs:
+        stats["sprt"] = pentanomial_sprt(
+            pentanomial_counts(pairs),
+            float(sprt_cfg["elo0"]),
+            float(sprt_cfg["elo1"]),
+            float(sprt_cfg.get("alpha", 0.05)),
+            float(sprt_cfg.get("beta", 0.05)),
+        )
     verdict = decision(stats, cfg)
     write_pair_csv(rd, pairs)
     summary = dict(stats)
@@ -777,6 +821,12 @@ def run_batches(
             f.write(" ".join(shell_quote(a) for a in args) + "\n")
 
     stats, verdict = analyze(config_path, run_id, cfg)
+    verdict = capped_verdict(stats, verdict, max_pairs)
+    if verdict == "inconclusive":
+        summary = dict(stats)
+        summary["verdict"] = verdict
+        write_json(rd / "estimates" / "summary.json", summary)
+        write_report(rd, cfg, stats, verdict)
     state = {
         "phase": "finished",
         "finished_at": now_utc(),
