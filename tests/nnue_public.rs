@@ -1,0 +1,142 @@
+use chess_rs_lib::backend::available_nnue_backends;
+use chess_rs_lib::nnue::{NNUEAccumulator, NNUENet};
+use chess_rs_lib::types::{BLACK, WHITE};
+use chess_rs_lib::Engine;
+
+const DENSE_NET: &[u8] = include_bytes!("../src/net.nnue");
+const COMPACT_NET: &[u8] = include_bytes!("../src/net.compact.nnue");
+
+fn parse_uci_move(mv: &str) -> (usize, usize, usize, usize, u8) {
+    let bytes = mv.as_bytes();
+    assert!(matches!(bytes.len(), 4 | 5), "invalid UCI move: {mv}");
+    let sc = (bytes[0] - b'a') as usize;
+    let sr = 8 - (bytes[1] - b'0') as usize;
+    let ec = (bytes[2] - b'a') as usize;
+    let er = 8 - (bytes[3] - b'0') as usize;
+    let promotion = bytes.get(4).copied().unwrap_or(0).to_ascii_uppercase();
+    (sr, sc, er, ec, promotion)
+}
+
+fn assert_incremental_line_matches_refresh(net: &NNUENet, fen: &str, moves: &[&str]) {
+    for backend in available_nnue_backends() {
+        let mut engine = Engine::new();
+        engine.try_set_fen(fen).expect("critical FEN should parse");
+
+        let mut incremental = NNUEAccumulator::new(net.hidden_size);
+        incremental.refresh_with_kind(backend, net, &engine.st);
+
+        for &uci in moves {
+            let (sr, sc, er, ec, promotion) = parse_uci_move(uci);
+            let before = engine.st;
+            let updated =
+                incremental.update_move_with_kind(backend, net, &before, sr, sc, er, ec, promotion);
+            assert!(
+                engine.make_move_uci(sr, sc, er, ec, promotion),
+                "{uci} should be legal for {backend:?}"
+            );
+            if !updated {
+                incremental.refresh_with_kind(backend, net, &engine.st);
+            }
+
+            let mut refreshed = NNUEAccumulator::new(net.hidden_size);
+            refreshed.refresh_with_kind(backend, net, &engine.st);
+            assert_eq!(
+                incremental.white(),
+                refreshed.white(),
+                "white accumulator drift after {uci} with {backend:?}"
+            );
+            assert_eq!(
+                incremental.black(),
+                refreshed.black(),
+                "black accumulator drift after {uci} with {backend:?}"
+            );
+            assert_eq!(
+                (incremental.wk, incremental.bk),
+                (refreshed.wk, refreshed.bk),
+                "king-square drift after {uci} with {backend:?}"
+            );
+
+            let stm = if engine.st.w { WHITE } else { BLACK };
+            let piece_count: u32 = engine.st.bb.iter().map(|bb| bb.count_ones()).sum();
+            assert_eq!(
+                net.forward_with_kind(backend, &incremental, stm, piece_count),
+                net.forward_with_kind(backend, &refreshed, stm, piece_count),
+                "NNUE score drift after {uci} with {backend:?}"
+            );
+        }
+    }
+}
+
+fn nnue_score(net: &NNUENet, fen: &str) -> i32 {
+    let mut engine = Engine::new();
+    engine.set_fen(fen);
+
+    let mut acc = NNUEAccumulator::new(net.hidden_size);
+    acc.refresh(net, &engine.st);
+    let stm = if engine.st.w { WHITE } else { BLACK };
+    let piece_count = (0..12).map(|i| engine.st.bb[i].count_ones()).sum();
+    let score = net.forward(&acc, stm, piece_count);
+    if stm == WHITE {
+        score
+    } else {
+        -score
+    }
+}
+
+#[test]
+fn compact_embedded_nnue_matches_dense_scores() {
+    let dense =
+        NNUENet::load_from_bytes(DENSE_NET, "<dense test>").expect("dense NNUE should load");
+    let compact = NNUENet::load_compact_from_bytes(COMPACT_NET, "<compact test>")
+        .expect("compact NNUE should load");
+
+    assert!(
+        COMPACT_NET.len() + 3_000_000 < DENSE_NET.len(),
+        "compact embedded NNUE should remove the zero feature rows"
+    );
+    assert_eq!(dense.input_row_map, compact.input_row_map);
+    assert_eq!(dense.input_weights, compact.input_weights);
+    assert_eq!(
+        compact
+            .input_row_map
+            .iter()
+            .filter(|&&row| row == u16::MAX)
+            .count(),
+        1712
+    );
+    assert_eq!(compact.input_weights.len() / compact.hidden_size, 10576);
+
+    for fen in [
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r3k2r/p1ppqpb1/bn2pnp1/2P5/1p2P3/2N2N2/PP1PBPPP/R2Q1RK1 w kq - 0 1",
+        "8/8/8/R2pP1k/8/8/6Q1/4K3 w - d6 0 1",
+        "4k3/8/8/3pP3/8/8/8/4K3 b - - 0 1",
+        "8/P4k2/8/8/8/8/8/6K1 w - - 0 1",
+    ] {
+        assert_eq!(
+            nnue_score(&dense, fen),
+            nnue_score(&compact, fen),
+            "compact NNUE score mismatch for {fen}"
+        );
+    }
+}
+
+#[test]
+fn critical_game_lines_keep_nnue_incremental_state_exact() {
+    let net = NNUENet::load_compact_from_bytes(COMPACT_NET, "<critical PV>")
+        .expect("compact NNUE should load");
+
+    assert_incremental_line_matches_refresh(
+        &net,
+        "rn2nrk1/1pp3b1/3pP2p/p7/2P4q/2N1P1pP/PP1BB3/R1QK3R w - - 2 20",
+        &[
+            "h1g1", "h4h3", "c1b1", "h3h2", "d1c2", "f8f2", "g1h1", "h2g2", "h1g1", "g2h3", "d2e1",
+            "b8c6", "b1d1", "c6b4", "c2b3", "f2g2", "g1g2", "h3g2", "a2a3",
+        ],
+    );
+    assert_incremental_line_matches_refresh(
+        &net,
+        "r3n1k1/1pp1Prb1/3p3p/p1n5/2P5/2N1P2P/PPKBBqp1/R2Q2R1 w - - 3 25",
+        &["e2h5", "g7c3", "b2c3", "f2f5", "c2b2", "f5f2"],
+    );
+}
