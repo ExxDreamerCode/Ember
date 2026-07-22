@@ -207,7 +207,19 @@ impl TimeManager {
         // The GUI cannot grant the next increment before this move returns.
         // Keep both limits inside the current clock after communication slack.
         let spendable_ms = (time_ms - overhead_ms).max(1.0);
-        let mut soft_ms = optimum_ms.min(spendable_ms).min(MAX_SEARCH_TIME_MS);
+        // Start protecting several future increments while there is still
+        // enough clock to recover; waiting until the last few moves permits
+        // one unstable iteration to consume most of an otherwise safe clock.
+        let increment_reserve_cap_ms =
+            if increment_ms > 0.0 && time_ms <= increment_ms * 60.0 && time_ms > 1_000.0 {
+                ((time_ms - increment_ms * 3.0).max(1.0)).min(time_ms * 0.35)
+            } else {
+                MAX_SEARCH_TIME_MS
+            };
+        let mut soft_ms = optimum_ms
+            .min(spendable_ms)
+            .min(MAX_SEARCH_TIME_MS)
+            .min(increment_reserve_cap_ms);
         if time_ms < 1_000.0 && increment_ms > 0.0 {
             soft_ms = soft_ms.min(increment_ms);
         }
@@ -219,6 +231,7 @@ impl TimeManager {
         let hard_ms = maximum_ms
             .min(spendable_ms)
             .min(MAX_SEARCH_TIME_MS)
+            .min(increment_reserve_cap_ms)
             .min(short_increment_hard_cap_ms)
             .max(soft_ms);
 
