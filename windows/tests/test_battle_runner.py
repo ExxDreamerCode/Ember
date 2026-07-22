@@ -28,6 +28,26 @@ verify_bundle = load_module("verify_bundle.py", "verify_bundle")
 
 
 class BattleRunnerTests(unittest.TestCase):
+    def test_game_count_accepts_finite_and_infinite_series(self) -> None:
+        self.assertEqual(battle_runner.parse_game_count("7"), 7)
+        self.assertIsNone(battle_runner.parse_game_count(" inf "))
+        for value in ("0", "-1", "forever"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                battle_runner.parse_game_count(value)
+
+    def test_scheduled_games_repeat_templates_to_requested_count(self) -> None:
+        config = battle_runner.load_config(WINDOWS_DIR / "battle.toml")
+        first = config.games[0]
+        second = replace(first, color="black")
+
+        scheduled = list(battle_runner.scheduled_games([first, second], 5))
+
+        self.assertEqual([index for index, _ in scheduled], [1, 2, 3, 4, 5])
+        self.assertEqual(
+            [game.color for _, game in scheduled],
+            ["random", "black", "random", "black", "random"],
+        )
+
     def test_default_config(self) -> None:
         config = battle_runner.load_config(WINDOWS_DIR / "battle.toml")
         self.assertEqual(config.hash_mb, 1024)
