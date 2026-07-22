@@ -56,10 +56,11 @@ def shell_quote(s):
     return "'" + s.replace("'", "'\"'\"'") + "'"
 
 
-def run_cmd(args, log_path=None, check=True, env=None):
+def run_cmd(args, log_path=None, check=True, env=None, cwd=None):
     start = time.time()
     proc = subprocess.run(
         args,
+        cwd=cwd,
         env=env,
         text=True,
         stdout=subprocess.PIPE,
@@ -94,6 +95,96 @@ def make_run_id(cfg):
 
 def run_dir_for(cfg, run_id):
     return Path(cfg["run"].get("results_dir", "results/head-to-head")) / run_id
+
+
+def git_output(repo, *args):
+    proc = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or f"git {' '.join(args)} failed")
+    return proc.stdout.strip()
+
+
+def materialize_revision_commands(cfg, rd):
+    for engine_id in ["engine_a", "engine_b"]:
+        if "revision" in cfg[engine_id]:
+            cfg[engine_id]["cmd"] = str(
+                (rd / "builds" / engine_id / "bin" / "ember").resolve()
+            )
+
+
+def build_revision(cfg, rd, engine_id):
+    build_cfg = cfg.get("build", {})
+    engine = cfg[engine_id]
+    repo = Path(build_cfg.get("repo", ".")).resolve()
+    revision = git_output(repo, "rev-parse", f"{engine['revision']}^{{commit}}")
+    root = rd / "builds" / engine_id
+    installed = root / "bin" / "ember"
+    metadata_path = root / "metadata.json"
+    if installed.is_file() and metadata_path.is_file():
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if metadata.get("revision") == revision and metadata.get(
+            "sha256"
+        ) == sha256_file(installed):
+            return metadata
+
+    source = root / "source"
+    archive = root / "source.tar"
+    if source.exists():
+        shutil.rmtree(source)
+    source.mkdir(parents=True, exist_ok=True)
+    run_cmd(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "archive",
+            "--format=tar",
+            f"--output={archive}",
+            revision,
+        ],
+        log_path=root / "build.log",
+    )
+    run_cmd(
+        ["tar", "-xf", str(archive), "-C", str(source)],
+        log_path=root / "build.log",
+    )
+    command = list(
+        build_cfg.get(
+            "command",
+            ["cargo", "build", "--locked", "--release", "--bin", "ember"],
+        )
+    )
+    run_cmd(command, log_path=root / "build.log", cwd=source)
+    built = source / build_cfg.get("binary", "target/release/ember")
+    if not built.is_file():
+        raise RuntimeError(f"build did not produce {built}")
+    installed.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(built, installed)
+    installed.chmod(0o755)
+    metadata = {
+        "engine": engine_id,
+        "configured_revision": engine["revision"],
+        "revision": revision,
+        "binary": str(installed.resolve()),
+        "sha256": sha256_file(installed),
+        "command": command,
+    }
+    write_json(metadata_path, metadata)
+    return metadata
+
+
+def record_revision_metadata(metadata, cfg, revision_metadata):
+    metadata.setdefault("engine_binaries", {})
+    metadata.setdefault("tools", {})
+    for engine_id, binary in revision_metadata.items():
+        metadata["engine_binaries"][cfg[engine_id]["name"]] = binary
+        path = binary["binary"]
+        metadata["tools"][path] = {"path": path, "available": True}
 
 
 def safe_name(name):
@@ -543,6 +634,7 @@ def analyze(config_path, run_id, cfg_override=None):
 def probe(config_path, run_id, explicit_workers=None):
     cfg = load_config(config_path)
     rd = run_dir_for(cfg, run_id)
+    materialize_revision_commands(cfg, rd)
     workers, cores, worker_source = detect_workers(cfg, explicit_workers)
     meta = {
         "run_id": run_id,
@@ -572,6 +664,27 @@ def probe(config_path, run_id, explicit_workers=None):
 def build(config_path, run_id):
     cfg = load_config(config_path)
     rd = run_dir_for(cfg, run_id)
+    revision_engines = [
+        engine_id
+        for engine_id in ["engine_a", "engine_b"]
+        if "revision" in cfg[engine_id]
+    ]
+    if revision_engines:
+        revision_metadata = {}
+        for engine_id in revision_engines:
+            revision_metadata[engine_id] = build_revision(cfg, rd, engine_id)
+        materialize_revision_commands(cfg, rd)
+        metadata_path = rd / "metadata.json"
+        metadata = (
+            json.loads(metadata_path.read_text(encoding="utf-8"))
+            if metadata_path.exists()
+            else {}
+        )
+        record_revision_metadata(metadata, cfg, revision_metadata)
+        write_json(metadata_path, metadata)
+        if len(revision_engines) == 2:
+            return
+
     command = cfg.get("build", {}).get("command")
     if not command:
         return
@@ -588,8 +701,15 @@ def build(config_path, run_id):
             write_json(meta_path, meta)
 
 
-def run_batches(config_path, run_id, explicit_workers=None, explicit_max_pairs=None, explicit_alpha=None):
+def run_batches(
+    config_path,
+    run_id,
+    explicit_workers=None,
+    explicit_max_pairs=None,
+    explicit_alpha=None,
+):
     cfg = load_config(config_path)
+    materialize_revision_commands(cfg, run_dir_for(cfg, run_id))
     if explicit_alpha is not None:
         cfg["run"]["alpha"] = float(explicit_alpha)
     rd = run_dir_for(cfg, run_id)
