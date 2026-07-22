@@ -1,6 +1,16 @@
 # Hand-written engine regressions. setup_move may be `-`, one UCI move, or a space-separated full move history. expected_move may be one exact move, alternatives separated by `|`, or forbidden moves prefixed with `!`.
 # Full histories are intentional: repetition, fifty-move, castling, and en-passant state cannot always be reconstructed from a final FEN.
+# Depth 0 means an embedded-book lookup: the expected move must be returned immediately with zero search nodes. Depths 1 through 64 run a normal fixed-depth search with the book disabled.
 id	depth	fen_before_blunder	setup_move	expected_move	themes	rating	popularity	plays
+
+# Lichess F1W14oiR opening branch. The embedded book must choose its established 3.c3 main line immediately instead of promoting the weak low-weight 3.d4 tail through a noisy one-ply evaluation.
+book-f1w14oir-main-line	0	rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1	g1f3 c7c5 e2e4 a7a6	c2c3	lichess,F1W14oiR,book,mainLine	0	0	0
+
+# Lichess 1suxf4br before 7.Ne5, https://lichess.org/1suxf4br. The embedded book must keep the higher-confidence 7.e3 continuation instead of choosing the inferior Ne5 tail uniformly.
+book-1suxf4br-main-line	0	rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1	d2d4 g8f6 g1f3 d7d5 c2c4 e7e6 g2g3 d5c4 f1g2 b8c6 e1g1 a7a6	e2e3	lichess,1suxf4br,book,mainLine	0	0	0
+
+# Lichess 25K5eprc after 1.e4, https://lichess.org/25K5eprc. The embedded book must answer with its high-confidence Sicilian main line instead of the weak low-weight 1...d5 tail.
+book-25k5eprc-main-line	0	rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1	e2e4	c7c5	lichess,25K5eprc,book,mainLine	0	0	0
 
 # CCRL 125th Amateur D11 game 15, Seawall–Ember 1.1.1, before 42...Kf8. The stale repetition stack made the losing non-repetition move look drawn; see ratings/ccrl-125th-amateur-d11.md.
 ccrl-015-kf8	6	rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1	d2d4 f7f5 g2g3 g8f6 f1g2 e7e6 g1f3 d7d5 e1g1 f8d6 c2c4 c7c6 b2b3 d8e7 f3e5 e8g8 b1d2 b7b6 c1b2 c8b7 e2e3 b8d7 d1e2 a7a5 f1c1 f6e4 d2f3 a5a4 e5d7 e7d7 c4d5 e6d5 b3a4 a8a4 f3e5 d6e5 d4e5 f8a8 e2c2 h7h6 f2f3 a4c4 c2d1 c4c1 d1c1 e4c5 b2d4 c5a4 a1b1 c6c5 d4a1 b7c8 c1c2 d7e8 f3f4 c8e6 b1d1 e8f7 c2b3 c5c4 b3b5 f7e8 b5e8 a8e8 g3g4 g7g6 g4f5 g6f5 a1d4 e8c8 d1b1 c8a8 g2f3 a8a6 b1b5 g8f7 g1f1 a4c5 f3h5 f7g8 h5f3 g8f7 f3h5	!f7f8	ccrl,repetition,game15	0	0	0

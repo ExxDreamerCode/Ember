@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, Once};
 use std::thread;
 
-use chess_rs_lib::{evaluate, Engine};
+use chess_rs_lib::{evaluate, opening_book, Engine, OpeningBook};
 
 const DEFAULT_CORPUS_WORKERS: usize = 4;
 const EXPECTED_HEADER: &str =
@@ -64,8 +64,8 @@ fn parse_depth(value: &str, fixture: &str, line_number: usize) -> i32 {
         )
     });
     assert!(
-        (1..=64).contains(&depth),
-        "{} uses depth {depth}, expected 1..=64",
+        (0..=64).contains(&depth),
+        "{} uses depth {depth}, expected 0..=64",
         fixture_location(fixture, line_number)
     );
     depth
@@ -216,7 +216,13 @@ fn move_matches_expectation(actual: &str, expectation: &str) -> bool {
 
 fn solve_case(case: &RegressionCase) -> Result<(), String> {
     let mut engine = Engine::new();
-    engine.book = None;
+    let is_book_case = case.depth == 0;
+    if is_book_case {
+        engine.book = Some(
+            OpeningBook::load_from_bytes(opening_book::BOOK_DATA, "<embedded>")
+                .map_err(|error| format!("failed to load embedded book: {error}"))?,
+        );
+    }
     engine.num_threads = 1;
     engine
         .try_set_fen(&case.fen_before_blunder)
@@ -236,7 +242,18 @@ fn solve_case(case: &RegressionCase) -> Result<(), String> {
         }
     }
 
-    let (best_move, score, nodes, elapsed) = engine.find_best_move(1_000_000.0, case.depth);
+    let (best_move, score, nodes, elapsed) = if is_book_case {
+        engine.find_best_move_with_time_limits(0.01, 0.01, 1)
+    } else {
+        engine.find_best_move(1_000_000.0, case.depth)
+    };
+    if is_book_case && nodes != 0 {
+        return Err(format!(
+            "book regression {} at {} searched {nodes} nodes instead of returning immediately",
+            case.id,
+            fixture_location(&case.fixture, case.line_number)
+        ));
+    }
     if !move_matches_expectation(&best_move, &case.expected_move) {
         return Err(format!(
             "failed regression {} ({}) at {} and depth {}; expected={}, got={best_move}; rating={}, popularity={}, plays={}; score={score}, nodes={nodes}, elapsed={elapsed:.3}s",

@@ -1738,6 +1738,9 @@ mod tests {
         );
     }
 
+    // These position-backed tests observe the internal root-order predicates, scores,
+    // extensions, and counterexamples. A TSV best-move assertion cannot distinguish
+    // those contracts from an unrelated search path that happens to choose the same move.
     #[test]
     fn root_ordering_prioritizes_the_missed_rook_clearance() {
         let engine = engine_from_fen("8/5k2/2pp2p1/5pP1/P2P4/3n4/2r5/1KB4R b - - 4 46");
@@ -2018,6 +2021,8 @@ mod tests {
 
     #[test]
     fn sparse_endgame_root_ordering_is_used_by_search() {
+        // This is an integration check for the forcing-move class and both the serial and
+        // Lazy SMP paths, rather than an exact single-thread best-move regression.
         for threads in [1usize, 2] {
             let mut engine = engine_from_fen("8/5k2/3Q4/7p/8/1p6/3p1P1P/3B2K1 w - - 52 78");
             engine.num_threads = threads;
@@ -2034,6 +2039,8 @@ mod tests {
         }
     }
 
+    // These book tests exercise ponder fallback and the transition from rejected book
+    // entries into search. Concrete immediate book move choices live in TSV depth-0 cases.
     #[test]
     fn embedded_book_ponder_fallback_uses_book_reply_without_tt() {
         let mut engine = Engine::new();
@@ -2085,67 +2092,6 @@ mod tests {
         assert!(
             nodes > 0,
             "the weight-one 10.h4 book tail should be rejected so search starts"
-        );
-    }
-
-    #[test]
-    fn book_main_line_avoids_the_inferior_f1w14oir_branch() {
-        let mut engine = Engine::new();
-        engine.book = Some(
-            OpeningBook::load_from_bytes(crate::opening_book::BOOK_DATA, "<embedded>").unwrap(),
-        );
-        for mv in ["g1f3", "c7c5", "e2e4", "a7a6"] {
-            play_uci(&mut engine, mv);
-        }
-
-        let (best_move, _score, nodes, _elapsed) =
-            engine.find_best_move_with_time_limits(0.01, 0.01, 1);
-
-        assert_eq!(best_move, "c2c3");
-        assert_eq!(
-            nodes, 0,
-            "the selected continuation should remain immediate"
-        );
-    }
-
-    #[test]
-    fn book_main_line_rejects_the_inferior_1suxf4br_branch() {
-        let mut engine = Engine::new();
-        engine.book = Some(
-            OpeningBook::load_from_bytes(crate::opening_book::BOOK_DATA, "<embedded>").unwrap(),
-        );
-        for mv in [
-            "d2d4", "g8f6", "g1f3", "d7d5", "c2c4", "e7e6", "g2g3", "d5c4", "f1g2", "b8c6", "e1g1",
-            "a7a6",
-        ] {
-            play_uci(&mut engine, mv);
-        }
-
-        let (best_move, _score, nodes, _elapsed) =
-            engine.find_best_move_with_time_limits(0.01, 0.01, 1);
-
-        assert_eq!(best_move, "e2e3", "https://lichess.org/1suxf4br");
-        assert_eq!(
-            nodes, 0,
-            "the selected continuation should remain immediate"
-        );
-    }
-
-    #[test]
-    fn book_main_line_rejects_the_inferior_25k5eprc_tail() {
-        let mut engine = Engine::new();
-        engine.book = Some(
-            OpeningBook::load_from_bytes(crate::opening_book::BOOK_DATA, "<embedded>").unwrap(),
-        );
-        play_uci(&mut engine, "e2e4");
-
-        let (best_move, _score, nodes, _elapsed) =
-            engine.find_best_move_with_time_limits(0.01, 0.01, 1);
-
-        assert_eq!(best_move, "c7c5", "https://lichess.org/25K5eprc");
-        assert_eq!(
-            nodes, 0,
-            "the selected continuation should remain immediate"
         );
     }
 
