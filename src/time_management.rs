@@ -78,29 +78,34 @@ pub fn iteration_time_decision(
     } else {
         1.0
     };
-    let maximum_scale = if soft_seconds * 1_000.0 <= SINGLE_THREAD_BUDGET_MS {
+    let soft_ms = soft_seconds * 1_000.0;
+    let can_finish_early = soft_ms >= EARLY_PREDICTION_BUDGET_MS
+        && timing.stable_iterations >= 3
+        && timing.score_change_cp.abs() <= 35
+        && effort >= 0.70
+        && disagreement <= 0.25;
+    let minimum_scale = if can_finish_early { 0.70 } else { 1.0 };
+    let maximum_scale = if soft_ms <= SINGLE_THREAD_BUDGET_MS {
         1.65
     } else {
         1.15
     };
     let scale = (stability * score_volatility * effort_factor * disagreement_factor)
-        .clamp(0.70, maximum_scale);
-    let mut target_seconds = (soft_seconds * scale).max(soft_seconds).min(hard_seconds);
+        .clamp(minimum_scale, maximum_scale);
+    let mut target_seconds = (soft_seconds * scale).min(hard_seconds);
     if legal_moves == 1 {
         target_seconds = target_seconds.min(0.5).min(hard_seconds);
     }
 
     let stable_enough =
         timing.stable_iterations >= 2 && timing.score_change_cp.abs() <= 80 && disagreement <= 0.5;
-    // A stable but shallow PV can still be wrong. Prediction may avoid an
-    // expensive extra iteration, but it must not take ordinary positions
-    // below the nominal budget that the clock manager already approved.
     let prediction_floor = if stable_enough { 0.90 } else { 0.95 };
     let predicted_target_overrun =
         predicted_next_seconds >= (target_seconds - timing.elapsed_seconds).max(0.0);
-    let soft_ms = soft_seconds * 1_000.0;
     let prediction_boundary = if soft_ms < EARLY_PREDICTION_BUDGET_MS {
         stable_enough && timing.elapsed_seconds >= soft_seconds && predicted_target_overrun
+    } else if can_finish_early {
+        timing.elapsed_seconds >= target_seconds * 0.95 && predicted_target_overrun
     } else {
         timing.elapsed_seconds >= soft_seconds * prediction_floor && predicted_target_overrun
     };
