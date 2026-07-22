@@ -497,7 +497,11 @@ macro_rules! qsearch_mode_body {
         }
         if caps.is_empty() {
             Self::return_buf(&mut $this.move_bufs, $ply, caps);
-            return if in_check { -MATE + 1000 } else { $alpha };
+            return if in_check {
+                -MATE + $ply as i32
+            } else {
+                $alpha
+            };
         }
         $eval.ensure_child_stack($this, $ply);
 
@@ -3909,6 +3913,29 @@ mod tests {
             score > stand_pat + 50,
             "qsearch should improve on stand-pat by searching e5xd6 en passant: stand_pat={stand_pat}, score={score}"
         );
+    }
+
+    #[test]
+    fn qsearch_checkmate_score_uses_the_actual_ply() {
+        let mut st = state_from_fen("7k/6Q1/6K1/8/8/8/8/8 b - - 0 1");
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(1));
+        let mut searcher = Searcher::new(shared_tt, stopped);
+        let mut nodes = 0u64;
+        let ply = 17;
+
+        let score = searcher.qsearch(
+            &mut st,
+            -INF,
+            INF,
+            -3,
+            Instant::now(),
+            10.0,
+            &mut nodes,
+            ply,
+        );
+
+        assert_eq!(score, -MATE + ply as i32);
     }
 
     #[cfg(feature = "search-debug")]
