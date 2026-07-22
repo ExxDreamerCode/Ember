@@ -67,6 +67,21 @@ the more convenient result.
 
 ## Regression policy
 
+### Keep public behavior tests outside `src/`
+
+Tests embedded under `src/` are reserved for focused unit tests and microbenchmarks of
+private, low-level implementation details that cannot be reached through the crate's public
+surface. A test that uses only exported `chess_rs_lib` modules, types, functions, and methods
+belongs under `tests/`, even when it exercises behavior implemented by a single source
+module. Public subsystem lifecycle and cross-module behavior are integration tests, not
+inline unit tests.
+
+Do not make an implementation detail public solely to relocate a test. When an inline test
+needs a chess position, comment the private contract it observes and why a public integration
+test or TSV move fixture would lose that contract. When touching an inline test module,
+recheck that every remaining test actually depends on private behavior; move public-only
+coverage out instead of adding more source-module test infrastructure.
+
 ### Chess move regressions belong in TSV fixtures
 
 Represent a position in `tests/fixtures/*.tsv` whenever the assertion is fundamentally
@@ -111,13 +126,14 @@ Fixture conventions:
   subjective label.
 - Do not duplicate a TSV move regression in Rust.
 
-Before adding a position-backed `#[test]` under `src/`, first try to express it as a TSV
-case. A fixed position or legal move history plus an exact, alternative, or forbidden root
-move belongs in TSV, including immediate embedded-book choices. If a position remains in
-a Rust test, add a nearby comment naming the non-TSV contract it observes, such as an
-internal ordering score, extension eligibility and counterexamples, synthetic SMP worker
-ballots, transposition state, node accounting, or direct tablebase probing. The position
-alone is not a reason to keep a regression in Rust.
+Before adding a position-backed Rust test, first try to express it as a TSV case. A fixed
+position or legal move history plus an exact, alternative, or forbidden root move belongs
+in TSV, including immediate embedded-book choices. If a position remains in a Rust test,
+add a nearby comment naming the non-TSV contract it observes, such as an internal ordering
+score, extension eligibility and counterexamples, synthetic SMP worker ballots,
+transposition state, node accounting, or direct tablebase probing. Such a test belongs under
+`src/` only when that contract requires private implementation access; otherwise put it
+under `tests/`. The position alone is not a reason to keep a regression in Rust.
 
 Use Rust tests for behavior the TSV schema cannot express: UCI protocol ordering, stop and
 ponder lifecycle, clock budgets, thread coordination, node accounting, option handling,
