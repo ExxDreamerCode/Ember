@@ -900,6 +900,11 @@ id	depth	fen_before_blunder	setup_move	expected_move	themes	rating	popularity	pl
 012wC	4	r2q1rk1/pbpn1p2/1p1bpn1Q/8/8/1B1P1NN1/PPP2PPP/R3K2R b KQ - 0 12	f6h7	g3h5	advantage,kingsideAttack,middlegame,quietMove,short	1441	98	1724
 #
 # Currently failing mined Lichess candidates. These are kept as commented fixtures until Ember learns them.
+# Stockfish agreement audit, 2026-07-21: official Stockfish dev-20260720-f4bcd404, https://github.com/official-stockfish/Stockfish/releases/tag/stockfish-dev-20260720-f4bcd404, binary SHA-256 f852c7881146c5047a6546dcd8a8f04f9271734cc36dae40912f13c05a48aaa4.
+# Analysis settings: 8 threads on an 8-core/16-thread Intel Xeon, 4096 MiB hash. Each position was analyzed after setup_move with an unrestricted 50M-node MultiPV=8 search, then a 50M-node comparison of the expected move, Ember's recorded moves, and Stockfish's unrestricted best move.
+# Group 1, Stockfish agrees (high priority): all 81 commented data rows below. The expected move was Stockfish's unrestricted and verified first choice in every case; its smallest verified advantage over Ember's best recorded move was 393 centipawns.
+# Group 2, Stockfish does not agree or the choice is ambiguous (lower priority): none.
+# Uncommented rows interleaved below are already active regressions and are not part of this classification.
 # failed_id	fen_before_blunder	setup_move	expected_move	got_depth2	got_depth3	got_depth4	themes	rating	popularity	plays
 # 00F5e	4k2r/1p2b1p1/p1q1Rp2/2p4p/8/1Q4B1/PP3PpP/6K1 b k - 1 22	c6d7	g3d6	h2h4	h2h4	h2h4	advantage,endgame,short	1716	100	260
 # 00OQt	8/8/8/p3b3/P1B2pKp/1Pk1p2P/6P1/8 w - - 8 50	g4h4	c3d2	e5f6	f4f3	c3b2	advancedPawn,bishopEndgame,crushing,endgame,long	1690	88	362
