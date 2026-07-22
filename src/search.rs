@@ -2943,6 +2943,16 @@ impl Drop for LazySmpPool {
 }
 
 fn select_lazy_smp_result(results: &[ThreadResult]) -> Option<&ThreadResult> {
+    // Thread zero owns time management, persistent learning, and the root TT
+    // entry. Helpers diversify the root and feed the shared TT, but their
+    // horizon-dependent votes must not replace the principal search result.
+    if let Some(principal) = results
+        .iter()
+        .find(|result| result.thread_id == 0 && result.depth > 0)
+    {
+        return Some(principal);
+    }
+
     let max_depth = results.iter().map(|result| result.depth).max()?;
     let near_deep_floor = max_depth.saturating_sub(1).max(1);
 
