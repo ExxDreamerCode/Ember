@@ -1,0 +1,51 @@
+[run]
+name = "ember-tip-vs-v112-sprt"
+time_control = "8+0.08"
+timemargin_ms = 50
+workers = "auto"
+worker_multiplier = 1.0
+max_pairs = 1000
+min_pairs = 40
+batch_pairs = 20
+opening_source = "polyglot"
+polyglot_book = "src/book.bin"
+book_min_plies = 8
+book_max_plies = 20
+opening_format = "epd"
+seed = 20260721
+results_dir = "results/head-to-head"
+rating_interval = 20
+max_moves = 220
+
+[sprt]
+enabled = true
+elo0 = -5.0
+elo1 = 5.0
+alpha = 0.05
+beta = 0.05
+min_pairs = 40
+
+[build]
+repo = "."
+binary = "target/release/ember"
+command = ["cargo", "build", "--locked", "--release", "--bin", "ember"]
+
+[engine_a]
+name = "Ember-Tip"
+revision = "HEAD"
+proto = "uci"
+
+[engine_a.options]
+Hash = "64"
+Threads = "1"
+Book = ""
+
+[engine_b]
+name = "Ember-V1.1.2"
+revision = "V1.1.2"
+proto = "uci"
+
+[engine_b.options]
+Hash = "64"
+Threads = "1"
+Book = ""

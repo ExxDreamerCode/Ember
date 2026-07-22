@@ -28,10 +28,13 @@ use std::time::Instant;
 pub use crate::backend::SearchBackendKind;
 
 const SEARCH_BACKEND_ENV: &str = "EMBER_SEARCH_BACKEND";
+const LAZY_SMP_VERIFICATION_MARGIN_CP: i32 = 25;
+const LAZY_SMP_VERIFICATION_TT_MB: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DrawStatus {
     None,
+    SearchCycle,
     Claimable,
     Automatic,
 }
@@ -329,6 +332,7 @@ pub struct Searcher {
     pub corr_hist: [i32; CORR_HIST_SIZE * 2],
     pub rep_stack: Vec<u64>,
     pub rep_stack_len: usize,
+    rep_root_len: usize,
     pub tt_mb: usize,
     pub stopped: Arc<AtomicBool>,
     pub pondering: Arc<AtomicBool>,
@@ -391,8 +395,38 @@ pub struct SearchDebug {
     pub disable_lmp: bool,
     pub disable_lmr: bool,
     pub disable_null_move: bool,
+    pub disable_qsearch_check_cap: bool,
+    pub disable_qsearch_delta: bool,
+    pub disable_qsearch_see: bool,
     pub disable_reverse_futility: bool,
     pub disable_see_pruning: bool,
+    trace_roots: bool,
+    stats: SearchDebugStats,
+}
+
+#[cfg(feature = "search-debug")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SearchDebugStats {
+    pub max_ply: usize,
+    pub tt_hits: u64,
+    pub tt_max_depth: i32,
+    pub tt_cutoffs: u64,
+    pub reverse_futility_cutoffs: u64,
+    pub futility_cutoffs: u64,
+    pub null_attempts: u64,
+    pub null_cutoffs: u64,
+    pub iid_reductions: u64,
+    pub lmp_cutoffs: u64,
+    pub history_skips: u64,
+    pub see_skips: u64,
+    pub lmr_searches: u64,
+    pub lmr_researches: u64,
+    pub lmr_reduction_sum: u64,
+    pub lmr_max_reduction: i32,
+    pub qnodes: u64,
+    pub q_delta_cutoffs: u64,
+    pub q_see_skips: u64,
+    pub q_checked_depth_exits: u64,
 }
 
 macro_rules! qsearch_mode_body {
@@ -410,6 +444,11 @@ macro_rules! qsearch_mode_body {
         $eval:ident
     ) => {{
         *$cnt += 1;
+        #[cfg(feature = "search-debug")]
+        {
+            $this.debug.stats.qnodes += 1;
+            $this.debug.stats.max_ply = $this.debug.stats.max_ply.max($ply);
+        }
         if $this.time_up($start, $tl) {
             return 0;
         }
@@ -434,10 +473,18 @@ macro_rules! qsearch_mode_body {
             if stand > $alpha {
                 $alpha = stand;
             }
-            if $depth <= 0 && $alpha - 975 > stand {
+            if $this.qsearch_delta_enabled() && $depth <= 0 && $alpha - 975 > stand {
+                #[cfg(feature = "search-debug")]
+                {
+                    $this.debug.stats.q_delta_cutoffs += 1;
+                }
                 return $alpha;
             }
-        } else if $depth <= -4 {
+        } else if $this.qsearch_check_cap_enabled() && $depth <= -4 {
+            #[cfg(feature = "search-debug")]
+            {
+                $this.debug.stats.q_checked_depth_exits += 1;
+            }
             return $eval.static_eval::<CHESS960>($this, $st, $ply);
         }
 
@@ -452,7 +499,11 @@ macro_rules! qsearch_mode_body {
         }
         if caps.is_empty() {
             Self::return_buf(&mut $this.move_bufs, $ply, caps);
-            return if in_check { -MATE + 1000 } else { $alpha };
+            return if in_check {
+                -MATE + $ply as i32
+            } else {
+                $alpha
+            };
         }
         $eval.ensure_child_stack($this, $ply);
 
@@ -481,7 +532,14 @@ macro_rules! qsearch_mode_body {
             let to = move_to(mv);
             let fpi = $st.mailbox[from];
             let tpi = $st.mailbox[to];
-            if !in_check && move_see::<CHESS960>($st, mv, from, to, fpi, tpi) < 0 {
+            if !in_check
+                && $this.qsearch_see_enabled()
+                && move_see::<CHESS960>($st, mv, from, to, fpi, tpi) < 0
+            {
+                #[cfg(feature = "search-debug")]
+                {
+                    $this.debug.stats.q_see_skips += 1;
+                }
                 continue;
             }
             let st_before = *$st;
@@ -512,6 +570,8 @@ macro_rules! qsearch_mode_body {
                 move_promotion(mv),
                 $ply,
             );
+            $this.rep_stack.push($st.hash);
+            $this.rep_stack_len += 1;
             let score = -$this.$qsearch_mode::<CHESS960, E>(
                 $st,
                 -$beta,
@@ -523,6 +583,8 @@ macro_rules! qsearch_mode_body {
                 $ply + 1,
                 $eval,
             );
+            $this.rep_stack.pop();
+            $this.rep_stack_len -= 1;
             *$st = st_before;
             if $this.stopped.load(Ordering::Relaxed) {
                 return 0;
@@ -557,6 +619,10 @@ macro_rules! negamax_mode_body {
         $eval:ident
     ) => {{
         *$cnt += 1;
+        #[cfg(feature = "search-debug")]
+        {
+            $this.debug.stats.max_ply = $this.debug.stats.max_ply.max($ply);
+        }
         if $this.time_up($start, $tl) {
             return 0;
         }
@@ -599,6 +665,12 @@ macro_rules! negamax_mode_body {
         let tt_depth = tt_data.map(|(d, _, _, _)| d).unwrap_or(-1);
         let tt_flag = tt_data.map(|(_, _, f, _)| f);
 
+        #[cfg(feature = "search-debug")]
+        if tt_data.is_some() {
+            $this.debug.stats.tt_hits += 1;
+            $this.debug.stats.tt_max_depth = $this.debug.stats.tt_max_depth.max(tt_depth);
+        }
+
         let is_pv = beta - $alpha > 1;
         let ext = if in_check && $depth < 16 { 1 } else { 0 };
         let actual_depth = $depth + ext;
@@ -606,9 +678,27 @@ macro_rules! negamax_mode_body {
         if !is_pv && tt_depth >= actual_depth {
             if let (Some(flag), Some(s)) = (tt_flag, tt_score) {
                 match flag {
-                    TT_EXACT => return s,
-                    TT_ALPHA if s <= $alpha => return $alpha,
-                    TT_BETA if s >= beta => return beta,
+                    TT_EXACT => {
+                        #[cfg(feature = "search-debug")]
+                        {
+                            $this.debug.stats.tt_cutoffs += 1;
+                        }
+                        return s;
+                    }
+                    TT_ALPHA if s <= $alpha => {
+                        #[cfg(feature = "search-debug")]
+                        {
+                            $this.debug.stats.tt_cutoffs += 1;
+                        }
+                        return $alpha;
+                    }
+                    TT_BETA if s >= beta => {
+                        #[cfg(feature = "search-debug")]
+                        {
+                            $this.debug.stats.tt_cutoffs += 1;
+                        }
+                        return beta;
+                    }
                     _ => {}
                 }
             }
@@ -632,6 +722,10 @@ macro_rules! negamax_mode_body {
         {
             let margin = 80 + 65 * actual_depth;
             if eval_score - margin >= beta {
+                #[cfg(feature = "search-debug")]
+                {
+                    $this.debug.stats.reverse_futility_cutoffs += 1;
+                }
                 return eval_score - margin;
             }
         }
@@ -650,6 +744,10 @@ macro_rules! negamax_mode_body {
                     $eval,
                 );
                 if q + margin <= $alpha {
+                    #[cfg(feature = "search-debug")]
+                    {
+                        $this.debug.stats.futility_cutoffs += 1;
+                    }
                     return $alpha;
                 }
             }
@@ -666,6 +764,10 @@ macro_rules! negamax_mode_body {
         {
             let total_non_pawn = (all_occ(&$st.bb) & !($st.bb[WP] | $st.bb[BP])).count_ones();
             if total_non_pawn > 4 {
+                #[cfg(feature = "search-debug")]
+                {
+                    $this.debug.stats.null_attempts += 1;
+                }
                 let r = 3 + actual_depth / 4 + ((eval_score - beta) / 200).min(3);
                 let ow = $st.w;
                 let oe = $st.ep;
@@ -705,6 +807,10 @@ macro_rules! negamax_mode_body {
                     return 0;
                 }
                 if s >= beta {
+                    #[cfg(feature = "search-debug")]
+                    {
+                        $this.debug.stats.null_cutoffs += 1;
+                    }
                     return beta;
                 }
             }
@@ -731,6 +837,10 @@ macro_rules! negamax_mode_body {
 
         let actual_depth =
             if $this.iid_reduction_enabled() && tt_move.is_none() && actual_depth >= 4 && is_pv {
+                #[cfg(feature = "search-debug")]
+                {
+                    $this.debug.stats.iid_reductions += 1;
+                }
                 actual_depth - 1
             } else {
                 actual_depth
@@ -827,6 +937,10 @@ macro_rules! negamax_mode_body {
             let is_quiet = !capture && !is_promo;
 
             if !is_pv && !in_check && is_quiet && legal_moves_seen >= lmp_count {
+                #[cfg(feature = "search-debug")]
+                {
+                    $this.debug.stats.lmp_cutoffs += 1;
+                }
                 break;
             }
             if !is_pv && !in_check && legal_moves_seen > 0 && best_score > -MATE / 2 {
@@ -834,11 +948,19 @@ macro_rules! negamax_mode_body {
                     if $this.see_pruning_enabled()
                         && move_see::<CHESS960>($st, mv, from, to, fpi, tpi) < -80 * actual_depth
                     {
+                        #[cfg(feature = "search-debug")]
+                        {
+                            $this.debug.stats.see_skips += 1;
+                        }
                         continue;
                     }
                 } else if is_quiet && $this.history_pruning_enabled() {
                     let (fk, tk) = from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
                     if actual_depth <= 5 && $this.history[fk][tk] < -1024 * actual_depth {
+                        #[cfg(feature = "search-debug")]
+                        {
+                            $this.debug.stats.history_skips += 1;
+                        }
                         continue;
                     }
                 }
@@ -922,6 +1044,13 @@ macro_rules! negamax_mode_body {
                         r
                     }
                 };
+                #[cfg(feature = "search-debug")]
+                {
+                    $this.debug.stats.lmr_searches += 1;
+                    $this.debug.stats.lmr_reduction_sum += r as u64;
+                    $this.debug.stats.lmr_max_reduction =
+                        $this.debug.stats.lmr_max_reduction.max(r);
+                }
                 let s2 = -$this.$negamax_mode::<CHESS960, E>(
                     $st,
                     new_depth - r,
@@ -935,6 +1064,10 @@ macro_rules! negamax_mode_body {
                     $eval,
                 );
                 if s2 > $alpha {
+                    #[cfg(feature = "search-debug")]
+                    {
+                        $this.debug.stats.lmr_researches += 1;
+                    }
                     let s3 = -$this.$negamax_mode::<CHESS960, E>(
                         $st,
                         new_depth,
@@ -1114,6 +1247,7 @@ impl Searcher {
             corr_hist: [0i32; CORR_HIST_SIZE * 2],
             rep_stack: Vec::with_capacity(512),
             rep_stack_len: 0,
+            rep_root_len: 0,
             tt_mb: 128,
             stopped,
             pondering: Arc::new(AtomicBool::new(false)),
@@ -1219,6 +1353,7 @@ impl Searcher {
     pub fn copy_root_context_to(&self, dst: &mut Searcher) {
         dst.rep_stack = self.rep_stack.clone();
         dst.rep_stack_len = self.rep_stack_len;
+        dst.rep_root_len = dst.rep_stack_len;
         dst.import_learning(&self.export_learning());
         dst.nnue_net = self.nnue_net.clone();
         dst.search_backend = self.search_backend;
@@ -1241,6 +1376,7 @@ impl Searcher {
     }
 
     pub fn prepare_for_search(&mut self) {
+        self.rep_root_len = self.rep_stack_len;
         self.killers = [[None; 2]; MAX_PLY];
         for row in &mut self.history {
             for value in row {
@@ -1254,6 +1390,73 @@ impl Searcher {
         self.history = [[0; 64]; 64];
         self.counter_move = [[None; 64]; 13];
         self.corr_hist = [0; CORR_HIST_SIZE * 2];
+    }
+
+    #[cfg(feature = "search-debug")]
+    pub fn reset_debug_stats(&mut self) {
+        self.debug.reset_stats();
+    }
+
+    #[cfg(feature = "search-debug")]
+    pub fn debug_stats(&self) -> SearchDebugStats {
+        self.debug.stats
+    }
+
+    #[cfg(feature = "search-debug")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn emit_debug_root_trace(
+        &self,
+        depth: i32,
+        order: usize,
+        mv: &str,
+        alpha: i32,
+        beta: i32,
+        score: i32,
+        nodes: u64,
+    ) {
+        if !self.debug.trace_roots {
+            return;
+        }
+        let s = self.debug.stats;
+        eprintln!(
+            "info string search-debug root depth={depth} order={order} move={mv} alpha={alpha} beta={beta} score={score} nodes={nodes} seldepth={} tt_hits={} tt_max_depth={} tt_cutoffs={} rfp={} futility={} null={}/{} iid={} lmp={} history={} see={} lmr={}/{} lmr_sum={} lmr_max={} qnodes={} qdelta={} qsee={} qcheck_cap={}",
+            s.max_ply,
+            s.tt_hits,
+            s.tt_max_depth,
+            s.tt_cutoffs,
+            s.reverse_futility_cutoffs,
+            s.futility_cutoffs,
+            s.null_cutoffs,
+            s.null_attempts,
+            s.iid_reductions,
+            s.lmp_cutoffs,
+            s.history_skips,
+            s.see_skips,
+            s.lmr_researches,
+            s.lmr_searches,
+            s.lmr_reduction_sum,
+            s.lmr_max_reduction,
+            s.qnodes,
+            s.q_delta_cutoffs,
+            s.q_see_skips,
+            s.q_checked_depth_exits,
+        );
+    }
+
+    #[cfg(feature = "search-debug")]
+    pub fn emit_debug_aspiration_trace(
+        &self,
+        depth: i32,
+        alpha: i32,
+        beta: i32,
+        score: i32,
+        result: &str,
+    ) {
+        if self.debug.trace_roots {
+            eprintln!(
+                "info string search-debug aspiration depth={depth} alpha={alpha} beta={beta} score={score} result={result}"
+            );
+        }
     }
 
     #[cfg(feature = "search-debug")]
@@ -1343,6 +1546,36 @@ impl Searcher {
     #[cfg(not(feature = "search-debug"))]
     #[inline(always)]
     fn see_pruning_enabled(&self) -> bool {
+        true
+    }
+
+    #[cfg(feature = "search-debug")]
+    fn qsearch_check_cap_enabled(&self) -> bool {
+        !self.debug.disable_qsearch_check_cap
+    }
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    fn qsearch_check_cap_enabled(&self) -> bool {
+        true
+    }
+
+    #[cfg(feature = "search-debug")]
+    fn qsearch_delta_enabled(&self) -> bool {
+        !self.debug.disable_qsearch_delta
+    }
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    fn qsearch_delta_enabled(&self) -> bool {
+        true
+    }
+
+    #[cfg(feature = "search-debug")]
+    fn qsearch_see_enabled(&self) -> bool {
+        !self.debug.disable_qsearch_see
+    }
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    fn qsearch_see_enabled(&self) -> bool {
         true
     }
 
@@ -1447,22 +1680,30 @@ impl Searcher {
         }
     }
 
-    fn repetition_count(&self, reversible_plies: usize) -> u8 {
+    fn repetition_info(&self, reversible_plies: usize) -> (u8, bool) {
         let len = self.rep_stack_len.min(self.rep_stack.len());
         if len == 0 {
-            return 0;
+            return (0, false);
         }
 
         let current_idx = len - 1;
+        let root_idx = self.rep_root_len.saturating_sub(1);
         let reversible_plies = reversible_plies.min(current_idx);
         let earliest_idx = current_idx - reversible_plies;
         let current = self.rep_stack[current_idx];
         let mut occurrences = 0u8;
+        let mut repeated_after_root = false;
         let mut idx = current_idx;
 
         loop {
             if self.rep_stack[idx] == current {
                 occurrences += 1;
+                // One prior occurrence is enough to stop a cycle created entirely by
+                // this search. At or before the root it is only game history, where a
+                // claim still requires the normal three occurrences.
+                if occurrences > 1 && idx > root_idx {
+                    repeated_after_root = true;
+                }
                 if occurrences == 5 {
                     break;
                 }
@@ -1473,12 +1714,12 @@ impl Searcher {
             idx -= 2;
         }
 
-        occurrences
+        (occurrences, repeated_after_root)
     }
 
     #[cfg(test)]
     fn is_repetition(&self) -> bool {
-        self.repetition_count(usize::MAX) >= 3
+        self.repetition_info(usize::MAX).0 >= 3
     }
 
     fn draw_status(&self, st: &BoardState, ply: usize, minimum_ply: usize) -> DrawStatus {
@@ -1489,11 +1730,14 @@ impl Searcher {
             return DrawStatus::None;
         }
 
-        let repetitions = self.repetition_count(usize::from(st.halfmove_clock));
+        let (repetitions, repeated_after_root) =
+            self.repetition_info(usize::from(st.halfmove_clock));
         if st.halfmove_clock >= MAX_HALF_MOVE_CLOCK || repetitions >= 5 {
             DrawStatus::Automatic
         } else if st.halfmove_clock >= 100 || repetitions >= 3 {
             DrawStatus::Claimable
+        } else if repeated_after_root {
+            DrawStatus::SearchCycle
         } else {
             DrawStatus::None
         }
@@ -2604,9 +2848,18 @@ impl SearchDebug {
             disable_lmp: env_flag("EMBER_DISABLE_LMP"),
             disable_lmr: env_flag("EMBER_DISABLE_LMR"),
             disable_null_move: env_flag("EMBER_DISABLE_NULL_MOVE"),
+            disable_qsearch_check_cap: env_flag("EMBER_DISABLE_QSEARCH_CHECK_CAP"),
+            disable_qsearch_delta: env_flag("EMBER_DISABLE_QSEARCH_DELTA"),
+            disable_qsearch_see: env_flag("EMBER_DISABLE_QSEARCH_SEE"),
             disable_reverse_futility: env_flag("EMBER_DISABLE_REVERSE_FUTILITY"),
             disable_see_pruning: env_flag("EMBER_DISABLE_SEE_PRUNING"),
+            trace_roots: env_flag("EMBER_TRACE_ROOT_SEARCH"),
+            stats: SearchDebugStats::default(),
         }
+    }
+
+    fn reset_stats(&mut self) {
+        self.stats = SearchDebugStats::default();
     }
 }
 
@@ -2687,6 +2940,7 @@ impl LazySmpRootContext {
         searcher.prepare_for_search();
         searcher.rep_stack.clone_from(&self.rep_stack);
         searcher.rep_stack_len = self.rep_stack_len;
+        searcher.rep_root_len = searcher.rep_stack_len;
         searcher.search_backend = self.search_backend;
         searcher.syzygy = self.syzygy.clone();
         searcher.tt_mb = self.tt_mb;
@@ -2703,6 +2957,8 @@ impl LazySmpRootContext {
 
 struct LazySmpSearchJob {
     shared_tt: Arc<SharedTT>,
+    verification_move: Option<Move>,
+    verification_tt: Option<Arc<SharedTT>>,
     stopped: Arc<AtomicBool>,
     st: BoardState,
     root_moves: Arc<Vec<Move>>,
@@ -2754,6 +3010,11 @@ fn spawn_lazy_smp_worker(thread_id: usize) -> std::io::Result<LazySmpWorker> {
                             &job.st,
                             initialize_learning,
                         );
+                        if thread_id == 1 {
+                            if let Some(verification_tt) = &job.verification_tt {
+                                searcher.shared_tt = Arc::clone(verification_tt);
+                            }
+                        }
                         let result = run_lazy_smp_worker(searcher, thread_id, &job);
                         let _ = result_tx.send(result);
                     }
@@ -2855,8 +3116,19 @@ impl LazySmpPool {
         let _search_guard = self.search_lock.lock().unwrap();
         self.ensure_workers(num_threads);
 
+        let verification_move = if num_threads > 1 {
+            lazy_smp_verification_move(st, root_moves)
+        } else {
+            None
+        };
+        // Keep the forced-line result independent of horizon-sensitive writes
+        // from workers that are comparing the complete root.
+        let verification_tt =
+            verification_move.map(|_| Arc::new(SharedTT::new(LAZY_SMP_VERIFICATION_TT_MB)));
         let job = Arc::new(LazySmpSearchJob {
             shared_tt,
+            verification_move,
+            verification_tt,
             stopped: Arc::clone(&root_searcher.stopped),
             st: *st,
             root_moves: Arc::new(root_moves.to_vec()),
@@ -2901,7 +3173,7 @@ impl LazySmpPool {
         {
             root_searcher.import_learning(&learning);
         }
-        let Some(best) = select_lazy_smp_result(&results) else {
+        let Some(best) = select_lazy_smp_result(&results, st, root_moves) else {
             return (root_moves[0], 0, 0, total_nodes);
         };
         if best.depth > 0 {
@@ -2942,9 +3214,49 @@ impl Drop for LazySmpPool {
     }
 }
 
-fn select_lazy_smp_result(results: &[ThreadResult]) -> Option<&ThreadResult> {
+fn select_lazy_smp_result<'a>(
+    results: &'a [ThreadResult],
+    st: &BoardState,
+    root_moves: &[Move],
+) -> Option<&'a ThreadResult> {
     let max_depth = results.iter().map(|result| result.depth).max()?;
     let near_deep_floor = max_depth.saturating_sub(1).max(1);
+    let principal = results
+        .iter()
+        .find(|result| result.thread_id == 0 && result.depth > 0);
+
+    // A helper can spend the whole search verifying a tactically ordered root
+    // capture. Accept its deeper result only within a small score-noise margin
+    // of the principal worker's alternative.
+    if let Some(root_move) = lazy_smp_verification_move(st, root_moves) {
+        if let Some(tactical) = results
+            .iter()
+            .filter(|result| {
+                result.thread_id == 1
+                    && result.depth >= near_deep_floor
+                    && result.best_move == root_move
+                    && principal.is_none_or(|principal| {
+                        result.score.saturating_add(LAZY_SMP_VERIFICATION_MARGIN_CP)
+                            >= principal.score
+                    })
+            })
+            .max_by(|a, b| {
+                a.depth
+                    .cmp(&b.depth)
+                    .then_with(|| a.score.cmp(&b.score))
+                    .then_with(|| b.thread_id.cmp(&a.thread_id))
+            })
+        {
+            return Some(tactical);
+        }
+    }
+
+    // Thread zero owns the selected result, persistent learning, and the root
+    // TT entry. Settled helpers can coordinate its stop only when its published
+    // move agrees; their horizon-dependent votes never replace that result.
+    if let Some(principal) = principal {
+        return Some(principal);
+    }
 
     results
         .iter()
@@ -2964,6 +3276,33 @@ fn select_lazy_smp_result(results: &[ThreadResult]) -> Option<&ThreadResult> {
                 .then_with(|| a.depth.cmp(&b.depth))
                 .then_with(|| a.score.cmp(&b.score))
         })
+}
+
+fn lazy_smp_verification_move(st: &BoardState, root_moves: &[Move]) -> Option<Move> {
+    let &root_move = root_moves.first()?;
+    let attacker = st.mailbox[move_from(root_move)];
+    let victim = st.mailbox[move_to(root_move)];
+    let verifies_minor_exchange = attacker != EMPTY_SQ
+        && victim != EMPTY_SQ
+        && piece_type(attacker) == 2
+        && piece_type(victim) == 1
+        && see(&st.bb, move_from(root_move), move_to(root_move)) >= -25;
+    verifies_minor_exchange.then_some(root_move)
+}
+
+fn lazy_smp_worker_root_moves(
+    st: &BoardState,
+    root_moves: &[Move],
+    thread_id: usize,
+    num_threads: usize,
+) -> Vec<Move> {
+    if thread_id == 1 && num_threads > 1 {
+        if let Some(root_move) = lazy_smp_verification_move(st, root_moves) {
+            return vec![root_move];
+        }
+    }
+
+    lazy_smp_root_moves(root_moves, thread_id, num_threads)
 }
 
 fn lazy_smp_root_moves(root_moves: &[Move], thread_id: usize, num_threads: usize) -> Vec<Move> {
@@ -3138,16 +3477,35 @@ pub fn lazy_smp_search(
     )
 }
 
-fn lazy_smp_worker_disagreement(
+#[derive(Clone, Copy, Debug)]
+struct LazySmpAgreement {
+    disagreement: f64,
+    comparable_workers: usize,
+    principal_agrees: bool,
+}
+
+fn lazy_smp_worker_agreement(
     job: &LazySmpSearchJob,
     thread_id: usize,
     best_move: Move,
     depth: i32,
-) -> f64 {
+) -> LazySmpAgreement {
+    let verification_thread = job.verification_move.map(|_| 1);
+    if verification_thread == Some(thread_id) {
+        return LazySmpAgreement {
+            disagreement: 0.0,
+            comparable_workers: 0,
+            principal_agrees: false,
+        };
+    }
+
     let mut comparable = 0usize;
     let mut different = 0usize;
     for other in 0..job.num_threads {
-        if other == thread_id || job.worker_depths[other].load(Ordering::Acquire) < depth {
+        if other == thread_id
+            || verification_thread == Some(other)
+            || job.worker_depths[other].load(Ordering::Acquire) < depth
+        {
             continue;
         }
         let other_move = job.worker_best_moves[other].load(Ordering::Relaxed) as Move;
@@ -3157,11 +3515,55 @@ fn lazy_smp_worker_disagreement(
         comparable += 1;
         different += usize::from(other_move != best_move);
     }
-    if comparable == 0 {
-        0.0
-    } else {
-        different as f64 / comparable as f64
+    LazySmpAgreement {
+        disagreement: if comparable == 0 {
+            0.0
+        } else {
+            different as f64 / comparable as f64
+        },
+        comparable_workers: comparable,
+        principal_agrees: thread_id == 0
+            || (job.worker_depths[0].load(Ordering::Acquire) > 0
+                && job.worker_best_moves[0].load(Ordering::Relaxed) as Move == best_move),
     }
+}
+
+#[cfg(test)]
+fn lazy_smp_worker_disagreement(
+    job: &LazySmpSearchJob,
+    thread_id: usize,
+    best_move: Move,
+    depth: i32,
+) -> f64 {
+    lazy_smp_worker_agreement(job, thread_id, best_move, depth).disagreement
+}
+
+fn lazy_smp_worker_can_coordinate_stop(
+    thread_id: usize,
+    verification_thread: Option<usize>,
+    soft_time: f64,
+    timing: IterationTiming,
+    agreement: LazySmpAgreement,
+    time_decision_stop: bool,
+) -> bool {
+    if !time_decision_stop {
+        return false;
+    }
+    if thread_id == 0 {
+        return true;
+    }
+
+    // A helper may interrupt a long leader iteration only after another
+    // complete root search confirms a settled result. The leader still owns
+    // the final move and persistent learning; helpers merely coordinate the
+    // shared stop token once the nominal allocation has been consumed.
+    verification_thread != Some(thread_id)
+        && timing.elapsed_seconds >= soft_time
+        && timing.stable_iterations >= 2
+        && timing.score_change_cp.abs() <= 80
+        && agreement.comparable_workers > 0
+        && agreement.principal_agrees
+        && agreement.disagreement <= 0.25
 }
 
 fn run_lazy_smp_worker(
@@ -3173,7 +3575,7 @@ fn run_lazy_smp_worker(
     let limits = job.limits;
     let start = job.start;
     let stopped = &job.stopped;
-    let my_moves = lazy_smp_root_moves(&job.root_moves, thread_id, job.num_threads);
+    let my_moves = lazy_smp_worker_root_moves(&st, &job.root_moves, thread_id, job.num_threads);
 
     let mut best_move = my_moves[0];
     let mut best_score = 0i32;
@@ -3340,6 +3742,7 @@ fn run_lazy_smp_worker(
             let iteration_seconds = (elapsed - previous_completed_elapsed).max(0.0);
             job.worker_best_moves[thread_id].store(u64::from(asp_best), Ordering::Relaxed);
             job.worker_depths[thread_id].store(depth, Ordering::Release);
+            let agreement = lazy_smp_worker_agreement(job, thread_id, asp_best, depth);
             let timing = IterationTiming {
                 elapsed_seconds: elapsed,
                 iteration_seconds,
@@ -3347,7 +3750,7 @@ fn run_lazy_smp_worker(
                 score_change_cp,
                 stable_iterations,
                 best_move_effort: asp_best_nodes as f64 / nd.max(1) as f64,
-                worker_disagreement: lazy_smp_worker_disagreement(job, thread_id, asp_best, depth),
+                worker_disagreement: agreement.disagreement,
             };
             let time_decision = iteration_time_decision(
                 limits.soft_time,
@@ -3376,8 +3779,17 @@ fn run_lazy_smp_worker(
                 );
             }
             searcher.update_correction_history(&st, best_score, best_depth);
-            // Helpers can finish useful work until the leader coordinates the stop.
-            if thread_id == 0 && !searcher.pondering.load(Ordering::Relaxed) && time_decision.stop {
+            let verification_thread = job.verification_move.map(|_| 1);
+            if !searcher.pondering.load(Ordering::Relaxed)
+                && lazy_smp_worker_can_coordinate_stop(
+                    thread_id,
+                    verification_thread,
+                    limits.soft_time,
+                    timing,
+                    agreement,
+                    time_decision.stop,
+                )
+            {
                 stopped.store(true, Ordering::SeqCst);
                 break;
             }
@@ -3522,6 +3934,58 @@ mod tests {
             score > stand_pat + 50,
             "qsearch should improve on stand-pat by searching e5xd6 en passant: stand_pat={stand_pat}, score={score}"
         );
+    }
+
+    #[test]
+    fn qsearch_checkmate_score_uses_the_actual_ply() {
+        let mut st = state_from_fen("7k/6Q1/6K1/8/8/8/8/8 b - - 0 1");
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(1));
+        let mut searcher = Searcher::new(shared_tt, stopped);
+        let mut nodes = 0u64;
+        let ply = 17;
+
+        let score = searcher.qsearch(
+            &mut st,
+            -INF,
+            INF,
+            -3,
+            Instant::now(),
+            10.0,
+            &mut nodes,
+            ply,
+        );
+
+        assert_eq!(score, -MATE + ply as i32);
+    }
+
+    #[cfg(feature = "search-debug")]
+    #[test]
+    fn search_debug_stats_are_reset_between_root_moves() {
+        let mut st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(1));
+        let mut searcher = Searcher::new(shared_tt, stopped);
+        let mut nodes = 0u64;
+
+        searcher.qsearch(
+            &mut st,
+            -INF,
+            INF,
+            QS_DEPTH,
+            Instant::now(),
+            10.0,
+            &mut nodes,
+            0,
+        );
+
+        let stats = searcher.debug_stats();
+        assert!(stats.qnodes > 1);
+        assert!(stats.max_ply > 0);
+
+        searcher.reset_debug_stats();
+
+        assert_eq!(searcher.debug_stats(), SearchDebugStats::default());
     }
 
     #[test]
@@ -3778,7 +4242,7 @@ mod tests {
     }
 
     #[test]
-    fn lazy_smp_helper_cannot_end_the_leader_iteration_at_soft_time() {
+    fn immature_lazy_smp_helper_cannot_end_the_leader_iteration_at_soft_time() {
         use std::sync::atomic::AtomicUsize;
 
         static EXPECTED_ROOT_MOVES: AtomicUsize = AtomicUsize::new(0);
@@ -3835,6 +4299,83 @@ mod tests {
             root_moves.len(),
             "a helper stopped the leader before its crossing iteration completed"
         );
+    }
+
+    #[test]
+    fn settled_lazy_smp_helper_can_coordinate_the_shared_soft_stop() {
+        let timing = IterationTiming {
+            elapsed_seconds: 1.1,
+            iteration_seconds: 0.2,
+            previous_iteration_seconds: 0.15,
+            score_change_cp: 12,
+            stable_iterations: 3,
+            best_move_effort: 0.8,
+            worker_disagreement: 0.0,
+        };
+        let agreement = LazySmpAgreement {
+            disagreement: 0.0,
+            comparable_workers: 2,
+            principal_agrees: true,
+        };
+
+        assert!(lazy_smp_worker_can_coordinate_stop(
+            2, None, 1.0, timing, agreement, true,
+        ));
+        assert!(!lazy_smp_worker_can_coordinate_stop(
+            2,
+            None,
+            1.0,
+            timing,
+            LazySmpAgreement {
+                disagreement: 0.0,
+                comparable_workers: 0,
+                principal_agrees: true,
+            },
+            true,
+        ));
+        assert!(!lazy_smp_worker_can_coordinate_stop(
+            1,
+            Some(1),
+            1.0,
+            timing,
+            agreement,
+            true,
+        ));
+        assert!(!lazy_smp_worker_can_coordinate_stop(
+            2,
+            None,
+            1.0,
+            IterationTiming {
+                elapsed_seconds: 0.9,
+                ..timing
+            },
+            agreement,
+            true,
+        ));
+        assert!(!lazy_smp_worker_can_coordinate_stop(
+            2,
+            None,
+            1.0,
+            timing,
+            LazySmpAgreement {
+                disagreement: 0.5,
+                comparable_workers: 2,
+                principal_agrees: true,
+            },
+            true,
+        ));
+        assert!(!lazy_smp_worker_can_coordinate_stop(
+            2,
+            None,
+            1.0,
+            timing,
+            LazySmpAgreement {
+                disagreement: 0.0,
+                comparable_workers: 2,
+                principal_agrees: false,
+            },
+            true,
+        ));
     }
 
     #[test]
@@ -3977,9 +4518,71 @@ mod tests {
         assert_eq!(lazy_smp_root_moves(&original, 1, 12), expected);
     }
 
-    fn completed_thread(best_move: Move, score: i32, depth: i32) -> ThreadResult {
+    #[test]
+    fn lazy_smp_assigns_a_helper_to_verify_game_ffzk_y782_recapture() {
+        let st = state_from_fen("4r1k1/q3nppp/2p1p2P/1p2B3/pP1rn3/3N2P1/P4PB1/2QR2K1 w - - 0 31");
+        let bxe4 = legal_move(&st, "g2e4");
+        let qb2 = legal_move(&st, "c1b2");
+        let re1 = legal_move(&st, "d1e1");
+        let root_moves = [bxe4, qb2, re1];
+
+        assert_eq!(
+            lazy_smp_worker_root_moves(&st, &root_moves, 1, 12),
+            vec![bxe4]
+        );
+        assert_eq!(
+            lazy_smp_worker_root_moves(&st, &root_moves, 0, 12),
+            root_moves
+        );
+    }
+
+    #[test]
+    fn lazy_smp_tactical_verifier_does_not_inflate_worker_disagreement() {
+        let st = state_from_fen("4r1k1/q3nppp/2p1p2P/1p2B3/pP1rn3/3N2P1/P4PB1/2QR2K1 w - - 0 31");
+        let bxe4 = legal_move(&st, "g2e4");
+        let qe3 = legal_move(&st, "c1e3");
+        let root_moves = Arc::new(vec![bxe4, qe3]);
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(1));
+        let verification_tt = Arc::new(SharedTT::new(1));
+        let root_searcher = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
+        let job = LazySmpSearchJob {
+            shared_tt,
+            verification_move: Some(bxe4),
+            verification_tt: Some(verification_tt),
+            stopped,
+            st,
+            root_moves,
+            num_threads: 3,
+            root_depth_extension: |_, _| 0,
+            limits: LazySmpSearchLimits {
+                soft_time: 1.0,
+                hard_time: 2.0,
+                depth: 20,
+                start: Instant::now(),
+            },
+            root_context: Arc::new(LazySmpRootContext::from_searcher(&root_searcher)),
+            start: Instant::now(),
+            global_best_depth: Arc::new(AtomicI32::new(0)),
+            global_nodes: Arc::new(AtomicU64::new(0)),
+            worker_best_moves: (0..3).map(|_| AtomicU64::new(0)).collect(),
+            worker_depths: (0..3).map(|_| AtomicI32::new(0)).collect(),
+        };
+        job.worker_best_moves[1].store(u64::from(bxe4), Ordering::Relaxed);
+        job.worker_depths[1].store(22, Ordering::Release);
+        job.worker_best_moves[2].store(u64::from(qe3), Ordering::Relaxed);
+        job.worker_depths[2].store(17, Ordering::Release);
+
+        assert_eq!(lazy_smp_worker_disagreement(&job, 0, qe3, 17), 0.0);
+        assert!(!Arc::ptr_eq(
+            &job.shared_tt,
+            job.verification_tt.as_ref().unwrap()
+        ));
+    }
+
+    fn completed_thread(thread_id: usize, best_move: Move, score: i32, depth: i32) -> ThreadResult {
         ThreadResult {
-            thread_id: 0,
+            thread_id,
             best_move,
             score,
             depth,
@@ -3999,12 +4602,17 @@ mod tests {
         let bg7 = legal_move(&st, "h6g7");
         let kh7 = legal_move(&st, "g8h7");
         let results = [
-            completed_thread(bg7, -72, 14),
-            completed_thread(bg7, -68, 14),
-            completed_thread(kh7, -61, 15),
+            completed_thread(0, bg7, -72, 14),
+            completed_thread(1, bg7, -68, 14),
+            completed_thread(2, kh7, -61, 15),
         ];
 
-        assert_eq!(select_lazy_smp_result(&results).unwrap().best_move, bg7);
+        assert_eq!(
+            select_lazy_smp_result(&results, &st, &[bg7, kh7])
+                .unwrap()
+                .best_move,
+            bg7
+        );
     }
 
     #[test]
@@ -4016,12 +4624,17 @@ mod tests {
         let ne7 = legal_move(&st, "d5e7");
         let kf7 = legal_move(&st, "e8f7");
         let results = [
-            completed_thread(ne7, -31, 12),
-            completed_thread(ne7, -28, 12),
-            completed_thread(kf7, -20, 13),
+            completed_thread(0, ne7, -31, 12),
+            completed_thread(1, ne7, -28, 12),
+            completed_thread(2, kf7, -20, 13),
         ];
 
-        assert_eq!(select_lazy_smp_result(&results).unwrap().best_move, ne7);
+        assert_eq!(
+            select_lazy_smp_result(&results, &st, &[ne7, kf7])
+                .unwrap()
+                .best_move,
+            ne7
+        );
     }
 
     #[test]
@@ -4034,12 +4647,111 @@ mod tests {
         let kh6 = legal_move(&st, "g6h6");
         let g4 = legal_move(&st, "g5g4");
         let results = [
-            completed_thread(kh6, -205, 13),
-            completed_thread(kh6, -198, 13),
-            completed_thread(g4, -187, 14),
+            completed_thread(0, kh6, -205, 13),
+            completed_thread(1, kh6, -198, 13),
+            completed_thread(2, g4, -187, 14),
         ];
 
-        assert_eq!(select_lazy_smp_result(&results).unwrap().best_move, kh6);
+        assert_eq!(
+            select_lazy_smp_result(&results, &st, &[kh6, g4])
+                .unwrap()
+                .best_move,
+            kh6
+        );
+    }
+
+    #[test]
+    fn lazy_smp_keeps_principal_recapture_from_game_ffzk_y782() {
+        // https://lichess.org/ffzkY782 before 31.Re1:
+        // 4r1k1/q3nppp/2p1p2P/1p2B3/pP1rn3/3N2P1/P4PB1/2QR2K1 w - - 0 31
+        // The principal worker found 31.Bxe4, which Stockfish evaluates as
+        // equal, but helper consensus replaced it with a losing quiet move.
+        let st = state_from_fen("4r1k1/q3nppp/2p1p2P/1p2B3/pP1rn3/3N2P1/P4PB1/2QR2K1 w - - 0 31");
+        let bxe4 = legal_move(&st, "g2e4");
+        let qe3 = legal_move(&st, "c1e3");
+        let qb2 = legal_move(&st, "c1b2");
+        let results = [
+            completed_thread(8, qe3, 0, 19),
+            completed_thread(7, bxe4, -91, 18),
+            completed_thread(3, qb2, -56, 20),
+            completed_thread(11, qe3, 0, 18),
+            completed_thread(2, qb2, -56, 20),
+            completed_thread(5, qe3, 0, 19),
+            completed_thread(4, bxe4, -72, 17),
+            completed_thread(6, qe3, 0, 18),
+            completed_thread(1, qe3, 0, 18),
+            completed_thread(9, qe3, 0, 18),
+            completed_thread(10, qe3, 0, 19),
+            completed_thread(0, bxe4, -126, 19),
+        ];
+
+        assert_eq!(
+            select_lazy_smp_result(&results, &st, &[bxe4, qe3, qb2])
+                .unwrap()
+                .best_move,
+            bxe4
+        );
+    }
+
+    #[test]
+    fn lazy_smp_keeps_deeper_root_recapture_from_game_ffzk_y782() {
+        // A dedicated helper can search Bxe4 more deeply than workers that
+        // compare every root move. Keep its better score over the principal
+        // worker's losing quiet alternative.
+        let st = state_from_fen("4r1k1/q3nppp/2p1p2P/1p2B3/pP1rn3/3N2P1/P4PB1/2QR2K1 w - - 0 31");
+        let bxe4 = legal_move(&st, "g2e4");
+        let qb2 = legal_move(&st, "c1b2");
+        let re1 = legal_move(&st, "d1e1");
+        let results = [
+            completed_thread(0, qb2, -128, 17),
+            completed_thread(1, bxe4, -65, 18),
+            completed_thread(2, re1, -124, 17),
+        ];
+
+        assert!(see(&st.bb, move_from(bxe4), move_to(bxe4)) >= -25);
+        assert_eq!(
+            select_lazy_smp_result(&results, &st, &[bxe4, qb2, re1])
+                .unwrap()
+                .best_move,
+            bxe4
+        );
+    }
+
+    #[test]
+    fn lazy_smp_rejects_a_worse_tactical_verification() {
+        let st = state_from_fen("4r1k1/q3nppp/2p1p2P/1p2B3/pP1rn3/3N2P1/P4PB1/2QR2K1 w - - 0 31");
+        let bxe4 = legal_move(&st, "g2e4");
+        let qe3 = legal_move(&st, "c1e3");
+        let results = [
+            completed_thread(0, qe3, -20, 17),
+            completed_thread(1, bxe4, -125, 18),
+        ];
+
+        assert_eq!(
+            select_lazy_smp_result(&results, &st, &[bxe4, qe3])
+                .unwrap()
+                .best_move,
+            qe3
+        );
+    }
+
+    #[test]
+    fn lazy_smp_uses_consensus_when_principal_has_no_result() {
+        let st = state_from_fen("2r3k1/5q2/2p3pb/4Qp1p/pB1P3P/P1P5/4RKP1/8 b - - 19 49");
+        let bg7 = legal_move(&st, "h6g7");
+        let kh7 = legal_move(&st, "g8h7");
+        let results = [
+            completed_thread(1, bg7, -72, 14),
+            completed_thread(2, bg7, -68, 14),
+            completed_thread(3, kh7, -61, 15),
+        ];
+
+        assert_eq!(
+            select_lazy_smp_result(&results, &st, &[bg7, kh7])
+                .unwrap()
+                .best_move,
+            bg7
+        );
     }
 
     #[test]
@@ -4116,6 +4828,30 @@ mod tests {
         searcher.rep_stack = vec![7, 1, 7, 2, 7, 3, 7, 4, 7];
         searcher.rep_stack_len = searcher.rep_stack.len();
         assert_eq!(searcher.draw_status(&st, 1, 1), DrawStatus::Automatic);
+    }
+
+    #[test]
+    fn draw_status_terminates_cycles_only_after_the_search_root() {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(1));
+        let mut searcher = Searcher::new(shared_tt, stopped);
+        let st = state_from_fen("7k/8/8/8/8/8/8/KQ6 w - - 8 1");
+
+        searcher.rep_stack = vec![9, 8, 7, 6, 7];
+        searcher.rep_stack_len = searcher.rep_stack.len();
+        searcher.rep_root_len = 3;
+
+        assert_eq!(
+            searcher.draw_status(&st, 2, 1),
+            DrawStatus::None,
+            "a second occurrence of the root is not a legal threefold"
+        );
+        searcher.rep_root_len = 1;
+        assert_eq!(
+            searcher.draw_status(&st, 4, 1),
+            DrawStatus::SearchCycle,
+            "a second occurrence entirely inside the tree terminates the cycle"
+        );
     }
 
     #[test]

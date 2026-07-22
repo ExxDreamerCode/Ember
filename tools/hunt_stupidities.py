@@ -11,6 +11,8 @@ import sys
 import time
 from pathlib import Path
 
+from benchmark_search import run_engine as run_uci_search
+
 try:
     import tomllib
 except ImportError:  # pragma: no cover
@@ -234,12 +236,9 @@ def smoke(config_path, run_id):
         "go depth 1",
         "quit",
     ]
-    proc = subprocess.run(
-        [cfg["ember"]["binary"]],
-        input="\n".join(cmds) + "\n",
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+    proc, _ = run_uci_search(
+        Path(cfg["ember"]["binary"]),
+        "\n".join(cmds) + "\n",
         timeout=10,
     )
     (rd / "smoke.log").write_text(proc.stdout, encoding="utf-8")
@@ -523,12 +522,9 @@ def run_ember_once(binary, fen, depth, hash_mb="64"):
         f"go depth {depth}",
         "quit",
     ]
-    proc = subprocess.run(
-        [binary],
-        input="\n".join(cmds) + "\n",
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+    proc, _ = run_uci_search(
+        Path(binary),
+        "\n".join(cmds) + "\n",
         timeout=60,
     )
     bestmove = None

@@ -283,6 +283,9 @@ fn root_rook_invasion_score(st: &BoardState, mv: Move) -> Option<i32> {
     if attacker == EMPTY_SQ || piece_type(attacker) != 3 {
         return None;
     }
+    if root_move_is_capture(st, mv) {
+        return None;
+    }
 
     let target_row = if st.w { 1 } else { 6 };
     if to / 8 != target_row {
@@ -300,7 +303,13 @@ fn root_depth_extension(st: &BoardState, mv: Move) -> i32 {
     if root_reduced_rook_check_capture(st, mv) {
         3
     } else {
-        i32::from(root_rook_invasion_score(st, mv).is_some())
+        let attacker = st.mailbox[move_from(mv)];
+        i32::from(
+            root_rook_invasion_score(st, mv).is_some()
+                || (attacker != EMPTY_SQ
+                    && piece_type(attacker) == 3
+                    && root_checking_slider_pawn_capture_order_score(st, mv).is_some()),
+        )
     }
 }
 
@@ -517,19 +526,22 @@ fn sort_root_moves(st: &BoardState, moves: &[Move], preferred: Move) -> Vec<Move
     let has_rook_invasion = moves
         .iter()
         .any(|&mv| root_rook_invasion_score(st, mv).is_some());
-    let has_reduced_rook_check = root_non_king_piece_count(st) <= 12
-        && !root_has_queen(st)
-        && moves.iter().any(|&mv| {
-            let attacker = st.mailbox[move_from(mv)];
-            attacker != EMPTY_SQ && piece_type(attacker) == 3 && root_move_gives_check(st, mv)
-        });
+    let has_reduced_rook_tactic = moves
+        .iter()
+        .any(|&mv| root_reduced_rook_check_capture(st, mv))
+        || (root_non_king_piece_count(st) <= 11
+            && !root_has_queen(st)
+            && moves.iter().any(|&mv| {
+                let attacker = st.mailbox[move_from(mv)];
+                attacker != EMPTY_SQ && piece_type(attacker) == 3 && root_move_gives_check(st, mv)
+            }));
     let has_minor_tactic = moves.iter().any(|&mv| root_minor_king_zone_capture(st, mv));
     let has_queen_capture = moves
         .iter()
         .any(|&mv| root_move_is_capture(st, mv) && piece_type(st.mailbox[move_to(mv)]) == 4);
     let use_tactical_order = has_minor_tactic
         || has_queen_capture
-        || has_reduced_rook_check
+        || has_reduced_rook_tactic
         || ((sparse_endgame || has_rook_invasion)
             && moves
                 .iter()
@@ -1260,11 +1272,24 @@ impl Engine {
 
         if !self.st.chess960 {
             if let Some(ref book) = self.book {
-                if let Some(choice) = book.pick_move_with_confidence(
+                if let Some(choice) = book.pick_move_with_quality(
                     &self.st,
                     &moves,
                     self.book_min_move_weight,
                     self.book_min_move_weight_permille,
+                    crate::book::DEFAULT_BOOK_MAX_EVAL_LOSS_CP,
+                    |mv| {
+                        let mut child = self.st;
+                        apply_move(
+                            &mut child,
+                            move_sr(mv),
+                            move_sc(mv),
+                            move_er(mv),
+                            move_ec(mv),
+                            move_promotion(mv),
+                        );
+                        -self.searcher.corrected_eval(&child)
+                    },
                 ) {
                     let mv_str = move_to_uci(&self.st, choice.mv);
                     let eval_score = self.searcher.corrected_eval(&self.st);
@@ -1375,7 +1400,7 @@ impl Engine {
                 let mut cur_best_nodes = 0u64;
                 let mut loop_alpha = alpha;
 
-                for &mv in &sorted {
+                for (_root_index, &mv) in sorted.iter().enumerate() {
                     if !self.searcher.pondering.load(Ordering::Relaxed)
                         && start.elapsed().as_secs_f64() > time_limit
                     {
@@ -1396,6 +1421,8 @@ impl Engine {
                     self.searcher.rep_stack_len += 1;
                     let root_ext = root_depth_extension(&old, mv);
                     let move_nodes_before = nd;
+                    #[cfg(feature = "search-debug")]
+                    self.searcher.reset_debug_stats();
 
                     let score = if cur_score == -INF {
                         -self.searcher.negamax(
@@ -1439,6 +1466,17 @@ impl Engine {
                     };
                     let move_nodes = nd.saturating_sub(move_nodes_before);
 
+                    #[cfg(feature = "search-debug")]
+                    self.searcher.emit_debug_root_trace(
+                        depth,
+                        _root_index,
+                        &move_to_uci(&old, mv),
+                        loop_alpha,
+                        beta,
+                        score,
+                        move_nodes,
+                    );
+
                     self.searcher.rep_stack.pop();
                     self.searcher.rep_stack_len -= 1;
                     self.st = old;
@@ -1467,12 +1505,23 @@ impl Engine {
                 }
 
                 if cur_score <= alpha {
+                    #[cfg(feature = "search-debug")]
+                    self.searcher
+                        .emit_debug_aspiration_trace(depth, alpha, beta, cur_score, "fail-low");
                     asp_delta = asp_delta.saturating_mul(2).min(INF);
                     alpha = (prev_score - asp_delta).max(-INF);
                     beta = prev_score + init_delta;
                     continue 'asp;
                 }
                 if cur_score >= beta {
+                    #[cfg(feature = "search-debug")]
+                    self.searcher.emit_debug_aspiration_trace(
+                        depth,
+                        alpha,
+                        beta,
+                        cur_score,
+                        "fail-high",
+                    );
                     asp_delta = asp_delta.saturating_mul(2).min(INF);
                     beta = (prev_score + asp_delta).min(INF);
                     asp_best = cur_best;
@@ -1481,6 +1530,9 @@ impl Engine {
                 asp_best = cur_best;
                 asp_score = cur_score;
                 asp_best_nodes = cur_best_nodes;
+                #[cfg(feature = "search-debug")]
+                self.searcher
+                    .emit_debug_aspiration_trace(depth, alpha, beta, cur_score, "exact");
                 break;
             }
 
@@ -1721,6 +1773,20 @@ mod tests {
     }
 
     #[test]
+    fn root_rook_invasion_extension_rejects_captures() {
+        let mut rook_capture =
+            engine_from_fen("2r3k1/p7/7p/1p4p1/6R1/3B1q1P/2P4P/2B3RK w - - 6 35");
+        play_uci(&mut rook_capture, "g1g2");
+        let rook_takes_pawn = root_move(&rook_capture, "c8c2");
+
+        assert_eq!(
+            root_rook_invasion_score(&rook_capture.st, rook_takes_pawn),
+            None
+        );
+        assert_eq!(root_depth_extension(&rook_capture.st, rook_takes_pawn), 0);
+    }
+
+    #[test]
     fn root_ordering_prioritizes_a_missed_mating_check() {
         let mut engine = engine_from_fen("1rb2rk1/q5P1/4p2p/3p3p/3P1P2/2P5/2QK3P/3R2R1 b - - 0 29");
         play_uci(&mut engine, "f8f7");
@@ -1827,6 +1893,7 @@ mod tests {
             root_checking_slider_pawn_capture_order_score(&engine.st, bishop_takes_pawn),
             Some(5_500_660)
         );
+        assert_eq!(root_depth_extension(&engine.st, bishop_takes_pawn), 0);
         assert_eq!(move_to_uci(&engine.st, ordered[0]), "d6h2");
 
         let mut rook_engine =
@@ -1842,6 +1909,7 @@ mod tests {
             root_checking_slider_pawn_capture_order_score(&rook_engine.st, rook_takes_pawn),
             Some(5_500_500)
         );
+        assert_eq!(root_depth_extension(&rook_engine.st, rook_takes_pawn), 1);
         assert_eq!(move_to_uci(&rook_engine.st, ordered[0]), "g3g6");
     }
 
@@ -2030,6 +2098,26 @@ mod tests {
         assert!(
             nodes > 0,
             "the weight-one 10.h4 book tail should be rejected so search starts"
+        );
+    }
+
+    #[test]
+    fn book_quality_window_avoids_the_inferior_f1w14oir_branch() {
+        let mut engine = Engine::new();
+        engine.book = Some(
+            OpeningBook::load_from_bytes(crate::opening_book::BOOK_DATA, "<embedded>").unwrap(),
+        );
+        for mv in ["g1f3", "c7c5", "e2e4", "a7a6"] {
+            play_uci(&mut engine, mv);
+        }
+
+        let (best_move, _score, nodes, _elapsed) =
+            engine.find_best_move_with_time_limits(0.01, 0.01, 1);
+
+        assert_eq!(best_move, "d2d4");
+        assert_eq!(
+            nodes, 0,
+            "the selected continuation should remain a book move"
         );
     }
 

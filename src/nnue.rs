@@ -2025,7 +2025,69 @@ fn validate_correction_offsets(offsets: &[u32]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::available_nnue_backends;
     use crate::Engine;
+
+    fn parse_uci_move(mv: &str) -> (usize, usize, usize, usize, u8) {
+        let bytes = mv.as_bytes();
+        assert!(matches!(bytes.len(), 4 | 5), "invalid UCI move: {mv}");
+        let sc = (bytes[0] - b'a') as usize;
+        let sr = 8 - (bytes[1] - b'0') as usize;
+        let ec = (bytes[2] - b'a') as usize;
+        let er = 8 - (bytes[3] - b'0') as usize;
+        let promotion = bytes.get(4).copied().unwrap_or(0).to_ascii_uppercase();
+        (sr, sc, er, ec, promotion)
+    }
+
+    fn assert_incremental_line_matches_refresh(net: &NNUENet, fen: &str, moves: &[&str]) {
+        for backend in available_nnue_backends() {
+            let mut engine = Engine::new();
+            engine.try_set_fen(fen).expect("critical FEN should parse");
+
+            let mut incremental = NNUEAccumulator::new(net.hidden_size);
+            incremental.refresh_with_kind(backend, net, &engine.st);
+
+            for &uci in moves {
+                let (sr, sc, er, ec, promotion) = parse_uci_move(uci);
+                let before = engine.st;
+                let updated = incremental
+                    .update_move_with_kind(backend, net, &before, sr, sc, er, ec, promotion);
+                assert!(
+                    engine.make_move_uci(sr, sc, er, ec, promotion),
+                    "{uci} should be legal for {backend:?}"
+                );
+                if !updated {
+                    incremental.refresh_with_kind(backend, net, &engine.st);
+                }
+
+                let mut refreshed = NNUEAccumulator::new(net.hidden_size);
+                refreshed.refresh_with_kind(backend, net, &engine.st);
+                assert_eq!(
+                    incremental.white(),
+                    refreshed.white(),
+                    "white accumulator drift after {uci} with {backend:?}"
+                );
+                assert_eq!(
+                    incremental.black(),
+                    refreshed.black(),
+                    "black accumulator drift after {uci} with {backend:?}"
+                );
+                assert_eq!(
+                    (incremental.wk, incremental.bk),
+                    (refreshed.wk, refreshed.bk),
+                    "king-square drift after {uci} with {backend:?}"
+                );
+
+                let stm = if engine.st.w { WHITE } else { BLACK };
+                let piece_count: u32 = engine.st.bb.iter().map(|bb| bb.count_ones()).sum();
+                assert_eq!(
+                    net.forward_with_kind(backend, &incremental, stm, piece_count),
+                    net.forward_with_kind(backend, &refreshed, stm, piece_count),
+                    "NNUE score drift after {uci} with {backend:?}"
+                );
+            }
+        }
+    }
 
     fn nnue_score(net: &NNUENet, fen: &str) -> i32 {
         let mut engine = Engine::new();
@@ -2080,5 +2142,26 @@ mod tests {
                 "compact NNUE score mismatch for {fen}"
             );
         }
+    }
+
+    #[test]
+    fn critical_game_lines_keep_nnue_incremental_state_exact() {
+        let net =
+            NNUENet::load_compact_from_bytes(include_bytes!("net.compact.nnue"), "<critical PV>")
+                .expect("compact NNUE should load");
+
+        assert_incremental_line_matches_refresh(
+            &net,
+            "rn2nrk1/1pp3b1/3pP2p/p7/2P4q/2N1P1pP/PP1BB3/R1QK3R w - - 2 20",
+            &[
+                "h1g1", "h4h3", "c1b1", "h3h2", "d1c2", "f8f2", "g1h1", "h2g2", "h1g1", "g2h3",
+                "d2e1", "b8c6", "b1d1", "c6b4", "c2b3", "f2g2", "g1g2", "h3g2", "a2a3",
+            ],
+        );
+        assert_incremental_line_matches_refresh(
+            &net,
+            "r3n1k1/1pp1Prb1/3p3p/p1n5/2P5/2N1P2P/PPKBBqp1/R2Q2R1 w - - 3 25",
+            &["e2h5", "g7c3", "b2c3", "f2f5", "c2b2", "f5f2"],
+        );
     }
 }

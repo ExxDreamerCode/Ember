@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 import argparse
 import json
-import subprocess
 from pathlib import Path
+
+from benchmark_search import run_engine as run_uci_search
 
 
 def run_ember(binary, fen, depth, timeout):
@@ -14,13 +15,10 @@ def run_ember(binary, fen, depth, timeout):
         f"go depth {depth}",
         "quit",
     ]
-    proc = subprocess.run(
-        [binary],
-        input="\n".join(cmds) + "\n",
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=timeout,
+    proc, _ = run_uci_search(
+        Path(binary),
+        "\n".join(cmds) + "\n",
+        timeout,
     )
     bestmove = None
     for line in proc.stdout.splitlines():

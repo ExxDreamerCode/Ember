@@ -78,29 +78,34 @@ pub fn iteration_time_decision(
     } else {
         1.0
     };
-    let maximum_scale = if soft_seconds * 1_000.0 <= SINGLE_THREAD_BUDGET_MS {
+    let soft_ms = soft_seconds * 1_000.0;
+    let can_finish_early = soft_ms >= EARLY_PREDICTION_BUDGET_MS
+        && timing.stable_iterations >= 3
+        && timing.score_change_cp.abs() <= 35
+        && effort >= 0.70
+        && disagreement <= 0.25;
+    let minimum_scale = if can_finish_early { 0.70 } else { 1.0 };
+    let maximum_scale = if soft_ms <= SINGLE_THREAD_BUDGET_MS {
         1.65
     } else {
         1.15
     };
     let scale = (stability * score_volatility * effort_factor * disagreement_factor)
-        .clamp(0.70, maximum_scale);
-    let mut target_seconds = (soft_seconds * scale).max(soft_seconds).min(hard_seconds);
+        .clamp(minimum_scale, maximum_scale);
+    let mut target_seconds = (soft_seconds * scale).min(hard_seconds);
     if legal_moves == 1 {
         target_seconds = target_seconds.min(0.5).min(hard_seconds);
     }
 
     let stable_enough =
         timing.stable_iterations >= 2 && timing.score_change_cp.abs() <= 80 && disagreement <= 0.5;
-    // A stable but shallow PV can still be wrong. Prediction may avoid an
-    // expensive extra iteration, but it must not take ordinary positions
-    // below the nominal budget that the clock manager already approved.
     let prediction_floor = if stable_enough { 0.90 } else { 0.95 };
     let predicted_target_overrun =
         predicted_next_seconds >= (target_seconds - timing.elapsed_seconds).max(0.0);
-    let soft_ms = soft_seconds * 1_000.0;
     let prediction_boundary = if soft_ms < EARLY_PREDICTION_BUDGET_MS {
         stable_enough && timing.elapsed_seconds >= soft_seconds && predicted_target_overrun
+    } else if can_finish_early {
+        timing.elapsed_seconds >= target_seconds * 0.95 && predicted_target_overrun
     } else {
         timing.elapsed_seconds >= soft_seconds * prediction_floor && predicted_target_overrun
     };
@@ -202,7 +207,19 @@ impl TimeManager {
         // The GUI cannot grant the next increment before this move returns.
         // Keep both limits inside the current clock after communication slack.
         let spendable_ms = (time_ms - overhead_ms).max(1.0);
-        let mut soft_ms = optimum_ms.min(spendable_ms).min(MAX_SEARCH_TIME_MS);
+        // Start protecting several future increments while there is still
+        // enough clock to recover; waiting until the last few moves permits
+        // one unstable iteration to consume most of an otherwise safe clock.
+        let increment_reserve_cap_ms =
+            if increment_ms > 0.0 && time_ms <= increment_ms * 60.0 && time_ms > 1_000.0 {
+                ((time_ms - increment_ms * 3.0).max(1.0)).min(time_ms * 0.35)
+            } else {
+                MAX_SEARCH_TIME_MS
+            };
+        let mut soft_ms = optimum_ms
+            .min(spendable_ms)
+            .min(MAX_SEARCH_TIME_MS)
+            .min(increment_reserve_cap_ms);
         if time_ms < 1_000.0 && increment_ms > 0.0 {
             soft_ms = soft_ms.min(increment_ms);
         }
@@ -214,6 +231,7 @@ impl TimeManager {
         let hard_ms = maximum_ms
             .min(spendable_ms)
             .min(MAX_SEARCH_TIME_MS)
+            .min(increment_reserve_cap_ms)
             .min(short_increment_hard_cap_ms)
             .max(soft_ms);
 

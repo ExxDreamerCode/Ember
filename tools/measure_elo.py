@@ -15,6 +15,8 @@ import sys
 import time
 from pathlib import Path
 
+from benchmark_search import run_engine as run_uci_search
+
 try:
     import tomllib
 except ImportError:  # pragma: no cover
@@ -278,12 +280,9 @@ def smoke(config_path, run_id):
         "go movetime 100",
         "quit",
     ]
-    proc = subprocess.run(
-        [str(ember_bin)],
-        input="\n".join(cmds) + "\n",
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+    proc, _ = run_uci_search(
+        ember_bin,
+        "\n".join(cmds) + "\n",
         timeout=10,
     )
     log = rd / "smoke.log"
