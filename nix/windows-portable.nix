@@ -111,13 +111,15 @@ EOF
     patch -d "$bundle/lichess-bot" -p1 < "${../windows/lichess-bot-rate-limit.patch}"
     grep -F 'control_queue.put_nowait({"type": "ember_control_ready"})' \
       "$bundle/lichess-bot/lib/lichess_bot.py" >/dev/null
-    PYTHONPATH="$bundle/lichess-bot" "${pythonDependencies}/bin/python" - <<'PY'
+    PYTHONPATH="$bundle/lichess-bot:$site" \
+      "${pythonDependencies}/bin/python" - <<'PY'
 from unittest.mock import patch
 
 from requests import Response
 from requests.exceptions import HTTPError
 
 from lib.lichess import Lichess, is_final
+from lib.lichess_bot import stop, watch_control_stream
 from lib.timer import seconds
 
 response = Response()
@@ -132,6 +134,41 @@ with (
 ):
     assert lichess.get_path_template("stream") == "/api/bot/game/stream/{}"
     sleep.assert_called_once_with(12)
+
+
+class ControlQueue:
+    def __init__(self):
+        self.events = []
+
+    def put_nowait(self, event):
+        self.events.append(event)
+
+
+class ControlResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def iter_lines(self):
+        stop.terminated = True
+        return []
+
+
+class ControlLichess:
+    def get_event_stream(self):
+        return ControlResponse()
+
+
+queue = ControlQueue()
+stop.terminated = False
+watch_control_stream(queue, ControlLichess())
+assert queue.events == [
+    {"type": "ember_control_ready"},
+    {"type": "terminated"},
+]
+stop.terminated = False
 PY
 
     cp "${../windows/battle_runner.py}" "$bundle/battle_runner.py"

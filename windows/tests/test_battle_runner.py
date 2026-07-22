@@ -320,6 +320,50 @@ class BattleRunnerTests(unittest.TestCase):
         self.assertEqual(result["winner"], "white")
         self.assertIn("1. e4", pgn)
 
+    def test_game_monitor_recovers_terminal_local_stream_without_game_finish(self) -> None:
+        process = mock.Mock()
+        process.poll.return_value = None
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pgn_dir = root / "pgn"
+            pgn_dir.mkdir()
+            bot_log = root / "lichess-bot.log"
+            bot_log.write_text(
+                "2026-07-21 DEBUG Game state: "
+                "{'type': 'gameState', 'moves': 'e2e4', 'status': 'mate', "
+                "'winner': 'white'}\n"
+                "2026-07-21 DEBUG Event: "
+                "{'type': 'local_game_done', 'game': {'id': 'game1234'}}\n",
+                encoding="utf-8",
+            )
+            (pgn_dir / "Ember vs Bot - game1234.pgn").write_text(
+                '[White "Ember"]\n[Black "Bot"]\n[Result "1-0"]\n\n1. e4 1-0\n',
+                encoding="utf-8",
+            )
+
+            result, pgn = battle_runner.wait_for_game(
+                bot_log,
+                pgn_dir,
+                "game1234",
+                process,
+                poll_seconds=1,
+                timeout_seconds=30,
+            )
+
+        self.assertEqual(result["status"], "mate")
+        self.assertEqual(result["winner"], "white")
+        self.assertIn("1. e4", pgn)
+
+    def test_incomplete_local_pgn_does_not_count_as_terminal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            pgn_dir = Path(directory)
+            (pgn_dir / "Ember vs Bot - game1234.pgn").write_text(
+                '[White "Ember"]\n[Black "Bot"]\n[Result "*"]\n\n1. e4 *\n',
+                encoding="utf-8",
+            )
+
+            self.assertIsNone(battle_runner.completed_local_pgn(pgn_dir, "game1234"))
+
     def test_game_monitor_reports_worker_failure_instead_of_silent_abort(self) -> None:
         process = mock.Mock()
         process.poll.return_value = None
@@ -334,7 +378,7 @@ class BattleRunnerTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(battle_runner.RunnerError, "before gameFinish"):
+            with self.assertRaisesRegex(battle_runner.RunnerError, "without a terminal PGN"):
                 battle_runner.wait_for_game(
                     bot_log,
                     pgn_dir,
@@ -343,6 +387,38 @@ class BattleRunnerTests(unittest.TestCase):
                     poll_seconds=1,
                     timeout_seconds=30,
                 )
+
+    def test_runner_waits_for_patched_control_stream_readiness(self) -> None:
+        process = mock.Mock()
+        process.poll.return_value = None
+        with tempfile.TemporaryDirectory() as directory:
+            bot_log = Path(directory) / "lichess-bot.log"
+            bot_log.write_text(
+                "2026-07-21 DEBUG Event: {'type': 'ember_control_ready'}\n",
+                encoding="utf-8",
+            )
+
+            battle_runner.wait_for_bot_ready(bot_log, process, timeout_seconds=1)
+
+        process.poll.assert_not_called()
+
+    def test_windows_shutdown_terminates_entire_lichess_bot_process_tree(self) -> None:
+        process = mock.Mock(pid=1234)
+        process.poll.return_value = None
+        process.wait.return_value = 0
+        with mock.patch.object(battle_runner.os, "name", "nt"), mock.patch.object(
+            battle_runner.subprocess, "run"
+        ) as run:
+            battle_runner.stop_process(process)
+
+        run.assert_called_once_with(
+            ["taskkill", "/PID", "1234", "/T", "/F"],
+            stdout=battle_runner.subprocess.DEVNULL,
+            stderr=battle_runner.subprocess.DEVNULL,
+            check=False,
+        )
+        process.terminate.assert_not_called()
+        process.wait.assert_called_once_with(timeout=15)
 
     def test_single_opponent_config_remains_supported(self) -> None:
         original = (WINDOWS_DIR / "battle.toml").read_text(encoding="utf-8")
