@@ -28,12 +28,34 @@ verify_bundle = load_module("verify_bundle.py", "verify_bundle")
 
 
 class BattleRunnerTests(unittest.TestCase):
+    def test_game_count_accepts_finite_and_infinite_series(self) -> None:
+        self.assertEqual(battle_runner.parse_game_count("7"), 7)
+        self.assertIsNone(battle_runner.parse_game_count(" inf "))
+        for value in ("0", "-1", "forever"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                battle_runner.parse_game_count(value)
+
+    def test_scheduled_games_repeat_templates_to_requested_count(self) -> None:
+        config = battle_runner.load_config(WINDOWS_DIR / "battle.toml")
+        first = config.games[0]
+        second = replace(first, color="black")
+
+        scheduled = list(battle_runner.scheduled_games([first, second], 5))
+
+        self.assertEqual([index for index, _ in scheduled], [1, 2, 3, 4, 5])
+        self.assertEqual(
+            [game.color for _, game in scheduled],
+            ["random", "black", "random", "black", "random"],
+        )
+
     def test_default_config(self) -> None:
         config = battle_runner.load_config(WINDOWS_DIR / "battle.toml")
         self.assertEqual(config.hash_mb, 1024)
         self.assertEqual(config.games[0].opponent, "Lynx_BOT")
+        self.assertEqual(len(config.games[0].opponents), 50)
+        self.assertEqual(len({name.casefold() for name in config.games[0].opponents}), 50)
         self.assertEqual(
-            config.games[0].opponents,
+            config.games[0].opponents[:5],
             ["Lynx_BOT", "pawn_git", "simbelmyne-bot", "CubixChess", "bot_adario"],
         )
         self.assertEqual(config.challenge_timeout_seconds, 15)
@@ -228,7 +250,7 @@ class BattleRunnerTests(unittest.TestCase):
         process.poll.return_value = None
 
         result = battle_runner.wait_for_opponent_and_challenge(
-            client, game, config, process, "[1/1]"
+            client, game, config, process, "[1/1]", rng=mock.Mock()
         )
 
         self.assertTrue(result["accepted"])
@@ -255,9 +277,11 @@ class BattleRunnerTests(unittest.TestCase):
         ]
         process = mock.Mock()
         process.poll.return_value = None
+        rng = mock.Mock()
+        rng.shuffle.side_effect = lambda values: None
 
         result = battle_runner.wait_for_opponent_and_challenge(
-            client, game, config, process, "[1/1]"
+            client, game, config, process, "[1/1]", rng=rng
         )
 
         self.assertEqual(result["opponent"], "pawn_git")
@@ -278,9 +302,11 @@ class BattleRunnerTests(unittest.TestCase):
         ]
         process = mock.Mock()
         process.poll.return_value = None
+        rng = mock.Mock()
+        rng.shuffle.side_effect = lambda values: None
 
         result = battle_runner.wait_for_opponent_and_challenge(
-            client, game, config, process, "[1/1]"
+            client, game, config, process, "[1/1]", rng=rng
         )
 
         self.assertEqual(result["opponent"], "pawn_git")
@@ -288,22 +314,164 @@ class BattleRunnerTests(unittest.TestCase):
         self.assertEqual(result["attempts"][1]["status"], "ACCEPTED")
         client.cancel_challenge.assert_called_once_with("challenge-timeout")
 
-    def test_game_monitor_retries_transient_disconnect(self) -> None:
+    def test_ready_opponents_are_randomized_before_challenging(self) -> None:
+        config = battle_runner.load_config(WINDOWS_DIR / "battle.toml")
+        game = replace(config.games[0], opponents=["first", "second"])
         client = mock.Mock()
-        client.game_json.side_effect = [
-            battle_runner.TransientLichessError("connection dropped"),
-            {"id": "game1234", "status": "mate"},
-        ]
+        client.opponents_status.return_value = {
+            "first": {"id": "first", "online": True, "playing": False},
+            "second": {"id": "second", "online": True, "playing": False},
+        }
+        client.create_challenge.return_value = (
+            "game1234",
+            "accepted",
+            {"challenge": {"id": "game1234"}},
+        )
         process = mock.Mock()
         process.poll.return_value = None
+        rng = mock.Mock()
+        rng.shuffle.side_effect = lambda values: values.reverse()
 
-        with mock.patch.object(battle_runner.time, "sleep"):
-            result = battle_runner.wait_for_game(
-                client, "game1234", process, poll_seconds=1, timeout_seconds=30
+        result = battle_runner.wait_for_opponent_and_challenge(
+            client, game, config, process, "[1/1]", rng=rng
+        )
+
+        self.assertEqual(result["opponent"], "second")
+        client.create_challenge.assert_called_once_with(
+            game, config.challenge_timeout_seconds, opponent="second"
+        )
+
+    def test_game_monitor_uses_local_finish_event_and_pgn_without_a_client(self) -> None:
+        process = mock.Mock()
+        process.poll.return_value = None
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pgn_dir = root / "pgn"
+            pgn_dir.mkdir()
+            bot_log = root / "lichess-bot.log"
+            bot_log.write_text(
+                "2026-07-20 DEBUG Event: "
+                "{'type': 'gameFinish', 'game': {'gameId': 'game1234', "
+                "'status': {'id': 30, 'name': 'mate'}}}\n",
+                encoding="utf-8",
+            )
+            (pgn_dir / "Ember vs Bot - game1234.pgn").write_text(
+                '[White "Ember"]\n[Black "Bot"]\n[Result "1-0"]\n\n1. e4 1-0\n',
+                encoding="utf-8",
+            )
+
+            result, pgn = battle_runner.wait_for_game(
+                bot_log,
+                pgn_dir,
+                "game1234",
+                process,
+                poll_seconds=1,
+                timeout_seconds=30,
             )
 
         self.assertEqual(result["status"], "mate")
-        self.assertEqual(client.game_json.call_count, 2)
+        self.assertEqual(result["winner"], "white")
+        self.assertIn("1. e4", pgn)
+
+    def test_game_monitor_recovers_terminal_local_stream_without_game_finish(self) -> None:
+        process = mock.Mock()
+        process.poll.return_value = None
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pgn_dir = root / "pgn"
+            pgn_dir.mkdir()
+            bot_log = root / "lichess-bot.log"
+            bot_log.write_text(
+                "2026-07-21 DEBUG Game state: "
+                "{'type': 'gameState', 'moves': 'e2e4', 'status': 'mate', "
+                "'winner': 'white'}\n"
+                "2026-07-21 DEBUG Event: "
+                "{'type': 'local_game_done', 'game': {'id': 'game1234'}}\n",
+                encoding="utf-8",
+            )
+            (pgn_dir / "Ember vs Bot - game1234.pgn").write_text(
+                '[White "Ember"]\n[Black "Bot"]\n[Result "1-0"]\n\n1. e4 1-0\n',
+                encoding="utf-8",
+            )
+
+            result, pgn = battle_runner.wait_for_game(
+                bot_log,
+                pgn_dir,
+                "game1234",
+                process,
+                poll_seconds=1,
+                timeout_seconds=30,
+            )
+
+        self.assertEqual(result["status"], "mate")
+        self.assertEqual(result["winner"], "white")
+        self.assertIn("1. e4", pgn)
+
+    def test_incomplete_local_pgn_does_not_count_as_terminal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            pgn_dir = Path(directory)
+            (pgn_dir / "Ember vs Bot - game1234.pgn").write_text(
+                '[White "Ember"]\n[Black "Bot"]\n[Result "*"]\n\n1. e4 *\n',
+                encoding="utf-8",
+            )
+
+            self.assertIsNone(battle_runner.completed_local_pgn(pgn_dir, "game1234"))
+
+    def test_game_monitor_reports_worker_failure_instead_of_silent_abort(self) -> None:
+        process = mock.Mock()
+        process.poll.return_value = None
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pgn_dir = root / "pgn"
+            pgn_dir.mkdir()
+            bot_log = root / "lichess-bot.log"
+            bot_log.write_text(
+                "2026-07-20 DEBUG Event: "
+                "{'type': 'local_game_done', 'game': {'id': 'game1234'}}\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(battle_runner.RunnerError, "without a terminal PGN"):
+                battle_runner.wait_for_game(
+                    bot_log,
+                    pgn_dir,
+                    "game1234",
+                    process,
+                    poll_seconds=1,
+                    timeout_seconds=30,
+                )
+
+    def test_runner_waits_for_patched_control_stream_readiness(self) -> None:
+        process = mock.Mock()
+        process.poll.return_value = None
+        with tempfile.TemporaryDirectory() as directory:
+            bot_log = Path(directory) / "lichess-bot.log"
+            bot_log.write_text(
+                "2026-07-21 DEBUG Event: {'type': 'ember_control_ready'}\n",
+                encoding="utf-8",
+            )
+
+            battle_runner.wait_for_bot_ready(bot_log, process, timeout_seconds=1)
+
+        process.poll.assert_not_called()
+
+    def test_windows_shutdown_terminates_entire_lichess_bot_process_tree(self) -> None:
+        process = mock.Mock(pid=1234)
+        process.poll.return_value = None
+        process.wait.return_value = 0
+        with mock.patch.object(battle_runner.os, "name", "nt"), mock.patch.object(
+            battle_runner.subprocess, "run"
+        ) as run:
+            battle_runner.stop_process(process)
+
+        run.assert_called_once_with(
+            ["taskkill", "/PID", "1234", "/T", "/F"],
+            stdout=battle_runner.subprocess.DEVNULL,
+            stderr=battle_runner.subprocess.DEVNULL,
+            check=False,
+        )
+        process.terminate.assert_not_called()
+        process.wait.assert_called_once_with(timeout=15)
 
     def test_single_opponent_config_remains_supported(self) -> None:
         original = (WINDOWS_DIR / "battle.toml").read_text(encoding="utf-8")
@@ -395,6 +563,24 @@ class BattleRunnerTests(unittest.TestCase):
             self.assertEqual(verify_bundle.verify(manifest), [])
             payload.write_text("changed\n", encoding="utf-8")
             self.assertEqual(verify_bundle.verify(manifest), ["CHANGED payload.txt"])
+
+    def test_manifest_ignores_regenerated_python_bytecode(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cache = root / "lichess-bot" / "lib" / "__pycache__"
+            cache.mkdir(parents=True)
+            bytecode = cache / "lichess.cpython-312.pyc"
+            bytecode.write_bytes(b"build-time bytecode")
+            digest = verify_bundle.sha256_file(bytecode)
+            manifest = root / "SHA256SUMS.txt"
+            manifest.write_text(
+                f"{digest}  lichess-bot/lib/__pycache__/{bytecode.name}\n",
+                encoding="utf-8",
+            )
+
+            bytecode.write_bytes(b"locally regenerated bytecode")
+
+            self.assertEqual(verify_bundle.verify(manifest), [])
 
     def test_source_does_not_contain_token_value(self) -> None:
         marker = "this-must-never-be-in-the-source-or-zip"

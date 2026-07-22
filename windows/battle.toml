@@ -18,7 +18,8 @@ availability_poll_seconds = 15
 opponent_retry_seconds = 300
 # 0 means wait indefinitely until one bot in the pool becomes available.
 opponent_wait_timeout_seconds = 0
-game_poll_seconds = 10
+# Local lichess-bot log/PGN polling; this does not call the Lichess API.
+game_poll_seconds = 1
 game_timeout_seconds = 21600
 
 [[games]]
@@ -28,6 +29,51 @@ opponents = [
   "simbelmyne-bot",
   "CubixChess",
   "bot_adario",
+  "ResoluteBot",
+  "RaspFish",
+  "ArasanX",
+  "PatriciaBot",
+  "NewChessEngine-ai",
+  "SF_Bot1nok",
+  "Bot1nokk",
+  "bot1e",
+  "YoBot_v2",
+  "CloudNetBot",
+  "SaxtonEngine",
+  "Cheszter",
+  "Motor-0",
+  "Cheng-4",
+  "Cheng-4-NN",
+  "Weiawaga",
+  "Moment-That-Inspires",
+  "duchessAI",
+  "Phalanx-XXV",
+  "Pseudo-0",
+  "rudim-bot",
+  "FataliiBot",
+  "InanisBot",
+  "halcyonbot",
+  "RavenEngine",
+  "RadianceEngine",
+  "likeawizard-bot",
+  "admete_bot",
+  "eubos",
+  "baby_eubos",
+  "CosetteBot",
+  "fornax-engine",
+  "Goldfish-Engine",
+  "PeachFruit",
+  "SoloBot",
+  "bot64jaques",
+  "simpleEval",
+  "StupidChessRobot",
+  "sseh-c",
+  "bfiedler-bot",
+  "honzovy-sachy-2",
+  "ChessChildren",
+  "Virutor",
+  "Elmichess",
+  "GarboBot",
 ]
 variant = "standard"
 base_seconds = 180

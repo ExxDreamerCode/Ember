@@ -36,10 +36,16 @@ def parse_manifest(path: Path) -> list[tuple[str, Path]]:
     return entries
 
 
+def is_generated_python_cache(path: Path) -> bool:
+    return "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}
+
+
 def verify(manifest: Path) -> list[str]:
     root = manifest.resolve().parent
     failures: list[str] = []
     for expected, relative in parse_manifest(manifest):
+        if is_generated_python_cache(relative):
+            continue
         candidate = root / relative
         if not candidate.is_file():
             failures.append(f"MISSING {relative.as_posix()}")
@@ -63,7 +69,10 @@ def main(argv: list[str]) -> int:
             print(f"  {failure}", file=sys.stderr)
         return 1
     print("Bundle verification passed.")
-    print("battle.toml and results/ are user data and are intentionally not checksummed.")
+    print(
+        "battle.toml, results/, and generated Python caches are intentionally "
+        "not checksummed."
+    )
     return 0
 
 

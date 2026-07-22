@@ -1,0 +1,33 @@
+diff --git a/lib/lichess.py b/lib/lichess.py
+index e26b3ae..d5fc74a 100644
+--- a/lib/lichess.py
++++ b/lib/lichess.py
+@@ -13 +13,2 @@
+-from lib.timer import Timer, seconds, sec_str
++import time
++from lib.timer import Timer, seconds, sec_str, to_seconds
+@@ -107 +108,3 @@
+-    return (isinstance(exception, HTTPError) and exception.response is not None and exception.response.status_code < 500
++    return (isinstance(exception, HTTPError) and exception.response is not None
++            and exception.response.status_code < 500
++            and exception.response.status_code != 429
+@@ -288 +291 @@
+-        Get the path template given the endpoint name. Will raise an exception if the path template is rate limited.
++        Get the path template given the endpoint name, waiting if it is rate limited.
+@@ -296,2 +299,2 @@
+-            raise RateLimitedError(
+-                f"{path_template} is rate-limited. Will retry in {sec_str(time_left)} seconds.", time_left)
++            logger.warning(f"{path_template} is rate-limited. Retrying in {sec_str(time_left)} seconds.")
++            time.sleep(to_seconds(time_left))
+diff --git a/lib/lichess_bot.py b/lib/lichess_bot.py
+index 57ae7c4..63a8205 100644
+--- a/lib/lichess_bot.py
++++ b/lib/lichess_bot.py
+@@ -117,6 +117,7 @@ def watch_control_stream(control_queue: CONTROL_QUEUE_TYPE, li: lichess.Lichess)
+     while not stop.terminated:
+         try:
+             with li.get_event_stream() as response:
++                control_queue.put_nowait({"type": "ember_control_ready"})
+                 lines = response.iter_lines()
+                 for line in lines:
+                     if line:

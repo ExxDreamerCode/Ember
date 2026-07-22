@@ -46,6 +46,7 @@ pkgs.stdenvNoCC.mkDerivation {
     pkgs.coreutils
     pkgs.findutils
     pkgs.gnused
+    pkgs.patch
     pkgs.python3
     pkgs.unzip
     pkgs.zip
@@ -106,6 +107,69 @@ EOF
         *) cp "$source" "$bundle/lichess-bot/" ;;
       esac
     done
+    chmod -R u+w "$bundle/lichess-bot"
+    patch -d "$bundle/lichess-bot" -p1 < "${../windows/lichess-bot-rate-limit.patch}"
+    grep -F 'control_queue.put_nowait({"type": "ember_control_ready"})' \
+      "$bundle/lichess-bot/lib/lichess_bot.py" >/dev/null
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$bundle/lichess-bot:$site" \
+      "${pythonDependencies}/bin/python" - <<'PY'
+from unittest.mock import patch
+
+from requests import Response
+from requests.exceptions import HTTPError
+
+from lib.lichess import Lichess, is_final
+from lib.lichess_bot import stop, watch_control_stream
+from lib.timer import seconds
+
+response = Response()
+response.status_code = 429
+assert not is_final(HTTPError(response=response))
+
+lichess = object.__new__(Lichess)
+with (
+    patch.object(lichess, "is_rate_limited", return_value=True),
+    patch.object(lichess, "rate_limit_time_left", return_value=seconds(12)),
+    patch("lib.lichess.time.sleep") as sleep,
+):
+    assert lichess.get_path_template("stream") == "/api/bot/game/stream/{}"
+    sleep.assert_called_once_with(12)
+
+
+class ControlQueue:
+    def __init__(self):
+        self.events = []
+
+    def put_nowait(self, event):
+        self.events.append(event)
+
+
+class ControlResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def iter_lines(self):
+        stop.terminated = True
+        return []
+
+
+class ControlLichess:
+    def get_event_stream(self):
+        return ControlResponse()
+
+
+queue = ControlQueue()
+stop.terminated = False
+watch_control_stream(queue, ControlLichess())
+assert queue.events == [
+    {"type": "ember_control_ready"},
+    {"type": "terminated"},
+]
+stop.terminated = False
+PY
 
     cp "${../windows/battle_runner.py}" "$bundle/battle_runner.py"
     cp "${../windows/verify_bundle.py}" "$bundle/verify_bundle.py"
@@ -127,8 +191,9 @@ Ember Lichess Windows portable bundle
 1. Extract the complete ZIP to a writable directory.
 2. Edit battle.toml with Notepad. It contains no Lichess token.
 3. Double-click Verify.cmd (Run Battle.cmd also verifies automatically).
-4. Double-click Run Battle.cmd, review the printed plan, type YES, and enter
-   the Lichess token at the masked prompt.
+4. Double-click Run Battle.cmd, review the printed plan, type YES, enter a
+   positive game count or INF, and enter the Lichess token at the masked
+   prompt.
 
 The bot token needs the bot:play and challenge:write permissions. If one
 opponent rejects a challenge, the exact Lichess reason is recorded and the
@@ -138,27 +203,39 @@ The runner uses all logical CPUs automatically (maximum 256) and can make the
 machine busy. It changes no Windows service, autostart, scheduled task, power,
 sleep, registry, PATH, or firewall setting. Keep the console and machine awake.
 
-The default battle is one casual, non-scoring 3+2 standard game against the
-first ready bot in a configured opponent pool. Busy, offline, rate-limited,
+The default template is a casual, non-scoring 3+2 standard game against a
+random ready bot in a 50-opponent pool. The requested game count repeats the
+configured templates sequentially; INF continues until Ctrl-C. One lichess-bot
+process and control stream are retained for the whole series. Busy, offline,
+rate-limited,
 declining, or non-responding bots are bypassed. Unaccepted challenges are
 canceled after challenge_timeout_seconds, then the runner tries the next ready
 bot. If the whole pool is unavailable, the runner waits and polls until one is
-ready. Games are direct challenges and strictly sequential. Temporary
-monitoring disconnects are retried without stopping an active game. The scoring
-flag and tags are analysis metadata; mode selects casual or rated. Results are
-written below results/. Syzygy and lichess-bot matchmaking are off.
+ready. Games are direct challenges and strictly sequential. Once a challenge
+is accepted, only lichess-bot accesses the live game API; the runner monitors
+its local log and PGN. The scoring flag and tags are analysis metadata; mode
+selects casual or rated. Results are written below results/. Syzygy and
+lichess-bot matchmaking are off.
 EOF
 
     chmod -R u+w "$bundle"
 
+    # Python may regenerate bytecode for the local interpreter at any time.
+    # Do not ship or checksum these disposable caches.
+    find "$bundle" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+    find "$bundle" -type d -name __pycache__ -prune -exec rm -rf {} +
+
     # battle.toml is intentionally user-editable. The manifest covers every
-    # other shipped file and never covers future results.
+    # other shipped file and never covers future results or Python caches.
     (
       cd "$bundle"
       find . -type f \
         ! -path './battle.toml' \
         ! -path './SHA256SUMS.txt' \
         ! -path './results/*' \
+        ! -path '*/__pycache__/*' \
+        ! -name '*.pyc' \
+        ! -name '*.pyo' \
         -printf '%P\0' \
         | sort -z \
         | xargs -0 sha256sum > SHA256SUMS.txt
