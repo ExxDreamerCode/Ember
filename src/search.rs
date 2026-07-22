@@ -3988,6 +3988,9 @@ mod tests {
         assert_eq!(searcher.debug_stats(), SearchDebugStats::default());
     }
 
+    // This deliberately exercises negamax directly and verifies the move stored in its
+    // root TT entry. The public root driver applies separate ordering and extension policy,
+    // so a TSV case at the same nominal depth does not preserve this internal contract.
     #[test]
     fn negamax_prefers_en_passant_discovered_check() {
         let mut st = state_from_fen("8/6pp/8/R2pP1k1/6B1/8/6PP/6K1 w - d6 0 1");
@@ -4518,6 +4521,8 @@ mod tests {
         assert_eq!(lazy_smp_root_moves(&original, 1, 12), expected);
     }
 
+    // These positions test helper-lane assignment and disagreement accounting directly;
+    // a final TSV move cannot reveal which worker searched a move or how its vote counted.
     #[test]
     fn lazy_smp_assigns_a_helper_to_verify_game_ffzk_y782_recapture() {
         let st = state_from_fen("4r1k1/q3nppp/2p1p2P/1p2B3/pP1rn3/3N2P1/P4PB1/2QR2K1 w - - 0 31");
@@ -4591,6 +4596,9 @@ mod tests {
         }
     }
 
+    // The following recorded positions drive synthetic worker ballots. They verify SMP
+    // result selection independently of search nondeterminism, which TSV move cases cannot
+    // express because they only observe a completed single-thread root search.
     #[test]
     fn lazy_smp_does_not_let_deepest_outlier_repeat_draw_game_kh7() {
         // https://lichess.org/xMs5Nkx3 before 49...Kh7:

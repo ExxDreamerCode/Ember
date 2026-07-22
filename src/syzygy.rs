@@ -517,6 +517,8 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
+    // These are direct probes against optional real table files. The ordinary TSV runner
+    // deliberately has no tablebase dependency and therefore cannot preserve this contract.
     #[test]
     fn known_six_piece_root_moves_when_tables_are_available() {
         let Ok(path) = std::env::var("EMBER_TEST_SYZYGY_PATH") else {

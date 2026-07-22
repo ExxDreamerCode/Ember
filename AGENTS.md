@@ -95,9 +95,11 @@ Fixture conventions:
 - `expected_move` accepts one exact move, alternatives separated by `|`, or forbidden
   moves after `!`. Prefer an invariant such as "do not play the losing move" when several
   continuations are sound.
-- Choose the lowest stable depth that still exercises the bug, unless the failure itself
-  depends on a documented deployment-like depth. Depth-based cases should remain
-  deterministic and reasonably cheap.
+- Use depth `0` for an embedded-book regression. It requires the expected move to be
+  returned immediately with zero search nodes. Depths `1` through `64` disable the book
+  and run a normal fixed-depth search. Choose the lowest stable search depth that still
+  exercises the bug, unless the failure itself depends on a documented deployment-like
+  depth. Depth-based cases should remain deterministic and reasonably cheap.
 - Keep source metadata in `themes`, `rating`, `popularity`, and `plays` when it exists. Use
   neutral zero values for hand-written cases where it does not.
 - If a valuable position still fails and no generally safe fix exists, keep a commented-out
@@ -108,6 +110,14 @@ Fixture conventions:
   cases separate from disagreements and near-ties so Ember is not tuned to an obsolete or
   subjective label.
 - Do not duplicate a TSV move regression in Rust.
+
+Before adding a position-backed `#[test]` under `src/`, first try to express it as a TSV
+case. A fixed position or legal move history plus an exact, alternative, or forbidden root
+move belongs in TSV, including immediate embedded-book choices. If a position remains in
+a Rust test, add a nearby comment naming the non-TSV contract it observes, such as an
+internal ordering score, extension eligibility and counterexamples, synthetic SMP worker
+ballots, transposition state, node accounting, or direct tablebase probing. The position
+alone is not a reason to keep a regression in Rust.
 
 Use Rust tests for behavior the TSV schema cannot express: UCI protocol ordering, stop and
 ponder lifecycle, clock budgets, thread coordination, node accounting, option handling,
