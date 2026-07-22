@@ -62,6 +62,35 @@ fn stockfish_scaling_uses_the_actual_game_ply() {
 }
 
 #[test]
+fn f1w14oir_low_clock_keeps_an_increment_reserve() {
+    let mut manager = TimeManager::default();
+    let _opening = manager.clock_budget(180_000.0, 2_000.0, 0, 0);
+    let before_move_29 = manager.clock_budget(24_350.0, 2_000.0, 0, 58);
+    let before_move_42 = manager.clock_budget(10_110.0, 2_000.0, 0, 84);
+
+    assert!(before_move_29.soft_seconds <= before_move_29.hard_seconds);
+    assert!(before_move_29.hard_seconds <= 24.350 * 0.35 + 1e-9);
+    assert!(before_move_42.soft_seconds <= before_move_42.hard_seconds);
+    assert!(
+        before_move_42.hard_seconds <= 4.110,
+        "three future increments should remain on the clock: {before_move_42:?}"
+    );
+}
+
+#[test]
+fn p1uv2lqo_medium_clock_cannot_spend_most_of_the_remaining_time() {
+    let mut manager = TimeManager::default();
+    let _opening = manager.clock_budget(178_000.0, 2_000.0, 0, 2);
+    let before_move_17 = manager.clock_budget(105_360.0, 2_000.0, 0, 32);
+    let before_move_20 = manager.clock_budget(52_120.0, 2_000.0, 0, 38);
+
+    assert!(before_move_17.soft_seconds <= before_move_17.hard_seconds);
+    assert!(before_move_17.hard_seconds <= 105.360 * 0.35 + 1e-9);
+    assert!(before_move_20.soft_seconds <= before_move_20.hard_seconds);
+    assert!(before_move_20.hard_seconds <= 52.120 * 0.35 + 1e-9);
+}
+
+#[test]
 fn move_overhead_rejects_invalid_values() {
     let mut manager = TimeManager::default();
     assert!(!manager.set_move_overhead_ms(-1.0));
