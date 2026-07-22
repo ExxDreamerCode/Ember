@@ -34,6 +34,7 @@ const LAZY_SMP_VERIFICATION_TT_MB: usize = 4;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DrawStatus {
     None,
+    SearchCycle,
     Claimable,
     Automatic,
 }
@@ -331,6 +332,7 @@ pub struct Searcher {
     pub corr_hist: [i32; CORR_HIST_SIZE * 2],
     pub rep_stack: Vec<u64>,
     pub rep_stack_len: usize,
+    rep_root_len: usize,
     pub tt_mb: usize,
     pub stopped: Arc<AtomicBool>,
     pub pondering: Arc<AtomicBool>,
@@ -568,6 +570,8 @@ macro_rules! qsearch_mode_body {
                 move_promotion(mv),
                 $ply,
             );
+            $this.rep_stack.push($st.hash);
+            $this.rep_stack_len += 1;
             let score = -$this.$qsearch_mode::<CHESS960, E>(
                 $st,
                 -$beta,
@@ -579,6 +583,8 @@ macro_rules! qsearch_mode_body {
                 $ply + 1,
                 $eval,
             );
+            $this.rep_stack.pop();
+            $this.rep_stack_len -= 1;
             *$st = st_before;
             if $this.stopped.load(Ordering::Relaxed) {
                 return 0;
@@ -1241,6 +1247,7 @@ impl Searcher {
             corr_hist: [0i32; CORR_HIST_SIZE * 2],
             rep_stack: Vec::with_capacity(512),
             rep_stack_len: 0,
+            rep_root_len: 0,
             tt_mb: 128,
             stopped,
             pondering: Arc::new(AtomicBool::new(false)),
@@ -1346,6 +1353,7 @@ impl Searcher {
     pub fn copy_root_context_to(&self, dst: &mut Searcher) {
         dst.rep_stack = self.rep_stack.clone();
         dst.rep_stack_len = self.rep_stack_len;
+        dst.rep_root_len = dst.rep_stack_len;
         dst.import_learning(&self.export_learning());
         dst.nnue_net = self.nnue_net.clone();
         dst.search_backend = self.search_backend;
@@ -1368,6 +1376,7 @@ impl Searcher {
     }
 
     pub fn prepare_for_search(&mut self) {
+        self.rep_root_len = self.rep_stack_len;
         self.killers = [[None; 2]; MAX_PLY];
         for row in &mut self.history {
             for value in row {
@@ -1671,22 +1680,30 @@ impl Searcher {
         }
     }
 
-    fn repetition_count(&self, reversible_plies: usize) -> u8 {
+    fn repetition_info(&self, reversible_plies: usize) -> (u8, bool) {
         let len = self.rep_stack_len.min(self.rep_stack.len());
         if len == 0 {
-            return 0;
+            return (0, false);
         }
 
         let current_idx = len - 1;
+        let root_idx = self.rep_root_len.saturating_sub(1);
         let reversible_plies = reversible_plies.min(current_idx);
         let earliest_idx = current_idx - reversible_plies;
         let current = self.rep_stack[current_idx];
         let mut occurrences = 0u8;
+        let mut repeated_after_root = false;
         let mut idx = current_idx;
 
         loop {
             if self.rep_stack[idx] == current {
                 occurrences += 1;
+                // One prior occurrence is enough to stop a cycle created entirely by
+                // this search. At or before the root it is only game history, where a
+                // claim still requires the normal three occurrences.
+                if occurrences > 1 && idx > root_idx {
+                    repeated_after_root = true;
+                }
                 if occurrences == 5 {
                     break;
                 }
@@ -1697,12 +1714,12 @@ impl Searcher {
             idx -= 2;
         }
 
-        occurrences
+        (occurrences, repeated_after_root)
     }
 
     #[cfg(test)]
     fn is_repetition(&self) -> bool {
-        self.repetition_count(usize::MAX) >= 3
+        self.repetition_info(usize::MAX).0 >= 3
     }
 
     fn draw_status(&self, st: &BoardState, ply: usize, minimum_ply: usize) -> DrawStatus {
@@ -1713,11 +1730,14 @@ impl Searcher {
             return DrawStatus::None;
         }
 
-        let repetitions = self.repetition_count(usize::from(st.halfmove_clock));
+        let (repetitions, repeated_after_root) =
+            self.repetition_info(usize::from(st.halfmove_clock));
         if st.halfmove_clock >= MAX_HALF_MOVE_CLOCK || repetitions >= 5 {
             DrawStatus::Automatic
         } else if st.halfmove_clock >= 100 || repetitions >= 3 {
             DrawStatus::Claimable
+        } else if repeated_after_root {
+            DrawStatus::SearchCycle
         } else {
             DrawStatus::None
         }
@@ -2920,6 +2940,7 @@ impl LazySmpRootContext {
         searcher.prepare_for_search();
         searcher.rep_stack.clone_from(&self.rep_stack);
         searcher.rep_stack_len = self.rep_stack_len;
+        searcher.rep_root_len = searcher.rep_stack_len;
         searcher.search_backend = self.search_backend;
         searcher.syzygy = self.syzygy.clone();
         searcher.tt_mb = self.tt_mb;
@@ -4807,6 +4828,30 @@ mod tests {
         searcher.rep_stack = vec![7, 1, 7, 2, 7, 3, 7, 4, 7];
         searcher.rep_stack_len = searcher.rep_stack.len();
         assert_eq!(searcher.draw_status(&st, 1, 1), DrawStatus::Automatic);
+    }
+
+    #[test]
+    fn draw_status_terminates_cycles_only_after_the_search_root() {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(1));
+        let mut searcher = Searcher::new(shared_tt, stopped);
+        let st = state_from_fen("7k/8/8/8/8/8/8/KQ6 w - - 8 1");
+
+        searcher.rep_stack = vec![9, 8, 7, 6, 7];
+        searcher.rep_stack_len = searcher.rep_stack.len();
+        searcher.rep_root_len = 3;
+
+        assert_eq!(
+            searcher.draw_status(&st, 2, 1),
+            DrawStatus::None,
+            "a second occurrence of the root is not a legal threefold"
+        );
+        searcher.rep_root_len = 1;
+        assert_eq!(
+            searcher.draw_status(&st, 4, 1),
+            DrawStatus::SearchCycle,
+            "a second occurrence entirely inside the tree terminates the cycle"
+        );
     }
 
     #[test]
