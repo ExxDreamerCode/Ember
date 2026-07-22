@@ -18,7 +18,8 @@ availability_poll_seconds = 15
 opponent_retry_seconds = 300
 # 0 means wait indefinitely until one bot in the pool becomes available.
 opponent_wait_timeout_seconds = 0
-game_poll_seconds = 10
+# Local lichess-bot log/PGN polling; this does not call the Lichess API.
+game_poll_seconds = 1
 game_timeout_seconds = 21600
 
 [[games]]

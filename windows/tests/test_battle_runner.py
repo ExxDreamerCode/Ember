@@ -288,22 +288,61 @@ class BattleRunnerTests(unittest.TestCase):
         self.assertEqual(result["attempts"][1]["status"], "ACCEPTED")
         client.cancel_challenge.assert_called_once_with("challenge-timeout")
 
-    def test_game_monitor_retries_transient_disconnect(self) -> None:
-        client = mock.Mock()
-        client.game_json.side_effect = [
-            battle_runner.TransientLichessError("connection dropped"),
-            {"id": "game1234", "status": "mate"},
-        ]
+    def test_game_monitor_uses_local_finish_event_and_pgn_without_a_client(self) -> None:
         process = mock.Mock()
         process.poll.return_value = None
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pgn_dir = root / "pgn"
+            pgn_dir.mkdir()
+            bot_log = root / "lichess-bot.log"
+            bot_log.write_text(
+                "2026-07-20 DEBUG Event: "
+                "{'type': 'gameFinish', 'game': {'gameId': 'game1234', "
+                "'status': {'id': 30, 'name': 'mate'}}}\n",
+                encoding="utf-8",
+            )
+            (pgn_dir / "Ember vs Bot - game1234.pgn").write_text(
+                '[White "Ember"]\n[Black "Bot"]\n[Result "1-0"]\n\n1. e4 1-0\n',
+                encoding="utf-8",
+            )
 
-        with mock.patch.object(battle_runner.time, "sleep"):
-            result = battle_runner.wait_for_game(
-                client, "game1234", process, poll_seconds=1, timeout_seconds=30
+            result, pgn = battle_runner.wait_for_game(
+                bot_log,
+                pgn_dir,
+                "game1234",
+                process,
+                poll_seconds=1,
+                timeout_seconds=30,
             )
 
         self.assertEqual(result["status"], "mate")
-        self.assertEqual(client.game_json.call_count, 2)
+        self.assertEqual(result["winner"], "white")
+        self.assertIn("1. e4", pgn)
+
+    def test_game_monitor_reports_worker_failure_instead_of_silent_abort(self) -> None:
+        process = mock.Mock()
+        process.poll.return_value = None
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pgn_dir = root / "pgn"
+            pgn_dir.mkdir()
+            bot_log = root / "lichess-bot.log"
+            bot_log.write_text(
+                "2026-07-20 DEBUG Event: "
+                "{'type': 'local_game_done', 'game': {'id': 'game1234'}}\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(battle_runner.RunnerError, "before gameFinish"):
+                battle_runner.wait_for_game(
+                    bot_log,
+                    pgn_dir,
+                    "game1234",
+                    process,
+                    poll_seconds=1,
+                    timeout_seconds=30,
+                )
 
     def test_single_opponent_config_remains_supported(self) -> None:
         original = (WINDOWS_DIR / "battle.toml").read_text(encoding="utf-8")

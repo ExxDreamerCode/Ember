@@ -46,6 +46,7 @@ pkgs.stdenvNoCC.mkDerivation {
     pkgs.coreutils
     pkgs.findutils
     pkgs.gnused
+    pkgs.patch
     pkgs.python3
     pkgs.unzip
     pkgs.zip
@@ -106,6 +107,32 @@ EOF
         *) cp "$source" "$bundle/lichess-bot/" ;;
       esac
     done
+    chmod -R u+w "$bundle/lichess-bot"
+    patch -d "$bundle/lichess-bot" -p1 < "${../windows/lichess-bot-rate-limit.patch}"
+    grep -F 'control_queue.put_nowait({"type": "ember_control_ready"})' \
+      "$bundle/lichess-bot/lib/lichess_bot.py" >/dev/null
+    PYTHONPATH="$bundle/lichess-bot" "${pythonDependencies}/bin/python" - <<'PY'
+from unittest.mock import patch
+
+from requests import Response
+from requests.exceptions import HTTPError
+
+from lib.lichess import Lichess, is_final
+from lib.timer import seconds
+
+response = Response()
+response.status_code = 429
+assert not is_final(HTTPError(response=response))
+
+lichess = object.__new__(Lichess)
+with (
+    patch.object(lichess, "is_rate_limited", return_value=True),
+    patch.object(lichess, "rate_limit_time_left", return_value=seconds(12)),
+    patch("lib.lichess.time.sleep") as sleep,
+):
+    assert lichess.get_path_template("stream") == "/api/bot/game/stream/{}"
+    sleep.assert_called_once_with(12)
+PY
 
     cp "${../windows/battle_runner.py}" "$bundle/battle_runner.py"
     cp "${../windows/verify_bundle.py}" "$bundle/verify_bundle.py"
@@ -143,10 +170,11 @@ first ready bot in a configured opponent pool. Busy, offline, rate-limited,
 declining, or non-responding bots are bypassed. Unaccepted challenges are
 canceled after challenge_timeout_seconds, then the runner tries the next ready
 bot. If the whole pool is unavailable, the runner waits and polls until one is
-ready. Games are direct challenges and strictly sequential. Temporary
-monitoring disconnects are retried without stopping an active game. The scoring
-flag and tags are analysis metadata; mode selects casual or rated. Results are
-written below results/. Syzygy and lichess-bot matchmaking are off.
+ready. Games are direct challenges and strictly sequential. Once a challenge
+is accepted, only lichess-bot accesses the live game API; the runner monitors
+its local log and PGN. The scoring flag and tags are analysis metadata; mode
+selects casual or rated. Results are written below results/. Syzygy and
+lichess-bot matchmaking are off.
 EOF
 
     chmod -R u+w "$bundle"

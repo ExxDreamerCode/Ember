@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import ctypes
 import datetime as dt
 import getpass
@@ -26,7 +27,6 @@ import yaml
 
 
 MAX_THREADS = 256
-ACTIVE_GAME_STATUSES = {"created", "started"}
 VALID_COLORS = {"random", "white", "black"}
 VALID_MODES = {"casual", "rated"}
 VALID_VARIANTS = {
@@ -44,6 +44,9 @@ VALID_VARIANTS = {
 INFO_RE = re.compile(r"\binfo\b.*?\bnodes\s+(\d+).*?\bnps\s+(\d+)\b", re.IGNORECASE)
 BESTMOVE_RE = re.compile(r"\bbestmove\b", re.IGNORECASE)
 RETRY_AT_RE = re.compile(r"\buntil\s+([0-9T:.+\-]+Z?)\b", re.IGNORECASE)
+CONTROL_READY_EVENT = "ember_control_ready"
+CONTROL_READY_TIMEOUT_SECONDS = 180
+TERMINAL_PGN_RESULTS = {"1-0", "0-1", "1/2-1/2"}
 
 BENCHMARK_POSITIONS = [
     ("startpos", "startpos"),
@@ -304,7 +307,7 @@ def load_config(path: Path) -> BattleConfig:
         opponent_wait_timeout_seconds=require_int(
             lichess_with_defaults, "opponent_wait_timeout_seconds", 0, 604800
         ),
-        game_poll_seconds=require_int(lichess, "game_poll_seconds", 5, 300),
+        game_poll_seconds=require_int(lichess, "game_poll_seconds", 1, 300),
         game_timeout_seconds=require_int(lichess, "game_timeout_seconds", 60, 86400),
         games=games,
     )
@@ -693,37 +696,12 @@ class LichessClient:
         if response.status_code not in {200, 404}:
             raise_for_lichess_error(response, f"could not cancel challenge {challenge_id}")
 
-    def game_json(self, game_id: str) -> dict[str, Any] | None:
-        response = self.request(
-            "GET",
-            f"/game/export/{game_id}",
-            headers={"Accept": "application/json"},
-            params={"clocks": "true", "evals": "true", "opening": "true"},
-            timeout=30,
-        )
-        if response.status_code == 404:
-            return None
-        raise_for_lichess_error(response, f"could not export game {game_id}")
-        return response.json()
-
     def ongoing_games(self) -> list[dict[str, Any]]:
         response = self.request("GET", "/api/account/playing", timeout=30)
         raise_for_lichess_error(response, "could not check the bot's ongoing games")
         value = response.json()
         games = value.get("nowPlaying", []) if isinstance(value, dict) else []
         return [game for game in games if isinstance(game, dict)]
-
-    def game_pgn(self, game_id: str) -> str:
-        response = self.request(
-            "GET",
-            f"/game/export/{game_id}",
-            headers={"Accept": "application/x-chess-pgn"},
-            params={"clocks": "true", "evals": "true", "opening": "true"},
-            timeout=30,
-        )
-        raise_for_lichess_error(response, f"could not export PGN for game {game_id}")
-        return response.text
-
 
 def parse_search_nps(lines: Iterable[str]) -> dict[str, Any]:
     final_searches: list[tuple[int, int]] = []
@@ -925,35 +903,169 @@ def wait_for_opponent_and_challenge(
     }
 
 
+def lichess_bot_literal(line: str, marker: str) -> dict[str, Any] | None:
+    marker_index = line.find(marker)
+    if marker_index < 0:
+        return None
+    try:
+        value = ast.literal_eval(line[marker_index + len(marker) :].strip())
+    except (SyntaxError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def lichess_bot_event(line: str) -> dict[str, Any] | None:
+    return lichess_bot_literal(line, "Event: ")
+
+
+def lichess_bot_game_state(line: str) -> dict[str, Any] | None:
+    return lichess_bot_literal(line, "Game state: ")
+
+
+PGN_HEADER_RE = re.compile(r'^\[([^ ]+)\s+"(.*)"\]$')
+
+
+def pgn_headers(pgn: str) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for line in pgn.splitlines():
+        match = PGN_HEADER_RE.match(line)
+        if match:
+            headers[match.group(1)] = match.group(2)
+        elif headers and line.strip():
+            break
+    return headers
+
+
+def completed_local_pgn(pgn_dir: Path, game_id: str) -> tuple[Path, str] | None:
+    for path in sorted(pgn_dir.glob(f"*{game_id}*.pgn")):
+        try:
+            pgn = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        headers = pgn_headers(pgn)
+        if headers.get("Result") in TERMINAL_PGN_RESULTS:
+            return path, pgn
+    return None
+
+
+def normalized_game_result(game_id: str, game: dict[str, Any], pgn: str) -> dict[str, Any]:
+    headers = pgn_headers(pgn)
+    status_value = game.get("status")
+    status = status_value.get("name") if isinstance(status_value, dict) else status_value
+    winner = {"1-0": "white", "0-1": "black"}.get(headers.get("Result", ""))
+    return {
+        "id": game_id,
+        "status": status or "unknown",
+        "winner": winner,
+        "game": game,
+        "pgn_headers": headers,
+    }
+
+
+def wait_for_bot_ready(
+    bot_log: Path,
+    bot_process: subprocess.Popen[Any],
+    timeout_seconds: int = CONTROL_READY_TIMEOUT_SECONDS,
+    poll_seconds: float = 0.25,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    position = 0
+    while time.monotonic() < deadline:
+        if bot_log.exists():
+            with bot_log.open("r", encoding="utf-8", errors="replace") as stream:
+                stream.seek(position)
+                while line := stream.readline():
+                    event = lichess_bot_event(line)
+                    if event is not None and event.get("type") == CONTROL_READY_EVENT:
+                        return
+                position = stream.tell()
+        if bot_process.poll() is not None:
+            raise RunnerError(
+                f"lichess-bot stopped before its control stream was ready "
+                f"(exit {bot_process.returncode})"
+            )
+        time.sleep(poll_seconds)
+    raise RunnerError(
+        "lichess-bot control stream did not become ready; another bot process "
+        "may still be using this token"
+    )
+
+
 def wait_for_game(
-    client: LichessClient,
+    bot_log: Path,
+    pgn_dir: Path,
     game_id: str,
     bot_process: subprocess.Popen[Any],
     poll_seconds: int,
     timeout_seconds: int,
+    log_offset: int = 0,
     event_sink: Callable[[dict[str, Any]], None] | None = None,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], str]:
     deadline = time.monotonic() + timeout_seconds
+    final_game: dict[str, Any] | None = None
+    terminal_game_state: dict[str, Any] | None = None
+    local_game_done_at: float | None = None
+    position = log_offset
     while time.monotonic() < deadline:
+        if bot_log.exists():
+            with bot_log.open("r", encoding="utf-8", errors="replace") as stream:
+                stream.seek(position)
+                while line := stream.readline():
+                    game_state = lichess_bot_game_state(line)
+                    if (
+                        game_state is not None
+                        and game_state.get("status") != "started"
+                    ):
+                        terminal_game_state = game_state
+                    event = lichess_bot_event(line)
+                    if event is None:
+                        continue
+                    event_game = event.get("game")
+                    if not isinstance(event_game, dict):
+                        continue
+                    event_game_id = str(event_game.get("gameId") or event_game.get("id") or "")
+                    if event_game_id != game_id:
+                        continue
+                    if event.get("type") == "gameFinish":
+                        if final_game is None and event_sink is not None:
+                            event_sink(
+                                {
+                                    "at": utc_now(),
+                                    "status": "GAME_FINISH_OBSERVED",
+                                    "game_id": game_id,
+                                }
+                            )
+                        final_game = event_game
+                    elif event.get("type") == "local_game_done" and final_game is None:
+                        local_game_done_at = time.monotonic()
+                position = stream.tell()
+
+        local_pgn = completed_local_pgn(pgn_dir, game_id)
+        if final_game is not None and local_pgn is not None:
+            _, pgn = local_pgn
+            return normalized_game_result(game_id, final_game, pgn), pgn
+        if (
+            terminal_game_state is not None
+            and local_game_done_at is not None
+            and local_pgn is not None
+        ):
+            _, pgn = local_pgn
+            return normalized_game_result(game_id, terminal_game_state, pgn), pgn
+        if local_game_done_at is not None and terminal_game_state is None:
+            raise RunnerError(
+                f"lichess-bot worker for game {game_id} ended without a terminal PGN; "
+                "inspect lichess-bot.log for the underlying stream error"
+            )
+        if (
+            local_game_done_at is not None
+            and local_pgn is None
+            and time.monotonic() - local_game_done_at >= 30
+        ):
+            raise RunnerError(
+                f"lichess-bot did not write the terminal PGN for game {game_id}"
+            )
         if bot_process.poll() is not None:
             raise RunnerError(f"lichess-bot stopped unexpectedly with exit code {bot_process.returncode}")
-        try:
-            value = client.game_json(game_id)
-        except (TransientLichessError, requests.RequestException, ValueError) as exc:
-            print(f"  Temporary monitoring error: {exc}; the game remains active and will be retried.")
-            if event_sink is not None:
-                event_sink(
-                    {
-                        "at": utc_now(),
-                        "status": "GAME_MONITOR_RETRY",
-                        "game_id": game_id,
-                        "error": str(exc),
-                    }
-                )
-            time.sleep(poll_seconds)
-            continue
-        if value is not None and value.get("status") not in ACTIVE_GAME_STATUSES:
-            return value
         time.sleep(poll_seconds)
     raise RunnerError(f"game {game_id} did not finish within {timeout_seconds} seconds")
 
@@ -961,7 +1073,15 @@ def wait_for_game(
 def stop_process(process: subprocess.Popen[Any]) -> None:
     if process.poll() is not None:
         return
-    process.terminate()
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    else:
+        process.terminate()
     try:
         process.wait(timeout=15)
     except subprocess.TimeoutExpired:
@@ -1017,7 +1137,6 @@ def run(args: argparse.Namespace) -> int:
     if input("\nType YES to benchmark Ember and begin issuing challenges: ").strip() != "YES":
         print("Canceled; no challenge was issued.")
         return 0
-
     token = os.environ.get("LICHESS_BOT_TOKEN") or getpass.getpass("Lichess bot token: ")
     if not token:
         raise RunnerError("no Lichess token supplied")
@@ -1074,12 +1193,9 @@ def run(args: argparse.Namespace) -> int:
     )
     token = ""
     child_env["LICHESS_BOT_TOKEN"] = ""
-    time.sleep(3)
-    if bot_process.poll() is not None:
-        bot_console.close()
-        raise RunnerError(f"lichess-bot failed to start (exit {bot_process.returncode})")
 
     try:
+        wait_for_bot_ready(bot_log, bot_process)
         state["phase"] = "PLAYING"
         write_json_atomic(state_path, state)
         for index, game in enumerate(config.games, 1):
@@ -1127,38 +1243,20 @@ def run(args: argparse.Namespace) -> int:
             record.update(status="PLAYING", game_id=game_id, accepted_at=utc_now())
             append_json_line(events_path, record)
             print(f"  Accepted: https://lichess.org/{game_id}")
-            final_json = wait_for_game(
-                client,
+            final_json, pgn = wait_for_game(
+                bot_log,
+                run_dir / "pgn",
                 game_id,
                 bot_process,
                 config.game_poll_seconds,
                 config.game_timeout_seconds,
+                log_offset=log_offset,
                 event_sink=record_runtime_event,
             )
             (run_dir / f"game-{index:03d}-{game_id}.json").write_text(
                 json.dumps(final_json, indent=2, sort_keys=True) + "\n", encoding="utf-8"
             )
-            pgn_error: str | None = None
-            try:
-                pgn = client.game_pgn(game_id)
-            except (TransientLichessError, requests.RequestException) as exc:
-                pgn_error = str(exc)
-                print(
-                    "  The game finished, but the extra PGN export is temporarily unavailable; "
-                    "the lichess-bot PGN and JSON result are retained."
-                )
-                record_runtime_event(
-                    {
-                        "at": utc_now(),
-                        "status": "PGN_EXPORT_FAILED",
-                        "game_id": game_id,
-                        "error": pgn_error,
-                    }
-                )
-            else:
-                (run_dir / f"game-{index:03d}-{game_id}.pgn").write_text(
-                    pgn, encoding="utf-8"
-                )
+            (run_dir / f"game-{index:03d}-{game_id}.pgn").write_text(pgn, encoding="utf-8")
             time.sleep(1)
             if bot_log.exists():
                 with bot_log.open("r", encoding="utf-8", errors="replace") as stream:
@@ -1167,12 +1265,11 @@ def run(args: argparse.Namespace) -> int:
             else:
                 nps = parse_search_nps([])
             record.update(
-                status="FINISHED" if pgn_error is None else "FINISHED_WITH_EXPORT_WARNING",
+                status="FINISHED",
                 finished_at=utc_now(),
                 lichess_status=final_json.get("status"),
                 winner=final_json.get("winner"),
                 nps=nps,
-                pgn_export_error=pgn_error,
             )
             append_json_line(events_path, record)
             state["completed"].append(record)
