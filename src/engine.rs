@@ -2102,7 +2102,7 @@ mod tests {
     }
 
     #[test]
-    fn book_quality_window_avoids_the_inferior_f1w14oir_branch() {
+    fn book_main_line_avoids_the_inferior_f1w14oir_branch() {
         let mut engine = Engine::new();
         engine.book = Some(
             OpeningBook::load_from_bytes(crate::opening_book::BOOK_DATA, "<embedded>").unwrap(),
@@ -2114,10 +2114,51 @@ mod tests {
         let (best_move, _score, nodes, _elapsed) =
             engine.find_best_move_with_time_limits(0.01, 0.01, 1);
 
-        assert_eq!(best_move, "d2d4");
+        assert_eq!(best_move, "c2c3");
         assert_eq!(
             nodes, 0,
-            "the selected continuation should remain a book move"
+            "the selected continuation should remain immediate"
+        );
+    }
+
+    #[test]
+    fn book_main_line_rejects_the_inferior_1suxf4br_branch() {
+        let mut engine = Engine::new();
+        engine.book = Some(
+            OpeningBook::load_from_bytes(crate::opening_book::BOOK_DATA, "<embedded>").unwrap(),
+        );
+        for mv in [
+            "d2d4", "g8f6", "g1f3", "d7d5", "c2c4", "e7e6", "g2g3", "d5c4", "f1g2", "b8c6", "e1g1",
+            "a7a6",
+        ] {
+            play_uci(&mut engine, mv);
+        }
+
+        let (best_move, _score, nodes, _elapsed) =
+            engine.find_best_move_with_time_limits(0.01, 0.01, 1);
+
+        assert_eq!(best_move, "e2e3", "https://lichess.org/1suxf4br");
+        assert_eq!(
+            nodes, 0,
+            "the selected continuation should remain immediate"
+        );
+    }
+
+    #[test]
+    fn book_main_line_rejects_the_inferior_25k5eprc_tail() {
+        let mut engine = Engine::new();
+        engine.book = Some(
+            OpeningBook::load_from_bytes(crate::opening_book::BOOK_DATA, "<embedded>").unwrap(),
+        );
+        play_uci(&mut engine, "e2e4");
+
+        let (best_move, _score, nodes, _elapsed) =
+            engine.find_best_move_with_time_limits(0.01, 0.01, 1);
+
+        assert_eq!(best_move, "c7c5", "https://lichess.org/25K5eprc");
+        assert_eq!(
+            nodes, 0,
+            "the selected continuation should remain immediate"
         );
     }
 
