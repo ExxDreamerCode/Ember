@@ -1,3 +1,10 @@
+# Source: Lichess puzzle database, https://database.lichess.org/#puzzles
+# Original file: lichess_db_puzzle.csv.zst, CC0 database export.
+# Source columns: PuzzleId,FEN,Moves,Rating,RatingDeviation,Popularity,
+# NbPlays,Themes,GameUrl,OpeningTags
+# Lichess FEN is before the opponent move; this fixture applies the
+# first Moves entry as setup_move, then checks the second entry as
+# expected_move. It keeps themes/rating/popularity/NbPlays for triage.
 id	depth	fen_before_blunder	setup_move	expected_move	themes	rating	popularity	plays
 00008	2	r6k/pp2r2p/4Rp1Q/3p4/8/1N1P2R1/PqP2bPP/7K b - - 0 24	f2g3	e6e7	crushing,hangingPiece,long,middlegame	1784	95	9822
 0008Q	2	8/4R3/1p2P3/p4r2/P6p/1P3Pk1/4K3/8 w - - 1 64	e7f7	f5e5	advantage,endgame,rookEndgame,short	1383	92	766

@@ -155,7 +155,7 @@ jobs:
           retention-days: 7
 
   lichess-puzzle-corpus:
-    name: Lichess puzzle corpus
+    name: Move regression fixtures
     runs-on: ubuntu-latest
 
     env:
@@ -171,10 +171,10 @@ jobs:
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run Lichess puzzle corpus
+      - name: Run move regression fixtures
         run: |
           nix develop .#ci --command bash -c "
             ulimit -s 65536
             export RUST_MIN_STACK=16777216
-            cargo test --locked --all-features --test lichess_puzzle_corpus -- --ignored --test-threads=4
+            cargo test --locked --release --all-features --test lichess_puzzle_corpus -- --ignored --test-threads=4
           "
