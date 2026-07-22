@@ -31,6 +31,7 @@
           };
           crossAarch64 = pkgs.pkgsCross.aarch64-multiplatform.stdenv.cc;
           crossAarch64Libc = pkgs.pkgsCross.aarch64-multiplatform.stdenv.cc.libc;
+          headToHeadPython = pkgs.python3.withPackages (ps: [ ps.chess ]);
 
           search-shape-benchmark = pkgs.writeShellApplication {
             name = "search-shape-benchmark";
@@ -42,6 +43,20 @@
             '';
           };
 
+          head-to-head = pkgs.writeShellApplication {
+            name = "head-to-head";
+            runtimeInputs = with pkgs; [
+              cutechess
+              git
+              gnutar
+              headToHeadPython
+              rustToolchain
+              stdenv.cc
+            ];
+            text = ''
+              exec python3 tools/head_to_head.py "$@"
+            '';
+          };
 
           x86_64-qemu-oldcpu-smoke = pkgs.writeShellApplication {
             name = "x86_64-qemu-oldcpu-smoke";
@@ -191,6 +206,11 @@
           search-shape-benchmark = {
             type = "app";
             program = "${search-shape-benchmark}/bin/search-shape-benchmark";
+          };
+
+          head-to-head = {
+            type = "app";
+            program = "${head-to-head}/bin/head-to-head";
           };
         });
 
