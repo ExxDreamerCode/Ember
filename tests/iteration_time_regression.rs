@@ -21,15 +21,14 @@ fn timing(
 }
 
 #[test]
-fn stable_search_keeps_its_nominal_budget_before_predicting() {
-    let before_soft_limit =
-        iteration_time_decision(10.0, 40.0, 30, timing(6.0, 2.0, 0.6, 20, 4, 0.90, 0.0));
-    let after_soft_limit =
-        iteration_time_decision(10.0, 40.0, 30, timing(10.1, 2.0, 0.6, 20, 4, 0.90, 0.0));
+fn settled_concentrated_search_can_finish_below_its_nominal_budget() {
+    let early = iteration_time_decision(10.0, 40.0, 30, timing(6.0, 2.0, 0.6, 20, 4, 0.90, 0.0));
+    let near_target =
+        iteration_time_decision(10.0, 40.0, 30, timing(6.8, 2.0, 0.6, 20, 4, 0.90, 0.0));
 
-    assert!(before_soft_limit.predicted_next_seconds > before_soft_limit.target_seconds - 6.0);
-    assert!(!before_soft_limit.stop);
-    assert!(after_soft_limit.stop);
+    assert!(early.target_seconds < 10.0);
+    assert!(!early.stop);
+    assert!(near_target.stop);
 }
 
 #[test]
@@ -106,11 +105,12 @@ fn worker_disagreement_extends_the_search_target() {
 }
 
 #[test]
-fn settled_worker_disagreement_does_not_inflate_the_budget() {
+fn settled_worker_disagreement_prevents_an_early_finish() {
     let agreed = iteration_time_decision(10.0, 40.0, 30, timing(4.0, 1.0, 0.5, 20, 4, 0.80, 0.0));
     let split = iteration_time_decision(10.0, 40.0, 30, timing(4.0, 1.0, 0.5, 20, 4, 0.80, 1.0));
 
-    assert_eq!(split.target_seconds, agreed.target_seconds);
+    assert!(agreed.target_seconds < 10.0);
+    assert_eq!(split.target_seconds, 10.0);
 }
 
 #[test]
