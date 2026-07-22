@@ -283,6 +283,9 @@ fn root_rook_invasion_score(st: &BoardState, mv: Move) -> Option<i32> {
     if attacker == EMPTY_SQ || piece_type(attacker) != 3 {
         return None;
     }
+    if root_move_is_capture(st, mv) {
+        return None;
+    }
 
     let target_row = if st.w { 1 } else { 6 };
     if to / 8 != target_row {
@@ -300,7 +303,13 @@ fn root_depth_extension(st: &BoardState, mv: Move) -> i32 {
     if root_reduced_rook_check_capture(st, mv) {
         3
     } else {
-        i32::from(root_rook_invasion_score(st, mv).is_some())
+        let attacker = st.mailbox[move_from(mv)];
+        i32::from(
+            root_rook_invasion_score(st, mv).is_some()
+                || (attacker != EMPTY_SQ
+                    && piece_type(attacker) == 3
+                    && root_checking_slider_pawn_capture_order_score(st, mv).is_some()),
+        )
     }
 }
 
@@ -517,19 +526,22 @@ fn sort_root_moves(st: &BoardState, moves: &[Move], preferred: Move) -> Vec<Move
     let has_rook_invasion = moves
         .iter()
         .any(|&mv| root_rook_invasion_score(st, mv).is_some());
-    let has_reduced_rook_check = root_non_king_piece_count(st) <= 12
-        && !root_has_queen(st)
-        && moves.iter().any(|&mv| {
-            let attacker = st.mailbox[move_from(mv)];
-            attacker != EMPTY_SQ && piece_type(attacker) == 3 && root_move_gives_check(st, mv)
-        });
+    let has_reduced_rook_tactic = moves
+        .iter()
+        .any(|&mv| root_reduced_rook_check_capture(st, mv))
+        || (root_non_king_piece_count(st) <= 11
+            && !root_has_queen(st)
+            && moves.iter().any(|&mv| {
+                let attacker = st.mailbox[move_from(mv)];
+                attacker != EMPTY_SQ && piece_type(attacker) == 3 && root_move_gives_check(st, mv)
+            }));
     let has_minor_tactic = moves.iter().any(|&mv| root_minor_king_zone_capture(st, mv));
     let has_queen_capture = moves
         .iter()
         .any(|&mv| root_move_is_capture(st, mv) && piece_type(st.mailbox[move_to(mv)]) == 4);
     let use_tactical_order = has_minor_tactic
         || has_queen_capture
-        || has_reduced_rook_check
+        || has_reduced_rook_tactic
         || ((sparse_endgame || has_rook_invasion)
             && moves
                 .iter()
@@ -1761,6 +1773,20 @@ mod tests {
     }
 
     #[test]
+    fn root_rook_invasion_extension_rejects_captures() {
+        let mut rook_capture =
+            engine_from_fen("2r3k1/p7/7p/1p4p1/6R1/3B1q1P/2P4P/2B3RK w - - 6 35");
+        play_uci(&mut rook_capture, "g1g2");
+        let rook_takes_pawn = root_move(&rook_capture, "c8c2");
+
+        assert_eq!(
+            root_rook_invasion_score(&rook_capture.st, rook_takes_pawn),
+            None
+        );
+        assert_eq!(root_depth_extension(&rook_capture.st, rook_takes_pawn), 0);
+    }
+
+    #[test]
     fn root_ordering_prioritizes_a_missed_mating_check() {
         let mut engine = engine_from_fen("1rb2rk1/q5P1/4p2p/3p3p/3P1P2/2P5/2QK3P/3R2R1 b - - 0 29");
         play_uci(&mut engine, "f8f7");
@@ -1867,6 +1893,7 @@ mod tests {
             root_checking_slider_pawn_capture_order_score(&engine.st, bishop_takes_pawn),
             Some(5_500_660)
         );
+        assert_eq!(root_depth_extension(&engine.st, bishop_takes_pawn), 0);
         assert_eq!(move_to_uci(&engine.st, ordered[0]), "d6h2");
 
         let mut rook_engine =
@@ -1882,6 +1909,7 @@ mod tests {
             root_checking_slider_pawn_capture_order_score(&rook_engine.st, rook_takes_pawn),
             Some(5_500_500)
         );
+        assert_eq!(root_depth_extension(&rook_engine.st, rook_takes_pawn), 1);
         assert_eq!(move_to_uci(&rook_engine.st, ordered[0]), "g3g6");
     }
 
