@@ -315,6 +315,16 @@ already incorporated.
 - Never rewrite commits below a user-specified boundary. After a rebase, add new commits
   unless the user explicitly authorizes another history rewrite.
 
+## Release versioning
+
+- Treat the `[package].version` in `Cargo.toml` as the canonical Ember version. Keep
+  `Cargo.lock`, the UCI `id name Ember <version>` response, and user-visible packaging
+  metadata synchronized with it.
+- Bump and verify every version-bearing location before creating a release tag. Build the
+  release candidate from that exact commit and check its UCI handshake before tagging. Never
+  tag first and apply the version bump afterward; the tagged source archive and attached
+  binaries must identify the same release.
+
 ## Nix, opponents, and Syzygy
 
 - Keep Nix inputs reproducible: pin exact upstream revisions and hashes. Do not silently
