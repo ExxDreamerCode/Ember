@@ -67,6 +67,21 @@ the more convenient result.
 
 ## Regression policy
 
+### Keep public behavior tests outside `src/`
+
+Tests embedded under `src/` are reserved for focused unit tests and microbenchmarks of
+private, low-level implementation details that cannot be reached through the crate's public
+surface. A test that uses only exported `chess_rs_lib` modules, types, functions, and methods
+belongs under `tests/`, even when it exercises behavior implemented by a single source
+module. Public subsystem lifecycle and cross-module behavior are integration tests, not
+inline unit tests.
+
+Do not make an implementation detail public solely to relocate a test. When an inline test
+needs a chess position, comment the private contract it observes and why a public integration
+test or TSV move fixture would lose that contract. When touching an inline test module,
+recheck that every remaining test actually depends on private behavior; move public-only
+coverage out instead of adding more source-module test infrastructure.
+
 ### Chess move regressions belong in TSV fixtures
 
 Represent a position in `tests/fixtures/*.tsv` whenever the assertion is fundamentally
@@ -95,9 +110,11 @@ Fixture conventions:
 - `expected_move` accepts one exact move, alternatives separated by `|`, or forbidden
   moves after `!`. Prefer an invariant such as "do not play the losing move" when several
   continuations are sound.
-- Choose the lowest stable depth that still exercises the bug, unless the failure itself
-  depends on a documented deployment-like depth. Depth-based cases should remain
-  deterministic and reasonably cheap.
+- Use depth `0` for an embedded-book regression. It requires the expected move to be
+  returned immediately with zero search nodes. Depths `1` through `64` disable the book
+  and run a normal fixed-depth search. Choose the lowest stable search depth that still
+  exercises the bug, unless the failure itself depends on a documented deployment-like
+  depth. Depth-based cases should remain deterministic and reasonably cheap.
 - Keep source metadata in `themes`, `rating`, `popularity`, and `plays` when it exists. Use
   neutral zero values for hand-written cases where it does not.
 - If a valuable position still fails and no generally safe fix exists, keep a commented-out
@@ -108,6 +125,15 @@ Fixture conventions:
   cases separate from disagreements and near-ties so Ember is not tuned to an obsolete or
   subjective label.
 - Do not duplicate a TSV move regression in Rust.
+
+Before adding a position-backed Rust test, first try to express it as a TSV case. A fixed
+position or legal move history plus an exact, alternative, or forbidden root move belongs
+in TSV, including immediate embedded-book choices. If a position remains in a Rust test,
+add a nearby comment naming the non-TSV contract it observes, such as an internal ordering
+score, extension eligibility and counterexamples, synthetic SMP worker ballots,
+transposition state, node accounting, or direct tablebase probing. Such a test belongs under
+`src/` only when that contract requires private implementation access; otherwise put it
+under `tests/`. The position alone is not a reason to keep a regression in Rust.
 
 Use Rust tests for behavior the TSV schema cannot express: UCI protocol ordering, stop and
 ponder lifecycle, clock budgets, thread coordination, node accounting, option handling,
@@ -288,6 +314,16 @@ already incorporated.
   tracks that artifact.
 - Never rewrite commits below a user-specified boundary. After a rebase, add new commits
   unless the user explicitly authorizes another history rewrite.
+
+## Release versioning
+
+- Treat the `[package].version` in `Cargo.toml` as the canonical Ember version. Keep
+  `Cargo.lock`, the UCI `id name Ember <version>` response, and user-visible packaging
+  metadata synchronized with it.
+- Bump and verify every version-bearing location before creating a release tag. Build the
+  release candidate from that exact commit and check its UCI handshake before tagging. Never
+  tag first and apply the version bump afterward; the tagged source archive and attached
+  binaries must identify the same release.
 
 ## Nix, opponents, and Syzygy
 
