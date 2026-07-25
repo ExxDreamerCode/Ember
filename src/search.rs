@@ -333,6 +333,7 @@ pub struct Searcher {
     pub rep_stack: Vec<u64>,
     pub rep_stack_len: usize,
     rep_root_len: usize,
+    excluded_moves: [Option<Move>; MAX_PLY],
     pub tt_mb: usize,
     pub stopped: Arc<AtomicBool>,
     pub pondering: Arc<AtomicBool>,
@@ -452,6 +453,7 @@ macro_rules! qsearch_mode_body {
         if $this.time_up($start, $tl) {
             return 0;
         }
+        let excluded_move = $this.excluded_moves.get($ply).copied().flatten();
         let ks = $st.king_sq($st.w);
         let in_check = crate::board::is_attacked(&$st.bb, ks, !$st.w);
 
@@ -459,7 +461,7 @@ macro_rules! qsearch_mode_body {
             return score;
         }
 
-        if !in_check {
+        if !in_check && excluded_move.is_none() {
             if let Some(score) = $this.syzygy.probe_search_score($st, $ply) {
                 return score;
             }
@@ -473,14 +475,18 @@ macro_rules! qsearch_mode_body {
             if stand > $alpha {
                 $alpha = stand;
             }
-            if $this.qsearch_delta_enabled() && $depth <= 0 && $alpha - 975 > stand {
+            if $this.qsearch_delta_enabled()
+                && excluded_move.is_none()
+                && $depth <= 0
+                && $alpha - 975 > stand
+            {
                 #[cfg(feature = "search-debug")]
                 {
                     $this.debug.stats.q_delta_cutoffs += 1;
                 }
                 return $alpha;
             }
-        } else if $this.qsearch_check_cap_enabled() && $depth <= -4 {
+        } else if $this.qsearch_check_cap_enabled() && excluded_move.is_none() && $depth <= -4 {
             #[cfg(feature = "search-debug")]
             {
                 $this.debug.stats.q_checked_depth_exits += 1;
@@ -499,7 +505,9 @@ macro_rules! qsearch_mode_body {
         }
         if caps.is_empty() {
             Self::return_buf(&mut $this.move_bufs, $ply, caps);
-            return if in_check {
+            return if excluded_move.is_some() {
+                $alpha
+            } else if in_check {
                 -MATE + $ply as i32
             } else {
                 $alpha
@@ -528,11 +536,15 @@ macro_rules! qsearch_mode_body {
             if $this.time_up($start, $tl) {
                 return 0;
             }
+            if Some(mv) == excluded_move {
+                continue;
+            }
             let from = move_from(mv);
             let to = move_to(mv);
             let fpi = $st.mailbox[from];
             let tpi = $st.mailbox[to];
             if !in_check
+                && excluded_move.is_none()
                 && $this.qsearch_see_enabled()
                 && move_see::<CHESS960>($st, mv, from, to, fpi, tpi) < 0
             {
@@ -629,6 +641,7 @@ macro_rules! negamax_mode_body {
         if $ply >= MAX_PLY {
             return $eval.static_eval::<CHESS960>($this, $st, $ply);
         }
+        let excluded_move = $this.excluded_moves[$ply];
 
         let mut beta = $beta;
         if $ply > 0 {
@@ -653,14 +666,18 @@ macro_rules! negamax_mode_body {
             return score;
         }
 
-        if $ply > 0 && !in_check && $can_null {
+        if $ply > 0 && !in_check && $can_null && excluded_move.is_none() {
             if let Some(score) = $this.syzygy.probe_search_score($st, $ply) {
                 return score;
             }
         }
 
         let tt_data = $this.shared_tt.get_depth(h);
-        let tt_move = tt_data.and_then(|(_, _, _, best)| best);
+        let tt_move = if excluded_move.is_none() {
+            tt_data.and_then(|(_, _, _, best)| best)
+        } else {
+            None
+        };
         let tt_score = tt_data.map(|(_, s, _, _)| score_from_tt(s, $ply));
         let tt_depth = tt_data.map(|(d, _, _, _)| d).unwrap_or(-1);
         let tt_flag = tt_data.map(|(_, _, f, _)| f);
@@ -675,7 +692,7 @@ macro_rules! negamax_mode_body {
         let ext = if in_check && $depth < 16 { 1 } else { 0 };
         let actual_depth = $depth + ext;
 
-        if !is_pv && tt_depth >= actual_depth {
+        if excluded_move.is_none() && !is_pv && tt_depth >= actual_depth {
             if let (Some(flag), Some(s)) = (tt_flag, tt_score) {
                 match flag {
                     TT_EXACT => {
@@ -729,7 +746,13 @@ macro_rules! negamax_mode_body {
                 return eval_score - margin;
             }
         }
-        if $this.futility_enabled() && !in_check && !is_pv && actual_depth <= 3 && $ply > 0 {
+        if $this.futility_enabled()
+            && excluded_move.is_none()
+            && !in_check
+            && !is_pv
+            && actual_depth <= 3
+            && $ply > 0
+        {
             let margin = 150 * actual_depth;
             if eval_score + margin <= $alpha {
                 let q = $this.$qsearch_mode::<CHESS960, E>(
@@ -753,6 +776,7 @@ macro_rules! negamax_mode_body {
             }
         }
         if $this.null_move_enabled()
+            && excluded_move.is_none()
             && king_pressure < 3
             && !in_check
             && $can_null
@@ -832,19 +856,29 @@ macro_rules! negamax_mode_body {
         }
         if moves_buf.is_empty() {
             Self::return_buf(&mut $this.move_bufs, $ply, moves_buf);
-            return if in_check { -MATE + $ply as i32 } else { 0 };
+            return if excluded_move.is_some() {
+                $alpha
+            } else if in_check {
+                -MATE + $ply as i32
+            } else {
+                0
+            };
         }
 
-        let actual_depth =
-            if $this.iid_reduction_enabled() && tt_move.is_none() && actual_depth >= 4 && is_pv {
-                #[cfg(feature = "search-debug")]
-                {
-                    $this.debug.stats.iid_reductions += 1;
-                }
-                actual_depth - 1
-            } else {
-                actual_depth
-            };
+        let actual_depth = if $this.iid_reduction_enabled()
+            && excluded_move.is_none()
+            && tt_move.is_none()
+            && actual_depth >= 4
+            && is_pv
+        {
+            #[cfg(feature = "search-debug")]
+            {
+                $this.debug.stats.iid_reductions += 1;
+            }
+            actual_depth - 1
+        } else {
+            actual_depth
+        };
 
         let mut scored = Self::take_buf(&mut $this.scored_bufs, $ply);
         scored.clear();
@@ -898,23 +932,27 @@ macro_rules! negamax_mode_body {
         Self::return_buf(&mut $this.move_bufs, $ply, moves_buf);
         scored.sort_unstable_by_key(|b| std::cmp::Reverse(b.0));
 
-        let lmp_count =
-            if $this.lmp_enabled() && king_pressure < 3 && !is_pv && !in_check && actual_depth <= 8
-            {
-                match actual_depth {
-                    1 => 4,
-                    2 => 7,
-                    3 => 11,
-                    4 => 17,
-                    5 => 24,
-                    6 => 33,
-                    7 => 44,
-                    8 => 57,
-                    _ => usize::MAX,
-                }
-            } else {
-                usize::MAX
-            };
+        let lmp_count = if $this.lmp_enabled()
+            && excluded_move.is_none()
+            && king_pressure < 3
+            && !is_pv
+            && !in_check
+            && actual_depth <= 8
+        {
+            match actual_depth {
+                1 => 4,
+                2 => 7,
+                3 => 11,
+                4 => 17,
+                5 => 24,
+                6 => 33,
+                7 => 44,
+                8 => 57,
+                _ => usize::MAX,
+            }
+        } else {
+            usize::MAX
+        };
 
         let orig_alpha = $alpha;
         let mut best_score = -INF;
@@ -927,6 +965,9 @@ macro_rules! negamax_mode_body {
             if $this.time_up($start, $tl) {
                 return 0;
             }
+            if Some(mv) == excluded_move {
+                continue;
+            }
 
             let from = move_from(mv);
             let to = move_to(mv);
@@ -936,14 +977,24 @@ macro_rules! negamax_mode_body {
             let is_promo = is_promotion_move(fpi, mv);
             let is_quiet = !capture && !is_promo;
 
-            if !is_pv && !in_check && is_quiet && legal_moves_seen >= lmp_count {
+            if excluded_move.is_none()
+                && !is_pv
+                && !in_check
+                && is_quiet
+                && legal_moves_seen >= lmp_count
+            {
                 #[cfg(feature = "search-debug")]
                 {
                     $this.debug.stats.lmp_cutoffs += 1;
                 }
                 break;
             }
-            if !is_pv && !in_check && legal_moves_seen > 0 && best_score > -MATE / 2 {
+            if excluded_move.is_none()
+                && !is_pv
+                && !in_check
+                && legal_moves_seen > 0
+                && best_score > -MATE / 2
+            {
                 if capture {
                     if $this.see_pruning_enabled()
                         && move_see::<CHESS960>($st, mv, from, to, fpi, tpi) < -80 * actual_depth
@@ -1016,6 +1067,7 @@ macro_rules! negamax_mode_body {
             let new_depth = actual_depth - 1 + move_ext;
 
             let lmr_eligible = $this.lmr_enabled()
+                && excluded_move.is_none()
                 && move_index >= 2
                 && actual_depth >= 3
                 && is_quiet
@@ -1161,7 +1213,7 @@ macro_rules! negamax_mode_body {
                 if s > $alpha {
                     $alpha = s;
                     if $alpha >= beta {
-                        if is_quiet {
+                        if is_quiet && excluded_move.is_none() {
                             if $this.killers[$ply][0] != Some(mv) {
                                 $this.killers[$ply][1] = $this.killers[$ply][0];
                                 $this.killers[$ply][0] = Some(mv);
@@ -1216,7 +1268,13 @@ macro_rules! negamax_mode_body {
             return 0;
         }
         if legal_moves_seen == 0 {
-            return if in_check { -MATE + $ply as i32 } else { 0 };
+            return if excluded_move.is_some() {
+                $alpha
+            } else if in_check {
+                -MATE + $ply as i32
+            } else {
+                0
+            };
         }
 
         let flag = if best_score <= orig_alpha {
@@ -1226,13 +1284,15 @@ macro_rules! negamax_mode_body {
         } else {
             TT_EXACT
         };
-        $this.shared_tt.store(
-            h,
-            actual_depth,
-            score_to_tt(best_score, $ply),
-            flag,
-            best_move,
-        );
+        if excluded_move.is_none() {
+            $this.shared_tt.store(
+                h,
+                actual_depth,
+                score_to_tt(best_score, $ply),
+                flag,
+                best_move,
+            );
+        }
         best_score
     }};
 }
@@ -1248,6 +1308,7 @@ impl Searcher {
             rep_stack: Vec::with_capacity(512),
             rep_stack_len: 0,
             rep_root_len: 0,
+            excluded_moves: [None; MAX_PLY],
             tt_mb: 128,
             stopped,
             pondering: Arc::new(AtomicBool::new(false)),
@@ -1377,6 +1438,7 @@ impl Searcher {
 
     pub fn prepare_for_search(&mut self) {
         self.rep_root_len = self.rep_stack_len;
+        self.excluded_moves.fill(None);
         self.killers = [[None; 2]; MAX_PLY];
         for row in &mut self.history {
             for value in row {
@@ -3827,6 +3889,25 @@ mod tests {
             .unwrap_or_else(|| panic!("expected legal move {uci}"))
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn negamax_excluding_move(
+        searcher: &mut Searcher,
+        st: &mut BoardState,
+        excluded_move: Move,
+        depth: i32,
+        ply: usize,
+        alpha: i32,
+        beta: i32,
+        start: Instant,
+        tl: f64,
+        nodes: &mut u64,
+    ) -> i32 {
+        let previous = searcher.excluded_moves[ply].replace(excluded_move);
+        let score = searcher.negamax(st, depth, ply, alpha, beta, false, start, tl, nodes);
+        searcher.excluded_moves[ply] = previous;
+        score
+    }
+
     #[test]
     fn special_move_gives_check_rejects_empty_from_square() {
         let st = state_from_fen("7k/8/8/8/8/8/8/R3K3 w - - 0 1");
@@ -3922,6 +4003,166 @@ mod tests {
         );
 
         assert_eq!(score, -MATE + ply as i32);
+    }
+
+    #[test]
+    fn restricted_search_ignores_unrestricted_tt_cutoffs() {
+        let st = state_from_fen("7k/4Q3/5K2/8/8/8/8/8 b - - 0 1");
+        let legal_moves = generate_moves(&st, st.w, &st.cr, st.ep);
+        assert_eq!(
+            legal_moves.len(),
+            1,
+            "test position must have one legal move"
+        );
+        let excluded_move = legal_moves[0];
+        let ply = 1;
+
+        for flag in [TT_EXACT, TT_BETA] {
+            let mut position = st;
+            let stopped = Arc::new(AtomicBool::new(false));
+            let shared_tt = Arc::new(SharedTT::new(1));
+            let mut searcher = Searcher::new(Arc::clone(&shared_tt), stopped);
+            searcher.nnue_net = None;
+            shared_tt.store(
+                position.hash,
+                12,
+                score_to_tt(900, ply),
+                flag,
+                Some(excluded_move),
+            );
+            let mut nodes = 0;
+
+            let score = negamax_excluding_move(
+                &mut searcher,
+                &mut position,
+                excluded_move,
+                4,
+                ply,
+                -200,
+                -199,
+                Instant::now(),
+                10.0,
+                &mut nodes,
+            );
+
+            assert_eq!(
+                score, -200,
+                "restricted search used an unrestricted TT flag {flag}"
+            );
+        }
+    }
+
+    #[test]
+    fn restricted_search_with_no_alternative_fails_low_without_storing_tt() {
+        let mut st = state_from_fen("7k/4Q3/5K2/8/8/8/8/8 b - - 0 1");
+        let legal_moves = generate_moves(&st, st.w, &st.cr, st.ep);
+        assert_eq!(
+            legal_moves.len(),
+            1,
+            "test position must have one legal move"
+        );
+        let excluded_move = legal_moves[0];
+        let key = st.hash;
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(1));
+        let mut searcher = Searcher::new(Arc::clone(&shared_tt), stopped);
+        searcher.nnue_net = None;
+        let mut nodes = 0;
+
+        let score = negamax_excluding_move(
+            &mut searcher,
+            &mut st,
+            excluded_move,
+            4,
+            1,
+            -300,
+            -299,
+            Instant::now(),
+            10.0,
+            &mut nodes,
+        );
+
+        assert_eq!(score, -300);
+        assert!(
+            shared_tt.get_depth(key).is_none(),
+            "restricted result contaminated the unrestricted TT"
+        );
+    }
+
+    #[test]
+    fn restricted_search_uses_descendant_tt_without_learning_from_its_root() {
+        let mut st = state_from_fen("7k/8/4Q3/5K2/8/8/8/8 b - - 0 1");
+        let legal_moves = generate_moves(&st, st.w, &st.cr, st.ep);
+        assert_eq!(
+            legal_moves.len(),
+            2,
+            "test position must have two legal moves"
+        );
+        let excluded_move = legal_moves[0];
+        let allowed_move = legal_moves[1];
+        let mut child = st;
+        apply_move(
+            &mut child,
+            move_sr(allowed_move),
+            move_sc(allowed_move),
+            move_er(allowed_move),
+            move_ec(allowed_move),
+            move_promotion(allowed_move),
+        );
+
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(1));
+        let mut searcher = Searcher::new(Arc::clone(&shared_tt), stopped);
+        searcher.nnue_net = None;
+        shared_tt.store(child.hash, 12, score_to_tt(-5000, 2), TT_EXACT, None);
+        let (from, to) = from_to_key(
+            move_sr(allowed_move),
+            move_sc(allowed_move),
+            move_er(allowed_move),
+            move_ec(allowed_move),
+        );
+        let piece_index = piece_to_idx(piece_type(st.mailbox[move_from(allowed_move)]));
+        let mut nodes = 0;
+
+        let score = negamax_excluding_move(
+            &mut searcher,
+            &mut st,
+            excluded_move,
+            4,
+            1,
+            9,
+            10,
+            Instant::now(),
+            10.0,
+            &mut nodes,
+        );
+
+        assert_eq!(score, 5000, "restricted descendants did not use their TT");
+        assert_eq!(searcher.history[from][to], 0);
+        assert_eq!(searcher.killers[1], [None; 2]);
+        assert_eq!(
+            searcher.counter_move[piece_index][move_to(allowed_move)],
+            None
+        );
+        assert!(
+            shared_tt.get_depth(st.hash).is_none(),
+            "restricted root was stored after a descendant TT cutoff"
+        );
+    }
+
+    #[test]
+    fn excluded_move_state_is_worker_local_and_cleared_before_search() {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(1));
+        let mut first = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
+        let second = Searcher::new(shared_tt, stopped);
+        let excluded_move = encode_move(0, 0, 0, 1, 0);
+
+        first.excluded_moves[3] = Some(excluded_move);
+
+        assert_eq!(second.excluded_moves[3], None);
+        first.prepare_for_search();
+        assert_eq!(first.excluded_moves[3], None);
     }
 
     #[cfg(feature = "search-debug")]
