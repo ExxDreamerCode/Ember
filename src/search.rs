@@ -56,6 +56,18 @@ struct SingularCandidate {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SingularMoveAdjustment {
+    mv: Move,
+    extension: i32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SingularSearchOutcome {
+    Continue(i32),
+    Cutoff(i32),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SingularEligibility {
     NoCandidate,
     SafetyRejected,
@@ -78,6 +90,25 @@ struct ChildPathState;
 #[cfg(any(feature = "search-debug", test))]
 fn next_singular_extension_count(current: u8, extension: i32) -> u8 {
     current.saturating_add(extension.max(0) as u8)
+}
+
+fn singular_search_outcome(
+    alternative_score: i32,
+    singular_beta: i32,
+    multi_cut_beta: Option<i32>,
+) -> SingularSearchOutcome {
+    if multi_cut_beta.is_some_and(|beta| alternative_score >= beta) {
+        return SingularSearchOutcome::Cutoff(alternative_score);
+    }
+    SingularSearchOutcome::Continue(i32::from(alternative_score < singular_beta))
+}
+
+fn combine_move_extensions(tactical_extension: i32, singular_extension: i32) -> i32 {
+    if tactical_extension > 0 {
+        tactical_extension
+    } else {
+        singular_extension
+    }
 }
 
 #[cfg(any(feature = "search-debug", test))]
@@ -1296,7 +1327,7 @@ macro_rules! negamax_mode_body {
         } else {
             (0, false)
         };
-        let singular_move = match singular_candidate(
+        let singular_adjustment = match singular_candidate(
             singular_enabled,
             $ply,
             excluded_move,
@@ -1377,62 +1408,49 @@ macro_rules! negamax_mode_body {
                     Self::return_buf(&mut $this.move_bufs, $ply, moves_buf);
                     return 0;
                 }
-                if alternative_score < candidate.beta {
-                    #[cfg(feature = "search-debug")]
-                    {
-                        $this.debug.stats.singular_extensions += 1;
-                        $this.emit_debug_singular_candidate(
-                            $st,
-                            candidate.mv,
-                            $ply,
-                            is_pv,
-                            actual_depth,
-                            $alpha,
-                            beta,
-                            eval_score,
-                            tt_score.expect("eligible singular candidate has a TT score"),
-                            tt_depth,
-                            tt_flag.expect("eligible singular candidate has a TT flag"),
-                            tt_pv,
-                            tt_age,
-                            candidate.beta,
-                            candidate.depth,
-                            alternative_score,
-                            verification_nodes,
-                            repetitions,
-                            repeated_after_root,
-                            "extended",
-                        );
+                match singular_search_outcome(alternative_score, candidate.beta, None) {
+                    SingularSearchOutcome::Continue(extension) => {
+                        #[cfg(feature = "search-debug")]
+                        {
+                            let outcome = if extension > 0 {
+                                $this.debug.stats.singular_extensions += 1;
+                                "extended"
+                            } else {
+                                $this.debug.stats.singular_alternative_rejections += 1;
+                                "rejected"
+                            };
+                            $this.emit_debug_singular_candidate(
+                                $st,
+                                candidate.mv,
+                                $ply,
+                                is_pv,
+                                actual_depth,
+                                $alpha,
+                                beta,
+                                eval_score,
+                                tt_score.expect("eligible singular candidate has a TT score"),
+                                tt_depth,
+                                tt_flag.expect("eligible singular candidate has a TT flag"),
+                                tt_pv,
+                                tt_age,
+                                candidate.beta,
+                                candidate.depth,
+                                alternative_score,
+                                verification_nodes,
+                                repetitions,
+                                repeated_after_root,
+                                outcome,
+                            );
+                        }
+                        (extension != 0).then_some(SingularMoveAdjustment {
+                            mv: candidate.mv,
+                            extension,
+                        })
                     }
-                    Some(candidate.mv)
-                } else {
-                    #[cfg(feature = "search-debug")]
-                    {
-                        $this.debug.stats.singular_alternative_rejections += 1;
-                        $this.emit_debug_singular_candidate(
-                            $st,
-                            candidate.mv,
-                            $ply,
-                            is_pv,
-                            actual_depth,
-                            $alpha,
-                            beta,
-                            eval_score,
-                            tt_score.expect("eligible singular candidate has a TT score"),
-                            tt_depth,
-                            tt_flag.expect("eligible singular candidate has a TT flag"),
-                            tt_pv,
-                            tt_age,
-                            candidate.beta,
-                            candidate.depth,
-                            alternative_score,
-                            verification_nodes,
-                            repetitions,
-                            repeated_after_root,
-                            "rejected",
-                        );
+                    SingularSearchOutcome::Cutoff(score) => {
+                        Self::return_buf(&mut $this.move_bufs, $ply, moves_buf);
+                        return score;
                     }
-                    None
                 }
             }
         };
@@ -1584,8 +1602,11 @@ macro_rules! negamax_mode_body {
             } else {
                 0
             };
-            let singular_extension = i32::from(Some(mv) == singular_move);
-            let move_ext = tactical_move_ext.max(singular_extension);
+            let singular_extension = singular_adjustment
+                .filter(|adjustment| adjustment.mv == mv)
+                .map(|adjustment| adjustment.extension)
+                .unwrap_or(0);
+            let move_ext = combine_move_extensions(tactical_move_ext, singular_extension);
 
             let st_before = *$st;
             let legal = if pseudo_moves {
@@ -5062,6 +5083,24 @@ mod tests {
         assert_eq!(next_singular_extension_count(2, 0), 2);
         assert_eq!(next_singular_extension_count(2, -2), 2);
         assert_eq!(next_singular_extension_count(u8::MAX, 1), u8::MAX);
+    }
+
+    #[test]
+    fn singular_outcome_keeps_adjustments_and_cutoffs_distinct() {
+        assert_eq!(
+            singular_search_outcome(19, 20, None),
+            SingularSearchOutcome::Continue(1)
+        );
+        assert_eq!(
+            singular_search_outcome(20, 20, None),
+            SingularSearchOutcome::Continue(0)
+        );
+        assert_eq!(
+            singular_search_outcome(30, 20, Some(25)),
+            SingularSearchOutcome::Cutoff(30)
+        );
+        assert_eq!(combine_move_extensions(0, -2), -2);
+        assert_eq!(combine_move_extensions(1, -2), 1);
     }
 
     #[test]
