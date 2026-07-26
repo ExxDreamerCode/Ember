@@ -22,7 +22,7 @@ def select_check(fixture_dir, case_id, depth):
 
 
 def build_engine(cargo, target_dir):
-    command = [cargo, "build", "--locked", "--release"]
+    command = [cargo, "build", "--locked", "--release", "--bin", "ember"]
     env = None
     if target_dir:
         import os
