@@ -765,6 +765,9 @@ struct SearchDagNode {
     q_delta_cutoffs: u64,
     min_q_delta_gap: i32,
     max_q_delta_gap: i32,
+    search_cycle_returns: u64,
+    claimable_draw_returns: u64,
+    automatic_draw_returns: u64,
 }
 
 #[cfg(feature = "search-debug")]
@@ -796,6 +799,9 @@ impl SearchDagNode {
             q_delta_cutoffs: 0,
             min_q_delta_gap: i32::MAX,
             max_q_delta_gap: i32::MIN,
+            search_cycle_returns: 0,
+            claimable_draw_returns: 0,
+            automatic_draw_returns: 0,
         }
     }
 
@@ -840,6 +846,15 @@ impl SearchDagNode {
         self.q_delta_cutoffs += 1;
         self.min_q_delta_gap = self.min_q_delta_gap.min(gap);
         self.max_q_delta_gap = self.max_q_delta_gap.max(gap);
+    }
+
+    fn record_draw(&mut self, status: DrawStatus) {
+        match status {
+            DrawStatus::None => {}
+            DrawStatus::SearchCycle => self.search_cycle_returns += 1,
+            DrawStatus::Claimable => self.claimable_draw_returns += 1,
+            DrawStatus::Automatic => self.automatic_draw_returns += 1,
+        }
     }
 }
 
@@ -952,6 +967,12 @@ impl SearchDagTrace {
         }
     }
 
+    fn record_draw(&mut self, hash: u64, status: DrawStatus) {
+        if let Some(node) = self.nodes.get_mut(&hash) {
+            node.record_draw(status);
+        }
+    }
+
     fn emit(&mut self, score: i32, searched_nodes: u64) {
         if !self.active {
             return;
@@ -1013,7 +1034,9 @@ impl SearchDagTrace {
                  \"max_tt_score\":{max_tt_score},\"tt_alpha\":{},\"tt_beta\":{},\
                  \"tt_exact\":{},\"q_delta_cutoffs\":{},\
                  \"min_q_delta_gap\":{min_q_delta_gap},\
-                 \"max_q_delta_gap\":{max_q_delta_gap}}}",
+                 \"max_q_delta_gap\":{max_q_delta_gap},\
+                 \"search_cycle_returns\":{},\"claimable_draw_returns\":{},\
+                 \"automatic_draw_returns\":{}}}",
                 node.fen,
                 node.main_visits,
                 node.qsearch_visits,
@@ -1031,6 +1054,9 @@ impl SearchDagTrace {
                 node.tt_beta,
                 node.tt_exact,
                 node.q_delta_cutoffs,
+                node.search_cycle_returns,
+                node.claimable_draw_returns,
+                node.automatic_draw_returns,
             );
         }
         for (&(parent, child), &visits) in &self.edges {
@@ -2767,6 +2793,11 @@ impl Searcher {
     }
 
     #[cfg(feature = "search-debug")]
+    fn record_debug_dag_draw(&mut self, hash: u64, status: DrawStatus) {
+        self.debug.dag.record_draw(hash, status);
+    }
+
+    #[cfg(feature = "search-debug")]
     pub fn debug_stats(&self) -> SearchDebugStats {
         self.debug.stats
     }
@@ -3291,13 +3322,16 @@ impl Searcher {
     }
 
     fn draw_score(
-        &self,
+        &mut self,
         st: &BoardState,
         ply: usize,
         minimum_ply: usize,
         in_check: bool,
     ) -> Option<i32> {
-        if self.draw_status(st, ply, minimum_ply) == DrawStatus::None {
+        let status = self.draw_status(st, ply, minimum_ply);
+        #[cfg(feature = "search-debug")]
+        self.record_debug_dag_draw(st.hash, status);
+        if status == DrawStatus::None {
             return None;
         }
         if in_check && generate_moves(st, st.w, &st.cr, st.ep).is_empty() {
