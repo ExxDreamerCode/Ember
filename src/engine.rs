@@ -1395,6 +1395,7 @@ impl Engine {
                         break;
                     }
                     let old = self.st;
+                    self.searcher.enter_root_path(mv);
                     apply_move(
                         &mut self.st,
                         move_sr(mv),
@@ -1468,6 +1469,7 @@ impl Engine {
                     self.searcher.rep_stack.pop();
                     self.searcher.rep_stack_len -= 1;
                     self.st = old;
+                    self.searcher.leave_root_path();
 
                     if self.searcher.stopped.load(Ordering::Relaxed) {
                         break;

@@ -105,6 +105,12 @@ def summarize(events):
         "by_tt_flag": group_summary(events, lambda event: event["tt_flag"]),
         "by_tt_pv": group_summary(events, lambda event: event.get("tt_pv", "unknown")),
         "by_tt_age": group_summary(events, lambda event: event.get("tt_age", "unknown")),
+        "by_shuffling": group_summary(
+            events, lambda event: event.get("shuffling", "unknown")
+        ),
+        "by_path_extensions": group_summary(
+            events, lambda event: event.get("path_extensions", "unknown")
+        ),
         "by_capture": group_summary(events, lambda event: event["capture"]),
         "by_promotion": group_summary(events, lambda event: event["promotion"]),
     }

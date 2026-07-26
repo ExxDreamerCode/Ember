@@ -261,6 +261,11 @@ verification nodes, action rate, and nodes per useful action. Keep raw traces an
 engine, and corpus hashes with the experiment so later threshold changes can be compared
 against the same evidence.
 
+Compile experimental per-node bookkeeping out of production when its policy is disabled.
+A search-debug runtime switch is not enough if release search still updates path state or
+collects evidence on every node. Confirm the absence of hidden scaffolding cost with a
+release NPS and search-shape comparison.
+
 ### Elo and game comparisons
 
 Choose the harness that matches the question:

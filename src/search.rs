@@ -62,6 +62,43 @@ enum SingularEligibility {
     Eligible(SingularCandidate),
 }
 
+#[cfg(feature = "search-debug")]
+#[derive(Clone, Copy)]
+struct ChildPathState {
+    ply: usize,
+    previous_move: Option<Move>,
+    child_ply: Option<usize>,
+    previous_extensions: u8,
+}
+
+#[cfg(not(feature = "search-debug"))]
+#[derive(Clone, Copy)]
+struct ChildPathState;
+
+#[cfg(any(feature = "search-debug", test))]
+fn next_singular_extension_count(current: u8, extension: i32) -> u8 {
+    current.saturating_add(extension.max(0) as u8)
+}
+
+#[cfg(any(feature = "search-debug", test))]
+fn reversible_shuffle(path_moves: &[Option<Move>], ply: usize, halfmove_clock: u8) -> bool {
+    if ply < 4 || halfmove_clock < 4 {
+        return false;
+    }
+    let (Some(latest), Some(previous), Some(latest_same_side), Some(previous_same_side)) = (
+        path_moves.get(ply - 1).copied().flatten(),
+        path_moves.get(ply - 2).copied().flatten(),
+        path_moves.get(ply - 3).copied().flatten(),
+        path_moves.get(ply - 4).copied().flatten(),
+    ) else {
+        return false;
+    };
+    move_from(latest) == move_to(latest_same_side)
+        && move_to(latest) == move_from(latest_same_side)
+        && move_from(previous) == move_to(previous_same_side)
+        && move_to(previous) == move_from(previous_same_side)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ProbCutCandidate {
     beta: i32,
@@ -484,6 +521,10 @@ pub struct Searcher {
     pub rep_stack_len: usize,
     rep_root_len: usize,
     excluded_moves: [Option<Move>; MAX_PLY],
+    #[cfg(feature = "search-debug")]
+    path_moves: [Option<Move>; MAX_PLY],
+    #[cfg(feature = "search-debug")]
+    singular_extensions_used: [u8; MAX_PLY],
     probcut_verification: bool,
     pub tt_mb: usize,
     pub stopped: Arc<AtomicBool>,
@@ -982,6 +1023,7 @@ macro_rules! negamax_mode_body {
                 let null_h = $st.hash;
                 $this.rep_stack.push(null_h);
                 $this.rep_stack_len += 1;
+                let path_state = $this.enter_null_path($ply);
                 let s = -$this.$negamax_mode::<CHESS960, E>(
                     $st,
                     actual_depth - r - 1,
@@ -994,6 +1036,7 @@ macro_rules! negamax_mode_body {
                     $cnt,
                     $eval,
                 );
+                $this.leave_child_path(path_state);
                 $this.rep_stack.pop();
                 $this.rep_stack_len -= 1;
                 $st.hash ^= z.side;
@@ -1152,6 +1195,7 @@ macro_rules! negamax_mode_body {
                     );
                     $this.rep_stack.push($st.hash);
                     $this.rep_stack_len += 1;
+                    let path_state = $this.enter_child_path($ply, mv, 0);
 
                     let qsearch_score = -$this.$qsearch_mode::<CHESS960, E>(
                         $st,
@@ -1195,6 +1239,7 @@ macro_rules! negamax_mode_body {
                         }
                     }
 
+                    $this.leave_child_path(path_state);
                     $this.rep_stack.pop();
                     $this.rep_stack_len -= 1;
                     *$st = st_before;
@@ -1539,7 +1584,8 @@ macro_rules! negamax_mode_body {
             } else {
                 0
             };
-            let move_ext = tactical_move_ext.max(i32::from(Some(mv) == singular_move));
+            let singular_extension = i32::from(Some(mv) == singular_move);
+            let move_ext = tactical_move_ext.max(singular_extension);
 
             let st_before = *$st;
             let legal = if pseudo_moves {
@@ -1576,6 +1622,7 @@ macro_rules! negamax_mode_body {
             let h_after = $st.hash;
             $this.rep_stack.push(h_after);
             $this.rep_stack_len += 1;
+            let path_state = $this.enter_child_path($ply, mv, singular_extension);
 
             let new_depth = actual_depth - 1 + move_ext;
 
@@ -1708,6 +1755,7 @@ macro_rules! negamax_mode_body {
                 )
             };
 
+            $this.leave_child_path(path_state);
             $this.rep_stack.pop();
             $this.rep_stack_len -= 1;
             *$st = st_before;
@@ -1823,6 +1871,10 @@ impl Searcher {
             rep_stack_len: 0,
             rep_root_len: 0,
             excluded_moves: [None; MAX_PLY],
+            #[cfg(feature = "search-debug")]
+            path_moves: [None; MAX_PLY],
+            #[cfg(feature = "search-debug")]
+            singular_extensions_used: [0; MAX_PLY],
             probcut_verification: false,
             tt_mb: 128,
             stopped,
@@ -1954,6 +2006,11 @@ impl Searcher {
     pub fn prepare_for_search(&mut self) {
         self.rep_root_len = self.rep_stack_len;
         self.excluded_moves.fill(None);
+        #[cfg(feature = "search-debug")]
+        {
+            self.path_moves.fill(None);
+            self.singular_extensions_used.fill(0);
+        }
         self.probcut_verification = false;
         self.killers = [[None; 2]; MAX_PLY];
         for row in &mut self.history {
@@ -1961,6 +2018,120 @@ impl Searcher {
                 *value = *value * 13 / 16;
             }
         }
+    }
+
+    #[cfg(feature = "search-debug")]
+    fn enter_path(
+        &mut self,
+        ply: usize,
+        mv: Option<Move>,
+        singular_extension: i32,
+    ) -> ChildPathState {
+        let previous_move = std::mem::replace(&mut self.path_moves[ply], mv);
+        let child_ply = (ply + 1 < MAX_PLY).then_some(ply + 1);
+        let previous_extensions = child_ply
+            .map(|child| {
+                let previous = self.singular_extensions_used[child];
+                self.singular_extensions_used[child] = next_singular_extension_count(
+                    self.singular_extensions_used[ply],
+                    singular_extension,
+                );
+                previous
+            })
+            .unwrap_or(0);
+        ChildPathState {
+            ply,
+            previous_move,
+            child_ply,
+            previous_extensions,
+        }
+    }
+
+    #[cfg(feature = "search-debug")]
+    fn enter_child_path(
+        &mut self,
+        ply: usize,
+        mv: Move,
+        singular_extension: i32,
+    ) -> ChildPathState {
+        self.enter_path(ply, Some(mv), singular_extension)
+    }
+
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    fn enter_child_path(
+        &mut self,
+        _ply: usize,
+        _mv: Move,
+        _singular_extension: i32,
+    ) -> ChildPathState {
+        ChildPathState
+    }
+
+    #[cfg(feature = "search-debug")]
+    fn enter_null_path(&mut self, ply: usize) -> ChildPathState {
+        self.enter_path(ply, None, 0)
+    }
+
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    fn enter_null_path(&mut self, _ply: usize) -> ChildPathState {
+        ChildPathState
+    }
+
+    #[cfg(feature = "search-debug")]
+    fn leave_child_path(&mut self, state: ChildPathState) {
+        self.path_moves[state.ply] = state.previous_move;
+        if let Some(child) = state.child_ply {
+            self.singular_extensions_used[child] = state.previous_extensions;
+        }
+    }
+
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    fn leave_child_path(&mut self, _state: ChildPathState) {}
+
+    #[cfg(feature = "search-debug")]
+    pub(crate) fn enter_root_path(&mut self, mv: Move) {
+        self.path_moves[0] = Some(mv);
+        self.singular_extensions_used[0] = 0;
+        self.singular_extensions_used[1] = 0;
+    }
+
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    pub(crate) fn enter_root_path(&mut self, _mv: Move) {}
+
+    #[cfg(feature = "search-debug")]
+    pub(crate) fn leave_root_path(&mut self) {
+        self.path_moves[0] = None;
+        self.singular_extensions_used[1] = 0;
+    }
+
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    pub(crate) fn leave_root_path(&mut self) {}
+
+    #[cfg(feature = "search-debug")]
+    fn singular_shuffling(&self, ply: usize, halfmove_clock: u8) -> bool {
+        reversible_shuffle(&self.path_moves, ply, halfmove_clock)
+    }
+
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    fn singular_shuffling(&self, _ply: usize, _halfmove_clock: u8) -> bool {
+        false
+    }
+
+    #[cfg(feature = "search-debug")]
+    fn singular_path_extensions(&self, ply: usize) -> u8 {
+        self.singular_extensions_used[ply]
+    }
+
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    fn singular_path_extensions(&self, _ply: usize) -> u8 {
+        0
     }
 
     pub fn clear_learning(&mut self) {
@@ -2091,6 +2262,12 @@ impl Searcher {
             && st.mailbox[to] == EMPTY_SQ;
         let capture = st.mailbox[to] != EMPTY_SQ || en_passant_capture;
         let promotion = move_promotion(mv) != 0;
+        let shuffling = reversible_shuffle(&self.path_moves, ply, st.halfmove_clock);
+        let path_extensions = self
+            .singular_extensions_used
+            .get(ply)
+            .copied()
+            .unwrap_or_default();
         eprintln!(
             "info string search-debug singular-event \
              {{\"hash\":\"{:016x}\",\"fen\":\"{}\",\"move\":\"{}\",\
@@ -2100,7 +2277,8 @@ impl Searcher {
              \"threshold\":{},\"verification_depth\":{},\
              \"verification_score\":{},\"verification_nodes\":{},\
              \"halfmove_clock\":{},\"repetitions\":{},\
-             \"repeated_after_root\":{},\"capture\":{},\"promotion\":{},\
+             \"repeated_after_root\":{},\"shuffling\":{},\
+             \"path_extensions\":{},\"capture\":{},\"promotion\":{},\
              \"outcome\":\"{}\"}}",
             st.hash,
             crate::board::board_to_fen(st),
@@ -2123,6 +2301,8 @@ impl Searcher {
             st.halfmove_clock,
             repetitions,
             repeated_after_root,
+            shuffling,
+            path_extensions,
             capture,
             promotion,
             outcome,
@@ -4317,6 +4497,7 @@ fn run_lazy_smp_worker(
                     break;
                 }
                 let mut s = st;
+                searcher.enter_root_path(mv);
                 apply_move(
                     &mut s,
                     move_sr(mv),
@@ -4376,6 +4557,7 @@ fn run_lazy_smp_worker(
 
                 searcher.rep_stack.pop();
                 searcher.rep_stack_len -= 1;
+                searcher.leave_root_path();
 
                 if stopped.load(Ordering::Relaxed) {
                     break;
@@ -4857,6 +5039,29 @@ mod tests {
         assert_eq!(second.excluded_moves[3], None);
         first.prepare_for_search();
         assert_eq!(first.excluded_moves[3], None);
+    }
+
+    #[test]
+    fn reversible_shuffle_requires_both_sides_to_retrace_their_moves() {
+        let mut path = [None; MAX_PLY];
+        path[0] = Some(encode_move(7, 6, 5, 5, 0));
+        path[1] = Some(encode_move(0, 6, 2, 5, 0));
+        path[2] = Some(encode_move(5, 5, 7, 6, 0));
+        path[3] = Some(encode_move(2, 5, 0, 6, 0));
+
+        assert!(reversible_shuffle(&path, 4, 4));
+        assert!(!reversible_shuffle(&path, 4, 3));
+
+        path[3] = Some(encode_move(2, 5, 4, 4, 0));
+        assert!(!reversible_shuffle(&path, 4, 4));
+    }
+
+    #[test]
+    fn singular_path_budget_counts_only_positive_extensions() {
+        assert_eq!(next_singular_extension_count(2, 1), 3);
+        assert_eq!(next_singular_extension_count(2, 0), 2);
+        assert_eq!(next_singular_extension_count(2, -2), 2);
+        assert_eq!(next_singular_extension_count(u8::MAX, 1), u8::MAX);
     }
 
     #[test]
