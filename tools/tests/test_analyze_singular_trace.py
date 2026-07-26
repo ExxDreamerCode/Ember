@@ -44,7 +44,7 @@ class TraceParsingTests(unittest.TestCase):
 class TraceSummaryTests(unittest.TestCase):
     def test_summary_reports_verification_economics(self):
         events = [
-            event(outcome="extended", verification_nodes=100),
+            event(outcome="extended", extension=2, verification_nodes=100),
             event(outcome="rejected", verification_nodes=200),
             event(outcome="rejected", verification_nodes=300),
         ]
@@ -52,6 +52,7 @@ class TraceSummaryTests(unittest.TestCase):
         self.assertEqual(overall["candidates"], 3)
         self.assertEqual(overall["outcomes"], {"extended": 1, "rejected": 2})
         self.assertAlmostEqual(overall["extension_rate"], 1 / 3)
+        self.assertEqual(overall["extension_plies"], 2)
         self.assertEqual(overall["verification_nodes"]["total"], 600)
         self.assertEqual(overall["verification_nodes"]["median"], 200)
         self.assertEqual(overall["verification_nodes"]["p95"], 300)

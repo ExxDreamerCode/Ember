@@ -74,12 +74,17 @@ def percentile(values, percentage):
 def summarize_group(events):
     nodes = [int(event["verification_nodes"]) for event in events]
     outcomes = Counter(event["outcome"] for event in events)
-    useful = outcomes["extended"]
+    extensions = [
+        int(event.get("extension", event["outcome"] == "extended")) for event in events
+    ]
+    useful = sum(extension > 0 for extension in extensions)
+    extension_plies = sum(max(0, extension) for extension in extensions)
     total_nodes = sum(nodes)
     return {
         "candidates": len(events),
         "outcomes": dict(sorted(outcomes.items())),
         "extension_rate": useful / len(events) if events else 0.0,
+        "extension_plies": extension_plies,
         "verification_nodes": {
             "total": total_nodes,
             "median": statistics.median(nodes) if nodes else 0,
@@ -309,6 +314,7 @@ def render_markdown(report):
         f"- Candidates: {overall['candidates']}",
         f"- Outcomes: `{json.dumps(overall['outcomes'], sort_keys=True)}`",
         f"- Extension rate: {overall['extension_rate']:.1%}",
+        f"- Extension plies: {overall['extension_plies']}",
         f"- Verification nodes: {nodes['total']} total, {nodes['median']} median, {nodes['p95']} p95",
         (
             "- Nodes per extension: "

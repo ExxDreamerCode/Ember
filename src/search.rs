@@ -39,6 +39,10 @@ const SINGULAR_MARGIN_PER_DEPTH_CP: i32 = 3;
 const SINGULAR_MAX_TT_AGE: u8 = 0;
 const SINGULAR_MAX_HALF_MOVE_CLOCK: u8 = 80;
 const SINGULAR_POLICY_MIN_DEPTH: i32 = 15;
+const SINGULAR_DOUBLE_MIN_DEPTH: i32 = 16;
+const SINGULAR_TRIPLE_MIN_DEPTH: i32 = 24;
+const SINGULAR_DOUBLE_MARGIN_CP: i32 = 160;
+const SINGULAR_TRIPLE_MARGIN_CP: i32 = 240;
 const PROBCUT_MIN_DEPTH: i32 = 8;
 const PROBCUT_REDUCTION: i32 = 2;
 const PROBCUT_MARGIN_CP: i32 = 350;
@@ -54,9 +58,11 @@ enum DrawStatus {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SingularCandidate {
     mv: Move,
+    score: i32,
     beta: i32,
     depth: i32,
     positive_extension: bool,
+    max_extension: i32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -145,6 +151,32 @@ fn combine_move_extensions(tactical_extension: i32, singular_extension: i32) -> 
     } else {
         singular_extension
     }
+}
+
+fn singular_extension_from_scores(
+    candidate: SingularCandidate,
+    base_alternative_score: i32,
+    double_alternative_score: Option<i32>,
+    triple_alternative_score: Option<i32>,
+) -> i32 {
+    if !candidate.positive_extension || base_alternative_score >= candidate.beta {
+        return 0;
+    }
+    let mut extension = 1;
+    if candidate.max_extension >= 2
+        && double_alternative_score
+            .is_some_and(|score| score < candidate.score - SINGULAR_DOUBLE_MARGIN_CP)
+    {
+        extension = 2;
+    }
+    if extension == 2
+        && candidate.max_extension >= 3
+        && triple_alternative_score
+            .is_some_and(|score| score < candidate.score - SINGULAR_TRIPLE_MARGIN_CP)
+    {
+        extension = 3;
+    }
+    extension
 }
 
 #[cfg(any(feature = "search-debug", test))]
@@ -298,6 +330,7 @@ fn singular_candidate(evidence: SingularEvidence) -> SingularEligibility {
     }
     SingularEligibility::Eligible(SingularCandidate {
         mv,
+        score,
         beta: if lower_bound_policy {
             evidence.node_beta
         } else {
@@ -305,6 +338,14 @@ fn singular_candidate(evidence: SingularEvidence) -> SingularEligibility {
         },
         depth: (evidence.actual_depth - 1) / 2,
         positive_extension,
+        max_extension: if positive_extension {
+            i32::from(
+                singular_path_budget(evidence.actual_depth)
+                    .saturating_sub(evidence.path_extensions),
+            )
+        } else {
+            0
+        },
     })
 }
 
@@ -677,6 +718,7 @@ pub struct SearchDebug {
     pub disable_reverse_futility: bool,
     pub disable_see_pruning: bool,
     pub enable_singular_extensions: bool,
+    pub enable_singular_multi_extensions: bool,
     pub enable_singular_multicut: bool,
     pub enable_singular_negative_extensions: bool,
     trace_roots: bool,
@@ -722,6 +764,7 @@ pub struct SearchDebugStats {
     pub singular_verifications: u64,
     pub singular_verification_nodes: u64,
     pub singular_extensions: u64,
+    pub singular_extension_plies: u64,
     pub singular_negative_extensions: u64,
     pub singular_multicut_cutoffs: u64,
     pub singular_alternative_rejections: u64,
@@ -1438,6 +1481,56 @@ macro_rules! negamax_mode_body {
                     $cnt,
                     $eval,
                 );
+                let mut double_alternative_score = None;
+                let mut triple_alternative_score = None;
+                if !$this.stopped.load(Ordering::Relaxed)
+                    && $this.singular_multi_extensions_enabled()
+                    && candidate.positive_extension
+                    && candidate.max_extension >= 2
+                    && actual_depth >= SINGULAR_DOUBLE_MIN_DEPTH
+                    && alternative_score < candidate.beta
+                {
+                    #[cfg(feature = "search-debug")]
+                    {
+                        $this.debug.stats.singular_verifications += 1;
+                    }
+                    let threshold = candidate.score - SINGULAR_DOUBLE_MARGIN_CP;
+                    double_alternative_score = Some($this.$negamax_mode::<CHESS960, E>(
+                        $st,
+                        candidate.depth,
+                        $ply,
+                        threshold - 1,
+                        threshold,
+                        false,
+                        $start,
+                        $tl,
+                        $cnt,
+                        $eval,
+                    ));
+                    if !$this.stopped.load(Ordering::Relaxed)
+                        && candidate.max_extension >= 3
+                        && actual_depth >= SINGULAR_TRIPLE_MIN_DEPTH
+                        && double_alternative_score.is_some_and(|score| score < threshold)
+                    {
+                        #[cfg(feature = "search-debug")]
+                        {
+                            $this.debug.stats.singular_verifications += 1;
+                        }
+                        let threshold = candidate.score - SINGULAR_TRIPLE_MARGIN_CP;
+                        triple_alternative_score = Some($this.$negamax_mode::<CHESS960, E>(
+                            $st,
+                            candidate.depth,
+                            $ply,
+                            threshold - 1,
+                            threshold,
+                            false,
+                            $start,
+                            $tl,
+                            $cnt,
+                            $eval,
+                        ));
+                    }
+                }
                 $this.excluded_moves[$ply] = previous;
                 #[cfg(feature = "search-debug")]
                 let verification_nodes = (*$cnt).saturating_sub(nodes_before);
@@ -1469,6 +1562,7 @@ macro_rules! negamax_mode_body {
                             verification_nodes,
                             repetitions,
                             repeated_after_root,
+                            0,
                             "stopped",
                         );
                     }
@@ -1493,11 +1587,20 @@ macro_rules! negamax_mode_body {
                     multi_cut_beta,
                     negative_extension,
                 ) {
-                    SingularSearchOutcome::Continue(extension) => {
+                    SingularSearchOutcome::Continue(mut extension) => {
+                        if extension > 0 && $this.singular_multi_extensions_enabled() {
+                            extension = singular_extension_from_scores(
+                                candidate,
+                                alternative_score,
+                                double_alternative_score,
+                                triple_alternative_score,
+                            );
+                        }
                         #[cfg(feature = "search-debug")]
                         {
                             let outcome = if extension > 0 {
                                 $this.debug.stats.singular_extensions += 1;
+                                $this.debug.stats.singular_extension_plies += extension as u64;
                                 "extended"
                             } else if extension < 0 {
                                 $this.debug.stats.singular_negative_extensions += 1;
@@ -1526,6 +1629,7 @@ macro_rules! negamax_mode_body {
                                 verification_nodes,
                                 repetitions,
                                 repeated_after_root,
+                                extension,
                                 outcome,
                             );
                         }
@@ -1558,6 +1662,7 @@ macro_rules! negamax_mode_body {
                                 verification_nodes,
                                 repetitions,
                                 repeated_after_root,
+                                0,
                                 "multi_cut",
                             );
                         }
@@ -2302,7 +2407,7 @@ impl Searcher {
         }
         let s = self.debug.stats;
         eprintln!(
-            "info string search-debug root depth={depth} order={order} move={mv} alpha={alpha} beta={beta} score={score} nodes={nodes} seldepth={} tt_hits={} tt_max_depth={} tt_cutoffs={} rfp={} futility={} null={}/{} iid={} lmp={} history={} see={} lmr={}/{} lmr_sum={} lmr_max={} qnodes={} qdelta={} qsee={} qcheck_cap={} probcut_eligible={} probcut_safety={} probcut_tt={} probcut_candidates={} probcut_see={} probcut_qpass={} probcut_verify={} probcut_nodes={} probcut_cutoffs={} probcut_stops={} singular_candidates={} singular_safety={} singular_verify={} singular_nodes={} singular_extensions={} singular_negative={} singular_multicut={} singular_alternatives={} singular_stops={}",
+            "info string search-debug root depth={depth} order={order} move={mv} alpha={alpha} beta={beta} score={score} nodes={nodes} seldepth={} tt_hits={} tt_max_depth={} tt_cutoffs={} rfp={} futility={} null={}/{} iid={} lmp={} history={} see={} lmr={}/{} lmr_sum={} lmr_max={} qnodes={} qdelta={} qsee={} qcheck_cap={} probcut_eligible={} probcut_safety={} probcut_tt={} probcut_candidates={} probcut_see={} probcut_qpass={} probcut_verify={} probcut_nodes={} probcut_cutoffs={} probcut_stops={} singular_candidates={} singular_safety={} singular_verify={} singular_nodes={} singular_extensions={} singular_extension_plies={} singular_negative={} singular_multicut={} singular_alternatives={} singular_stops={}",
             s.max_ply,
             s.tt_hits,
             s.tt_max_depth,
@@ -2338,6 +2443,7 @@ impl Searcher {
             s.singular_verifications,
             s.singular_verification_nodes,
             s.singular_extensions,
+            s.singular_extension_plies,
             s.singular_negative_extensions,
             s.singular_multicut_cutoffs,
             s.singular_alternative_rejections,
@@ -2384,6 +2490,7 @@ impl Searcher {
         verification_nodes: u64,
         repetitions: u8,
         repeated_after_root: bool,
+        extension: i32,
         outcome: &str,
     ) {
         if !self.debug.trace_singular_candidates {
@@ -2415,7 +2522,7 @@ impl Searcher {
              \"halfmove_clock\":{},\"repetitions\":{},\
              \"repeated_after_root\":{},\"shuffling\":{},\
              \"path_extensions\":{},\"capture\":{},\"promotion\":{},\
-             \"outcome\":\"{}\"}}",
+             \"extension\":{},\"outcome\":\"{}\"}}",
             st.hash,
             crate::board::board_to_fen(st),
             crate::board::move_to_uci(st, mv),
@@ -2441,6 +2548,7 @@ impl Searcher {
             path_extensions,
             capture,
             promotion,
+            extension,
             outcome,
         );
     }
@@ -2542,6 +2650,16 @@ impl Searcher {
     #[cfg(not(feature = "search-debug"))]
     #[inline(always)]
     fn singular_extensions_enabled(&self) -> bool {
+        false
+    }
+
+    #[cfg(feature = "search-debug")]
+    fn singular_multi_extensions_enabled(&self) -> bool {
+        self.debug.enable_singular_multi_extensions
+    }
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    fn singular_multi_extensions_enabled(&self) -> bool {
         false
     }
 
@@ -3881,6 +3999,7 @@ impl SearchDebug {
             disable_reverse_futility: env_flag("EMBER_DISABLE_REVERSE_FUTILITY"),
             disable_see_pruning: env_flag("EMBER_DISABLE_SEE_PRUNING"),
             enable_singular_extensions: env_flag("EMBER_ENABLE_SINGULAR_EXTENSIONS"),
+            enable_singular_multi_extensions: env_flag("EMBER_ENABLE_SINGULAR_MULTI_EXTENSIONS"),
             enable_singular_multicut: env_flag("EMBER_ENABLE_SINGULAR_MULTICUT"),
             enable_singular_negative_extensions: env_flag(
                 "EMBER_ENABLE_SINGULAR_NEGATIVE_EXTENSIONS",
@@ -5264,6 +5383,10 @@ mod tests {
         assert_eq!(candidate.beta, 300 - singular_margin(evidence));
         assert_eq!(candidate.depth, (SINGULAR_MIN_DEPTH - 1) / 2);
         assert!(candidate.positive_extension);
+        assert_eq!(
+            candidate.max_extension,
+            i32::from(singular_path_budget(evidence.actual_depth))
+        );
 
         let mut lower_bound = evidence;
         lower_bound.actual_depth = SINGULAR_POLICY_MIN_DEPTH;
@@ -5281,6 +5404,7 @@ mod tests {
         };
         assert!(!lower_candidate.positive_extension);
         assert_eq!(lower_candidate.beta, allowed_lower_bound.node_beta);
+        assert_eq!(lower_candidate.max_extension, 0);
 
         let no_candidate_cases = [
             SingularEvidence {
@@ -5407,6 +5531,53 @@ mod tests {
         assert!(alternative_score >= singular_beta);
     }
 
+    #[test]
+    fn singular_multi_ply_extensions_require_progressively_larger_gaps() {
+        let mut evidence = qualifying_singular_evidence(encode_move(0, 0, 0, 1, 0));
+        evidence.actual_depth = SINGULAR_TRIPLE_MIN_DEPTH;
+        evidence.tt_depth = SINGULAR_TRIPLE_MIN_DEPTH;
+        let SingularEligibility::Eligible(candidate) = singular_candidate(evidence) else {
+            panic!("qualifying TT evidence was rejected");
+        };
+        assert_eq!(candidate.max_extension, 3);
+
+        assert_eq!(
+            singular_extension_from_scores(candidate, candidate.beta - 1, None, None),
+            1
+        );
+        assert_eq!(
+            singular_extension_from_scores(
+                candidate,
+                candidate.beta - 1,
+                Some(candidate.score - SINGULAR_DOUBLE_MARGIN_CP),
+                None,
+            ),
+            1
+        );
+        assert_eq!(
+            singular_extension_from_scores(
+                candidate,
+                candidate.beta - 1,
+                Some(candidate.score - SINGULAR_DOUBLE_MARGIN_CP - 1),
+                None,
+            ),
+            2
+        );
+        assert_eq!(
+            singular_extension_from_scores(
+                candidate,
+                candidate.beta - 1,
+                Some(candidate.score - SINGULAR_DOUBLE_MARGIN_CP - 1),
+                Some(candidate.score - SINGULAR_TRIPLE_MARGIN_CP - 1),
+            ),
+            3
+        );
+        assert_eq!(
+            singular_extension_from_scores(candidate, candidate.beta, None, None),
+            0
+        );
+    }
+
     #[cfg(feature = "search-debug")]
     #[test]
     fn singular_extensions_require_explicit_experimental_opt_in() {
@@ -5419,6 +5590,11 @@ mod tests {
 
         searcher.debug.enable_singular_extensions = true;
         assert!(searcher.singular_extensions_enabled());
+
+        searcher.debug.enable_singular_multi_extensions = false;
+        assert!(!searcher.singular_multi_extensions_enabled());
+        searcher.debug.enable_singular_multi_extensions = true;
+        assert!(searcher.singular_multi_extensions_enabled());
 
         searcher.debug.enable_singular_multicut = false;
         searcher.debug.enable_singular_negative_extensions = false;
