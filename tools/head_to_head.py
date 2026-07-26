@@ -193,6 +193,35 @@ def safe_name(name):
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", name).strip("-")
 
 
+def engine_thread_count(engine):
+    raw = next(
+        (
+            value
+            for name, value in engine.get("options", {}).items()
+            if name.casefold() == "threads"
+        ),
+        1,
+    )
+    try:
+        threads = int(raw)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f"{engine.get('name', 'engine')} has an invalid Threads option: {raw!r}"
+        ) from error
+    if threads < 1:
+        raise ValueError(
+            f"{engine.get('name', 'engine')} has a non-positive Threads option: {raw!r}"
+        )
+    return threads
+
+
+def threads_per_game(cfg):
+    return max(
+        engine_thread_count(cfg["engine_a"]),
+        engine_thread_count(cfg["engine_b"]),
+    )
+
+
 def detect_workers(cfg, explicit_workers):
     cores = os.cpu_count() or 1
     if explicit_workers is not None:
@@ -201,7 +230,9 @@ def detect_workers(cfg, explicit_workers):
     if configured != "auto":
         return max(1, int(configured)), cores, "config"
     multiplier = float(cfg["run"].get("worker_multiplier", 1.0))
-    return max(1, int(math.ceil(cores * multiplier))), cores, "auto"
+    search_threads = threads_per_game(cfg)
+    workers = max(1, int(math.floor(cores * multiplier / search_threads)))
+    return workers, cores, "auto"
 
 
 def engine_args(engine):
@@ -680,6 +711,7 @@ def probe(config_path, run_id, explicit_workers=None):
     rd = run_dir_for(cfg, run_id)
     materialize_revision_commands(cfg, rd)
     workers, cores, worker_source = detect_workers(cfg, explicit_workers)
+    search_threads = threads_per_game(cfg)
     meta = {
         "run_id": run_id,
         "started_at": now_utc(),
@@ -689,6 +721,8 @@ def probe(config_path, run_id, explicit_workers=None):
         "cpu_count": cores,
         "workers": workers,
         "worker_source": worker_source,
+        "search_threads_per_game": search_threads,
+        "planned_search_threads": workers * search_threads,
         "engine_a": cfg["engine_a"],
         "engine_b": cfg["engine_b"],
         "tools": {},
@@ -702,7 +736,18 @@ def probe(config_path, run_id, explicit_workers=None):
     rd.mkdir(parents=True, exist_ok=True)
     write_json(rd / "metadata.json", meta)
     write_json(rd / "state.json", {"phase": "probe", "metadata": meta})
-    print(json.dumps({"run_id": run_id, "workers": workers, "cpu_count": cores}, indent=2))
+    print(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "workers": workers,
+                "cpu_count": cores,
+                "search_threads_per_game": search_threads,
+                "planned_search_threads": workers * search_threads,
+            },
+            indent=2,
+        )
+    )
 
 
 def build(config_path, run_id):
