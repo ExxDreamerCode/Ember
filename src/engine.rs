@@ -3,7 +3,7 @@ use crate::board::board_to_fen;
 use crate::board::{
     bit, is_attacked, move_ec, move_er, move_from, move_promotion, move_sc, move_sr, move_to,
     move_to_uci, piece_from_char, piece_type, sq, sq_c, BoardState, Move, BK, BP, BQ, BR, EMPTY_SQ,
-    INF, MATE, MAX_HALF_MOVE_CLOCK, NO_MOVE, WK, WP, WQ, WR,
+    INF, KNIGHT_ATTACKS, MATE, MAX_HALF_MOVE_CLOCK, NO_MOVE, WK, WP, WQ, WR,
 };
 use crate::book::{
     OpeningBook, DEFAULT_BOOK_MIN_MOVE_WEIGHT, DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE,
@@ -340,6 +340,7 @@ fn rook_attacks_enemy_non_pawn_on_rank(st: &BoardState, rook_sq: usize, rook: u8
 fn root_order_score(st: &BoardState, mv: Move, preferred: Move) -> i32 {
     let mut score = root_forcing_score(st, mv).unwrap_or(0);
     score += root_rook_invasion_score(st, mv).unwrap_or(0);
+    score += root_quiet_knight_major_fork_order_score(st, mv).unwrap_or(0);
     if root_minor_king_zone_capture(st, mv) {
         score += 1_500_000;
     }
@@ -347,6 +348,24 @@ fn root_order_score(st: &BoardState, mv: Move, preferred: Move) -> i32 {
         score += 500_000;
     }
     score
+}
+
+fn root_quiet_knight_major_fork_order_score(st: &BoardState, mv: Move) -> Option<i32> {
+    let from = move_from(mv);
+    let to = move_to(mv);
+    let attacker = st.mailbox[from];
+    if attacker == EMPTY_SQ
+        || piece_type(attacker) != 1
+        || root_move_is_capture(st, mv)
+        || root_move_is_promotion(st, mv)
+    {
+        return None;
+    }
+    let (enemy_queen, enemy_rook, enemy_king) = if st.w { (BQ, BR, BK) } else { (WQ, WR, WK) };
+    let attacks = KNIGHT_ATTACKS[to];
+    ((attacks & st.bb[enemy_queen]) != 0
+        && (attacks & (st.bb[enemy_rook] | st.bb[enemy_king])) != 0)
+        .then_some(6_500_000)
 }
 
 fn root_mating_check_order_score(st: &BoardState, mv: Move) -> Option<i32> {
