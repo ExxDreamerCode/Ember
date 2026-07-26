@@ -1411,7 +1411,11 @@ impl Engine {
                     let root_ext = root_depth_extension(&old, mv);
                     let move_nodes_before = nd;
                     #[cfg(feature = "search-debug")]
-                    self.searcher.reset_debug_stats();
+                    {
+                        self.searcher.reset_debug_stats();
+                        self.searcher
+                            .begin_debug_search_dag(depth, &move_to_uci(&old, mv));
+                    }
 
                     let score = if cur_score == -INF {
                         -self.searcher.negamax(
@@ -1465,6 +1469,8 @@ impl Engine {
                         score,
                         move_nodes,
                     );
+                    #[cfg(feature = "search-debug")]
+                    self.searcher.emit_debug_search_dag(score, move_nodes);
 
                     self.searcher.rep_stack.pop();
                     self.searcher.rep_stack_len -= 1;
