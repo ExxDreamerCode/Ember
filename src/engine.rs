@@ -1309,6 +1309,7 @@ impl Engine {
         }
 
         let search_threads = threads_for_time_budget(self.num_threads, soft_time_limit);
+        self.shared_tt.advance_generation();
         let preferred = tt_root_move(&self.searcher, &self.st, &moves);
         let ordered_moves = sort_root_moves(&self.st, &moves, preferred);
         if search_threads > 1 {
@@ -1394,6 +1395,7 @@ impl Engine {
                         break;
                     }
                     let old = self.st;
+                    self.searcher.enter_root_path(mv);
                     apply_move(
                         &mut self.st,
                         move_sr(mv),
@@ -1467,6 +1469,7 @@ impl Engine {
                     self.searcher.rep_stack.pop();
                     self.searcher.rep_stack_len -= 1;
                     self.st = old;
+                    self.searcher.leave_root_path();
 
                     if self.searcher.stopped.load(Ordering::Relaxed) {
                         break;
@@ -1554,12 +1557,13 @@ impl Engine {
                 prev_score = best_score;
                 previous_iteration_seconds = iteration_seconds;
                 previous_completed_elapsed = elapsed;
-                self.searcher.shared_tt.store(
+                self.searcher.shared_tt.store_with_pv(
                     self.st.hash,
                     depth,
                     best_score,
                     crate::tt::TT_EXACT,
                     Some(best_move),
+                    true,
                 );
                 let nps = if elapsed > 0.0 {
                     (total_nodes as f64 / elapsed) as i64

@@ -1,7 +1,9 @@
+import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 TOOLS = Path(__file__).resolve().parents[1]
@@ -9,13 +11,139 @@ sys.path.insert(0, str(TOOLS))
 
 from head_to_head import (  # noqa: E402
     capped_verdict,
+    command_executable,
+    command_label,
     decision,
+    detect_workers,
+    engine_thread_count,
     materialize_revision_commands,
+    probe,
     record_revision_metadata,
+    threads_per_game,
+    worker_saturating_batch_pairs,
 )
 
 
 class HeadToHeadSprtTests(unittest.TestCase):
+    def test_command_executable_accepts_string_and_list_commands(self):
+        self.assertEqual(
+            command_executable("cutechess-cli -recover"),
+            "cutechess-cli",
+        )
+        self.assertEqual(
+            command_executable(
+                ["/nix/store/cutechess/bin/cutechess-cli", "-recover"]
+            ),
+            "/nix/store/cutechess/bin/cutechess-cli",
+        )
+        with self.assertRaisesRegex(ValueError, "must not be empty"):
+            command_executable([])
+
+    def test_command_label_preserves_strings_and_joins_lists(self):
+        self.assertEqual(
+            command_label("cutechess-cli -recover"),
+            "cutechess-cli -recover",
+        )
+        self.assertEqual(
+            command_label(
+                ["/nix/store/cutechess/bin/cutechess-cli", "-recover"]
+            ),
+            "/nix/store/cutechess/bin/cutechess-cli -recover",
+        )
+        with self.assertRaisesRegex(ValueError, "must not be empty"):
+            command_label([])
+
+    @patch("head_to_head.print")
+    def test_probe_records_list_form_cutechess_command(self, _print):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "match.toml"
+            config.write_text(
+                f"""
+[run]
+cutechess_cmd = ["/not-installed/cutechess-cli", "-recover"]
+results_dir = {json.dumps(str(root / "results"))}
+workers = 1
+
+[engine_a]
+name = "a"
+cmd = "/bin/true"
+
+[engine_b]
+name = "b"
+cmd = "/bin/true"
+""",
+                encoding="utf-8",
+            )
+
+            probe(config, "list-command", explicit_workers=1)
+
+            metadata = json.loads(
+                (root / "results/list-command/metadata.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                metadata["tools"][
+                    "/not-installed/cutechess-cli -recover"
+                ],
+                {"available": False, "path": None},
+            )
+
+    @staticmethod
+    def worker_config(workers="auto", engine_a_threads="1", engine_b_threads="1"):
+        return {
+            "run": {"workers": workers, "worker_multiplier": 1.0},
+            "engine_a": {
+                "name": "engine-a",
+                "options": {"Threads": engine_a_threads},
+            },
+            "engine_b": {
+                "name": "engine-b",
+                "options": {"Threads": engine_b_threads},
+            },
+        }
+
+    @patch("head_to_head.os.cpu_count", return_value=16)
+    def test_auto_workers_fill_cores_without_oversubscribing_engine_threads(
+        self, _cpu_count
+    ):
+        single_threaded = self.worker_config()
+        multi_threaded = self.worker_config(
+            engine_a_threads="2", engine_b_threads="4"
+        )
+
+        self.assertEqual(threads_per_game(single_threaded), 1)
+        self.assertEqual(detect_workers(single_threaded, None), (16, 16, "auto"))
+        self.assertEqual(threads_per_game(multi_threaded), 4)
+        self.assertEqual(detect_workers(multi_threaded, None), (4, 16, "auto"))
+
+    @patch("head_to_head.os.cpu_count", return_value=16)
+    def test_explicit_worker_counts_override_automatic_sizing(self, _cpu_count):
+        cfg = self.worker_config(workers="3", engine_a_threads="4")
+
+        self.assertEqual(detect_workers(cfg, None), (3, 16, "config"))
+        self.assertEqual(detect_workers(cfg, 7), (7, 16, "cli"))
+
+    def test_engine_threads_must_be_positive_integers(self):
+        with self.assertRaisesRegex(ValueError, "invalid Threads"):
+            engine_thread_count({"name": "bad", "options": {"Threads": "many"}})
+        with self.assertRaisesRegex(ValueError, "non-positive Threads"):
+            engine_thread_count({"name": "bad", "options": {"Threads": "0"}})
+
+    def test_batch_size_keeps_multiple_games_queued_per_worker(self):
+        run_cfg = {"batch_pairs": 20, "batch_games_per_worker": 4}
+
+        self.assertEqual(worker_saturating_batch_pairs(run_cfg, 4, 100), 20)
+        self.assertEqual(worker_saturating_batch_pairs(run_cfg, 16, 100), 32)
+        self.assertEqual(worker_saturating_batch_pairs(run_cfg, 16, 12), 12)
+        with self.assertRaisesRegex(ValueError, "must be positive"):
+            worker_saturating_batch_pairs(
+                {"batch_games_per_worker": 0},
+                16,
+                100,
+            )
+
     def test_sprt_decision_waits_for_minimum_pairs_and_maps_hypotheses(self):
         cfg = {
             "run": {"min_pairs": 2},

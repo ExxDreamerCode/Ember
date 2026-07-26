@@ -82,6 +82,22 @@ def run_cmd(args, log_path=None, check=True, env=None, cwd=None):
     return proc
 
 
+def command_executable(command):
+    if isinstance(command, str):
+        return command.split()[0]
+    if command:
+        return str(command[0])
+    raise ValueError("command must not be empty")
+
+
+def command_label(command):
+    if isinstance(command, str):
+        return command
+    if command:
+        return " ".join(str(argument) for argument in command)
+    raise ValueError("command must not be empty")
+
+
 def load_config(path):
     cfg = read_toml(path)
     if "engine_a" not in cfg or "engine_b" not in cfg:
@@ -193,6 +209,49 @@ def safe_name(name):
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", name).strip("-")
 
 
+def engine_thread_count(engine):
+    raw = next(
+        (
+            value
+            for name, value in engine.get("options", {}).items()
+            if name.casefold() == "threads"
+        ),
+        1,
+    )
+    try:
+        threads = int(raw)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f"{engine.get('name', 'engine')} has an invalid Threads option: {raw!r}"
+        ) from error
+    if threads < 1:
+        raise ValueError(
+            f"{engine.get('name', 'engine')} has a non-positive Threads option: {raw!r}"
+        )
+    return threads
+
+
+def threads_per_game(cfg):
+    return max(
+        engine_thread_count(cfg["engine_a"]),
+        engine_thread_count(cfg["engine_b"]),
+    )
+
+
+def batch_games_per_worker(run_cfg):
+    value = int(run_cfg.get("batch_games_per_worker", 4))
+    if value < 1:
+        raise ValueError("run.batch_games_per_worker must be positive")
+    return value
+
+
+def worker_saturating_batch_pairs(run_cfg, workers, remaining_pairs):
+    configured = max(1, int(run_cfg.get("batch_pairs", 16)))
+    games_per_worker = batch_games_per_worker(run_cfg)
+    worker_floor = math.ceil(workers * games_per_worker / 2)
+    return min(remaining_pairs, max(configured, worker_floor))
+
+
 def detect_workers(cfg, explicit_workers):
     cores = os.cpu_count() or 1
     if explicit_workers is not None:
@@ -201,7 +260,9 @@ def detect_workers(cfg, explicit_workers):
     if configured != "auto":
         return max(1, int(configured)), cores, "config"
     multiplier = float(cfg["run"].get("worker_multiplier", 1.0))
-    return max(1, int(math.ceil(cores * multiplier))), cores, "auto"
+    search_threads = threads_per_game(cfg)
+    workers = max(1, int(math.floor(cores * multiplier / search_threads)))
+    return workers, cores, "auto"
 
 
 def engine_args(engine):
@@ -347,7 +408,11 @@ def prepare_openings(cfg, rd, max_pairs):
 def write_batch_openings(rd, all_openings, start, count):
     path = rd / "openings" / f"batch-{start + 1:06d}-{start + count:06d}.epd"
     if not path.exists():
-        path.write_text("\n".join(all_openings[start : start + count]) + "\n", encoding="utf-8")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "\n".join(all_openings[start : start + count]) + "\n",
+            encoding="utf-8",
+        )
     return path
 
 
@@ -680,6 +745,13 @@ def probe(config_path, run_id, explicit_workers=None):
     rd = run_dir_for(cfg, run_id)
     materialize_revision_commands(cfg, rd)
     workers, cores, worker_source = detect_workers(cfg, explicit_workers)
+    search_threads = threads_per_game(cfg)
+    configured_max_pairs = int(cfg["run"].get("max_pairs", 200))
+    planned_batch_pairs = worker_saturating_batch_pairs(
+        cfg["run"],
+        workers,
+        configured_max_pairs,
+    )
     meta = {
         "run_id": run_id,
         "started_at": now_utc(),
@@ -689,20 +761,51 @@ def probe(config_path, run_id, explicit_workers=None):
         "cpu_count": cores,
         "workers": workers,
         "worker_source": worker_source,
+        "search_threads_per_game": search_threads,
+        "planned_search_threads": workers * search_threads,
+        "configured_batch_pairs": max(
+            1,
+            int(cfg["run"].get("batch_pairs", 16)),
+        ),
+        "planned_batch_pairs": planned_batch_pairs,
         "engine_a": cfg["engine_a"],
         "engine_b": cfg["engine_b"],
         "tools": {},
     }
-    for cmd in ["python3", cfg["run"].get("cutechess_cmd", "cutechess-cli")]:
-        exe = cmd.split()[0]
-        meta["tools"][cmd] = {"path": shutil.which(exe), "available": shutil.which(exe) is not None}
+    commands = [
+        "python3",
+        cfg["run"].get("cutechess_cmd", "cutechess-cli"),
+    ]
+    for command in commands:
+        executable = command_executable(command)
+        path = shutil.which(executable)
+        meta["tools"][command_label(command)] = {
+            "path": path,
+            "available": path is not None,
+        }
     for engine in [cfg["engine_a"], cfg["engine_b"]]:
         exe = str(engine["cmd"]).split()[0]
         meta["tools"][engine["cmd"]] = {"path": shutil.which(exe), "available": shutil.which(exe) is not None}
     rd.mkdir(parents=True, exist_ok=True)
     write_json(rd / "metadata.json", meta)
     write_json(rd / "state.json", {"phase": "probe", "metadata": meta})
-    print(json.dumps({"run_id": run_id, "workers": workers, "cpu_count": cores}, indent=2))
+    print(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "workers": workers,
+                "cpu_count": cores,
+                "search_threads_per_game": search_threads,
+                "planned_search_threads": workers * search_threads,
+                "configured_batch_pairs": max(
+                    1,
+                    int(cfg["run"].get("batch_pairs", 16)),
+                ),
+                "planned_batch_pairs": planned_batch_pairs,
+            },
+            indent=2,
+        )
+    )
 
 
 def build(config_path, run_id):
@@ -760,10 +863,10 @@ def run_batches(
     rd.mkdir(parents=True, exist_ok=True)
     workers, _cores, _source = detect_workers(cfg, explicit_workers)
     max_pairs = int(explicit_max_pairs or cfg["run"].get("max_pairs", 200))
-    batch_pairs = max(1, int(cfg["run"].get("batch_pairs", 16)))
     openings_path, opening_count = prepare_openings(cfg, rd, max_pairs)
     max_pairs = min(max_pairs, opening_count)
     all_openings = read_opening_lines(openings_path)
+    max_moves = int(cfg["run"].get("max_moves", 0))
 
     start_pair = 0
     cutechess = cfg["run"].get("cutechess_cmd", "cutechess-cli")
@@ -779,8 +882,17 @@ def run_batches(
         start_pair = stats["pairs"]
         if start_pair >= max_pairs:
             break
-        pairs_this_batch = min(batch_pairs, max_pairs - start_pair)
-        batch_openings = write_batch_openings(rd, all_openings, start_pair, pairs_this_batch)
+        pairs_this_batch = worker_saturating_batch_pairs(
+            cfg["run"],
+            workers,
+            max_pairs - start_pair,
+        )
+        batch_openings = write_batch_openings(
+            rd,
+            all_openings,
+            start_pair,
+            pairs_this_batch,
+        )
         pgn = rd / "games" / f"batch-{start_pair + 1:06d}-{start_pair + pairs_this_batch:06d}.pgn"
         pgn.parent.mkdir(parents=True, exist_ok=True)
         if count_games_in_pgn(pgn) >= pairs_this_batch * 2:
@@ -814,8 +926,8 @@ def run_batches(
                 str(int(cfg["run"].get("rating_interval", 20))),
             ]
         )
-        if int(cfg["run"].get("max_moves", 0)) > 0:
-            args.extend(["-maxmoves", str(int(cfg["run"]["max_moves"]))])
+        if max_moves > 0:
+            args.extend(["-maxmoves", str(max_moves)])
         run_cmd(args, log_path=rd / "games" / (pgn.name + ".cutechess.log"))
         with open(rd / "commands.log", "a", encoding="utf-8") as f:
             f.write(" ".join(shell_quote(a) for a in args) + "\n")

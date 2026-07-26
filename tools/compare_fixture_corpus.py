@@ -61,8 +61,8 @@ def _standard_check(path, line_number, activation, columns):
         depth = int(columns[1])
     except ValueError as error:
         raise ValueError(f"{path}:{line_number}: invalid depth {columns[1]!r}") from error
-    if not 1 <= depth <= 64:
-        raise ValueError(f"{path}:{line_number}: depth must be in 1..=64")
+    if not 0 <= depth <= 64:
+        raise ValueError(f"{path}:{line_number}: depth must be in 0..=64")
     return FixtureCheck(
         fixture=path.name,
         line_number=line_number,
@@ -154,12 +154,14 @@ def _read_until(lines, prefix, deadline, output):
             return line
 
 
-def uci_setup_commands(hash_mb):
+def uci_setup_commands(hash_mb, use_embedded_book=False):
     return (
         "uci",
         "setoption name Threads value 1",
         f"setoption name Hash value {hash_mb}",
-        "setoption name Book value",
+        "setoption name Book value <embedded>"
+        if use_embedded_book
+        else "setoption name Book value",
         "isready",
     )
 
@@ -196,7 +198,7 @@ def run_check(binary, check, timeout, hash_mb):
         process.stdin.flush()
 
     try:
-        setup_commands = uci_setup_commands(hash_mb)
+        setup_commands = uci_setup_commands(hash_mb, check.depth == 0)
         send(setup_commands[0])
         _read_until(lines, "uciok", deadline, output)
         for command in setup_commands[1:]:

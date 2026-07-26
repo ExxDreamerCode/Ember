@@ -23,6 +23,7 @@ class CompareFixtureCorpusTests(unittest.TestCase):
 # source comment
 id\tdepth\tfen_before_blunder\tsetup_move\texpected_move\tthemes\trating\tpopularity\tplays
 active\t4\tactive fen\t-\ta1a2\ttheme\t0\t0\t0
+book\t0\tbook fen\t-\ta2a3\tbook\t0\t0\t0
 # disabled\t7\tdisabled fen\t-\tb1b2|b1c3\ttheme\t0\t0\t0
 # failed_id\tfen_before_blunder\tsetup_move\texpected_move\tgot_depth2\tgot_depth3\tgot_depth4\tthemes\trating\tpopularity\tplays
 # mined\tmined fen\tc1c2\td1d2\te1e2\te1e3\te1e4\ttheme\t0\t0\t0
@@ -32,11 +33,12 @@ active\t4\tactive fen\t-\ta1a2\ttheme\t0\t0\t0
             fixture.write_text(contents, encoding="utf-8")
             checks = parse_fixture(fixture)
 
-        self.assertEqual(len(checks), 5)
+        self.assertEqual(len(checks), 6)
         self.assertEqual(
             [(check.case_id, check.depth, check.activation) for check in checks],
             [
                 ("active", 4, "active"),
+                ("book", 0, "active"),
                 ("disabled", 7, "disabled"),
                 ("mined", 2, "disabled"),
                 ("mined", 3, "disabled"),
@@ -62,6 +64,14 @@ active\t4\tactive fen\t-\ta1a2\ttheme\t0\t0\t0
         self.assertIn(
             "setoption name Hash value 256",
             uci_setup_commands(DEFAULT_HASH_MB),
+        )
+        self.assertIn(
+            "setoption name Book value",
+            uci_setup_commands(DEFAULT_HASH_MB),
+        )
+        self.assertIn(
+            "setoption name Book value <embedded>",
+            uci_setup_commands(DEFAULT_HASH_MB, use_embedded_book=True),
         )
 
     def test_position_summary_compares_pass_counts_across_depths(self):
