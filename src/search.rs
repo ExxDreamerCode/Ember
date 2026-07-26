@@ -762,6 +762,9 @@ struct SearchDagNode {
     tt_alpha: u64,
     tt_beta: u64,
     tt_exact: u64,
+    q_delta_cutoffs: u64,
+    min_q_delta_gap: i32,
+    max_q_delta_gap: i32,
 }
 
 #[cfg(feature = "search-debug")]
@@ -790,6 +793,9 @@ impl SearchDagNode {
             tt_alpha: 0,
             tt_beta: 0,
             tt_exact: 0,
+            q_delta_cutoffs: 0,
+            min_q_delta_gap: i32::MAX,
+            max_q_delta_gap: i32::MIN,
         }
     }
 
@@ -827,6 +833,13 @@ impl SearchDagNode {
             TT_EXACT => self.tt_exact += 1,
             _ => {}
         }
+    }
+
+    fn record_q_delta(&mut self, alpha: i32, stand: i32) {
+        let gap = alpha - stand;
+        self.q_delta_cutoffs += 1;
+        self.min_q_delta_gap = self.min_q_delta_gap.min(gap);
+        self.max_q_delta_gap = self.max_q_delta_gap.max(gap);
     }
 }
 
@@ -933,6 +946,12 @@ impl SearchDagTrace {
         }
     }
 
+    fn record_q_delta(&mut self, hash: u64, alpha: i32, stand: i32) {
+        if let Some(node) = self.nodes.get_mut(&hash) {
+            node.record_q_delta(alpha, stand);
+        }
+    }
+
     fn emit(&mut self, score: i32, searched_nodes: u64) {
         if !self.active {
             return;
@@ -977,6 +996,11 @@ impl SearchDagTrace {
                     node.max_tt_score,
                 )
             };
+            let (min_q_delta_gap, max_q_delta_gap) = if node.q_delta_cutoffs == 0 {
+                (0, 0)
+            } else {
+                (node.min_q_delta_gap, node.max_q_delta_gap)
+            };
             let _ = writeln!(
                 file,
                 "{{\"type\":\"node\",\"sequence\":{sequence},\"hash\":\"{hash:016x}\",\
@@ -987,7 +1011,9 @@ impl SearchDagTrace {
                  \"tt_visits\":{},\"min_tt_depth\":{min_tt_depth},\
                  \"max_tt_depth\":{max_tt_depth},\"min_tt_score\":{min_tt_score},\
                  \"max_tt_score\":{max_tt_score},\"tt_alpha\":{},\"tt_beta\":{},\
-                 \"tt_exact\":{}}}",
+                 \"tt_exact\":{},\"q_delta_cutoffs\":{},\
+                 \"min_q_delta_gap\":{min_q_delta_gap},\
+                 \"max_q_delta_gap\":{max_q_delta_gap}}}",
                 node.fen,
                 node.main_visits,
                 node.qsearch_visits,
@@ -1004,6 +1030,7 @@ impl SearchDagTrace {
                 node.tt_alpha,
                 node.tt_beta,
                 node.tt_exact,
+                node.q_delta_cutoffs,
             );
         }
         for (&(parent, child), &visits) in &self.edges {
@@ -1119,6 +1146,7 @@ macro_rules! qsearch_mode_body {
                 #[cfg(feature = "search-debug")]
                 {
                     $this.debug.stats.q_delta_cutoffs += 1;
+                    $this.debug.dag.record_q_delta($st.hash, $alpha, stand);
                 }
                 return $alpha;
             }
