@@ -16,6 +16,7 @@ from head_to_head import (  # noqa: E402
     materialize_revision_commands,
     record_revision_metadata,
     threads_per_game,
+    worker_saturating_batch_pairs,
 )
 
 
@@ -60,6 +61,19 @@ class HeadToHeadSprtTests(unittest.TestCase):
             engine_thread_count({"name": "bad", "options": {"Threads": "many"}})
         with self.assertRaisesRegex(ValueError, "non-positive Threads"):
             engine_thread_count({"name": "bad", "options": {"Threads": "0"}})
+
+    def test_batch_size_keeps_multiple_games_queued_per_worker(self):
+        run_cfg = {"batch_pairs": 20, "batch_games_per_worker": 4}
+
+        self.assertEqual(worker_saturating_batch_pairs(run_cfg, 4, 100), 20)
+        self.assertEqual(worker_saturating_batch_pairs(run_cfg, 16, 100), 32)
+        self.assertEqual(worker_saturating_batch_pairs(run_cfg, 16, 12), 12)
+        with self.assertRaisesRegex(ValueError, "must be positive"):
+            worker_saturating_batch_pairs(
+                {"batch_games_per_worker": 0},
+                16,
+                100,
+            )
 
     def test_sprt_decision_waits_for_minimum_pairs_and_maps_hypotheses(self):
         cfg = {

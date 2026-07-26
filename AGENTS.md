@@ -277,6 +277,16 @@ match. Count paired-opening outcomes from 0 through 2 points and inspect the rec
 and bounds. Repeatedly checking an ordinary fixed-sample p-value after each batch does not
 preserve its advertised false-positive rate and must not be presented as an SPRT result.
 
+Leave head-to-head workers on `auto` unless the experiment deliberately reserves or
+oversubscribes CPUs. Automatic concurrency must account for each engine's UCI `Threads`
+setting: only one side normally searches at a time, so the per-game CPU cost is the larger
+engine thread count. Keep several games queued per worker inside each statistical batch so
+one long game does not create an avoidable idle tail. Prefer dynamic queueing to static
+opening-cost guesses: starting-position material is a poor predictor of the trajectory and
+duration of a chess game. Never reorder scenarios across SPRT boundaries, because a cost
+estimate can correlate with game outcome and bias sequential stopping. Record the resolved
+worker count and batch size with the result artifacts.
+
 When a candidate has worsened outcomes, locate the first Ember move that differs from the
 baseline and analyze both choices with strong Stockfish. Compare the immediate balance and
 several subsequent moves. Look for a repeated signature across games before changing a
