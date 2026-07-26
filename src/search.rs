@@ -36,6 +36,9 @@ const SINGULAR_MIN_DEPTH: i32 = 12;
 const SINGULAR_TT_DEPTH_MARGIN: i32 = 1;
 const SINGULAR_MARGIN_CP: i32 = 320;
 const SINGULAR_MAX_HALF_MOVE_CLOCK: u8 = 80;
+const PROBCUT_MIN_DEPTH: i32 = 8;
+const PROBCUT_REDUCTION: i32 = 2;
+const PROBCUT_MARGIN_CP: i32 = 350;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DrawStatus {
@@ -57,6 +60,87 @@ enum SingularEligibility {
     NoCandidate,
     SafetyRejected,
     Eligible(SingularCandidate),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProbCutCandidate {
+    beta: i32,
+    child_depth: i32,
+    store_depth: i32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProbCutEligibility {
+    NoCandidate,
+    SafetyRejected,
+    TtRejected,
+    Eligible(ProbCutCandidate),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProbCutVerdict {
+    QuiescenceRejected,
+    FullSearchRejected,
+    Cutoff,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn probcut_candidate(
+    enabled: bool,
+    verification_active: bool,
+    ply: usize,
+    is_pv: bool,
+    in_check: bool,
+    excluded_move: Option<Move>,
+    actual_depth: i32,
+    beta: i32,
+    static_eval: i32,
+    tt_score: Option<i32>,
+    tt_depth: i32,
+    tt_flag: Option<u8>,
+) -> ProbCutEligibility {
+    if !enabled || actual_depth < PROBCUT_MIN_DEPTH {
+        return ProbCutEligibility::NoCandidate;
+    }
+    let probcut_beta = beta + PROBCUT_MARGIN_CP;
+    if verification_active
+        || ply == 0
+        || is_pv
+        || in_check
+        || excluded_move.is_some()
+        || static_eval < beta
+        || beta.abs() >= MATE / 2
+        || probcut_beta.abs() >= MATE / 2
+    {
+        return ProbCutEligibility::SafetyRejected;
+    }
+    let child_depth = actual_depth - PROBCUT_REDUCTION;
+    let store_depth = child_depth + 1;
+    if tt_depth >= store_depth
+        && matches!(tt_flag, Some(TT_EXACT) | Some(TT_ALPHA))
+        && tt_score.is_some_and(|score| score < probcut_beta)
+    {
+        return ProbCutEligibility::TtRejected;
+    }
+    ProbCutEligibility::Eligible(ProbCutCandidate {
+        beta: probcut_beta,
+        child_depth,
+        store_depth,
+    })
+}
+
+fn probcut_verdict(
+    probcut_beta: i32,
+    qsearch_score: i32,
+    full_search_score: Option<i32>,
+) -> ProbCutVerdict {
+    if qsearch_score < probcut_beta {
+        ProbCutVerdict::QuiescenceRejected
+    } else if !full_search_score.is_some_and(|score| score >= probcut_beta) {
+        ProbCutVerdict::FullSearchRejected
+    } else {
+        ProbCutVerdict::Cutoff
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -400,6 +484,7 @@ pub struct Searcher {
     pub rep_stack_len: usize,
     rep_root_len: usize,
     excluded_moves: [Option<Move>; MAX_PLY],
+    probcut_verification: bool,
     pub tt_mb: usize,
     pub stopped: Arc<AtomicBool>,
     pub pondering: Arc<AtomicBool>,
@@ -465,6 +550,7 @@ pub struct SearchDebug {
     pub disable_qsearch_check_cap: bool,
     pub disable_qsearch_delta: bool,
     pub disable_qsearch_see: bool,
+    pub disable_probcut: bool,
     pub disable_reverse_futility: bool,
     pub disable_see_pruning: bool,
     pub enable_singular_extensions: bool,
@@ -495,6 +581,16 @@ pub struct SearchDebugStats {
     pub q_delta_cutoffs: u64,
     pub q_see_skips: u64,
     pub q_checked_depth_exits: u64,
+    pub probcut_eligible_nodes: u64,
+    pub probcut_safety_rejections: u64,
+    pub probcut_tt_rejections: u64,
+    pub probcut_candidates: u64,
+    pub probcut_see_rejections: u64,
+    pub probcut_qsearch_passes: u64,
+    pub probcut_verifications: u64,
+    pub probcut_verification_nodes: u64,
+    pub probcut_cutoffs: u64,
+    pub probcut_stop_rejections: u64,
     pub singular_candidates: u64,
     pub singular_safety_rejections: u64,
     pub singular_verifications: u64,
@@ -953,6 +1049,182 @@ macro_rules! negamax_mode_body {
         } else {
             actual_depth
         };
+
+        match probcut_candidate(
+            $this.probcut_enabled(),
+            $this.probcut_verification,
+            $ply,
+            is_pv,
+            in_check,
+            excluded_move,
+            actual_depth,
+            beta,
+            eval_score,
+            tt_score,
+            tt_depth,
+            tt_flag,
+        ) {
+            ProbCutEligibility::NoCandidate => {}
+            ProbCutEligibility::SafetyRejected => {
+                #[cfg(feature = "search-debug")]
+                {
+                    $this.debug.stats.probcut_safety_rejections += 1;
+                }
+            }
+            ProbCutEligibility::TtRejected => {
+                #[cfg(feature = "search-debug")]
+                {
+                    $this.debug.stats.probcut_tt_rejections += 1;
+                }
+            }
+            ProbCutEligibility::Eligible(candidate) => {
+                #[cfg(feature = "search-debug")]
+                {
+                    $this.debug.stats.probcut_eligible_nodes += 1;
+                }
+                let mut caps = Self::take_buf(&mut $this.caps_bufs, $ply);
+                generate_pseudo_captures_promotions_into_mode::<CHESS960>(
+                    $st, $st.w, &$st.cr, $st.ep, &mut caps,
+                );
+                caps.sort_by_key(|mv| {
+                    let from = move_from(*mv);
+                    let to = move_to(*mv);
+                    let fpi = $st.mailbox[from];
+                    let tpi = $st.mailbox[to];
+                    let victim = capture_victim_value::<CHESS960>($st, fpi, *mv, to, tpi);
+                    let attacker = if fpi != EMPTY_SQ {
+                        piece_val(piece_type(fpi))
+                    } else {
+                        0
+                    };
+                    -(victim * 10 - attacker + promotion_value(*mv))
+                });
+                $eval.ensure_child_stack($this, $ply);
+
+                let mut cap_idx = 0usize;
+                while cap_idx < caps.len() {
+                    let mv = caps[cap_idx];
+                    cap_idx += 1;
+                    if $this.time_up($start, $tl) {
+                        Self::return_buf(&mut $this.caps_bufs, $ply, caps);
+                        Self::return_buf(&mut $this.move_bufs, $ply, moves_buf);
+                        return 0;
+                    }
+                    #[cfg(feature = "search-debug")]
+                    {
+                        $this.debug.stats.probcut_candidates += 1;
+                    }
+                    let from = move_from(mv);
+                    let to = move_to(mv);
+                    let fpi = $st.mailbox[from];
+                    let tpi = $st.mailbox[to];
+                    let is_capture = move_is_capture::<CHESS960>($st, fpi, mv, to, tpi);
+                    let is_queen_promotion = move_promotion(mv).eq_ignore_ascii_case(&b'Q');
+                    if !is_queen_promotion
+                        && (!is_capture || move_see::<CHESS960>($st, mv, from, to, fpi, tpi) < 0)
+                    {
+                        #[cfg(feature = "search-debug")]
+                        {
+                            $this.debug.stats.probcut_see_rejections += 1;
+                        }
+                        continue;
+                    }
+
+                    let st_before = *$st;
+                    if !try_apply_move_mode::<CHESS960>($st, mv) {
+                        continue;
+                    }
+                    $eval.push_acc(
+                        $this,
+                        &st_before,
+                        $st,
+                        move_sr(mv),
+                        move_sc(mv),
+                        move_er(mv),
+                        move_ec(mv),
+                        move_promotion(mv),
+                        $ply,
+                    );
+                    $this.rep_stack.push($st.hash);
+                    $this.rep_stack_len += 1;
+
+                    let qsearch_score = -$this.$qsearch_mode::<CHESS960, E>(
+                        $st,
+                        -candidate.beta,
+                        -candidate.beta + 1,
+                        QS_DEPTH,
+                        $start,
+                        $tl,
+                        $cnt,
+                        $ply + 1,
+                        $eval,
+                    );
+                    let mut full_search_score = None;
+                    if qsearch_score >= candidate.beta && !$this.stopped.load(Ordering::Relaxed) {
+                        #[cfg(feature = "search-debug")]
+                        {
+                            $this.debug.stats.probcut_qsearch_passes += 1;
+                            $this.debug.stats.probcut_verifications += 1;
+                        }
+                        #[cfg(feature = "search-debug")]
+                        let nodes_before = *$cnt;
+                        let previous_verification = $this.probcut_verification;
+                        $this.probcut_verification = true;
+                        full_search_score = Some(-$this.$negamax_mode::<CHESS960, E>(
+                            $st,
+                            candidate.child_depth,
+                            $ply + 1,
+                            -candidate.beta,
+                            -candidate.beta + 1,
+                            false,
+                            $start,
+                            $tl,
+                            $cnt,
+                            $eval,
+                        ));
+                        $this.probcut_verification = previous_verification;
+                        #[cfg(feature = "search-debug")]
+                        {
+                            $this.debug.stats.probcut_verification_nodes +=
+                                (*$cnt).saturating_sub(nodes_before);
+                        }
+                    }
+
+                    $this.rep_stack.pop();
+                    $this.rep_stack_len -= 1;
+                    *$st = st_before;
+
+                    if $this.stopped.load(Ordering::Relaxed) {
+                        #[cfg(feature = "search-debug")]
+                        {
+                            $this.debug.stats.probcut_stop_rejections += 1;
+                        }
+                        Self::return_buf(&mut $this.caps_bufs, $ply, caps);
+                        Self::return_buf(&mut $this.move_bufs, $ply, moves_buf);
+                        return 0;
+                    }
+                    if probcut_verdict(candidate.beta, qsearch_score, full_search_score)
+                        == ProbCutVerdict::Cutoff
+                    {
+                        #[cfg(feature = "search-debug")]
+                        {
+                            $this.debug.stats.probcut_cutoffs += 1;
+                        }
+                        $this.shared_tt.store(
+                            h,
+                            candidate.store_depth,
+                            score_to_tt(candidate.beta, $ply),
+                            TT_BETA,
+                            Some(mv),
+                        );
+                        Self::return_buf(&mut $this.caps_bufs, $ply, caps);
+                        Self::return_buf(&mut $this.move_bufs, $ply, moves_buf);
+                        return beta;
+                    }
+                }
+                Self::return_buf(&mut $this.caps_bufs, $ply, caps);
+            }
+        }
 
         let singular_enabled = $this.singular_extensions_enabled();
         let inspect_singular_safety = singular_enabled
@@ -1478,6 +1750,7 @@ impl Searcher {
             rep_stack_len: 0,
             rep_root_len: 0,
             excluded_moves: [None; MAX_PLY],
+            probcut_verification: false,
             tt_mb: 128,
             stopped,
             pondering: Arc::new(AtomicBool::new(false)),
@@ -1608,6 +1881,7 @@ impl Searcher {
     pub fn prepare_for_search(&mut self) {
         self.rep_root_len = self.rep_stack_len;
         self.excluded_moves.fill(None);
+        self.probcut_verification = false;
         self.killers = [[None; 2]; MAX_PLY];
         for row in &mut self.history {
             for value in row {
@@ -1650,7 +1924,7 @@ impl Searcher {
         }
         let s = self.debug.stats;
         eprintln!(
-            "info string search-debug root depth={depth} order={order} move={mv} alpha={alpha} beta={beta} score={score} nodes={nodes} seldepth={} tt_hits={} tt_max_depth={} tt_cutoffs={} rfp={} futility={} null={}/{} iid={} lmp={} history={} see={} lmr={}/{} lmr_sum={} lmr_max={} qnodes={} qdelta={} qsee={} qcheck_cap={} singular_candidates={} singular_safety={} singular_verify={} singular_nodes={} singular_extensions={} singular_alternatives={} singular_stops={}",
+            "info string search-debug root depth={depth} order={order} move={mv} alpha={alpha} beta={beta} score={score} nodes={nodes} seldepth={} tt_hits={} tt_max_depth={} tt_cutoffs={} rfp={} futility={} null={}/{} iid={} lmp={} history={} see={} lmr={}/{} lmr_sum={} lmr_max={} qnodes={} qdelta={} qsee={} qcheck_cap={} probcut_eligible={} probcut_safety={} probcut_tt={} probcut_candidates={} probcut_see={} probcut_qpass={} probcut_verify={} probcut_nodes={} probcut_cutoffs={} probcut_stops={} singular_candidates={} singular_safety={} singular_verify={} singular_nodes={} singular_extensions={} singular_alternatives={} singular_stops={}",
             s.max_ply,
             s.tt_hits,
             s.tt_max_depth,
@@ -1671,6 +1945,16 @@ impl Searcher {
             s.q_delta_cutoffs,
             s.q_see_skips,
             s.q_checked_depth_exits,
+            s.probcut_eligible_nodes,
+            s.probcut_safety_rejections,
+            s.probcut_tt_rejections,
+            s.probcut_candidates,
+            s.probcut_see_rejections,
+            s.probcut_qsearch_passes,
+            s.probcut_verifications,
+            s.probcut_verification_nodes,
+            s.probcut_cutoffs,
+            s.probcut_stop_rejections,
             s.singular_candidates,
             s.singular_safety_rejections,
             s.singular_verifications,
@@ -1824,6 +2108,16 @@ impl Searcher {
     #[cfg(not(feature = "search-debug"))]
     #[inline(always)]
     fn qsearch_see_enabled(&self) -> bool {
+        true
+    }
+
+    #[cfg(feature = "search-debug")]
+    fn probcut_enabled(&self) -> bool {
+        !self.debug.disable_probcut
+    }
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    fn probcut_enabled(&self) -> bool {
         true
     }
 
@@ -3099,6 +3393,7 @@ impl SearchDebug {
             disable_qsearch_check_cap: env_flag("EMBER_DISABLE_QSEARCH_CHECK_CAP"),
             disable_qsearch_delta: env_flag("EMBER_DISABLE_QSEARCH_DELTA"),
             disable_qsearch_see: env_flag("EMBER_DISABLE_QSEARCH_SEE"),
+            disable_probcut: env_flag("EMBER_DISABLE_PROBCUT"),
             disable_reverse_futility: env_flag("EMBER_DISABLE_REVERSE_FUTILITY"),
             disable_see_pruning: env_flag("EMBER_DISABLE_SEE_PRUNING"),
             enable_singular_extensions: env_flag("EMBER_ENABLE_SINGULAR_EXTENSIONS"),
@@ -4094,6 +4389,23 @@ mod tests {
         )
     }
 
+    fn qualifying_probcut_candidate() -> ProbCutEligibility {
+        probcut_candidate(
+            true,
+            false,
+            1,
+            false,
+            false,
+            None,
+            PROBCUT_MIN_DEPTH,
+            0,
+            0,
+            None,
+            -1,
+            None,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn negamax_excluding_move(
         searcher: &mut Searcher,
@@ -4666,6 +4978,244 @@ mod tests {
         assert_eq!(stats.singular_extensions, 1);
         assert_eq!(stats.singular_alternative_rejections, 0);
         assert_eq!(searcher.excluded_moves[1], None);
+    }
+
+    #[test]
+    fn probcut_candidate_requires_a_safe_non_pv_node() {
+        assert_eq!(
+            qualifying_probcut_candidate(),
+            ProbCutEligibility::Eligible(ProbCutCandidate {
+                beta: PROBCUT_MARGIN_CP,
+                child_depth: PROBCUT_MIN_DEPTH - PROBCUT_REDUCTION,
+                store_depth: PROBCUT_MIN_DEPTH - PROBCUT_REDUCTION + 1,
+            })
+        );
+        assert_eq!(
+            probcut_candidate(
+                true,
+                false,
+                1,
+                false,
+                false,
+                None,
+                PROBCUT_MIN_DEPTH - 1,
+                0,
+                0,
+                None,
+                -1,
+                None,
+            ),
+            ProbCutEligibility::NoCandidate
+        );
+
+        let safety_cases = [
+            probcut_candidate(
+                true,
+                false,
+                0,
+                false,
+                false,
+                None,
+                PROBCUT_MIN_DEPTH,
+                0,
+                0,
+                None,
+                -1,
+                None,
+            ),
+            probcut_candidate(
+                true,
+                false,
+                1,
+                false,
+                false,
+                None,
+                PROBCUT_MIN_DEPTH,
+                1,
+                0,
+                None,
+                -1,
+                None,
+            ),
+            probcut_candidate(
+                true,
+                false,
+                1,
+                true,
+                false,
+                None,
+                PROBCUT_MIN_DEPTH,
+                0,
+                0,
+                None,
+                -1,
+                None,
+            ),
+            probcut_candidate(
+                true,
+                false,
+                1,
+                false,
+                true,
+                None,
+                PROBCUT_MIN_DEPTH,
+                0,
+                0,
+                None,
+                -1,
+                None,
+            ),
+            probcut_candidate(
+                true,
+                false,
+                1,
+                false,
+                false,
+                Some(encode_move(0, 0, 0, 1, 0)),
+                PROBCUT_MIN_DEPTH,
+                0,
+                0,
+                None,
+                -1,
+                None,
+            ),
+            probcut_candidate(
+                true,
+                true,
+                1,
+                false,
+                false,
+                None,
+                PROBCUT_MIN_DEPTH,
+                0,
+                0,
+                None,
+                -1,
+                None,
+            ),
+            probcut_candidate(
+                true,
+                false,
+                1,
+                false,
+                false,
+                None,
+                PROBCUT_MIN_DEPTH,
+                MATE / 2,
+                MATE / 2,
+                None,
+                -1,
+                None,
+            ),
+        ];
+        assert!(safety_cases
+            .into_iter()
+            .all(|case| case == ProbCutEligibility::SafetyRejected));
+    }
+
+    #[test]
+    fn probcut_respects_tt_evidence_but_not_a_lower_bound() {
+        for flag in [TT_EXACT, TT_ALPHA] {
+            assert_eq!(
+                probcut_candidate(
+                    true,
+                    false,
+                    1,
+                    false,
+                    false,
+                    None,
+                    PROBCUT_MIN_DEPTH,
+                    0,
+                    0,
+                    Some(0),
+                    PROBCUT_MIN_DEPTH - PROBCUT_REDUCTION + 1,
+                    Some(flag),
+                ),
+                ProbCutEligibility::TtRejected
+            );
+        }
+        assert!(matches!(
+            probcut_candidate(
+                true,
+                false,
+                1,
+                false,
+                false,
+                None,
+                PROBCUT_MIN_DEPTH,
+                0,
+                0,
+                Some(0),
+                PROBCUT_MIN_DEPTH - PROBCUT_REDUCTION + 1,
+                Some(TT_BETA),
+            ),
+            ProbCutEligibility::Eligible(_)
+        ));
+    }
+
+    #[test]
+    fn probcut_requires_both_verification_stages_to_pass() {
+        let beta = PROBCUT_MARGIN_CP;
+        assert_eq!(
+            probcut_verdict(beta, beta - 1, Some(beta + 100)),
+            ProbCutVerdict::QuiescenceRejected
+        );
+        assert_eq!(
+            probcut_verdict(beta, beta, None),
+            ProbCutVerdict::FullSearchRejected
+        );
+        assert_eq!(
+            probcut_verdict(beta, beta, Some(beta - 1)),
+            ProbCutVerdict::FullSearchRejected
+        );
+        assert_eq!(
+            probcut_verdict(beta, beta, Some(beta)),
+            ProbCutVerdict::Cutoff
+        );
+    }
+
+    #[cfg(feature = "search-debug")]
+    #[test]
+    fn probcut_stores_only_the_reduced_verified_depth() {
+        let mut st = state_from_fen("q6k/8/8/8/8/8/8/Q5K1 w - - 0 1");
+        let tactical_move = legal_move(&st, "a1a8");
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(1));
+        let mut searcher = Searcher::new(Arc::clone(&shared_tt), stopped);
+        searcher.nnue_net = None;
+        let key = st.hash;
+        let mut nodes = 0;
+
+        let score = searcher.negamax(
+            &mut st,
+            PROBCUT_MIN_DEPTH,
+            1,
+            -1,
+            0,
+            true,
+            Instant::now(),
+            10.0,
+            &mut nodes,
+        );
+
+        assert_eq!(score, 0);
+        let stats = searcher.debug_stats();
+        assert_eq!(stats.probcut_eligible_nodes, 1);
+        assert_eq!(stats.probcut_qsearch_passes, 1);
+        assert_eq!(stats.probcut_verifications, 1);
+        assert_eq!(stats.probcut_cutoffs, 1);
+        let (depth, tt_score, flag, best_move) = shared_tt
+            .get_depth(key)
+            .expect("ProbCut did not store a bound");
+        assert_eq!(
+            depth,
+            PROBCUT_MIN_DEPTH - PROBCUT_REDUCTION + 1,
+            "ProbCut stored a depth other than its reduced proof"
+        );
+        assert_eq!(score_from_tt(tt_score, 1), PROBCUT_MARGIN_CP);
+        assert_eq!(flag, TT_BETA);
+        assert_eq!(best_move, Some(tactical_move));
+        assert!(!searcher.probcut_verification);
     }
 
     #[cfg(feature = "search-debug")]
