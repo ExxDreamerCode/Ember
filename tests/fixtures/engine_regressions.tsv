@@ -50,7 +50,7 @@ baseline-00zoq-rook-capture	3	2r3k1/p7/7p/1p4p1/6R1/3B1q1P/2P4P/2B3RK w - - 6 35
 # f1w14oir-30-qxb5	20	2r2r2/q3pk2/4p1p1/1pp4p/1P2P3/p3B2P/PbR1QPP1/1R4K1 w - - 2 30	-	b4c5	lichess,F1W14oiR,smp,tactic	0	0	0
 
 # Lichess sGhFxtv2 before 25.Bh5, https://lichess.org/sGhFxtv2. Ember sees 25...Bxc3 26.bxc3 Qf5+ in its PV but undervalues the damage; deep Stockfish analysis prefers 25.a4, with 25.Bg4 also substantially safer.
-# DISABLED: Bh5 reproduces with both one and twelve threads; the deployment search completed depth 21 and reported only -1.05. Ember V1.1.2 passed this depth-21 forbidden-move check by choosing 25.Nd5, while the current production search still chooses 25.Bh5. Keep the row visible until a general evaluation/search fix passes it without losing Elo or NPS.
+# DISABLED: V1.1.2 gives Nd5 and Bh5 the same final fail-hard bound and passes only because Nd5 remains the root incumbent. The current search likewise collapses Bh5, Nd5, a4, and Bg4 to the same bound after correctly adjudicating path draws before transposition cutoffs. Fixing this requires general per-root score and bound tracking rather than another position-specific order rule.
 # sghfxtv2-25-bh5	21	r3n1k1/1pp1Prb1/3p3p/p1n5/2P5/2N1P2P/PPKBBqp1/R2Q2R1 w - - 3 25	-	!e2h5	lichess,sGhFxtv2,exposedKing,horizon,tactic	0	0	0
 
 # Lichess 62oWHyZN before 14...Ne4, https://lichess.org/62oWHyZN. The old quiescence check cap distorted the root by evaluating a still-checked leaf as if it were quiet; Stockfish dev at 100M nodes puts Bxc2 within 0.15 pawn of the best move and about 1.94 pawns above Ne4.
