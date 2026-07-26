@@ -38,6 +38,7 @@ const SINGULAR_BASE_MARGIN_CP: i32 = 44;
 const SINGULAR_MARGIN_PER_DEPTH_CP: i32 = 3;
 const SINGULAR_MAX_TT_AGE: u8 = 0;
 const SINGULAR_MAX_HALF_MOVE_CLOCK: u8 = 80;
+const SINGULAR_POLICY_MIN_DEPTH: i32 = 15;
 const PROBCUT_MIN_DEPTH: i32 = 8;
 const PROBCUT_REDUCTION: i32 = 2;
 const PROBCUT_MARGIN_CP: i32 = 350;
@@ -55,6 +56,7 @@ struct SingularCandidate {
     mv: Move,
     beta: i32,
     depth: i32,
+    positive_extension: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -83,12 +85,14 @@ struct SingularEvidence {
     excluded_move: Option<Move>,
     in_check: bool,
     node_pv: bool,
+    node_beta: i32,
     actual_depth: i32,
     halfmove_clock: u8,
     repetitions: u8,
     repeated_after_root: bool,
     shuffling: bool,
     path_extensions: u8,
+    allow_lower_bound: bool,
     tt_move: Option<Move>,
     tt_score: Option<i32>,
     tt_depth: i32,
@@ -119,6 +123,7 @@ fn next_singular_extension_count(current: u8, extension: i32) -> u8 {
 fn singular_search_outcome(
     alternative_score: i32,
     singular_beta: i32,
+    positive_extension: bool,
     multi_cut_beta: Option<i32>,
     negative_extension: i32,
 ) -> SingularSearchOutcome {
@@ -128,7 +133,7 @@ fn singular_search_outcome(
         }
     }
     if alternative_score < singular_beta {
-        SingularSearchOutcome::Continue(1)
+        SingularSearchOutcome::Continue(i32::from(positive_extension))
     } else {
         SingularSearchOutcome::Continue(negative_extension.min(0))
     }
@@ -263,11 +268,18 @@ fn singular_candidate(evidence: SingularEvidence) -> SingularEligibility {
     else {
         return SingularEligibility::NoCandidate;
     };
-    let reliable_bound = flag == TT_EXACT && evidence.tt_pv;
+    let positive_extension = flag == TT_EXACT && evidence.tt_pv;
+    let lower_bound_policy = evidence.allow_lower_bound && flag == TT_BETA;
+    let reliable_bound = positive_extension || lower_bound_policy;
     if !reliable_bound
         || evidence.actual_depth < SINGULAR_MIN_DEPTH
         || evidence.tt_depth < evidence.actual_depth - SINGULAR_TT_DEPTH_MARGIN
         || evidence.tt_age > SINGULAR_MAX_TT_AGE
+        || lower_bound_policy
+            && (evidence.node_pv
+                || evidence.actual_depth < SINGULAR_POLICY_MIN_DEPTH
+                || evidence.node_beta.abs() >= MATE / 2
+                || score < evidence.node_beta)
     {
         return SingularEligibility::NoCandidate;
     }
@@ -286,8 +298,13 @@ fn singular_candidate(evidence: SingularEvidence) -> SingularEligibility {
     }
     SingularEligibility::Eligible(SingularCandidate {
         mv,
-        beta: score - singular_margin(evidence),
+        beta: if lower_bound_policy {
+            evidence.node_beta
+        } else {
+            score - singular_margin(evidence)
+        },
         depth: (evidence.actual_depth - 1) / 2,
+        positive_extension,
     })
 }
 
@@ -1346,11 +1363,13 @@ macro_rules! negamax_mode_body {
         }
 
         let singular_enabled = $this.singular_extensions_enabled();
+        let singular_policy_enabled =
+            $this.singular_multicut_enabled() || $this.singular_negative_extensions_enabled();
         let inspect_singular_safety = singular_enabled
             && actual_depth >= SINGULAR_MIN_DEPTH
             && tt_depth >= actual_depth - SINGULAR_TT_DEPTH_MARGIN
-            && tt_flag == Some(TT_EXACT)
-            && tt_pv
+            && (tt_flag == Some(TT_EXACT) && tt_pv
+                || singular_policy_enabled && tt_flag == Some(TT_BETA))
             && tt_age <= SINGULAR_MAX_TT_AGE
             && tt_move.is_some()
             && tt_score.is_some();
@@ -1373,12 +1392,14 @@ macro_rules! negamax_mode_body {
             excluded_move,
             in_check,
             node_pv: is_pv,
+            node_beta: beta,
             actual_depth,
             halfmove_clock: $st.halfmove_clock,
             repetitions,
             repeated_after_root,
             shuffling: $this.singular_shuffling($ply, $st.halfmove_clock),
             path_extensions: $this.singular_path_extensions($ply),
+            allow_lower_bound: singular_policy_enabled,
             tt_move,
             tt_score,
             tt_depth,
@@ -1454,15 +1475,12 @@ macro_rules! negamax_mode_body {
                     Self::return_buf(&mut $this.move_bufs, $ply, moves_buf);
                     return 0;
                 }
-                let expected_fail_high = !is_pv
-                    && actual_depth >= 14
-                    && beta.abs() < MATE / 2
-                    && tt_score.is_some_and(|score| score >= beta);
-                let multi_cut_beta =
-                    ($this.singular_multicut_enabled() && expected_fail_high).then_some(beta);
+                let lower_bound_policy = !candidate.positive_extension;
+                let multi_cut_beta = ($this.singular_multicut_enabled() && lower_bound_policy)
+                    .then_some(candidate.beta);
                 let negative_extension = if $this.singular_negative_extensions_enabled()
-                    && expected_fail_high
-                    && alternative_score >= beta
+                    && lower_bound_policy
+                    && alternative_score >= candidate.beta
                 {
                     -1
                 } else {
@@ -1471,6 +1489,7 @@ macro_rules! negamax_mode_body {
                 match singular_search_outcome(
                     alternative_score,
                     candidate.beta,
+                    candidate.positive_extension,
                     multi_cut_beta,
                     negative_extension,
                 ) {
@@ -4851,12 +4870,14 @@ mod tests {
             excluded_move: None,
             in_check: false,
             node_pv: true,
+            node_beta: 100,
             actual_depth: SINGULAR_MIN_DEPTH,
             halfmove_clock: 0,
             repetitions: 1,
             repeated_after_root: false,
             shuffling: false,
             path_extensions: 0,
+            allow_lower_bound: false,
             tt_move: Some(mv),
             tt_score: Some(300),
             tt_depth: SINGULAR_MIN_DEPTH - SINGULAR_TT_DEPTH_MARGIN,
@@ -5213,19 +5234,19 @@ mod tests {
     #[test]
     fn singular_outcome_keeps_adjustments_and_cutoffs_distinct() {
         assert_eq!(
-            singular_search_outcome(19, 20, None, -1),
+            singular_search_outcome(19, 20, true, None, -1),
             SingularSearchOutcome::Continue(1)
         );
         assert_eq!(
-            singular_search_outcome(20, 20, None, 0),
+            singular_search_outcome(19, 20, false, None, 0),
             SingularSearchOutcome::Continue(0)
         );
         assert_eq!(
-            singular_search_outcome(30, 20, Some(25), -1),
+            singular_search_outcome(30, 20, false, Some(25), -1),
             SingularSearchOutcome::Cutoff(25)
         );
         assert_eq!(
-            singular_search_outcome(24, 20, None, -1),
+            singular_search_outcome(24, 20, false, None, -1),
             SingularSearchOutcome::Continue(-1)
         );
         assert_eq!(combine_move_extensions(0, -2), -2);
@@ -5242,10 +5263,24 @@ mod tests {
         assert_eq!(candidate.mv, mv);
         assert_eq!(candidate.beta, 300 - singular_margin(evidence));
         assert_eq!(candidate.depth, (SINGULAR_MIN_DEPTH - 1) / 2);
+        assert!(candidate.positive_extension);
 
         let mut lower_bound = evidence;
+        lower_bound.actual_depth = SINGULAR_POLICY_MIN_DEPTH;
+        lower_bound.tt_depth = SINGULAR_POLICY_MIN_DEPTH - SINGULAR_TT_DEPTH_MARGIN;
+        lower_bound.node_pv = false;
+        lower_bound.node_beta = 200;
         lower_bound.tt_flag = Some(TT_BETA);
         lower_bound.tt_pv = false;
+        let mut allowed_lower_bound = lower_bound;
+        allowed_lower_bound.allow_lower_bound = true;
+        let SingularEligibility::Eligible(lower_candidate) =
+            singular_candidate(allowed_lower_bound)
+        else {
+            panic!("enabled lower-bound evidence was rejected");
+        };
+        assert!(!lower_candidate.positive_extension);
+        assert_eq!(lower_candidate.beta, allowed_lower_bound.node_beta);
 
         let no_candidate_cases = [
             SingularEvidence {
@@ -5272,7 +5307,32 @@ mod tests {
                 tt_move: None,
                 ..evidence
             },
-            lower_bound,
+            SingularEvidence {
+                allow_lower_bound: false,
+                ..lower_bound
+            },
+            SingularEvidence {
+                actual_depth: SINGULAR_POLICY_MIN_DEPTH - 1,
+                tt_depth: SINGULAR_POLICY_MIN_DEPTH - 1,
+                ..allowed_lower_bound
+            },
+            SingularEvidence {
+                tt_depth: SINGULAR_POLICY_MIN_DEPTH - SINGULAR_TT_DEPTH_MARGIN - 1,
+                ..allowed_lower_bound
+            },
+            SingularEvidence {
+                node_pv: true,
+                ..allowed_lower_bound
+            },
+            SingularEvidence {
+                tt_score: Some(allowed_lower_bound.node_beta - 1),
+                ..allowed_lower_bound
+            },
+            SingularEvidence {
+                node_beta: MATE / 2,
+                tt_score: Some(MATE / 2),
+                ..allowed_lower_bound
+            },
         ];
         assert!(no_candidate_cases
             .into_iter()
