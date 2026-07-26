@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import re
 import statistics
@@ -16,6 +17,18 @@ INFO_RE = re.compile(
     r"^info .*?\bdepth\s+(\d+).*?\bnodes\s+(\d+)"
     r".*?\bnps\s+(\d+).*?\btime\s+(\d+)\b"
 )
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def safe_component(value):
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-") or "sample"
 
 
 def parse_binary_arg(value):
@@ -67,7 +80,16 @@ def read_until(proc, predicate, timeout_at):
             return lines
 
 
-def run_one(binary, position, go_command, hash_mb, threads, disable_book, timeout):
+def run_one(
+    binary,
+    position,
+    go_command,
+    hash_mb,
+    threads,
+    disable_book,
+    timeout,
+    raw_output_path=None,
+):
     label, position_command = position
     deadline = time.monotonic() + timeout
     proc = subprocess.Popen(
@@ -95,6 +117,8 @@ def run_one(binary, position, go_command, hash_mb, threads, disable_book, timeou
         start = time.perf_counter()
         lines = read_until(proc, lambda line: line.startswith("bestmove "), deadline)
         wall = time.perf_counter() - start
+        if raw_output_path is not None:
+            raw_output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         for line in lines:
             match = INFO_RE.search(line)
             if match:
@@ -153,13 +177,26 @@ def main():
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--keep-book", action="store_true")
     parser.add_argument("--json-out", type=Path)
+    parser.add_argument(
+        "--raw-output-dir",
+        type=Path,
+        help="preserve each engine's complete search output in this directory",
+    )
     args = parser.parse_args()
 
     positions = load_positions(args.positions)
+    if args.raw_output_dir is not None:
+        args.raw_output_dir.mkdir(parents=True, exist_ok=True)
     samples = []
     for repeat in range(1, args.repeats + 1):
         for label, binary in args.binaries:
             for position in positions:
+                raw_output_path = None
+                if args.raw_output_dir is not None:
+                    raw_output_path = args.raw_output_dir / (
+                        f"{safe_component(label)}-r{repeat:02d}-"
+                        f"{safe_component(position[0])}.log"
+                    )
                 row = run_one(
                     binary,
                     position,
@@ -168,9 +205,12 @@ def main():
                     args.threads,
                     not args.keep_book,
                     args.timeout,
+                    raw_output_path,
                 )
                 row["label"] = label
                 row["repeat"] = repeat
+                if raw_output_path is not None:
+                    row["raw_output"] = str(raw_output_path.resolve())
                 samples.append(row)
                 print(
                     f"{label} repeat={repeat} position={row['position']} "
@@ -185,6 +225,13 @@ def main():
         "hash_mb": args.hash,
         "threads": args.threads,
         "book_disabled": not args.keep_book,
+        "binaries": {
+            label: {
+                "path": str(binary.resolve()),
+                "sha256": sha256_file(binary),
+            }
+            for label, binary in args.binaries
+        },
         "samples": samples,
         "summaries": {},
     }

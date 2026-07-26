@@ -253,6 +253,14 @@ Use at least three repeats for meaningful before/after measurements. If the delt
 to run-to-run noise, rerun rather than declaring a regression or improvement. CI's quick NPS
 job is a smoke test, not an Elo or performance proof.
 
+For selective-search heuristics, instrument candidate eligibility and the complete outcome
+before tuning thresholds. Record the context, verification cost, resulting action, and a
+stable position identifier, then label a representative sample with a deeper independent
+oracle. A verification that changes no search decision is still overhead; report total
+verification nodes, action rate, and nodes per useful action. Keep raw traces and tool,
+engine, and corpus hashes with the experiment so later threshold changes can be compared
+against the same evidence.
+
 ### Elo and game comparisons
 
 Choose the harness that matches the question:

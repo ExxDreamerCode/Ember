@@ -555,6 +555,7 @@ pub struct SearchDebug {
     pub disable_see_pruning: bool,
     pub enable_singular_extensions: bool,
     trace_roots: bool,
+    trace_singular_candidates: bool,
     stats: SearchDebugStats,
 }
 
@@ -1292,14 +1293,35 @@ macro_rules! negamax_mode_body {
                 );
                 $this.excluded_moves[$ply] = previous;
                 #[cfg(feature = "search-debug")]
+                let verification_nodes = (*$cnt).saturating_sub(nodes_before);
+                #[cfg(feature = "search-debug")]
                 {
-                    $this.debug.stats.singular_verification_nodes +=
-                        (*$cnt).saturating_sub(nodes_before);
+                    $this.debug.stats.singular_verification_nodes += verification_nodes;
                 }
                 if $this.stopped.load(Ordering::Relaxed) {
                     #[cfg(feature = "search-debug")]
                     {
                         $this.debug.stats.singular_stop_rejections += 1;
+                        $this.emit_debug_singular_candidate(
+                            $st,
+                            candidate.mv,
+                            $ply,
+                            is_pv,
+                            actual_depth,
+                            $alpha,
+                            beta,
+                            eval_score,
+                            tt_score.expect("eligible singular candidate has a TT score"),
+                            tt_depth,
+                            tt_flag.expect("eligible singular candidate has a TT flag"),
+                            candidate.beta,
+                            candidate.depth,
+                            alternative_score,
+                            verification_nodes,
+                            repetitions,
+                            repeated_after_root,
+                            "stopped",
+                        );
                     }
                     Self::return_buf(&mut $this.move_bufs, $ply, moves_buf);
                     return 0;
@@ -1308,12 +1330,52 @@ macro_rules! negamax_mode_body {
                     #[cfg(feature = "search-debug")]
                     {
                         $this.debug.stats.singular_extensions += 1;
+                        $this.emit_debug_singular_candidate(
+                            $st,
+                            candidate.mv,
+                            $ply,
+                            is_pv,
+                            actual_depth,
+                            $alpha,
+                            beta,
+                            eval_score,
+                            tt_score.expect("eligible singular candidate has a TT score"),
+                            tt_depth,
+                            tt_flag.expect("eligible singular candidate has a TT flag"),
+                            candidate.beta,
+                            candidate.depth,
+                            alternative_score,
+                            verification_nodes,
+                            repetitions,
+                            repeated_after_root,
+                            "extended",
+                        );
                     }
                     Some(candidate.mv)
                 } else {
                     #[cfg(feature = "search-debug")]
                     {
                         $this.debug.stats.singular_alternative_rejections += 1;
+                        $this.emit_debug_singular_candidate(
+                            $st,
+                            candidate.mv,
+                            $ply,
+                            is_pv,
+                            actual_depth,
+                            $alpha,
+                            beta,
+                            eval_score,
+                            tt_score.expect("eligible singular candidate has a TT score"),
+                            tt_depth,
+                            tt_flag.expect("eligible singular candidate has a TT flag"),
+                            candidate.beta,
+                            candidate.depth,
+                            alternative_score,
+                            verification_nodes,
+                            repetitions,
+                            repeated_after_root,
+                            "rejected",
+                        );
                     }
                     None
                 }
@@ -1979,6 +2041,76 @@ impl Searcher {
                 "info string search-debug aspiration depth={depth} alpha={alpha} beta={beta} score={score} result={result}"
             );
         }
+    }
+
+    #[cfg(feature = "search-debug")]
+    #[allow(clippy::too_many_arguments)]
+    fn emit_debug_singular_candidate(
+        &self,
+        st: &BoardState,
+        mv: Move,
+        ply: usize,
+        is_pv: bool,
+        depth: i32,
+        alpha: i32,
+        beta: i32,
+        eval: i32,
+        tt_score: i32,
+        tt_depth: i32,
+        tt_flag: u8,
+        threshold: i32,
+        verification_depth: i32,
+        verification_score: i32,
+        verification_nodes: u64,
+        repetitions: u8,
+        repeated_after_root: bool,
+        outcome: &str,
+    ) {
+        if !self.debug.trace_singular_candidates {
+            return;
+        }
+        let from = move_from(mv);
+        let to = move_to(mv);
+        let moved_piece = st.mailbox[from];
+        let en_passant_capture = moved_piece != EMPTY_SQ
+            && piece_type(moved_piece) == 0
+            && st.ep == Some(to)
+            && st.mailbox[to] == EMPTY_SQ;
+        let capture = st.mailbox[to] != EMPTY_SQ || en_passant_capture;
+        let promotion = move_promotion(mv) != 0;
+        eprintln!(
+            "info string search-debug singular-event \
+             {{\"hash\":\"{:016x}\",\"fen\":\"{}\",\"move\":\"{}\",\
+             \"ply\":{},\"pv\":{},\"depth\":{},\"alpha\":{},\"beta\":{},\
+             \"eval\":{},\"tt_score\":{},\"tt_depth\":{},\"tt_flag\":{},\
+             \"threshold\":{},\"verification_depth\":{},\
+             \"verification_score\":{},\"verification_nodes\":{},\
+             \"halfmove_clock\":{},\"repetitions\":{},\
+             \"repeated_after_root\":{},\"capture\":{},\"promotion\":{},\
+             \"outcome\":\"{}\"}}",
+            st.hash,
+            crate::board::board_to_fen(st),
+            crate::board::move_to_uci(st, mv),
+            ply,
+            is_pv,
+            depth,
+            alpha,
+            beta,
+            eval,
+            tt_score,
+            tt_depth,
+            tt_flag,
+            threshold,
+            verification_depth,
+            verification_score,
+            verification_nodes,
+            st.halfmove_clock,
+            repetitions,
+            repeated_after_root,
+            capture,
+            promotion,
+            outcome,
+        );
     }
 
     #[cfg(feature = "search-debug")]
@@ -3398,6 +3530,7 @@ impl SearchDebug {
             disable_see_pruning: env_flag("EMBER_DISABLE_SEE_PRUNING"),
             enable_singular_extensions: env_flag("EMBER_ENABLE_SINGULAR_EXTENSIONS"),
             trace_roots: env_flag("EMBER_TRACE_ROOT_SEARCH"),
+            trace_singular_candidates: env_flag("EMBER_TRACE_SINGULAR_CANDIDATES"),
             stats: SearchDebugStats::default(),
         }
     }
