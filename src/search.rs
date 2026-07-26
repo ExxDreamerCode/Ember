@@ -30,6 +30,12 @@ pub use crate::backend::SearchBackendKind;
 const SEARCH_BACKEND_ENV: &str = "EMBER_SEARCH_BACKEND";
 const LAZY_SMP_VERIFICATION_MARGIN_CP: i32 = 25;
 const LAZY_SMP_VERIFICATION_TT_MB: usize = 4;
+// Singular extensions remain available for controlled search experiments, but
+// are not part of the production search until they pass the strength gates.
+const SINGULAR_MIN_DEPTH: i32 = 12;
+const SINGULAR_TT_DEPTH_MARGIN: i32 = 1;
+const SINGULAR_MARGIN_CP: i32 = 320;
+const SINGULAR_MAX_HALF_MOVE_CLOCK: u8 = 80;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DrawStatus {
@@ -37,6 +43,66 @@ enum DrawStatus {
     SearchCycle,
     Claimable,
     Automatic,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SingularCandidate {
+    mv: Move,
+    beta: i32,
+    depth: i32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SingularEligibility {
+    NoCandidate,
+    SafetyRejected,
+    Eligible(SingularCandidate),
+}
+
+#[allow(clippy::too_many_arguments)]
+fn singular_candidate(
+    enabled: bool,
+    ply: usize,
+    excluded_move: Option<Move>,
+    in_check: bool,
+    actual_depth: i32,
+    halfmove_clock: u8,
+    repetitions: u8,
+    repeated_after_root: bool,
+    tt_move: Option<Move>,
+    tt_score: Option<i32>,
+    tt_depth: i32,
+    tt_flag: Option<u8>,
+    tt_move_is_legal: bool,
+) -> SingularEligibility {
+    if !enabled {
+        return SingularEligibility::NoCandidate;
+    }
+    let (Some(mv), Some(score), Some(flag)) = (tt_move, tt_score, tt_flag) else {
+        return SingularEligibility::NoCandidate;
+    };
+    if flag != TT_EXACT
+        || actual_depth < SINGULAR_MIN_DEPTH
+        || tt_depth < actual_depth - SINGULAR_TT_DEPTH_MARGIN
+    {
+        return SingularEligibility::NoCandidate;
+    }
+    if ply == 0
+        || excluded_move.is_some()
+        || in_check
+        || score.abs() >= MATE / 2
+        || halfmove_clock >= SINGULAR_MAX_HALF_MOVE_CLOCK
+        || repetitions > 1
+        || repeated_after_root
+        || !tt_move_is_legal
+    {
+        return SingularEligibility::SafetyRejected;
+    }
+    SingularEligibility::Eligible(SingularCandidate {
+        mv,
+        beta: score - SINGULAR_MARGIN_CP,
+        depth: (actual_depth - 1) / 2,
+    })
 }
 
 static SEARCH_BACKEND: OnceLock<SearchBackendKind> = OnceLock::new();
@@ -401,6 +467,7 @@ pub struct SearchDebug {
     pub disable_qsearch_see: bool,
     pub disable_reverse_futility: bool,
     pub disable_see_pruning: bool,
+    pub enable_singular_extensions: bool,
     trace_roots: bool,
     stats: SearchDebugStats,
 }
@@ -428,6 +495,13 @@ pub struct SearchDebugStats {
     pub q_delta_cutoffs: u64,
     pub q_see_skips: u64,
     pub q_checked_depth_exits: u64,
+    pub singular_candidates: u64,
+    pub singular_safety_rejections: u64,
+    pub singular_verifications: u64,
+    pub singular_verification_nodes: u64,
+    pub singular_extensions: u64,
+    pub singular_alternative_rejections: u64,
+    pub singular_stop_rejections: u64,
 }
 
 macro_rules! qsearch_mode_body {
@@ -880,6 +954,100 @@ macro_rules! negamax_mode_body {
             actual_depth
         };
 
+        let singular_enabled = $this.singular_extensions_enabled();
+        let inspect_singular_safety = singular_enabled
+            && actual_depth >= SINGULAR_MIN_DEPTH
+            && tt_depth >= actual_depth - SINGULAR_TT_DEPTH_MARGIN
+            && tt_flag == Some(TT_EXACT)
+            && tt_move.is_some()
+            && tt_score.is_some();
+        let tt_move_is_legal = inspect_singular_safety
+            && tt_move.is_some_and(|mv| {
+                if !moves_buf.contains(&mv) {
+                    return false;
+                }
+                let mut probe = *$st;
+                try_apply_move_mode::<CHESS960>(&mut probe, mv)
+            });
+        let (repetitions, repeated_after_root) = if inspect_singular_safety {
+            $this.repetition_info(usize::from($st.halfmove_clock))
+        } else {
+            (0, false)
+        };
+        let singular_move = match singular_candidate(
+            singular_enabled,
+            $ply,
+            excluded_move,
+            in_check,
+            actual_depth,
+            $st.halfmove_clock,
+            repetitions,
+            repeated_after_root,
+            tt_move,
+            tt_score,
+            tt_depth,
+            tt_flag,
+            tt_move_is_legal,
+        ) {
+            SingularEligibility::NoCandidate => None,
+            SingularEligibility::SafetyRejected => {
+                #[cfg(feature = "search-debug")]
+                {
+                    $this.debug.stats.singular_safety_rejections += 1;
+                }
+                None
+            }
+            SingularEligibility::Eligible(candidate) => {
+                #[cfg(feature = "search-debug")]
+                {
+                    $this.debug.stats.singular_candidates += 1;
+                    $this.debug.stats.singular_verifications += 1;
+                }
+                #[cfg(feature = "search-debug")]
+                let nodes_before = *$cnt;
+                let previous = $this.excluded_moves[$ply].replace(candidate.mv);
+                let alternative_score = $this.$negamax_mode::<CHESS960, E>(
+                    $st,
+                    candidate.depth,
+                    $ply,
+                    candidate.beta - 1,
+                    candidate.beta,
+                    false,
+                    $start,
+                    $tl,
+                    $cnt,
+                    $eval,
+                );
+                $this.excluded_moves[$ply] = previous;
+                #[cfg(feature = "search-debug")]
+                {
+                    $this.debug.stats.singular_verification_nodes +=
+                        (*$cnt).saturating_sub(nodes_before);
+                }
+                if $this.stopped.load(Ordering::Relaxed) {
+                    #[cfg(feature = "search-debug")]
+                    {
+                        $this.debug.stats.singular_stop_rejections += 1;
+                    }
+                    Self::return_buf(&mut $this.move_bufs, $ply, moves_buf);
+                    return 0;
+                }
+                if alternative_score < candidate.beta {
+                    #[cfg(feature = "search-debug")]
+                    {
+                        $this.debug.stats.singular_extensions += 1;
+                    }
+                    Some(candidate.mv)
+                } else {
+                    #[cfg(feature = "search-debug")]
+                    {
+                        $this.debug.stats.singular_alternative_rejections += 1;
+                    }
+                    None
+                }
+            }
+        };
+
         let mut scored = Self::take_buf(&mut $this.scored_bufs, $ply);
         scored.clear();
         scored.reserve(moves_buf.len());
@@ -1017,7 +1185,7 @@ macro_rules! negamax_mode_body {
                 }
             }
 
-            let move_ext = if !in_check
+            let tactical_move_ext = if !in_check
                 && legal_moves_seen == 0
                 && !is_quiet
                 && actual_depth <= 2
@@ -1027,6 +1195,7 @@ macro_rules! negamax_mode_body {
             } else {
                 0
             };
+            let move_ext = tactical_move_ext.max(i32::from(Some(mv) == singular_move));
 
             let st_before = *$st;
             let legal = if pseudo_moves {
@@ -1481,7 +1650,7 @@ impl Searcher {
         }
         let s = self.debug.stats;
         eprintln!(
-            "info string search-debug root depth={depth} order={order} move={mv} alpha={alpha} beta={beta} score={score} nodes={nodes} seldepth={} tt_hits={} tt_max_depth={} tt_cutoffs={} rfp={} futility={} null={}/{} iid={} lmp={} history={} see={} lmr={}/{} lmr_sum={} lmr_max={} qnodes={} qdelta={} qsee={} qcheck_cap={}",
+            "info string search-debug root depth={depth} order={order} move={mv} alpha={alpha} beta={beta} score={score} nodes={nodes} seldepth={} tt_hits={} tt_max_depth={} tt_cutoffs={} rfp={} futility={} null={}/{} iid={} lmp={} history={} see={} lmr={}/{} lmr_sum={} lmr_max={} qnodes={} qdelta={} qsee={} qcheck_cap={} singular_candidates={} singular_safety={} singular_verify={} singular_nodes={} singular_extensions={} singular_alternatives={} singular_stops={}",
             s.max_ply,
             s.tt_hits,
             s.tt_max_depth,
@@ -1502,6 +1671,13 @@ impl Searcher {
             s.q_delta_cutoffs,
             s.q_see_skips,
             s.q_checked_depth_exits,
+            s.singular_candidates,
+            s.singular_safety_rejections,
+            s.singular_verifications,
+            s.singular_verification_nodes,
+            s.singular_extensions,
+            s.singular_alternative_rejections,
+            s.singular_stop_rejections,
         );
     }
 
@@ -1609,6 +1785,16 @@ impl Searcher {
     #[inline(always)]
     fn see_pruning_enabled(&self) -> bool {
         true
+    }
+
+    #[cfg(feature = "search-debug")]
+    fn singular_extensions_enabled(&self) -> bool {
+        self.debug.enable_singular_extensions
+    }
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    fn singular_extensions_enabled(&self) -> bool {
+        false
     }
 
     #[cfg(feature = "search-debug")]
@@ -2915,6 +3101,7 @@ impl SearchDebug {
             disable_qsearch_see: env_flag("EMBER_DISABLE_QSEARCH_SEE"),
             disable_reverse_futility: env_flag("EMBER_DISABLE_REVERSE_FUTILITY"),
             disable_see_pruning: env_flag("EMBER_DISABLE_SEE_PRUNING"),
+            enable_singular_extensions: env_flag("EMBER_ENABLE_SINGULAR_EXTENSIONS"),
             trace_roots: env_flag("EMBER_TRACE_ROOT_SEARCH"),
             stats: SearchDebugStats::default(),
         }
@@ -3889,6 +4076,24 @@ mod tests {
             .unwrap_or_else(|| panic!("expected legal move {uci}"))
     }
 
+    fn qualifying_singular_candidate(mv: Move) -> SingularEligibility {
+        singular_candidate(
+            true,
+            1,
+            None,
+            false,
+            SINGULAR_MIN_DEPTH,
+            0,
+            1,
+            false,
+            Some(mv),
+            Some(300),
+            SINGULAR_MIN_DEPTH - SINGULAR_TT_DEPTH_MARGIN,
+            Some(TT_EXACT),
+            true,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn negamax_excluding_move(
         searcher: &mut Searcher,
@@ -4090,6 +4295,33 @@ mod tests {
     }
 
     #[test]
+    fn stopped_restricted_search_restores_the_excluded_move() {
+        let mut st = state_from_fen("7k/4Q3/5K2/8/8/8/8/8 b - - 0 1");
+        let excluded_move = generate_moves(&st, st.w, &st.cr, st.ep)[0];
+        let stopped = Arc::new(AtomicBool::new(true));
+        let shared_tt = Arc::new(SharedTT::new(1));
+        let mut searcher = Searcher::new(shared_tt, stopped);
+        searcher.nnue_net = None;
+        let mut nodes = 0;
+
+        let score = negamax_excluding_move(
+            &mut searcher,
+            &mut st,
+            excluded_move,
+            4,
+            1,
+            -300,
+            -299,
+            Instant::now(),
+            10.0,
+            &mut nodes,
+        );
+
+        assert_eq!(score, 0);
+        assert_eq!(searcher.excluded_moves[1], None);
+    }
+
+    #[test]
     fn restricted_search_uses_descendant_tt_without_learning_from_its_root() {
         let mut st = state_from_fen("7k/8/4Q3/5K2/8/8/8/8 b - - 0 1");
         let legal_moves = generate_moves(&st, st.w, &st.cr, st.ep);
@@ -4163,6 +4395,277 @@ mod tests {
         assert_eq!(second.excluded_moves[3], None);
         first.prepare_for_search();
         assert_eq!(first.excluded_moves[3], None);
+    }
+
+    #[test]
+    fn singular_candidate_requires_deep_reliable_safe_tt_evidence() {
+        let mv = encode_move(0, 0, 0, 1, 0);
+        let SingularEligibility::Eligible(candidate) = qualifying_singular_candidate(mv) else {
+            panic!("qualifying TT evidence was rejected");
+        };
+        assert_eq!(candidate.mv, mv);
+        assert_eq!(candidate.beta, 300 - SINGULAR_MARGIN_CP);
+        assert_eq!(candidate.depth, (SINGULAR_MIN_DEPTH - 1) / 2);
+
+        let cases = [
+            singular_candidate(
+                true,
+                1,
+                None,
+                false,
+                SINGULAR_MIN_DEPTH,
+                0,
+                1,
+                false,
+                Some(mv),
+                Some(300),
+                SINGULAR_MIN_DEPTH - SINGULAR_TT_DEPTH_MARGIN - 1,
+                Some(TT_BETA),
+                true,
+            ),
+            singular_candidate(
+                true,
+                1,
+                None,
+                false,
+                SINGULAR_MIN_DEPTH,
+                0,
+                1,
+                false,
+                Some(mv),
+                Some(300),
+                SINGULAR_MIN_DEPTH,
+                Some(TT_BETA),
+                true,
+            ),
+            singular_candidate(
+                true,
+                1,
+                None,
+                false,
+                SINGULAR_MIN_DEPTH,
+                0,
+                1,
+                false,
+                Some(mv),
+                Some(300),
+                SINGULAR_MIN_DEPTH,
+                Some(TT_ALPHA),
+                true,
+            ),
+            singular_candidate(
+                true,
+                1,
+                None,
+                false,
+                SINGULAR_MIN_DEPTH,
+                0,
+                1,
+                false,
+                None,
+                Some(300),
+                SINGULAR_MIN_DEPTH,
+                Some(TT_EXACT),
+                false,
+            ),
+        ];
+        assert!(cases
+            .into_iter()
+            .all(|case| case == SingularEligibility::NoCandidate));
+
+        let safety_cases = [
+            singular_candidate(
+                true,
+                0,
+                None,
+                false,
+                SINGULAR_MIN_DEPTH,
+                0,
+                1,
+                false,
+                Some(mv),
+                Some(300),
+                SINGULAR_MIN_DEPTH,
+                Some(TT_EXACT),
+                true,
+            ),
+            singular_candidate(
+                true,
+                1,
+                Some(mv),
+                false,
+                SINGULAR_MIN_DEPTH,
+                0,
+                1,
+                false,
+                Some(mv),
+                Some(300),
+                SINGULAR_MIN_DEPTH,
+                Some(TT_EXACT),
+                true,
+            ),
+            singular_candidate(
+                true,
+                1,
+                None,
+                false,
+                SINGULAR_MIN_DEPTH,
+                0,
+                1,
+                false,
+                Some(mv),
+                Some(300),
+                SINGULAR_MIN_DEPTH,
+                Some(TT_EXACT),
+                false,
+            ),
+            singular_candidate(
+                true,
+                1,
+                None,
+                true,
+                SINGULAR_MIN_DEPTH,
+                0,
+                1,
+                false,
+                Some(mv),
+                Some(300),
+                SINGULAR_MIN_DEPTH,
+                Some(TT_EXACT),
+                true,
+            ),
+            singular_candidate(
+                true,
+                1,
+                None,
+                false,
+                SINGULAR_MIN_DEPTH,
+                0,
+                2,
+                true,
+                Some(mv),
+                Some(300),
+                SINGULAR_MIN_DEPTH,
+                Some(TT_EXACT),
+                true,
+            ),
+            singular_candidate(
+                true,
+                1,
+                None,
+                false,
+                SINGULAR_MIN_DEPTH,
+                SINGULAR_MAX_HALF_MOVE_CLOCK,
+                1,
+                false,
+                Some(mv),
+                Some(300),
+                SINGULAR_MIN_DEPTH,
+                Some(TT_EXACT),
+                true,
+            ),
+            singular_candidate(
+                true,
+                1,
+                None,
+                false,
+                SINGULAR_MIN_DEPTH,
+                0,
+                1,
+                false,
+                Some(mv),
+                Some(MATE / 2),
+                SINGULAR_MIN_DEPTH,
+                Some(TT_EXACT),
+                true,
+            ),
+        ];
+        assert!(safety_cases
+            .into_iter()
+            .all(|case| case == SingularEligibility::SafetyRejected));
+    }
+
+    #[test]
+    fn singular_margin_rejects_a_competitive_alternative() {
+        let mut st = state_from_fen("7k/8/4Q3/5K2/8/8/8/8 b - - 0 1");
+        let legal_moves = generate_moves(&st, st.w, &st.cr, st.ep);
+        assert_eq!(legal_moves.len(), 2);
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(1));
+        let mut searcher = Searcher::new(shared_tt, stopped);
+        searcher.nnue_net = None;
+        let singular_beta = -6_000 - SINGULAR_MARGIN_CP;
+        let mut nodes = 0;
+
+        let alternative_score = negamax_excluding_move(
+            &mut searcher,
+            &mut st,
+            legal_moves[0],
+            3,
+            1,
+            singular_beta - 1,
+            singular_beta,
+            Instant::now(),
+            10.0,
+            &mut nodes,
+        );
+
+        assert!(alternative_score >= singular_beta);
+    }
+
+    #[cfg(feature = "search-debug")]
+    #[test]
+    fn singular_extensions_require_explicit_experimental_opt_in() {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(1));
+        let mut searcher = Searcher::new(shared_tt, stopped);
+
+        searcher.debug.enable_singular_extensions = false;
+        assert!(!searcher.singular_extensions_enabled());
+
+        searcher.debug.enable_singular_extensions = true;
+        assert!(searcher.singular_extensions_enabled());
+    }
+
+    #[cfg(feature = "search-debug")]
+    #[test]
+    fn singular_search_extends_a_synthetic_only_move_tt_result() {
+        let mut st = state_from_fen("7k/8/5K2/5Q2/8/8/8/8 b - - 0 1");
+        let legal_moves = generate_moves(&st, st.w, &st.cr, st.ep);
+        assert_eq!(legal_moves.len(), 1, "position must have one legal move");
+        let tt_move = legal_moves[0];
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(1));
+        let mut searcher = Searcher::new(Arc::clone(&shared_tt), stopped);
+        searcher.nnue_net = None;
+        searcher.debug.enable_singular_extensions = true;
+        shared_tt.store(
+            st.hash,
+            SINGULAR_MIN_DEPTH,
+            score_to_tt(0, 1),
+            TT_EXACT,
+            Some(tt_move),
+        );
+        let mut nodes = 0;
+
+        searcher.negamax(
+            &mut st,
+            SINGULAR_MIN_DEPTH,
+            1,
+            -INF,
+            INF,
+            true,
+            Instant::now(),
+            10.0,
+            &mut nodes,
+        );
+
+        let stats = searcher.debug_stats();
+        assert_eq!(stats.singular_candidates, 1);
+        assert_eq!(stats.singular_verifications, 1);
+        assert_eq!(stats.singular_extensions, 1);
+        assert_eq!(stats.singular_alternative_rejections, 0);
+        assert_eq!(searcher.excluded_moves[1], None);
     }
 
     #[cfg(feature = "search-debug")]
