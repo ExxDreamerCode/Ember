@@ -34,7 +34,9 @@ const LAZY_SMP_VERIFICATION_TT_MB: usize = 4;
 // are not part of the production search until they pass the strength gates.
 const SINGULAR_MIN_DEPTH: i32 = 12;
 const SINGULAR_TT_DEPTH_MARGIN: i32 = 1;
-const SINGULAR_MARGIN_CP: i32 = 320;
+const SINGULAR_BASE_MARGIN_CP: i32 = 44;
+const SINGULAR_MARGIN_PER_DEPTH_CP: i32 = 3;
+const SINGULAR_MAX_TT_AGE: u8 = 0;
 const SINGULAR_MAX_HALF_MOVE_CLOCK: u8 = 80;
 const PROBCUT_MIN_DEPTH: i32 = 8;
 const PROBCUT_REDUCTION: i32 = 2;
@@ -72,6 +74,28 @@ enum SingularEligibility {
     NoCandidate,
     SafetyRejected,
     Eligible(SingularCandidate),
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SingularEvidence {
+    enabled: bool,
+    ply: usize,
+    excluded_move: Option<Move>,
+    in_check: bool,
+    node_pv: bool,
+    actual_depth: i32,
+    halfmove_clock: u8,
+    repetitions: u8,
+    repeated_after_root: bool,
+    shuffling: bool,
+    path_extensions: u8,
+    tt_move: Option<Move>,
+    tt_score: Option<i32>,
+    tt_depth: i32,
+    tt_flag: Option<u8>,
+    tt_pv: bool,
+    tt_age: u8,
+    tt_move_is_legal: bool,
 }
 
 #[cfg(feature = "search-debug")]
@@ -211,49 +235,52 @@ fn probcut_verdict(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn singular_candidate(
-    enabled: bool,
-    ply: usize,
-    excluded_move: Option<Move>,
-    in_check: bool,
-    actual_depth: i32,
-    halfmove_clock: u8,
-    repetitions: u8,
-    repeated_after_root: bool,
-    tt_move: Option<Move>,
-    tt_score: Option<i32>,
-    tt_depth: i32,
-    tt_flag: Option<u8>,
-    tt_move_is_legal: bool,
-) -> SingularEligibility {
-    if !enabled {
+fn singular_margin(evidence: SingularEvidence) -> i32 {
+    SINGULAR_BASE_MARGIN_CP
+        + SINGULAR_MARGIN_PER_DEPTH_CP * evidence.actual_depth
+        + i32::from(!evidence.tt_pv) * 16
+        + i32::from(!evidence.node_pv) * 8
+        + i32::from(evidence.tt_age) * 8
+}
+
+fn singular_path_budget(depth: i32) -> u8 {
+    (1 + depth.max(0) / 12).min(3) as u8
+}
+
+fn singular_candidate(evidence: SingularEvidence) -> SingularEligibility {
+    if !evidence.enabled {
         return SingularEligibility::NoCandidate;
     }
-    let (Some(mv), Some(score), Some(flag)) = (tt_move, tt_score, tt_flag) else {
+    let (Some(mv), Some(score), Some(flag)) =
+        (evidence.tt_move, evidence.tt_score, evidence.tt_flag)
+    else {
         return SingularEligibility::NoCandidate;
     };
-    if flag != TT_EXACT
-        || actual_depth < SINGULAR_MIN_DEPTH
-        || tt_depth < actual_depth - SINGULAR_TT_DEPTH_MARGIN
+    let reliable_bound = flag == TT_EXACT && evidence.tt_pv;
+    if !reliable_bound
+        || evidence.actual_depth < SINGULAR_MIN_DEPTH
+        || evidence.tt_depth < evidence.actual_depth - SINGULAR_TT_DEPTH_MARGIN
+        || evidence.tt_age > SINGULAR_MAX_TT_AGE
     {
         return SingularEligibility::NoCandidate;
     }
-    if ply == 0
-        || excluded_move.is_some()
-        || in_check
+    if evidence.ply == 0
+        || evidence.excluded_move.is_some()
+        || evidence.in_check
         || score.abs() >= MATE / 2
-        || halfmove_clock >= SINGULAR_MAX_HALF_MOVE_CLOCK
-        || repetitions > 1
-        || repeated_after_root
-        || !tt_move_is_legal
+        || evidence.halfmove_clock >= SINGULAR_MAX_HALF_MOVE_CLOCK
+        || evidence.repetitions > 1
+        || evidence.repeated_after_root
+        || evidence.shuffling
+        || evidence.path_extensions >= singular_path_budget(evidence.actual_depth)
+        || !evidence.tt_move_is_legal
     {
         return SingularEligibility::SafetyRejected;
     }
     SingularEligibility::Eligible(SingularCandidate {
         mv,
-        beta: score - SINGULAR_MARGIN_CP,
-        depth: (actual_depth - 1) / 2,
+        beta: score - singular_margin(evidence),
+        depth: (evidence.actual_depth - 1) / 2,
     })
 }
 
@@ -1312,6 +1339,8 @@ macro_rules! negamax_mode_body {
             && actual_depth >= SINGULAR_MIN_DEPTH
             && tt_depth >= actual_depth - SINGULAR_TT_DEPTH_MARGIN
             && tt_flag == Some(TT_EXACT)
+            && tt_pv
+            && tt_age <= SINGULAR_MAX_TT_AGE
             && tt_move.is_some()
             && tt_score.is_some();
         let tt_move_is_legal = inspect_singular_safety
@@ -1327,21 +1356,27 @@ macro_rules! negamax_mode_body {
         } else {
             (0, false)
         };
-        let singular_adjustment = match singular_candidate(
-            singular_enabled,
-            $ply,
+        let singular_evidence = SingularEvidence {
+            enabled: singular_enabled,
+            ply: $ply,
             excluded_move,
             in_check,
+            node_pv: is_pv,
             actual_depth,
-            $st.halfmove_clock,
+            halfmove_clock: $st.halfmove_clock,
             repetitions,
             repeated_after_root,
+            shuffling: $this.singular_shuffling($ply, $st.halfmove_clock),
+            path_extensions: $this.singular_path_extensions($ply),
             tt_move,
             tt_score,
             tt_depth,
             tt_flag,
+            tt_pv,
+            tt_age,
             tt_move_is_legal,
-        ) {
+        };
+        let singular_adjustment = match singular_candidate(singular_evidence) {
             SingularEligibility::NoCandidate => None,
             SingularEligibility::SafetyRejected => {
                 #[cfg(feature = "search-debug")]
@@ -4724,22 +4759,27 @@ mod tests {
             .unwrap_or_else(|| panic!("expected legal move {uci}"))
     }
 
-    fn qualifying_singular_candidate(mv: Move) -> SingularEligibility {
-        singular_candidate(
-            true,
-            1,
-            None,
-            false,
-            SINGULAR_MIN_DEPTH,
-            0,
-            1,
-            false,
-            Some(mv),
-            Some(300),
-            SINGULAR_MIN_DEPTH - SINGULAR_TT_DEPTH_MARGIN,
-            Some(TT_EXACT),
-            true,
-        )
+    fn qualifying_singular_evidence(mv: Move) -> SingularEvidence {
+        SingularEvidence {
+            enabled: true,
+            ply: 1,
+            excluded_move: None,
+            in_check: false,
+            node_pv: true,
+            actual_depth: SINGULAR_MIN_DEPTH,
+            halfmove_clock: 0,
+            repetitions: 1,
+            repeated_after_root: false,
+            shuffling: false,
+            path_extensions: 0,
+            tt_move: Some(mv),
+            tt_score: Some(300),
+            tt_depth: SINGULAR_MIN_DEPTH - SINGULAR_TT_DEPTH_MARGIN,
+            tt_flag: Some(TT_EXACT),
+            tt_pv: true,
+            tt_age: 0,
+            tt_move_is_legal: true,
+        }
     }
 
     fn qualifying_probcut_candidate() -> ProbCutEligibility {
@@ -5106,189 +5146,88 @@ mod tests {
     #[test]
     fn singular_candidate_requires_deep_reliable_safe_tt_evidence() {
         let mv = encode_move(0, 0, 0, 1, 0);
-        let SingularEligibility::Eligible(candidate) = qualifying_singular_candidate(mv) else {
+        let evidence = qualifying_singular_evidence(mv);
+        let SingularEligibility::Eligible(candidate) = singular_candidate(evidence) else {
             panic!("qualifying TT evidence was rejected");
         };
         assert_eq!(candidate.mv, mv);
-        assert_eq!(candidate.beta, 300 - SINGULAR_MARGIN_CP);
+        assert_eq!(candidate.beta, 300 - singular_margin(evidence));
         assert_eq!(candidate.depth, (SINGULAR_MIN_DEPTH - 1) / 2);
 
-        let cases = [
-            singular_candidate(
-                true,
-                1,
-                None,
-                false,
-                SINGULAR_MIN_DEPTH,
-                0,
-                1,
-                false,
-                Some(mv),
-                Some(300),
-                SINGULAR_MIN_DEPTH - SINGULAR_TT_DEPTH_MARGIN - 1,
-                Some(TT_BETA),
-                true,
-            ),
-            singular_candidate(
-                true,
-                1,
-                None,
-                false,
-                SINGULAR_MIN_DEPTH,
-                0,
-                1,
-                false,
-                Some(mv),
-                Some(300),
-                SINGULAR_MIN_DEPTH,
-                Some(TT_BETA),
-                true,
-            ),
-            singular_candidate(
-                true,
-                1,
-                None,
-                false,
-                SINGULAR_MIN_DEPTH,
-                0,
-                1,
-                false,
-                Some(mv),
-                Some(300),
-                SINGULAR_MIN_DEPTH,
-                Some(TT_ALPHA),
-                true,
-            ),
-            singular_candidate(
-                true,
-                1,
-                None,
-                false,
-                SINGULAR_MIN_DEPTH,
-                0,
-                1,
-                false,
-                None,
-                Some(300),
-                SINGULAR_MIN_DEPTH,
-                Some(TT_EXACT),
-                false,
-            ),
+        let mut lower_bound = evidence;
+        lower_bound.tt_flag = Some(TT_BETA);
+        lower_bound.tt_pv = false;
+
+        let no_candidate_cases = [
+            SingularEvidence {
+                actual_depth: SINGULAR_MIN_DEPTH - 1,
+                ..evidence
+            },
+            SingularEvidence {
+                tt_depth: evidence.tt_depth - 1,
+                ..evidence
+            },
+            SingularEvidence {
+                tt_flag: Some(TT_ALPHA),
+                ..evidence
+            },
+            SingularEvidence {
+                tt_pv: false,
+                ..evidence
+            },
+            SingularEvidence {
+                tt_age: SINGULAR_MAX_TT_AGE + 1,
+                ..evidence
+            },
+            SingularEvidence {
+                tt_move: None,
+                ..evidence
+            },
+            lower_bound,
         ];
-        assert!(cases
+        assert!(no_candidate_cases
             .into_iter()
-            .all(|case| case == SingularEligibility::NoCandidate));
+            .all(|case| singular_candidate(case) == SingularEligibility::NoCandidate));
 
         let safety_cases = [
-            singular_candidate(
-                true,
-                0,
-                None,
-                false,
-                SINGULAR_MIN_DEPTH,
-                0,
-                1,
-                false,
-                Some(mv),
-                Some(300),
-                SINGULAR_MIN_DEPTH,
-                Some(TT_EXACT),
-                true,
-            ),
-            singular_candidate(
-                true,
-                1,
-                Some(mv),
-                false,
-                SINGULAR_MIN_DEPTH,
-                0,
-                1,
-                false,
-                Some(mv),
-                Some(300),
-                SINGULAR_MIN_DEPTH,
-                Some(TT_EXACT),
-                true,
-            ),
-            singular_candidate(
-                true,
-                1,
-                None,
-                false,
-                SINGULAR_MIN_DEPTH,
-                0,
-                1,
-                false,
-                Some(mv),
-                Some(300),
-                SINGULAR_MIN_DEPTH,
-                Some(TT_EXACT),
-                false,
-            ),
-            singular_candidate(
-                true,
-                1,
-                None,
-                true,
-                SINGULAR_MIN_DEPTH,
-                0,
-                1,
-                false,
-                Some(mv),
-                Some(300),
-                SINGULAR_MIN_DEPTH,
-                Some(TT_EXACT),
-                true,
-            ),
-            singular_candidate(
-                true,
-                1,
-                None,
-                false,
-                SINGULAR_MIN_DEPTH,
-                0,
-                2,
-                true,
-                Some(mv),
-                Some(300),
-                SINGULAR_MIN_DEPTH,
-                Some(TT_EXACT),
-                true,
-            ),
-            singular_candidate(
-                true,
-                1,
-                None,
-                false,
-                SINGULAR_MIN_DEPTH,
-                SINGULAR_MAX_HALF_MOVE_CLOCK,
-                1,
-                false,
-                Some(mv),
-                Some(300),
-                SINGULAR_MIN_DEPTH,
-                Some(TT_EXACT),
-                true,
-            ),
-            singular_candidate(
-                true,
-                1,
-                None,
-                false,
-                SINGULAR_MIN_DEPTH,
-                0,
-                1,
-                false,
-                Some(mv),
-                Some(MATE / 2),
-                SINGULAR_MIN_DEPTH,
-                Some(TT_EXACT),
-                true,
-            ),
+            SingularEvidence { ply: 0, ..evidence },
+            SingularEvidence {
+                excluded_move: Some(mv),
+                ..evidence
+            },
+            SingularEvidence {
+                tt_move_is_legal: false,
+                ..evidence
+            },
+            SingularEvidence {
+                in_check: true,
+                ..evidence
+            },
+            SingularEvidence {
+                repetitions: 2,
+                repeated_after_root: true,
+                ..evidence
+            },
+            SingularEvidence {
+                halfmove_clock: SINGULAR_MAX_HALF_MOVE_CLOCK,
+                ..evidence
+            },
+            SingularEvidence {
+                tt_score: Some(MATE / 2),
+                ..evidence
+            },
+            SingularEvidence {
+                shuffling: true,
+                ..evidence
+            },
+            SingularEvidence {
+                path_extensions: singular_path_budget(evidence.actual_depth),
+                ..evidence
+            },
         ];
         assert!(safety_cases
             .into_iter()
-            .all(|case| case == SingularEligibility::SafetyRejected));
+            .all(|case| singular_candidate(case) == SingularEligibility::SafetyRejected));
     }
 
     #[test]
@@ -5300,7 +5239,7 @@ mod tests {
         let shared_tt = Arc::new(SharedTT::new(1));
         let mut searcher = Searcher::new(shared_tt, stopped);
         searcher.nnue_net = None;
-        let singular_beta = -6_000 - SINGULAR_MARGIN_CP;
+        let singular_beta = -6_000 - singular_margin(qualifying_singular_evidence(legal_moves[0]));
         let mut nodes = 0;
 
         let alternative_score = negamax_excluding_move(
@@ -5345,12 +5284,13 @@ mod tests {
         let mut searcher = Searcher::new(Arc::clone(&shared_tt), stopped);
         searcher.nnue_net = None;
         searcher.debug.enable_singular_extensions = true;
-        shared_tt.store(
+        shared_tt.store_with_pv(
             st.hash,
             SINGULAR_MIN_DEPTH,
             score_to_tt(0, 1),
             TT_EXACT,
             Some(tt_move),
+            true,
         );
         let mut nodes = 0;
 
