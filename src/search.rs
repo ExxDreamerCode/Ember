@@ -648,6 +648,8 @@ pub struct Searcher {
     path_moves: [Option<Move>; MAX_PLY],
     #[cfg(feature = "search-debug")]
     singular_extensions_used: [u8; MAX_PLY],
+    #[cfg(any(feature = "search-debug", test))]
+    restricted_verification: bool,
     probcut_verification: bool,
     pub tt_mb: usize,
     pub stopped: Arc<AtomicBool>,
@@ -1389,13 +1391,15 @@ macro_rules! negamax_mode_body {
                         {
                             $this.debug.stats.probcut_cutoffs += 1;
                         }
-                        $this.shared_tt.store(
-                            h,
-                            candidate.store_depth,
-                            score_to_tt(candidate.beta, $ply),
-                            TT_BETA,
-                            Some(mv),
-                        );
+                        if !$this.restricted_verification_active() {
+                            $this.shared_tt.store(
+                                h,
+                                candidate.store_depth,
+                                score_to_tt(candidate.beta, $ply),
+                                TT_BETA,
+                                Some(mv),
+                            );
+                        }
                         Self::return_buf(&mut $this.caps_bufs, $ply, caps);
                         Self::return_buf(&mut $this.move_bufs, $ply, moves_buf);
                         return beta;
@@ -1405,7 +1409,8 @@ macro_rules! negamax_mode_body {
             }
         }
 
-        let singular_enabled = $this.singular_extensions_enabled();
+        let singular_enabled =
+            $this.singular_extensions_enabled() && !$this.restricted_verification_active();
         let singular_policy_enabled =
             $this.singular_multicut_enabled() || $this.singular_negative_extensions_enabled();
         let inspect_singular_safety = singular_enabled
@@ -1469,6 +1474,7 @@ macro_rules! negamax_mode_body {
                 #[cfg(feature = "search-debug")]
                 let nodes_before = *$cnt;
                 let previous = $this.excluded_moves[$ply].replace(candidate.mv);
+                let previous_restricted = $this.set_restricted_verification(true);
                 let alternative_score = $this.$negamax_mode::<CHESS960, E>(
                     $st,
                     candidate.depth,
@@ -1532,6 +1538,7 @@ macro_rules! negamax_mode_body {
                     }
                 }
                 $this.excluded_moves[$ply] = previous;
+                $this.set_restricted_verification(previous_restricted);
                 #[cfg(feature = "search-debug")]
                 let verification_nodes = (*$cnt).saturating_sub(nodes_before);
                 #[cfg(feature = "search-debug")]
@@ -2013,7 +2020,10 @@ macro_rules! negamax_mode_body {
                 if s > $alpha {
                     $alpha = s;
                     if $alpha >= beta {
-                        if is_quiet && excluded_move.is_none() {
+                        if is_quiet
+                            && excluded_move.is_none()
+                            && !$this.restricted_verification_active()
+                        {
                             if $this.killers[$ply][0] != Some(mv) {
                                 $this.killers[$ply][1] = $this.killers[$ply][0];
                                 $this.killers[$ply][0] = Some(mv);
@@ -2084,7 +2094,7 @@ macro_rules! negamax_mode_body {
         } else {
             TT_EXACT
         };
-        if excluded_move.is_none() {
+        if excluded_move.is_none() && !$this.restricted_verification_active() {
             $this.shared_tt.store_with_pv(
                 h,
                 actual_depth,
@@ -2114,6 +2124,8 @@ impl Searcher {
             path_moves: [None; MAX_PLY],
             #[cfg(feature = "search-debug")]
             singular_extensions_used: [0; MAX_PLY],
+            #[cfg(any(feature = "search-debug", test))]
+            restricted_verification: false,
             probcut_verification: false,
             tt_mb: 128,
             stopped,
@@ -2249,6 +2261,10 @@ impl Searcher {
         {
             self.path_moves.fill(None);
             self.singular_extensions_used.fill(0);
+        }
+        #[cfg(any(feature = "search-debug", test))]
+        {
+            self.restricted_verification = false;
         }
         self.probcut_verification = false;
         self.killers = [[None; 2]; MAX_PLY];
@@ -2650,6 +2666,28 @@ impl Searcher {
     #[cfg(not(feature = "search-debug"))]
     #[inline(always)]
     fn singular_extensions_enabled(&self) -> bool {
+        false
+    }
+
+    #[cfg(any(feature = "search-debug", test))]
+    fn set_restricted_verification(&mut self, active: bool) -> bool {
+        std::mem::replace(&mut self.restricted_verification, active)
+    }
+
+    #[cfg(not(any(feature = "search-debug", test)))]
+    #[inline(always)]
+    fn set_restricted_verification(&mut self, _active: bool) -> bool {
+        false
+    }
+
+    #[cfg(any(feature = "search-debug", test))]
+    fn restricted_verification_active(&self) -> bool {
+        self.restricted_verification
+    }
+
+    #[cfg(not(any(feature = "search-debug", test)))]
+    #[inline(always)]
+    fn restricted_verification_active(&self) -> bool {
         false
     }
 
@@ -5038,7 +5076,9 @@ mod tests {
         nodes: &mut u64,
     ) -> i32 {
         let previous = searcher.excluded_moves[ply].replace(excluded_move);
+        let previous_restricted = searcher.set_restricted_verification(true);
         let score = searcher.negamax(st, depth, ply, alpha, beta, false, start, tl, nodes);
+        searcher.set_restricted_verification(previous_restricted);
         searcher.excluded_moves[ply] = previous;
         score
     }
@@ -5310,6 +5350,82 @@ mod tests {
             shared_tt.get_depth(st.hash).is_none(),
             "restricted root was stored after a descendant TT cutoff"
         );
+    }
+
+    #[test]
+    fn restricted_verification_does_not_write_descendant_tt_or_learning() {
+        let initial = state_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        let legal_moves = generate_moves(&initial, initial.w, &initial.cr, initial.ep);
+        let excluded_move = legal_moves[0];
+        let child_hashes: Vec<_> = legal_moves[1..]
+            .iter()
+            .map(|&mv| {
+                let mut child = initial;
+                apply_move(
+                    &mut child,
+                    move_sr(mv),
+                    move_sc(mv),
+                    move_er(mv),
+                    move_ec(mv),
+                    move_promotion(mv),
+                );
+                child.hash
+            })
+            .collect();
+
+        let control_tt = Arc::new(SharedTT::new(1));
+        let mut control = Searcher::new(Arc::clone(&control_tt), Arc::new(AtomicBool::new(false)));
+        control.nnue_net = None;
+        let mut control_position = initial;
+        let mut control_nodes = 0;
+        control.excluded_moves[1] = Some(excluded_move);
+        control.negamax(
+            &mut control_position,
+            4,
+            1,
+            -INF,
+            INF,
+            false,
+            Instant::now(),
+            10.0,
+            &mut control_nodes,
+        );
+        control.excluded_moves[1] = None;
+        assert!(
+            child_hashes
+                .iter()
+                .any(|&hash| control_tt.get_entry(hash).is_some()),
+            "control search did not exercise a descendant TT store"
+        );
+
+        let isolated_tt = Arc::new(SharedTT::new(1));
+        let mut isolated =
+            Searcher::new(Arc::clone(&isolated_tt), Arc::new(AtomicBool::new(false)));
+        isolated.nnue_net = None;
+        let mut isolated_position = initial;
+        let mut isolated_nodes = 0;
+        negamax_excluding_move(
+            &mut isolated,
+            &mut isolated_position,
+            excluded_move,
+            4,
+            1,
+            -INF,
+            INF,
+            Instant::now(),
+            10.0,
+            &mut isolated_nodes,
+        );
+
+        assert!(
+            child_hashes
+                .iter()
+                .all(|&hash| isolated_tt.get_entry(hash).is_none()),
+            "restricted verification polluted a descendant TT entry"
+        );
+        assert!(isolated.history.iter().flatten().all(|&value| value == 0));
+        assert!(isolated.killers.iter().flatten().all(Option::is_none));
+        assert!(isolated.counter_move.iter().flatten().all(Option::is_none));
     }
 
     #[test]

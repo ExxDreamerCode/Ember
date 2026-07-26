@@ -261,6 +261,12 @@ verification nodes, action rate, and nodes per useful action. Keep raw traces an
 engine, and corpus hashes with the experiment so later threshold changes can be compared
 against the same evidence.
 
+Treat speculative verification as read-only until its result is accepted. It may reuse
+valid descendant TT entries, but a rejected probe must not write descendant TT results,
+train history, killers, or counter moves, or recursively start the same experiment. Check
+the no-action invariant explicitly: when every candidate is rejected, a fixed-depth real
+search must not change merely because verification ran.
+
 Compile experimental per-node bookkeeping out of production when its policy is disabled.
 A search-debug runtime switch is not enough if release search still updates path state or
 collects evidence on every node. Confirm the absence of hidden scaffolding cost with a
