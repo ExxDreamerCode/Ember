@@ -121,10 +121,16 @@ fn singular_search_outcome(
     singular_beta: i32,
     multi_cut_beta: Option<i32>,
 ) -> SingularSearchOutcome {
-    if multi_cut_beta.is_some_and(|beta| alternative_score >= beta) {
-        return SingularSearchOutcome::Cutoff(alternative_score);
+    if let Some(beta) = multi_cut_beta {
+        if alternative_score >= beta {
+            return SingularSearchOutcome::Cutoff(beta);
+        }
     }
-    SingularSearchOutcome::Continue(i32::from(alternative_score < singular_beta))
+    if alternative_score < singular_beta {
+        SingularSearchOutcome::Continue(1)
+    } else {
+        SingularSearchOutcome::Continue(0)
+    }
 }
 
 fn combine_move_extensions(tactical_extension: i32, singular_extension: i32) -> i32 {
@@ -653,6 +659,7 @@ pub struct SearchDebug {
     pub disable_reverse_futility: bool,
     pub disable_see_pruning: bool,
     pub enable_singular_extensions: bool,
+    pub enable_singular_multicut: bool,
     trace_roots: bool,
     trace_singular_candidates: bool,
     stats: SearchDebugStats,
@@ -696,6 +703,7 @@ pub struct SearchDebugStats {
     pub singular_verifications: u64,
     pub singular_verification_nodes: u64,
     pub singular_extensions: u64,
+    pub singular_multicut_cutoffs: u64,
     pub singular_alternative_rejections: u64,
     pub singular_stop_rejections: u64,
 }
@@ -1443,7 +1451,13 @@ macro_rules! negamax_mode_body {
                     Self::return_buf(&mut $this.move_bufs, $ply, moves_buf);
                     return 0;
                 }
-                match singular_search_outcome(alternative_score, candidate.beta, None) {
+                let expected_fail_high = !is_pv
+                    && actual_depth >= 14
+                    && beta.abs() < MATE / 2
+                    && tt_score.is_some_and(|score| score >= beta);
+                let multi_cut_beta =
+                    ($this.singular_multicut_enabled() && expected_fail_high).then_some(beta);
+                match singular_search_outcome(alternative_score, candidate.beta, multi_cut_beta) {
                     SingularSearchOutcome::Continue(extension) => {
                         #[cfg(feature = "search-debug")]
                         {
@@ -1483,6 +1497,32 @@ macro_rules! negamax_mode_body {
                         })
                     }
                     SingularSearchOutcome::Cutoff(score) => {
+                        #[cfg(feature = "search-debug")]
+                        {
+                            $this.debug.stats.singular_multicut_cutoffs += 1;
+                            $this.emit_debug_singular_candidate(
+                                $st,
+                                candidate.mv,
+                                $ply,
+                                is_pv,
+                                actual_depth,
+                                $alpha,
+                                beta,
+                                eval_score,
+                                tt_score.expect("eligible singular candidate has a TT score"),
+                                tt_depth,
+                                tt_flag.expect("eligible singular candidate has a TT flag"),
+                                tt_pv,
+                                tt_age,
+                                candidate.beta,
+                                candidate.depth,
+                                alternative_score,
+                                verification_nodes,
+                                repetitions,
+                                repeated_after_root,
+                                "multi_cut",
+                            );
+                        }
                         Self::return_buf(&mut $this.move_bufs, $ply, moves_buf);
                         return score;
                     }
@@ -2224,7 +2264,7 @@ impl Searcher {
         }
         let s = self.debug.stats;
         eprintln!(
-            "info string search-debug root depth={depth} order={order} move={mv} alpha={alpha} beta={beta} score={score} nodes={nodes} seldepth={} tt_hits={} tt_max_depth={} tt_cutoffs={} rfp={} futility={} null={}/{} iid={} lmp={} history={} see={} lmr={}/{} lmr_sum={} lmr_max={} qnodes={} qdelta={} qsee={} qcheck_cap={} probcut_eligible={} probcut_safety={} probcut_tt={} probcut_candidates={} probcut_see={} probcut_qpass={} probcut_verify={} probcut_nodes={} probcut_cutoffs={} probcut_stops={} singular_candidates={} singular_safety={} singular_verify={} singular_nodes={} singular_extensions={} singular_alternatives={} singular_stops={}",
+            "info string search-debug root depth={depth} order={order} move={mv} alpha={alpha} beta={beta} score={score} nodes={nodes} seldepth={} tt_hits={} tt_max_depth={} tt_cutoffs={} rfp={} futility={} null={}/{} iid={} lmp={} history={} see={} lmr={}/{} lmr_sum={} lmr_max={} qnodes={} qdelta={} qsee={} qcheck_cap={} probcut_eligible={} probcut_safety={} probcut_tt={} probcut_candidates={} probcut_see={} probcut_qpass={} probcut_verify={} probcut_nodes={} probcut_cutoffs={} probcut_stops={} singular_candidates={} singular_safety={} singular_verify={} singular_nodes={} singular_extensions={} singular_multicut={} singular_alternatives={} singular_stops={}",
             s.max_ply,
             s.tt_hits,
             s.tt_max_depth,
@@ -2260,6 +2300,7 @@ impl Searcher {
             s.singular_verifications,
             s.singular_verification_nodes,
             s.singular_extensions,
+            s.singular_multicut_cutoffs,
             s.singular_alternative_rejections,
             s.singular_stop_rejections,
         );
@@ -2462,6 +2503,16 @@ impl Searcher {
     #[cfg(not(feature = "search-debug"))]
     #[inline(always)]
     fn singular_extensions_enabled(&self) -> bool {
+        false
+    }
+
+    #[cfg(feature = "search-debug")]
+    fn singular_multicut_enabled(&self) -> bool {
+        self.debug.enable_singular_multicut
+    }
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    fn singular_multicut_enabled(&self) -> bool {
         false
     }
 
@@ -3781,6 +3832,7 @@ impl SearchDebug {
             disable_reverse_futility: env_flag("EMBER_DISABLE_REVERSE_FUTILITY"),
             disable_see_pruning: env_flag("EMBER_DISABLE_SEE_PRUNING"),
             enable_singular_extensions: env_flag("EMBER_ENABLE_SINGULAR_EXTENSIONS"),
+            enable_singular_multicut: env_flag("EMBER_ENABLE_SINGULAR_MULTICUT"),
             trace_roots: env_flag("EMBER_TRACE_ROOT_SEARCH"),
             trace_singular_candidates: env_flag("EMBER_TRACE_SINGULAR_CANDIDATES"),
             stats: SearchDebugStats::default(),
@@ -5137,7 +5189,7 @@ mod tests {
         );
         assert_eq!(
             singular_search_outcome(30, 20, Some(25)),
-            SingularSearchOutcome::Cutoff(30)
+            SingularSearchOutcome::Cutoff(25)
         );
         assert_eq!(combine_move_extensions(0, -2), -2);
         assert_eq!(combine_move_extensions(1, -2), 1);
@@ -5270,6 +5322,12 @@ mod tests {
 
         searcher.debug.enable_singular_extensions = true;
         assert!(searcher.singular_extensions_enabled());
+
+        searcher.debug.enable_singular_multicut = false;
+        assert!(!searcher.singular_multicut_enabled());
+
+        searcher.debug.enable_singular_multicut = true;
+        assert!(searcher.singular_multicut_enabled());
     }
 
     #[cfg(feature = "search-debug")]
