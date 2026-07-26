@@ -306,6 +306,7 @@ fn root_depth_extension(st: &BoardState, mv: Move) -> i32 {
         let attacker = st.mailbox[move_from(mv)];
         i32::from(
             root_rook_invasion_score(st, mv).is_some()
+                || root_quiet_queen_rook_battery_order_score(st, mv).is_some()
                 || (attacker != EMPTY_SQ
                     && piece_type(attacker) == 3
                     && root_checking_slider_pawn_capture_order_score(st, mv).is_some()),
@@ -341,6 +342,7 @@ fn root_order_score(st: &BoardState, mv: Move, preferred: Move) -> i32 {
     let mut score = root_forcing_score(st, mv).unwrap_or(0);
     score += root_rook_invasion_score(st, mv).unwrap_or(0);
     score += root_quiet_knight_major_fork_order_score(st, mv).unwrap_or(0);
+    score += root_quiet_queen_rook_battery_order_score(st, mv).unwrap_or(0);
     if root_minor_king_zone_capture(st, mv) {
         score += 1_500_000;
     }
@@ -366,6 +368,53 @@ fn root_quiet_knight_major_fork_order_score(st: &BoardState, mv: Move) -> Option
     ((attacks & st.bb[enemy_queen]) != 0
         && (attacks & (st.bb[enemy_rook] | st.bb[enemy_king])) != 0)
         .then_some(6_500_000)
+}
+
+fn root_quiet_queen_rook_battery_order_score(st: &BoardState, mv: Move) -> Option<i32> {
+    let from = move_from(mv);
+    let to = move_to(mv);
+    let attacker = st.mailbox[from];
+    if attacker == EMPTY_SQ
+        || piece_type(attacker) != 4
+        || root_move_is_capture(st, mv)
+        || root_move_is_promotion(st, mv)
+    {
+        return None;
+    }
+
+    let mut after = *st;
+    apply_move(
+        &mut after,
+        move_sr(mv),
+        move_sc(mv),
+        move_er(mv),
+        move_ec(mv),
+        move_promotion(mv),
+    );
+    let own_rook = if st.w { WR } else { BR };
+    for (dr, dc) in [
+        (-1isize, -1isize),
+        (-1, 0),
+        (-1, 1),
+        (0, -1),
+        (0, 1),
+        (1, -1),
+        (1, 0),
+        (1, 1),
+    ] {
+        let row = to as isize / 8 + dr;
+        let col = to as isize % 8 + dc;
+        if !(0..8).contains(&row) || !(0..8).contains(&col) {
+            continue;
+        }
+        let rook_square = row as usize * 8 + col as usize;
+        if after.mailbox[rook_square] as usize == own_rook
+            && is_attacked(&after.bb, rook_square, !st.w)
+        {
+            return Some(2_000_000);
+        }
+    }
+    None
 }
 
 fn root_mating_check_order_score(st: &BoardState, mv: Move) -> Option<i32> {
