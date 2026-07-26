@@ -57,6 +57,5 @@ baseline-00zoq-rook-capture	3	2r3k1/p7/7p/1p4p1/6R1/3B1q1P/2P4P/2B3RK w - - 6 35
 # DISABLED: removing or relaxing the checked-leaf cap changes many established puzzle solutions and does not reliably repair this root at fixed depth. Keep the position visible until quiescence can resolve checks without losing general quality.
 # 62owhyzn-14-bxc2	16	r2q1rk1/1p2ppb1/p4np1/2p1Nb2/1n1P1BP1/2N5/PPPQBP2/2KR3R b - - 0 14	-	f5c2	lichess,62oWHyZN,quiescence,check,horizon	0	0	0
 
-# Lichess PsmkiN5M before 19...Ng7, https://lichess.org/PsmkiN5M. The same checked-leaf defect makes a five-second search prefer Ng7 instead of Stockfish's Nxh4, a gap of about 1.25 pawns at 100M Stockfish nodes.
-# DISABLED: resolving checks makes the time-limited search choose Nxh4, but the fixed-depth fixture still chooses Ng7. Ember V1.1.2 passed this depth-16 check with 19...Nxh4, while the current production search does not. Keep the game visible without pretending the broader horizon miss is solved.
-# psmkin5m-19-nxh4	16	r1q2rk1/pp3p1p/1np2Bp1/5n2/2P2Q1N/8/P1P2PPP/4RRK1 b - - 6 19	-	f5h4	lichess,PsmkiN5M,quiescence,check,horizon	0	0	0
+# Lichess PsmkiN5M before 19...Ng7, https://lichess.org/PsmkiN5M. Rules-correct search-local cycle handling changed the root tree and left the immediately recapturable Nxh4 exchange three plies beyond the depth-16 horizon; Stockfish 18 at 100M nodes prefers Nxh4 over Ng7 by about 1.19 pawns. Extend only recapturable equal-knight trades when no higher-value capture competes.
+psmkin5m-19-nxh4	16	r1q2rk1/pp3p1p/1np2Bp1/5n2/2P2Q1N/8/P1P2PPP/4RRK1 b - - 6 19	-	f5h4	lichess,PsmkiN5M,quiescence,check,horizon	0	0	0

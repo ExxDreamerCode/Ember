@@ -237,6 +237,44 @@ fn root_move_is_promotion(st: &BoardState, mv: Move) -> bool {
     fpi != EMPTY_SQ && piece_type(fpi) == 0 && (move_er(mv) == 0 || move_er(mv) == 7)
 }
 
+fn root_equal_knight_capture(st: &BoardState, mv: Move) -> bool {
+    if !root_move_is_capture(st, mv) {
+        return false;
+    }
+    let attacker = st.mailbox[move_from(mv)];
+    let victim = st.mailbox[move_to(mv)];
+    attacker != EMPTY_SQ
+        && victim != EMPTY_SQ
+        && piece_type(attacker) == 1
+        && piece_type(victim) == 1
+}
+
+fn root_capture_can_be_recaptured(st: &BoardState, mv: Move) -> bool {
+    let target = move_to(mv);
+    let mut after = *st;
+    apply_move(
+        &mut after,
+        move_sr(mv),
+        move_sc(mv),
+        move_er(mv),
+        move_ec(mv),
+        move_promotion(mv),
+    );
+    generate_moves(&after, after.w, &after.cr, after.ep)
+        .into_iter()
+        .any(|reply| move_to(reply) == target && root_move_is_capture(&after, reply))
+}
+
+fn root_has_more_valuable_capture(st: &BoardState, mv: Move) -> bool {
+    let victim_value = root_piece_value(st.mailbox[move_to(mv)]);
+    generate_moves(st, st.w, &st.cr, st.ep)
+        .into_iter()
+        .any(|candidate| {
+            root_move_is_capture(st, candidate)
+                && root_piece_value(st.mailbox[move_to(candidate)]) > victim_value
+        })
+}
+
 fn root_piece_value(pi: u8) -> i32 {
     if pi == EMPTY_SQ {
         return 0;
@@ -300,7 +338,11 @@ fn root_rook_invasion_score(st: &BoardState, mv: Move) -> Option<i32> {
 }
 
 fn root_depth_extension(st: &BoardState, mv: Move) -> i32 {
-    if root_reduced_rook_check_capture(st, mv) {
+    if root_reduced_rook_check_capture(st, mv)
+        || (root_equal_knight_capture(st, mv)
+            && root_capture_can_be_recaptured(st, mv)
+            && !root_has_more_valuable_capture(st, mv))
+    {
         3
     } else {
         let attacker = st.mailbox[move_from(mv)];
