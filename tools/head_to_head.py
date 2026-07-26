@@ -82,6 +82,22 @@ def run_cmd(args, log_path=None, check=True, env=None, cwd=None):
     return proc
 
 
+def command_executable(command):
+    if isinstance(command, str):
+        return command.split()[0]
+    if command:
+        return str(command[0])
+    raise ValueError("command must not be empty")
+
+
+def command_label(command):
+    if isinstance(command, str):
+        return command
+    if command:
+        return " ".join(str(argument) for argument in command)
+    raise ValueError("command must not be empty")
+
+
 def load_config(path):
     cfg = read_toml(path)
     if "engine_a" not in cfg or "engine_b" not in cfg:
@@ -756,9 +772,17 @@ def probe(config_path, run_id, explicit_workers=None):
         "engine_b": cfg["engine_b"],
         "tools": {},
     }
-    for cmd in ["python3", cfg["run"].get("cutechess_cmd", "cutechess-cli")]:
-        exe = cmd.split()[0]
-        meta["tools"][cmd] = {"path": shutil.which(exe), "available": shutil.which(exe) is not None}
+    commands = [
+        "python3",
+        cfg["run"].get("cutechess_cmd", "cutechess-cli"),
+    ]
+    for command in commands:
+        executable = command_executable(command)
+        path = shutil.which(executable)
+        meta["tools"][command_label(command)] = {
+            "path": path,
+            "available": path is not None,
+        }
     for engine in [cfg["engine_a"], cfg["engine_b"]]:
         exe = str(engine["cmd"]).split()[0]
         meta["tools"][engine["cmd"]] = {"path": shutil.which(exe), "available": shutil.which(exe) is not None}

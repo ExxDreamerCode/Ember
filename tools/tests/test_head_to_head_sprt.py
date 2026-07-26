@@ -1,3 +1,4 @@
+import json
 import sys
 import tempfile
 import unittest
@@ -10,10 +11,13 @@ sys.path.insert(0, str(TOOLS))
 
 from head_to_head import (  # noqa: E402
     capped_verdict,
+    command_executable,
+    command_label,
     decision,
     detect_workers,
     engine_thread_count,
     materialize_revision_commands,
+    probe,
     record_revision_metadata,
     threads_per_game,
     worker_saturating_batch_pairs,
@@ -21,6 +25,71 @@ from head_to_head import (  # noqa: E402
 
 
 class HeadToHeadSprtTests(unittest.TestCase):
+    def test_command_executable_accepts_string_and_list_commands(self):
+        self.assertEqual(
+            command_executable("cutechess-cli -recover"),
+            "cutechess-cli",
+        )
+        self.assertEqual(
+            command_executable(
+                ["/nix/store/cutechess/bin/cutechess-cli", "-recover"]
+            ),
+            "/nix/store/cutechess/bin/cutechess-cli",
+        )
+        with self.assertRaisesRegex(ValueError, "must not be empty"):
+            command_executable([])
+
+    def test_command_label_preserves_strings_and_joins_lists(self):
+        self.assertEqual(
+            command_label("cutechess-cli -recover"),
+            "cutechess-cli -recover",
+        )
+        self.assertEqual(
+            command_label(
+                ["/nix/store/cutechess/bin/cutechess-cli", "-recover"]
+            ),
+            "/nix/store/cutechess/bin/cutechess-cli -recover",
+        )
+        with self.assertRaisesRegex(ValueError, "must not be empty"):
+            command_label([])
+
+    @patch("head_to_head.print")
+    def test_probe_records_list_form_cutechess_command(self, _print):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "match.toml"
+            config.write_text(
+                f"""
+[run]
+cutechess_cmd = ["/not-installed/cutechess-cli", "-recover"]
+results_dir = {json.dumps(str(root / "results"))}
+workers = 1
+
+[engine_a]
+name = "a"
+cmd = "/bin/true"
+
+[engine_b]
+name = "b"
+cmd = "/bin/true"
+""",
+                encoding="utf-8",
+            )
+
+            probe(config, "list-command", explicit_workers=1)
+
+            metadata = json.loads(
+                (root / "results/list-command/metadata.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                metadata["tools"][
+                    "/not-installed/cutechess-cli -recover"
+                ],
+                {"available": False, "path": None},
+            )
+
     @staticmethod
     def worker_config(workers="auto", engine_a_threads="1", engine_b_threads="1"):
         return {
