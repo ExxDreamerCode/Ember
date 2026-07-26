@@ -843,15 +843,19 @@ macro_rules! negamax_mode_body {
             }
         }
 
-        let tt_data = $this.shared_tt.get_depth(h);
+        let tt_data = $this.shared_tt.get_entry(h);
         let tt_move = if excluded_move.is_none() {
-            tt_data.and_then(|(_, _, _, best)| best)
+            tt_data.and_then(|entry| entry.best_move)
         } else {
             None
         };
-        let tt_score = tt_data.map(|(_, s, _, _)| score_from_tt(s, $ply));
-        let tt_depth = tt_data.map(|(d, _, _, _)| d).unwrap_or(-1);
-        let tt_flag = tt_data.map(|(_, _, f, _)| f);
+        let tt_score = tt_data.map(|entry| score_from_tt(entry.score, $ply));
+        let tt_depth = tt_data.map(|entry| entry.depth).unwrap_or(-1);
+        let tt_flag = tt_data.map(|entry| entry.flag);
+        let tt_pv = tt_data.is_some_and(|entry| entry.pv);
+        let tt_age = tt_data
+            .map(|entry| $this.shared_tt.age(entry))
+            .unwrap_or(u8::MAX);
 
         #[cfg(feature = "search-debug")]
         if tt_data.is_some() {
@@ -1314,6 +1318,8 @@ macro_rules! negamax_mode_body {
                             tt_score.expect("eligible singular candidate has a TT score"),
                             tt_depth,
                             tt_flag.expect("eligible singular candidate has a TT flag"),
+                            tt_pv,
+                            tt_age,
                             candidate.beta,
                             candidate.depth,
                             alternative_score,
@@ -1342,6 +1348,8 @@ macro_rules! negamax_mode_body {
                             tt_score.expect("eligible singular candidate has a TT score"),
                             tt_depth,
                             tt_flag.expect("eligible singular candidate has a TT flag"),
+                            tt_pv,
+                            tt_age,
                             candidate.beta,
                             candidate.depth,
                             alternative_score,
@@ -1368,6 +1376,8 @@ macro_rules! negamax_mode_body {
                             tt_score.expect("eligible singular candidate has a TT score"),
                             tt_depth,
                             tt_flag.expect("eligible singular candidate has a TT flag"),
+                            tt_pv,
+                            tt_age,
                             candidate.beta,
                             candidate.depth,
                             alternative_score,
@@ -1788,12 +1798,13 @@ macro_rules! negamax_mode_body {
             TT_EXACT
         };
         if excluded_move.is_none() {
-            $this.shared_tt.store(
+            $this.shared_tt.store_with_pv(
                 h,
                 actual_depth,
                 score_to_tt(best_score, $ply),
                 flag,
                 best_move,
+                is_pv,
             );
         }
         best_score
@@ -2058,6 +2069,8 @@ impl Searcher {
         tt_score: i32,
         tt_depth: i32,
         tt_flag: u8,
+        tt_pv: bool,
+        tt_age: u8,
         threshold: i32,
         verification_depth: i32,
         verification_score: i32,
@@ -2083,6 +2096,7 @@ impl Searcher {
              {{\"hash\":\"{:016x}\",\"fen\":\"{}\",\"move\":\"{}\",\
              \"ply\":{},\"pv\":{},\"depth\":{},\"alpha\":{},\"beta\":{},\
              \"eval\":{},\"tt_score\":{},\"tt_depth\":{},\"tt_flag\":{},\
+             \"tt_pv\":{},\"tt_age\":{},\
              \"threshold\":{},\"verification_depth\":{},\
              \"verification_score\":{},\"verification_nodes\":{},\
              \"halfmove_clock\":{},\"repetitions\":{},\
@@ -2100,6 +2114,8 @@ impl Searcher {
             tt_score,
             tt_depth,
             tt_flag,
+            tt_pv,
+            tt_age,
             threshold,
             verification_depth,
             verification_score,
@@ -4447,12 +4463,13 @@ fn run_lazy_smp_worker(
             previous_iteration_seconds = iteration_seconds;
             previous_completed_elapsed = elapsed;
             if thread_id == 0 {
-                searcher.shared_tt.store(
+                searcher.shared_tt.store_with_pv(
                     st.hash,
                     depth,
                     score_to_tt(best_score, 0),
                     TT_EXACT,
                     Some(best_move),
+                    true,
                 );
             }
             searcher.update_correction_history(&st, best_score, best_depth);
