@@ -16,7 +16,11 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
-#[cfg(feature = "mimalloc")]
+#[cfg(all(
+    feature = "mimalloc",
+    target_arch = "x86_64",
+    any(target_os = "linux", target_os = "windows")
+))]
 #[global_allocator]
 static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

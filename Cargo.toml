@@ -13,13 +13,15 @@ name = "chess_rs_lib"
 path = "src/lib.rs"
  
 [dependencies]
-mimalloc = { version = "0.1.52", optional = true }
 rand = { version = "0.8", features = ["small_rng"] }
 shakmaty = "0.30"
 shakmaty-syzygy = { version = "0.28", features = ["mmap"] }
 
+[target.'cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "windows")))'.dependencies]
+mimalloc = { version = "0.1.52", optional = true }
+
 [features]
-default = []
+default = ["mimalloc"]
 decision-trace = []
 mimalloc = ["dep:mimalloc"]
 search-debug = []
