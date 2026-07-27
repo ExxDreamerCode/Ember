@@ -359,3 +359,27 @@ fn polyglot_has_ep_capture(st: &BoardState, ep_s: usize) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{pick_uniform_choice_at, BookChoice};
+
+    #[test]
+    fn uniform_picker_can_select_each_quality_candidate() {
+        let candidates = [
+            BookChoice {
+                mv: 1,
+                weight: 2,
+                total_weight: 102,
+            },
+            BookChoice {
+                mv: 2,
+                weight: 100,
+                total_weight: 102,
+            },
+        ];
+
+        assert_eq!(pick_uniform_choice_at(&candidates, 0), Some(candidates[0]));
+        assert_eq!(pick_uniform_choice_at(&candidates, 1), Some(candidates[1]));
+    }
+}

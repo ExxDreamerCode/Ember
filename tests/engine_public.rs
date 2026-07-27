@@ -70,6 +70,25 @@ fn book_confidence_cutoff_rejects_weight_one_tail_move() {
 }
 
 #[test]
+fn random_book_move_returns_before_search_when_a_good_move_exists() {
+    let mut engine = Engine::new();
+    engine.book =
+        Some(OpeningBook::load_from_bytes(opening_book::BOOK_DATA, "<embedded>").unwrap());
+    engine.random_book_move = true;
+    for mv in ["g1f3", "c7c5", "e2e4", "a7a6"] {
+        play_uci(&mut engine, mv);
+    }
+
+    let (best_move, _score, nodes, _elapsed) = engine.find_best_move_with_time_limits(1.0, 1.0, 64);
+
+    assert_eq!(best_move, "d2d4", "https://lichess.org/F1W14oiR");
+    assert_eq!(
+        nodes, 0,
+        "random book selection must not start search when a confident move exists"
+    );
+}
+
+#[test]
 fn caller_supplied_start_time_is_used_for_clock_search() {
     let mut engine = Engine::new();
     engine.book = None;

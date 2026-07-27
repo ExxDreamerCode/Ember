@@ -317,6 +317,44 @@ fn enabled_ponder_option_supplies_book_ponder_move() {
 }
 
 #[test]
+fn random_book_move_is_opt_in_and_returns_without_searching() {
+    let (mut child, rx) = spawn_ember();
+    let mut stdin = child.stdin.take().expect("capture Ember stdin");
+    writeln!(stdin, "uci").unwrap();
+    stdin.flush().unwrap();
+    assert_eq!(
+        wait_for_line(&rx, "option name RandomBookMove ", Duration::from_secs(5)).as_deref(),
+        Some("option name RandomBookMove type check default false"),
+        "Ember must advertise deterministic book selection as the default"
+    );
+
+    writeln!(stdin, "setoption name RandomBookMove value true").unwrap();
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some());
+
+    writeln!(stdin, "position startpos moves g1f3 c7c5 e2e4 a7a6").unwrap();
+    writeln!(stdin, "go depth 64").unwrap();
+    stdin.flush().unwrap();
+    let info = wait_for_line(&rx, "info ", Duration::from_secs(5))
+        .expect("random book selection did not report its result");
+    assert_eq!(
+        info_number(&info, "nodes"),
+        Some(0),
+        "random book selection unexpectedly started search: {info}"
+    );
+    assert_eq!(
+        wait_for_line(&rx, "bestmove ", Duration::from_secs(5)).as_deref(),
+        Some("bestmove d2d4")
+    );
+
+    writeln!(stdin, "quit").unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+    assert!(child.wait().expect("wait for Ember").success());
+}
+
+#[test]
 fn ponder_search_bypasses_book_probe() {
     let (mut child, rx) = spawn_ember();
     let mut stdin = child.stdin.take().expect("capture Ember stdin");

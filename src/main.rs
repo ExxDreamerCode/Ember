@@ -957,6 +957,23 @@ mod tests {
     }
 
     #[test]
+    fn random_book_move_option_is_parsed_and_preserved_on_reset() {
+        let mut engine = Engine::new();
+
+        parse_setoption(&mut engine, "randombookmove", "true");
+        assert!(engine.random_book_move);
+
+        reset_engine(&mut engine);
+        assert!(
+            engine.random_book_move,
+            "ucinewgame must preserve the configured RandomBookMove value"
+        );
+
+        parse_setoption(&mut engine, "randombookmove", "false");
+        assert!(!engine.random_book_move);
+    }
+
+    #[test]
     fn reset_preserves_chess960_hash_alignment() {
         let mut engine = Engine::new();
         engine.st.chess960 = true;
