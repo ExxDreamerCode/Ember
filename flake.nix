@@ -9,20 +9,35 @@
     };
   };
 
-  outputs = { self, nixpkgs, rust-overlay }:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      rust-overlay,
+    }:
     let
-      systems = [ "x86_64-linux" "aarch64-linux" ];
-      forAllSystems = f:
-        nixpkgs.lib.genAttrs systems (system:
-          f (import nixpkgs {
-            inherit system;
-            overlays = [ (import rust-overlay) ];
-            config.allowUnfreePredicate = pkg:
-              builtins.elem (nixpkgs.lib.getName pkg) [ "ccrl-crafty" ];
-          }));
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+        "x86_64-darwin"
+        "aarch64-darwin"
+      ];
+      forAllSystems =
+        f:
+        nixpkgs.lib.genAttrs systems (
+          system:
+          f (
+            import nixpkgs {
+              inherit system;
+              overlays = [ (import rust-overlay) ];
+              config.allowUnfreePredicate = pkg: builtins.elem (nixpkgs.lib.getName pkg) [ "ccrl-crafty" ];
+            }
+          )
+        );
     in
     {
-      apps = forAllSystems (pkgs:
+      apps = forAllSystems (
+        pkgs:
         let
           rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
           windowsEmber = import ./nix/windows-ember.nix {
@@ -187,6 +202,16 @@
           };
         in
         {
+          search-shape-benchmark = {
+            type = "app";
+            program = "${search-shape-benchmark}/bin/search-shape-benchmark";
+          };
+        }
+        // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          head-to-head = {
+            type = "app";
+            program = "${head-to-head}/bin/head-to-head";
+          };
 
           windows-release = {
             type = "app";
@@ -202,37 +227,74 @@
             type = "app";
             program = "${aarch64-qemu-tests}/bin/aarch64-qemu-tests";
           };
+        }
+      );
 
-          search-shape-benchmark = {
-            type = "app";
-            program = "${search-shape-benchmark}/bin/search-shape-benchmark";
-          };
-
-          head-to-head = {
-            type = "app";
-            program = "${head-to-head}/bin/head-to-head";
-          };
-        });
-
-      packages = forAllSystems (pkgs:
+      packages = forAllSystems (
+        pkgs:
         let
-          windowsEmber = import ./nix/windows-ember.nix {
+          windowsEmberAmd64 = import ./nix/windows-ember.nix {
             inherit pkgs;
             lib = pkgs.lib;
+            arch = "amd64";
           };
+          windowsEmberArm64 = import ./nix/windows-ember.nix {
+            inherit pkgs;
+            lib = pkgs.lib;
+            arch = "arm64";
+          };
+          linuxReleasePackages = pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+            ember-linux-amd64 = import ./nix/linux-ember.nix {
+              inherit pkgs;
+              lib = pkgs.lib;
+              arch = "amd64";
+            };
+            ember-linux-arm64 = import ./nix/linux-ember.nix {
+              inherit pkgs;
+              lib = pkgs.lib;
+              arch = "arm64";
+            };
+            ember-windows-amd64 = windowsEmberAmd64.package;
+            ember-windows-arm64 = windowsEmberArm64.package;
+          };
+          macosReleasePackages = pkgs.lib.optionalAttrs pkgs.stdenv.isDarwin {
+            ember-macos-amd64 = import ./nix/macos-ember.nix {
+              inherit
+                nixpkgs
+                pkgs
+                rust-overlay
+                ;
+              lib = pkgs.lib;
+              arch = "amd64";
+            };
+            ember-macos-arm64 = import ./nix/macos-ember.nix {
+              inherit
+                nixpkgs
+                pkgs
+                rust-overlay
+                ;
+              lib = pkgs.lib;
+              arch = "arm64";
+            };
+          };
+          existingLinuxPackages = pkgs.lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") (
+            (import ./nix/ccrl-opponents.nix { inherit pkgs; })
+            // (import ./nix/syzygy-tablebases.nix { inherit pkgs; })
+            // {
+              windows-ember = windowsEmberAmd64.package;
+              windows-portable = import ./nix/windows-portable.nix {
+                inherit pkgs;
+                lib = pkgs.lib;
+                emberWindows = windowsEmberAmd64.package;
+              };
+            }
+          );
         in
-        (import ./nix/ccrl-opponents.nix { inherit pkgs; })
-        // (import ./nix/syzygy-tablebases.nix { inherit pkgs; })
-        // {
-          windows-ember = windowsEmber.package;
-          windows-portable = import ./nix/windows-portable.nix {
-            inherit pkgs;
-            lib = pkgs.lib;
-            emberWindows = windowsEmber.package;
-          };
-        });
+        existingLinuxPackages // linuxReleasePackages // macosReleasePackages
+      );
 
-      devShells = forAllSystems (pkgs:
+      devShells = forAllSystems (
+        pkgs:
         let
           rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
           ccrlOpponents = import ./nix/ccrl-opponents.nix { inherit pkgs; };
@@ -255,8 +317,35 @@
               mv "$out/bin/blunder" "$out/bin/blunder-7.2.0"
             '';
           };
+          ciPackages = with pkgs; [
+            bash
+            coreutils
+            rustToolchain
+            (python3.withPackages (ps: [
+              ps.pyyaml
+              ps.requests
+            ]))
+          ];
         in
         {
+          ci = pkgs.mkShell {
+            packages = ciPackages;
+          };
+
+          release-ci = pkgs.mkShell {
+            packages =
+              ciPackages
+              ++ pkgs.lib.optionals pkgs.stdenv.isLinux (
+                with pkgs;
+                [
+                  llvmPackages.llvm
+                  qemu-user
+                  wine64
+                ]
+              );
+          };
+        }
+        // pkgs.lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") {
           elo-runner = pkgs.mkShell {
             packages = with pkgs; [
               bash
@@ -289,19 +378,8 @@
             '';
           };
 
-          ci = pkgs.mkShell {
-            packages = with pkgs; [
-              bash
-              coreutils
-              rustToolchain
-              (python3.withPackages (ps: [
-                ps.pyyaml
-                ps.requests
-              ]))
-            ];
-          };
-
-          default = self.devShells.${pkgs.system}.elo-runner;
-        });
+          default = self.devShells.${pkgs.stdenv.hostPlatform.system}.elo-runner;
+        }
+      );
     };
 }
