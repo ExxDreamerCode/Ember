@@ -1718,13 +1718,32 @@ impl NNUENet {
     }
 }
 
-#[derive(Clone)]
 pub struct NNUEAccumulator {
     white: Vec<i16>,
     black: Vec<i16>,
     pub hs: usize,
     pub wk: u8,
     pub bk: u8,
+}
+
+impl Clone for NNUEAccumulator {
+    fn clone(&self) -> Self {
+        Self {
+            white: self.white.clone(),
+            black: self.black.clone(),
+            hs: self.hs,
+            wk: self.wk,
+            bk: self.bk,
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.white.clone_from(&source.white);
+        self.black.clone_from(&source.black);
+        self.hs = source.hs;
+        self.wk = source.wk;
+        self.bk = source.bk;
+    }
 }
 
 impl NNUEAccumulator {
@@ -2020,4 +2039,36 @@ fn validate_correction_offsets(offsets: &[u32]) -> Result<(), String> {
         prev = offset;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NNUEAccumulator;
+
+    #[test]
+    fn accumulator_clone_from_reuses_matching_buffers() {
+        let mut source = NNUEAccumulator::new(1024);
+        source.white[0] = 17;
+        source.black[1023] = -23;
+        source.wk = 7;
+        source.bk = 56;
+
+        let mut destination = NNUEAccumulator::new(1024);
+        let white_ptr = destination.white.as_ptr();
+        let black_ptr = destination.black.as_ptr();
+        let white_capacity = destination.white.capacity();
+        let black_capacity = destination.black.capacity();
+
+        destination.clone_from(&source);
+
+        assert_eq!(destination.white, source.white);
+        assert_eq!(destination.black, source.black);
+        assert_eq!(destination.hs, source.hs);
+        assert_eq!(destination.wk, source.wk);
+        assert_eq!(destination.bk, source.bk);
+        assert_eq!(destination.white.as_ptr(), white_ptr);
+        assert_eq!(destination.black.as_ptr(), black_ptr);
+        assert_eq!(destination.white.capacity(), white_capacity);
+        assert_eq!(destination.black.capacity(), black_capacity);
+    }
 }
