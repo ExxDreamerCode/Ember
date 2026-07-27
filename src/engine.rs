@@ -35,6 +35,7 @@ pub struct Engine {
     pub num_threads: usize,
     pub stopped: Arc<AtomicBool>,
     pub book: Option<OpeningBook>,
+    pub random_book_move: bool,
     pub book_min_move_weight: u16,
     pub book_min_move_weight_permille: u16,
     #[cfg(feature = "decision-trace")]
@@ -43,6 +44,7 @@ pub struct Engine {
 
 pub struct EngineBookConfig {
     pub book: Option<OpeningBook>,
+    pub random_book_move: bool,
     pub min_move_weight: u16,
     pub min_move_weight_permille: u16,
 }
@@ -55,9 +57,15 @@ impl EngineBookConfig {
     ) -> Self {
         Self {
             book,
+            random_book_move: false,
             min_move_weight,
             min_move_weight_permille,
         }
+    }
+
+    pub fn with_random_book_move(mut self, random_book_move: bool) -> Self {
+        self.random_book_move = random_book_move;
+        self
     }
 }
 
@@ -933,6 +941,7 @@ impl Engine {
             num_threads: 1,
             stopped,
             book: None,
+            random_book_move: false,
             book_min_move_weight: DEFAULT_BOOK_MIN_MOVE_WEIGHT,
             book_min_move_weight_permille: DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE,
             #[cfg(feature = "decision-trace")]
@@ -964,6 +973,7 @@ impl Engine {
             num_threads,
             stopped,
             book: book_config.book,
+            random_book_move: book_config.random_book_move,
             book_min_move_weight: book_config.min_move_weight,
             book_min_move_weight_permille: book_config.min_move_weight_permille,
             #[cfg(feature = "decision-trace")]
@@ -1386,12 +1396,35 @@ impl Engine {
 
         if !self.st.chess960 {
             if let Some(ref book) = self.book {
-                if let Some(choice) = book.best_move_with_confidence(
-                    &self.st,
-                    &moves,
-                    self.book_min_move_weight,
-                    self.book_min_move_weight_permille,
-                ) {
+                let choice = if self.random_book_move {
+                    book.pick_move_with_quality(
+                        &self.st,
+                        &moves,
+                        self.book_min_move_weight,
+                        self.book_min_move_weight_permille,
+                        crate::book::DEFAULT_BOOK_MAX_EVAL_LOSS_CP,
+                        |mv| {
+                            let mut child = self.st;
+                            apply_move(
+                                &mut child,
+                                move_sr(mv),
+                                move_sc(mv),
+                                move_er(mv),
+                                move_ec(mv),
+                                move_promotion(mv),
+                            );
+                            -self.searcher.corrected_eval(&child)
+                        },
+                    )
+                } else {
+                    book.best_move_with_confidence(
+                        &self.st,
+                        &moves,
+                        self.book_min_move_weight,
+                        self.book_min_move_weight_permille,
+                    )
+                };
+                if let Some(choice) = choice {
                     let mv_str = move_to_uci(&self.st, choice.mv);
                     let eval_score = self.searcher.corrected_eval(&self.st);
                     let elapsed = match timer_start {

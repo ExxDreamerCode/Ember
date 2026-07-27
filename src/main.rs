@@ -235,6 +235,7 @@ fn main() {
                 println!("option name Move Overhead type spin default 7 min 0 max 5000");
                 println!("option name Ponder type check default false");
                 println!("option name Book type string default <embedded>");
+                println!("option name RandomBookMove type check default false");
                 println!(
                     "option name BookMinMoveWeight type spin default {} min 1 max 65535",
                     DEFAULT_BOOK_MIN_MOVE_WEIGHT
@@ -414,7 +415,8 @@ fn main() {
                     book,
                     engine.book_min_move_weight,
                     engine.book_min_move_weight_permille,
-                );
+                )
+                .with_random_book_move(engine.random_book_move);
 
                 let mut search_searcher = chess_rs_lib::search::Searcher::new(
                     Arc::clone(&shared_tt),
@@ -616,6 +618,13 @@ fn parse_setoption(engine: &mut Engine, name: &str, val: &str) {
                 }
             }
         }
+        "randombookmove" | "random book move" => match parse_check_value(val) {
+            Some(enabled) => {
+                engine.random_book_move = enabled;
+                eprintln!("info string Set RandomBookMove to {}", enabled);
+            }
+            None => eprintln!("info string Ignoring invalid RandomBookMove value: {}", val),
+        },
         "bookminmoveweight" | "book min move weight" => {
             if let Ok(weight) = val.parse::<u16>() {
                 if weight >= 1 {
@@ -675,6 +684,7 @@ fn reset_engine(engine: &mut Engine) {
     let search_pool = Arc::clone(&engine.search_pool);
     let chess960 = engine.st.chess960;
     let syzygy = engine.searcher.syzygy.clone();
+    let random_book_move = engine.random_book_move;
     let book_min_move_weight = engine.book_min_move_weight;
     let book_min_move_weight_permille = engine.book_min_move_weight_permille;
     #[cfg(feature = "decision-trace")]
@@ -683,6 +693,7 @@ fn reset_engine(engine: &mut Engine) {
     search_pool.clear_learning();
     *engine = Engine::new();
     engine.book = book;
+    engine.random_book_move = random_book_move;
     engine.book_min_move_weight = book_min_move_weight;
     engine.book_min_move_weight_permille = book_min_move_weight_permille;
     engine.search_pool = search_pool;
