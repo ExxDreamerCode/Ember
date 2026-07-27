@@ -3357,19 +3357,12 @@ impl Searcher {
         if ply + 1 >= self.nnue_stack.len() {
             return;
         }
-        let (left, right) = self.nnue_stack.split_at_mut(ply + 1);
-        right[0].clone_from(&left[ply]);
-
-        let ok = B::update_move(
-            &mut self.nnue_stack[ply + 1],
-            net,
-            st_before,
-            sr,
-            sc,
-            er,
-            ec,
-            promotion,
-        );
+        let ok = {
+            let (left, right) = self.nnue_stack.split_at_mut(ply + 1);
+            right[0].update_from_parent_with_backend::<B>(
+                &left[ply], net, st_before, sr, sc, er, ec, promotion,
+            )
+        };
 
         if !ok {
             B::refresh(&mut self.nnue_stack[ply + 1], net, st_after);
