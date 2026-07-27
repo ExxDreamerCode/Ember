@@ -21,6 +21,84 @@
 
 - Скачайте [последний релиз](https://github.com/ExxDreamerCode/Ember/releases/tag/V1.1.2)
 
+### Выпускные бинарники через Nix
+
+Для каждой поддерживаемой системы и архитектуры есть отдельная Nix-цель:
+
+```bash
+# На Linux
+nix build .#ember-linux-amd64
+nix build .#ember-linux-arm64
+nix build .#ember-windows-amd64
+nix build .#ember-windows-arm64
+
+# На macOS
+nix build .#ember-macos-amd64
+nix build .#ember-macos-arm64
+```
+
+Linux-бинарники полностью статические и используют musl, Windows-бинарники
+статически связывают MSVC CRT. В macOS системная `libSystem` всегда остаётся
+динамической; выпускные бинарники не зависят от Homebrew, MacPorts, Nix store
+или других сторонних библиотек. x86-64 сборки сохраняют автоматический выбор
+ускоренных AVX2 и AVX-512 реализаций на подходящих процессорах. macOS x86-64
+также работает через Rosetta 2.
+
+CI собирает все шесть вариантов только в двух заданиях: Linux собирает
+Linux и Windows, а нативный ARM64 macOS runner запускает полный набор тестов
+и собирает обе macOS-архитектуры. Перед загрузкой Linux и обе macOS-сборки
+проходят короткий UCI-тест, Windows amd64 дополнительно запускается через
+Wine, а Windows arm64 проверяется как корректный PE ARM64 со статическим CRT.
+Сборку можно запустить вручную кнопкой `Run workflow` на странице Actions.
+
+Каждый бинарник упаковывается отдельно. Windows использует ZIP, Linux и
+macOS — `tar.gz`. Например:
+
+```text
+ember-1.1.2-01234567-linux-amd64.tar.gz
+ember-1.1.2-01234567-windows-arm64.zip
+```
+
+Имя каталога внутри совпадает с именем архива без расширения. Рядом с
+бинарником лежат `BUILD-INFO.txt` с системой, архитектурой, версией, полным
+хешем коммита и SHA-256 бинарника, а также `SHA256SUMS.txt`.
+
+Чтобы скачать из одного GitHub Actions запуска все шесть готовых архивов в
+каталог `release/`, передайте скрипту номер запуска из его URL:
+
+```bash
+python3 tools/download_release_archives.py RUN_ID
+```
+
+Скрипт скачивает оба CI-артефакта, извлекает из них готовые выпускные архивы
+и проверяет, что получены все платформы одной версии и одного коммита. Для
+закрытого репозитория или если GitHub требует авторизацию задайте `GH_TOKEN`;
+другой репозиторий можно указать через
+`--repo OWNER/REPOSITORY`.
+
+Короткий путь создать токен через сайт GitHub:
+
+1. Откройте GitHub и нажмите на аватар в правом верхнем углу.
+2. Перейдите в `Settings` → `Developer settings` → `Personal access tokens` →
+   `Fine-grained tokens`.
+3. Нажмите `Generate new token`.
+4. Укажите понятное имя, например `download Ember CI artifacts`, и короткий
+   срок действия.
+5. В `Resource owner` выберите владельца нужного репозитория.
+6. В `Repository access` выберите `Only select repositories` и отметьте
+   репозиторий с Ember.
+7. В `Repository permissions` выставьте `Actions` в `Read-only` и `Contents` в
+   `Read-only`.
+8. Сгенерируйте токен и сразу сохраните его: GitHub показывает его только один
+   раз.
+
+Пример запуска с токеном из файла:
+
+```bash
+GH_TOKEN="$(tr -d '\r\n' < ../gh-token.txt)" \
+  python3 tools/download_release_archives.py RUN_ID --repo OWNER/REPOSITORY
+```
+
 ### Сборка Windows-версии через Nix
 
 На Linux воспроизводимый Windows-бинарник с ABI MSVC собирается как обычный
