@@ -16,6 +16,10 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const MIN_HASH_MB: usize = 1;
 const MAX_HASH_MB: usize = 4096;
 const MIN_THREADS: usize = 1;

@@ -105,6 +105,7 @@ let
       export HOME="$TMPDIR/home"
       ${xwinEnvironment}
       export XWIN_CACHE_DIR="$TMPDIR/cargo-xwin"
+      export PATH="${pkgs.llvmPackages.clang-unwrapped}/bin:$PATH"
       mkdir -p "$HOME" "$XWIN_CACHE_DIR"
       cp -R "${xwinSdk}/." "$XWIN_CACHE_DIR/"
       chmod -R u+w "$XWIN_CACHE_DIR"
@@ -149,6 +150,7 @@ let
       ${xwinEnvironment}
       export XWIN_CACHE_DIR="''${XWIN_CACHE_DIR:-$HOME/.cache/cargo-xwin}"
       export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-target/xwin}"
+      export PATH="${pkgs.llvmPackages.clang-unwrapped}/bin:$PATH"
 
       target_cpu="''${EMBER_WINDOWS_TARGET_CPU:-${defaultTargetCpu}}"
       export RUSTFLAGS="-C target-cpu=$target_cpu -C target-feature=+crt-static ''${EMBER_WINDOWS_RUSTFLAGS:-}"
