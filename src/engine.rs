@@ -923,7 +923,7 @@ impl Default for Engine {
 impl Engine {
     pub fn new() -> Self {
         let stopped = Arc::new(AtomicBool::new(false));
-        let shared_tt = Arc::new(SharedTT::new(DEFAULT_HASH_MB));
+        let shared_tt = Arc::new(SharedTT::placeholder());
         let search_pool = Arc::new(LazySmpPool::new());
         let mut e = Engine {
             st: BoardState::empty(),
@@ -941,6 +941,10 @@ impl Engine {
         e.searcher.tt_mb = DEFAULT_HASH_MB;
         e.set_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
         e
+    }
+
+    pub fn ensure_hash_ready(&mut self) {
+        self.shared_tt.ensure_size(self.searcher.tt_mb);
     }
 
     pub fn new_with(
@@ -1419,6 +1423,7 @@ impl Engine {
         }
 
         let search_threads = threads_for_time_budget(self.num_threads, soft_time_limit);
+        self.ensure_hash_ready();
         self.shared_tt.advance_generation();
         let preferred = tt_root_move(&self.searcher, &self.st, &moves);
         let ordered_moves = sort_root_moves(&self.st, &moves, preferred);
@@ -1855,6 +1860,21 @@ mod tests {
             ),
             "expected legal move {uci}"
         );
+    }
+
+    #[test]
+    fn engine_defers_hash_materialization_until_ready() {
+        let mut engine = Engine::new();
+        assert_eq!(engine.searcher.tt_mb, DEFAULT_HASH_MB);
+        assert_eq!(engine.shared_tt.allocated_entries(), 1);
+
+        engine.searcher.tt_mb = 1;
+        engine.ensure_hash_ready();
+        let ready_entries = engine.shared_tt.allocated_entries();
+        assert!(ready_entries > 1);
+
+        engine.ensure_hash_ready();
+        assert_eq!(engine.shared_tt.allocated_entries(), ready_entries);
     }
 
     // These position-backed tests observe the internal root-order predicates, scores,

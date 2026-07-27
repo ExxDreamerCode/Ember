@@ -252,6 +252,7 @@ fn main() {
                 println!("uciok");
             }
             "isready" => {
+                engine.ensure_hash_ready();
                 println!("readyok");
             }
             "ucinewgame" => {
@@ -688,7 +689,8 @@ fn reset_engine(engine: &mut Engine) {
     {
         engine.trace = trace;
     }
-    engine.searcher.resize_tt(tt_mb);
+    engine.searcher.tt_mb = tt_mb;
+    engine.ensure_hash_ready();
 }
 
 fn parse_position(engine: &mut Engine, parts: &[&str]) {
