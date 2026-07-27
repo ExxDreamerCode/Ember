@@ -1704,6 +1704,26 @@ impl NNUEAccumulator {
     }
 
     #[inline(always)]
+    fn seed_or_add_feature<B: NnueBackend>(
+        acc: &mut [i16],
+        net: &NNUENet,
+        idx: usize,
+        seeded: &mut bool,
+    ) {
+        let Some(row) = net.input_row_fast(idx) else {
+            return;
+        };
+
+        if *seeded {
+            Self::add_row::<B>(acc, row);
+        } else {
+            let zero = &ZERO_FEATURE_ROW[..acc.len()];
+            B::copy_update(acc, &net.input_biases[..acc.len()], zero, zero, row);
+            *seeded = true;
+        }
+    }
+
+    #[inline(always)]
     fn remove_feature<B: NnueBackend>(acc: &mut [i16], net: &NNUENet, idx: usize) {
         if let Some(row) = net.input_row_fast(idx) {
             Self::remove_row::<B>(acc, row);
@@ -1742,8 +1762,8 @@ impl NNUEAccumulator {
         self.wk = wk;
         self.bk = bk;
 
-        self.white.copy_from_slice(&net.input_biases[..h]);
-        self.black.copy_from_slice(&net.input_biases[..h]);
+        let mut white_seeded = false;
+        let mut black_seeded = false;
 
         for color in 0..2u8 {
             for pt in 0..6u8 {
@@ -1753,10 +1773,27 @@ impl NNUEAccumulator {
                     bb &= bb - 1;
                     let csq = convert(sq);
 
-                    Self::add_feature::<B>(&mut self.white, net, net.halfka(0, wk, color, pt, csq));
-                    Self::add_feature::<B>(&mut self.black, net, net.halfka(1, bk, color, pt, csq));
+                    Self::seed_or_add_feature::<B>(
+                        &mut self.white,
+                        net,
+                        net.halfka(0, wk, color, pt, csq),
+                        &mut white_seeded,
+                    );
+                    Self::seed_or_add_feature::<B>(
+                        &mut self.black,
+                        net,
+                        net.halfka(1, bk, color, pt, csq),
+                        &mut black_seeded,
+                    );
                 }
             }
+        }
+
+        if !white_seeded {
+            self.white.copy_from_slice(&net.input_biases[..h]);
+        }
+        if !black_seeded {
+            self.black.copy_from_slice(&net.input_biases[..h]);
         }
     }
 
