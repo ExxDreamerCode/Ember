@@ -2,10 +2,14 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chess_rs_lib::board::{encode_move, move_to_uci, BoardState, Move, INF};
+use chess_rs_lib::board::{
+    encode_move, move_ec, move_er, move_promotion, move_sc, move_sr, move_to_uci, BoardState, Move,
+    INF,
+};
 use chess_rs_lib::movegen::{apply_move, generate_moves};
 use chess_rs_lib::search::{
-    extract_pv_line, lazy_smp_search, LazySmpPool, LazySmpSearchLimits, Searcher,
+    extract_pv_line, format_pv_line_uci, lazy_smp_search, LazySmpPool, LazySmpSearchLimits,
+    Searcher,
 };
 use chess_rs_lib::syzygy::SyzygyTables;
 use chess_rs_lib::tt::{SharedTT, TT_EXACT};
@@ -16,6 +20,24 @@ fn state_from_fen(fen: &str) -> BoardState {
     let mut engine = Engine::new();
     engine.set_fen(fen);
     engine.st
+}
+
+fn legal_move(st: &BoardState, uci: &str) -> Move {
+    generate_moves(st, st.w, &st.cr, st.ep)
+        .into_iter()
+        .find(|mv| move_to_uci(st, *mv) == uci)
+        .unwrap_or_else(|| panic!("expected legal move {uci}"))
+}
+
+fn apply_encoded_move(st: &mut BoardState, mv: Move) {
+    apply_move(
+        st,
+        move_sr(mv),
+        move_sc(mv),
+        move_er(mv),
+        move_ec(mv),
+        move_promotion(mv),
+    );
 }
 
 #[test]
@@ -467,4 +489,32 @@ fn extract_pv_validates_takes_back_king_in_check() {
         1,
         "extract_pv must pop moves that leave king in check"
     );
+}
+
+#[test]
+fn format_pv_line_uci_walks_successive_positions() {
+    let st = state_from_fen("2n4k/8/1P6/8/8/8/8/7K w - - 0 1");
+    let first = legal_move(&st, "b6b7");
+    let mut after_first = st;
+    apply_encoded_move(&mut after_first, first);
+    let reply = legal_move(&after_first, "h8g8");
+    let promotion = encode_move(1, 1, 0, 2, b'Q');
+
+    let pv = [first, reply, promotion];
+
+    assert_eq!(format_pv_line_uci(&st, &pv), "b6b7 h8g8 b7c8q");
+}
+
+#[test]
+fn format_pv_line_uci_stops_before_suffixless_promotion() {
+    let st = state_from_fen("2n4k/8/1P6/8/8/8/8/7K w - - 0 1");
+    let first = legal_move(&st, "b6b7");
+    let mut after_first = st;
+    apply_encoded_move(&mut after_first, first);
+    let reply = legal_move(&after_first, "h8g8");
+    let suffixless_promotion = encode_move(1, 1, 0, 2, 0);
+
+    let pv = [first, reply, suffixless_promotion];
+
+    assert_eq!(format_pv_line_uci(&st, &pv), "b6b7 h8g8");
 }

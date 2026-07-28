@@ -9,7 +9,9 @@ use crate::book::{
     OpeningBook, DEFAULT_BOOK_MIN_MOVE_WEIGHT, DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE,
 };
 use crate::movegen::{apply_move, generate_moves};
-use crate::search::{lazy_smp_search, LazySmpPool, LazySmpSearchLimits, Searcher};
+use crate::search::{
+    format_pv_line_uci, lazy_smp_search, LazySmpPool, LazySmpSearchLimits, Searcher,
+};
 use crate::time_management::{iteration_time_decision, threads_for_time_budget, IterationTiming};
 #[cfg(feature = "decision-trace")]
 use crate::trace::{DecisionTrace, DepthInfo, TraceLogger};
@@ -1737,11 +1739,7 @@ impl Engine {
                 };
                 let pv_line =
                     crate::search::extract_pv_line(&self.searcher.shared_tt, &self.st, best_move);
-                let pv_str = pv_line
-                    .iter()
-                    .map(|m| move_to_uci(&self.st, *m))
-                    .collect::<Vec<_>>()
-                    .join(" ");
+                let pv_str = format_pv_line_uci(&self.st, &pv_line);
                 println!(
                     "info depth {} score {} nodes {} nps {} time {} pv {}",
                     depth, score_str, total_nodes, nps, time_ms, pv_str

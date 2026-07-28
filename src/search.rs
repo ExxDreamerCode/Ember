@@ -4942,11 +4942,7 @@ fn print_lazy_smp_info(
         format!("cp {score}")
     };
     let pv_line = extract_pv_line(&job.shared_tt, &job.st, best_move);
-    let pv_str = pv_line
-        .iter()
-        .map(|mv| crate::board::move_to_uci(&job.st, *mv))
-        .collect::<Vec<_>>()
-        .join(" ");
+    let pv_str = format_pv_line_uci(&job.st, &pv_line);
     let nps = if elapsed > 0.0 {
         (nodes as f64 / elapsed) as i64
     } else {
@@ -4963,18 +4959,51 @@ fn print_lazy_smp_info(
     );
 }
 
+fn malformed_promotion_move(st: &BoardState, mv: Move) -> bool {
+    let promo = move_promotion(mv).to_ascii_uppercase();
+    let from = move_from(mv);
+    let to_rank = move_er(mv);
+    let fpi = st.mailbox[from];
+    let reaches_back_rank = to_rank == 0 || to_rank == 7;
+    let valid_promo = matches!(promo, b'Q' | b'R' | b'B' | b'N');
+
+    if promo != 0 {
+        return fpi == EMPTY_SQ || piece_type(fpi) != 0 || !reaches_back_rank || !valid_promo;
+    }
+
+    fpi != EMPTY_SQ && piece_type(fpi) == 0 && reaches_back_rank
+}
+
+pub fn format_pv_line_uci(st: &BoardState, pv_line: &[Move]) -> String {
+    let mut current = *st;
+    let mut out = Vec::with_capacity(pv_line.len());
+
+    for &mv in pv_line {
+        if malformed_promotion_move(&current, mv) {
+            break;
+        }
+
+        let legal_moves = generate_moves(&current, current.w, &current.cr, current.ep);
+        if !legal_moves.contains(&mv) {
+            break;
+        }
+
+        out.push(crate::board::move_to_uci(&current, mv));
+        apply_move(
+            &mut current,
+            move_sr(mv),
+            move_sc(mv),
+            move_er(mv),
+            move_ec(mv),
+            move_promotion(mv),
+        );
+    }
+
+    out.join(" ")
+}
+
 pub fn extract_pv_line(shared_tt: &SharedTT, st: &BoardState, first_move: Move) -> Vec<Move> {
-    let first_promo = move_promotion(first_move);
-    let first_fpi = st.mailbox[move_from(first_move)];
-    if first_fpi != EMPTY_SQ
-        && piece_type(first_fpi) == 0
-        && (move_er(first_move) == 0 || move_er(first_move) == 7)
-        && (first_promo == 0
-            || (first_promo != b'Q'
-                && first_promo != b'R'
-                && first_promo != b'B'
-                && first_promo != b'N'))
-    {
+    if malformed_promotion_move(st, first_move) {
         return vec![];
     }
 
@@ -5005,16 +5034,10 @@ pub fn extract_pv_line(shared_tt: &SharedTT, st: &BoardState, first_move: Move) 
             if !moves.contains(&best) {
                 break;
             }
-            let promo = move_promotion(best);
-            let fpi = prev_st.mailbox[move_from(best)];
-            if fpi != EMPTY_SQ
-                && piece_type(fpi) == 0
-                && (move_er(best) == 0 || move_er(best) == 7)
-                && (promo == 0
-                    || (promo != b'Q' && promo != b'R' && promo != b'B' && promo != b'N'))
-            {
+            if malformed_promotion_move(&prev_st, best) {
                 break;
             }
+            let promo = move_promotion(best);
             pv.push(best);
             apply_move(
                 &mut prev_st,
