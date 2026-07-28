@@ -105,6 +105,66 @@ jobs:
             cargo test --locked --release --all-features --test lichess_puzzle_corpus -- --ignored --test-threads=4
           "
 
+  windows-msvc:
+    name: Windows MSVC build smoke
+    runs-on: windows-2022
+    needs:
+      - rust
+
+    env:
+      CARGO_TERM_COLOR: always
+      RUSTFLAGS: -C target-cpu=x86-64-v3 -C target-feature=+crt-static
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install nightly-2026-07-07 `
+            --profile minimal `
+            --component clippy `
+            --component rustfmt `
+            --target x86_64-pc-windows-msvc
+          rustup default nightly-2026-07-07
+          rustup show
+
+      - name: Configure Visual Studio environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build native MSVC binary
+        shell: pwsh
+        run: >
+          cargo build --locked --release --bin ember
+          --target x86_64-pc-windows-msvc
+
+      - name: Run native UCI smoke test
+        shell: pwsh
+        run: >
+          python tools/smoke_test_uci.py --
+          target/x86_64-pc-windows-msvc/release/ember.exe
+
+      - name: Check static MSVC runtime
+        shell: pwsh
+        run: |
+          $binary = "target/x86_64-pc-windows-msvc/release/ember.exe"
+          $imports = & dumpbin /dependents $binary
+          $imports
+          if ($imports -match "(?i)ucrtbase|vcruntime|msvcp[0-9]") {
+            throw "$binary imports a dynamic MSVC runtime"
+          }
+
+      - name: Upload native MSVC binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ember-windows-msvc-amd64
+          path: target/x86_64-pc-windows-msvc/release/ember.exe
+          if-no-files-found: error
+          retention-days: 7
+
   release-linux-windows:
     name: Linux and Windows release binaries
     runs-on: ubuntu-latest
