@@ -982,7 +982,10 @@ id	depth	fen_before_blunder	setup_move	expected_move	themes	rating	popularity	pl
 00j3i	2	5rk1/R5p1/5q1p/8/3p4/1P4Q1/P3rPPP/5RK1 w - - 2 38	g3g4	f6f2	endgame,long,mate,mateIn3,sacrifice	1588	96	14959
 # 00jmD	8/1pp5/8/PP4p1/3k1pP1/8/1bbBB3/5K2 b - - 2 41	c2d3	e2d3	a5a6	a5a6	a5a6	bishopEndgame,crushing,endgame,quietMove,veryLong	2930	98	290
 # 00k5U	6k1/pp6/3br2p/6pq/3R2R1/1P5P/P1P2KQ1/8 w - - 5 30	h3h4	h5f7	d6c5	d6c5	d6c5	advantage,endgame,long,pin	2346	90	349
-# 00kZO	3Q4/4rRbk/p1qp2p1/1p2r2p/2p1P1bP/6N1/PP4P1/1B3R1K b - - 11 37	c6d7	d8f8	f7g7	f7g7	f7g7	advantage,long,middlegame,pin	2146	89	166
+# Ember V1.1.2 found Qf8 and the forced Rxf7 Rxf7 Qxf7 Qxf7 exchange, while newer root ordering searched Rg7 first and let the quiet queen-rook battery fail low. Source: https://lichess.org/training/00kZO.
+00kZO-d2	2	3Q4/4rRbk/p1qp2p1/1p2r2p/2p1P1bP/6N1/PP4P1/1B3R1K b - - 11 37	c6d7	d8f8	advantage,long,middlegame,pin	2146	89	166
+00kZO-d3	3	3Q4/4rRbk/p1qp2p1/1p2r2p/2p1P1bP/6N1/PP4P1/1B3R1K b - - 11 37	c6d7	d8f8	advantage,long,middlegame,pin	2146	89	166
+00kZO-d4	4	3Q4/4rRbk/p1qp2p1/1p2r2p/2p1P1bP/6N1/PP4P1/1B3R1K b - - 11 37	c6d7	d8f8	advantage,long,middlegame,pin	2146	89	166
 00ldC	2	3r1r2/pp3pk1/2p1pRp1/6Qp/2P5/P7/1q4PP/5R1K b - - 1 31	d8d2	f6g6	advantage,clearance,deflection,endgame,fork,sacrifice,veryLong	1650	97	2325
 # 00nsa	6k1/1p1R3p/pB4p1/P3bpK1/4r2P/6P1/2P2P2/8 w - - 3 34	b6c5	e4g4	e4c4	e4c4	e4c4	deflection,endgame,long,mate,mateIn3,sacrifice	2269	94	779
 # 00pXW	r2qr1k1/3n1pp1/p2bp2p/1p1b2NQ/5P2/3BB3/PPP3PP/R4RK1 b - - 1 17	h6g5	f4g5	h5h7	h5h7	h5h7	advantage,enPassant,long,middlegame	2412	90	362
@@ -994,7 +997,10 @@ id	depth	fen_before_blunder	setup_move	expected_move	themes	rating	popularity	pl
 # 00sys	r1bq1r2/pp2b1pk/2n1pp2/3p4/2pP3N/2P1P1P1/PP1N1PP1/R2QK2R b KQ - 0 13	d8e8	h4g6	d1g4	d1g4	d1g4	crushing,discoveredAttack,discoveredCheck,long,master,opening	2294	81	376
 # 00tlr	r2r2k1/p3Rp1p/5Qp1/8/8/2P4P/q4PP1/4R1K1 b - - 1 24	a7a5	h3h4	e1e5	e1e5	e1e4	crushing,endgame,quietMove,short	2749	90	1903
 # 00uAh	r1q3k1/1pb3pp/p1b1p3/3R1pB1/4N1NQ/8/PPP2PPP/2K5 b - - 0 21	e6d5	g4f6	e4f6	e4f6	e4f6	crushing,kingsideAttack,long,middlegame	2250	77	168
-# 00v6q	2Q1k3/4qpp1/2pr4/2Np4/3P4/7P/P1P3P1/6K1 b - - 4 34	e7d8	c5b7	c8f5	c8f5	c8f5	crushing,endgame,fork,long,master,sacrifice	1940	88	218
+# Ember V1.1.2 found the quiet Nb7 queen-rook fork, while the newer tactical root ordering searched Qxd8+ first and let the fork fail low through quiescence. Source: https://lichess.org/training/00v6q.
+00v6q-d2	2	2Q1k3/4qpp1/2pr4/2Np4/3P4/7P/P1P3P1/6K1 b - - 4 34	e7d8	c5b7	crushing,endgame,fork,long,master,sacrifice	1940	88	218
+00v6q-d3	3	2Q1k3/4qpp1/2pr4/2Np4/3P4/7P/P1P3P1/6K1 b - - 4 34	e7d8	c5b7	crushing,endgame,fork,long,master,sacrifice	1940	88	218
+00v6q-d4	4	2Q1k3/4qpp1/2pr4/2Np4/3P4/7P/P1P3P1/6K1 b - - 4 34	e7d8	c5b7	crushing,endgame,fork,long,master,sacrifice	1940	88	218
 # 00vf5	r1b1kbnr/1pqp1ppp/p1n1p3/8/2BNP3/P1N5/1PP2PPP/R1BQK2R b KQkq - 0 7	g8e7	d4b5	d4c6	d4c6	d4c6	crushing,long,opening,sacrifice	2162	90	1452
 # 00zOQ	2r3k1/p7/7p/1p4p1/6R1/3B1q1P/2P4P/2B3RK w - - 6 35	g1g2	c8e8	f3d1	f3d1	f3h3	advantage,deflection,endgame,long,quietMove	1915	90	778
 # 00zdb	2rqr1k1/pb3p2/1p4pp/n2p4/P1pRnN2/2P2N1P/BPQ2PP1/3R2K1 b - - 2 20	c8c5	d4e4	f4g6	f4g6	f4g6	advantage,discoveredAttack,master,middlegame,short	1853	93	2903

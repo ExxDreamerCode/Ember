@@ -1,26 +1,48 @@
 {
   pkgs,
   lib,
+  arch ? "amd64",
 }:
 
 let
+  target =
+    {
+      amd64 = "x86_64-pc-windows-msvc";
+      arm64 = "aarch64-pc-windows-msvc";
+    }
+    .${arch} or (throw "unsupported Windows Ember architecture: ${arch}");
   xwinConfig = {
-    arch = "x86_64";
+    arch =
+      {
+        amd64 = "x86_64";
+        arm64 = "aarch64";
+      }
+      .${arch};
     variant = "desktop";
     version = "17";
     sdkVersion = "10.0.26100";
     # xwin expects the manifest toolset selector, not the 14.44.35220
     # build number reported by the installed CRT headers.
     crtVersion = "14.44.17.14";
-    cacheHash = "sha256-wHNCHGHGJcKv+oN/sDceNBitjQdwRcEWOZlJnu/CzSE=";
+    cacheHash =
+      {
+        amd64 = "sha256-wHNCHGHGJcKv+oN/sDceNBitjQdwRcEWOZlJnu/CzSE=";
+        arm64 = "sha256-ejLSpOVpszYXdfovAfhVRyyn/cVgXNwCiKQao+smags=";
+      }
+      .${arch};
   };
-  defaultTargetCpu = "x86-64-v3";
-  rustToolchainConfig =
-    (builtins.fromTOML (builtins.readFile ../rust-toolchain.toml)).toolchain;
+  defaultTargetCpu =
+    {
+      amd64 = "x86-64-v3";
+      arm64 = "generic";
+    }
+    .${arch};
+  releaseAppName = if arch == "amd64" then "windows-release" else "windows-release-arm64";
+  rustToolchainConfig = (builtins.fromTOML (builtins.readFile ../rust-toolchain.toml)).toolchain;
   windowsRustToolchain = pkgs.rust-bin.fromRustupToolchain (
     rustToolchainConfig
     // {
-      targets = [ "x86_64-pc-windows-msvc" ];
+      targets = [ target ];
     }
   );
 
@@ -35,7 +57,7 @@ let
     --locked
     --release
     --bin ember
-    --target x86_64-pc-windows-msvc
+    --target ${target}
   '';
 
   # Keep cargo-xwin's network access in a fixed-output derivation. Both the
@@ -73,24 +95,13 @@ let
     cargo = windowsRustToolchain;
     rustc = windowsRustToolchain;
   };
+  version = (builtins.fromTOML (builtins.readFile ../Cargo.toml)).package.version;
 
   emberWindows = rustPlatform.buildRustPackage {
-    pname = "ember-windows";
-    version = "1.1.2";
+    pname = "ember-windows-${arch}";
+    inherit version;
 
-    src = lib.cleanSourceWith {
-      src = ../.;
-      filter = path: type:
-        let
-          root = toString ../.;
-          relative = lib.removePrefix "${root}/" (toString path);
-        in
-        toString path == root
-        || relative == "Cargo.toml"
-        || relative == "Cargo.lock"
-        || relative == "src"
-        || lib.hasPrefix "src/" relative;
-    };
+    src = import ./ember-source.nix { inherit lib; };
 
     cargoLock.lockFile = ../Cargo.lock;
     nativeBuildInputs = [
@@ -105,6 +116,7 @@ let
       export HOME="$TMPDIR/home"
       ${xwinEnvironment}
       export XWIN_CACHE_DIR="$TMPDIR/cargo-xwin"
+      export PATH="${pkgs.llvmPackages.clang-unwrapped}/bin:$PATH"
       mkdir -p "$HOME" "$XWIN_CACHE_DIR"
       cp -R "${xwinSdk}/." "$XWIN_CACHE_DIR/"
       chmod -R u+w "$XWIN_CACHE_DIR"
@@ -120,7 +132,7 @@ let
     installPhase = ''
       runHook preInstall
       mkdir -p "$out/bin"
-      cp target/x86_64-pc-windows-msvc/release/ember.exe "$out/bin/ember.exe"
+      cp "target/${target}/release/ember.exe" "$out/bin/ember.exe"
       runHook postInstall
     '';
 
@@ -128,8 +140,16 @@ let
     dontFixup = true;
 
     passthru = {
-      inherit windowsRustToolchain xwinConfig xwinSdk;
+      inherit
+        arch
+        target
+        windowsRustToolchain
+        xwinConfig
+        xwinSdk
+        ;
       targetCpu = defaultTargetCpu;
+      allocator = if arch == "amd64" then "mimalloc" else "system";
+      linkage = "static-msvc-crt";
     };
   };
 
@@ -137,7 +157,7 @@ let
   # workflow. Its xwin pins and Cargo arguments come from the same definitions
   # as the pure `windows-ember` package above.
   releaseApp = pkgs.writeShellApplication {
-    name = "windows-release";
+    name = releaseAppName;
     runtimeInputs = with pkgs; [
       cargo-xwin
       clang
@@ -149,6 +169,7 @@ let
       ${xwinEnvironment}
       export XWIN_CACHE_DIR="''${XWIN_CACHE_DIR:-$HOME/.cache/cargo-xwin}"
       export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-target/xwin}"
+      export PATH="${pkgs.llvmPackages.clang-unwrapped}/bin:$PATH"
 
       target_cpu="''${EMBER_WINDOWS_TARGET_CPU:-${defaultTargetCpu}}"
       export RUSTFLAGS="-C target-cpu=$target_cpu -C target-feature=+crt-static ''${EMBER_WINDOWS_RUSTFLAGS:-}"
@@ -161,5 +182,10 @@ let
 in
 {
   package = emberWindows;
-  inherit releaseApp windowsRustToolchain xwinConfig xwinSdk;
+  inherit
+    releaseApp
+    windowsRustToolchain
+    xwinConfig
+    xwinSdk
+    ;
 }

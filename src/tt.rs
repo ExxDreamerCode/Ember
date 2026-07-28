@@ -82,6 +82,14 @@ fn table_size_for_mb(mb: usize) -> usize {
 impl SharedTT {
     pub fn new(mb: usize) -> Self {
         let size = table_size_for_mb(mb);
+        Self::with_size(size)
+    }
+
+    pub(crate) fn placeholder() -> Self {
+        Self::with_size(1)
+    }
+
+    fn with_size(size: usize) -> Self {
         Self {
             inner: UnsafeCell::new(Inner {
                 entries: (0..size).map(|_| PackedEntry::default()).collect(),
@@ -168,8 +176,30 @@ impl SharedTT {
         let _lock = self.resize_lock.lock().unwrap();
         let inner = unsafe { &mut *self.inner.get() };
         let size = table_size_for_mb(mb);
+        Self::replace_entries(inner, size);
+    }
+
+    pub fn ensure_size(&self, mb: usize) {
+        let size = table_size_for_mb(mb);
+        let _lock = self.resize_lock.lock().unwrap();
+        let inner = unsafe { &mut *self.inner.get() };
+        if inner.entries.len() == size {
+            return;
+        }
+        Self::replace_entries(inner, size);
+    }
+
+    fn replace_entries(inner: &mut Inner, size: usize) {
+        inner.mask = 0;
+        let old_entries = std::mem::take(&mut inner.entries);
+        drop(old_entries);
         inner.entries = (0..size).map(|_| PackedEntry::default()).collect();
         inner.mask = size - 1;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn allocated_entries(&self) -> usize {
+        unsafe { &*self.inner.get() }.entries.len()
     }
 }
 
@@ -225,5 +255,28 @@ mod tests {
         }
         assert_eq!(table.generation(), 1);
         assert_eq!(table.age(entry), 0);
+    }
+
+    #[test]
+    fn placeholder_table_is_safe_until_materialized() {
+        let table = SharedTT::placeholder();
+        assert_eq!(table.allocated_entries(), 1);
+        table.store(0x1234, 1, 42, TT_EXACT, Some(0x42));
+        assert_eq!(table.get_entry(0x1234).unwrap().score, 42);
+
+        table.ensure_size(1);
+        assert_eq!(table.allocated_entries(), table_size_for_mb(1));
+        table.store(0x1234, 1, 42, TT_EXACT, Some(0x42));
+        assert_eq!(table.get_entry(0x1234).unwrap().score, 42);
+    }
+
+    #[test]
+    fn ensure_size_preserves_an_already_matching_table() {
+        let table = SharedTT::new(1);
+        table.store(0x1234, 1, 42, TT_EXACT, Some(0x42));
+
+        table.ensure_size(1);
+
+        assert_eq!(table.get_entry(0x1234).unwrap().score, 42);
     }
 }

@@ -10,6 +10,7 @@ use std::slice;
 pub const PSQ_INPUTS_PER_BUCKET: usize = 768;
 pub const NNUE_OUTPUT_BUCKETS: usize = 8;
 pub const MAX_HIDDEN_SIZE: usize = 2048;
+static ZERO_FEATURE_ROW: [i16; MAX_HIDDEN_SIZE] = [0; MAX_HIDDEN_SIZE];
 
 pub(crate) const QA: i32 = 255;
 pub(crate) const QB: i32 = 64;
@@ -32,19 +33,9 @@ unsafe fn assume_init_slice<T>(values: &[MaybeUninit<T>]) -> &[T] {
 pub(crate) trait NnueBackend: Copy {
     fn forward(net: &NNUENet, acc: &NNUEAccumulator, stm: u8, piece_count: u32) -> i32;
     fn refresh(acc: &mut NNUEAccumulator, net: &NNUENet, st: &BoardState);
-    #[allow(clippy::too_many_arguments)]
-    fn update_move(
-        acc: &mut NNUEAccumulator,
-        net: &NNUENet,
-        st_before: &BoardState,
-        sr: usize,
-        sc: usize,
-        er: usize,
-        ec: usize,
-        promotion: u8,
-    ) -> bool;
     fn add_row(acc: &mut [i16], row: &[i16]);
     fn sub_row(acc: &mut [i16], row: &[i16]);
+    fn copy_update(dst: &mut [i16], src: &[i16], remove0: &[i16], remove1: &[i16], add: &[i16]);
     fn forward_base_crelu(
         stm: &[i16],
         ntm: &[i16],
@@ -107,21 +98,6 @@ impl NnueBackend for ScalarNnueBackend {
     }
 
     #[inline(always)]
-    #[allow(clippy::too_many_arguments)]
-    fn update_move(
-        acc: &mut NNUEAccumulator,
-        net: &NNUENet,
-        st_before: &BoardState,
-        sr: usize,
-        sc: usize,
-        er: usize,
-        ec: usize,
-        promotion: u8,
-    ) -> bool {
-        acc.update_move_with_backend::<Self>(net, st_before, sr, sc, er, ec, promotion)
-    }
-
-    #[inline(always)]
     fn add_row(acc: &mut [i16], row: &[i16]) {
         simd::scalar_add_row(acc, row)
     }
@@ -129,6 +105,11 @@ impl NnueBackend for ScalarNnueBackend {
     #[inline(always)]
     fn sub_row(acc: &mut [i16], row: &[i16]) {
         simd::scalar_sub_row(acc, row)
+    }
+
+    #[inline(always)]
+    fn copy_update(dst: &mut [i16], src: &[i16], remove0: &[i16], remove1: &[i16], add: &[i16]) {
+        simd::scalar_copy_update(dst, src, remove0, remove1, add)
     }
 
     #[inline(always)]
@@ -203,21 +184,6 @@ impl NnueBackend for Simd128NnueBackend {
     }
 
     #[inline(always)]
-    #[allow(clippy::too_many_arguments)]
-    fn update_move(
-        acc: &mut NNUEAccumulator,
-        net: &NNUENet,
-        st_before: &BoardState,
-        sr: usize,
-        sc: usize,
-        er: usize,
-        ec: usize,
-        promotion: u8,
-    ) -> bool {
-        acc.update_move_with_backend::<Self>(net, st_before, sr, sc, er, ec, promotion)
-    }
-
-    #[inline(always)]
     fn add_row(acc: &mut [i16], row: &[i16]) {
         simd::simd128_add_row(acc, row)
     }
@@ -225,6 +191,11 @@ impl NnueBackend for Simd128NnueBackend {
     #[inline(always)]
     fn sub_row(acc: &mut [i16], row: &[i16]) {
         simd::simd128_sub_row(acc, row)
+    }
+
+    #[inline(always)]
+    fn copy_update(dst: &mut [i16], src: &[i16], remove0: &[i16], remove1: &[i16], add: &[i16]) {
+        simd::simd128_copy_update(dst, src, remove0, remove1, add)
     }
 
     #[inline(always)]
@@ -307,23 +278,6 @@ unsafe fn nnue_refresh_x86_v3(acc: &mut NNUEAccumulator, net: &NNUENet, st: &Boa
 }
 
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
-#[inline]
-#[allow(clippy::too_many_arguments)]
-unsafe fn nnue_update_move_x86_v3(
-    acc: &mut NNUEAccumulator,
-    net: &NNUENet,
-    st_before: &BoardState,
-    sr: usize,
-    sc: usize,
-    er: usize,
-    ec: usize,
-    promotion: u8,
-) -> bool {
-    acc.update_move_with_backend::<SimdNnueBackend>(net, st_before, sr, sc, er, ec, promotion)
-}
-
-#[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx,avx2,avx512f,avx512bw,avx512dq,avx512vl,bmi1,bmi2,fma,lzcnt,popcnt")]
 #[inline]
 unsafe fn nnue_forward_x86_avx512(
@@ -340,23 +294,6 @@ unsafe fn nnue_forward_x86_avx512(
 #[inline]
 unsafe fn nnue_refresh_x86_avx512(acc: &mut NNUEAccumulator, net: &NNUENet, st: &BoardState) {
     acc.refresh_with_backend::<Avx512NnueBackend>(net, st)
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx,avx2,avx512f,avx512bw,avx512dq,avx512vl,bmi1,bmi2,fma,lzcnt,popcnt")]
-#[inline]
-#[allow(clippy::too_many_arguments)]
-unsafe fn nnue_update_move_x86_avx512(
-    acc: &mut NNUEAccumulator,
-    net: &NNUENet,
-    st_before: &BoardState,
-    sr: usize,
-    sc: usize,
-    er: usize,
-    ec: usize,
-    promotion: u8,
-) -> bool {
-    acc.update_move_with_backend::<Avx512NnueBackend>(net, st_before, sr, sc, er, ec, promotion)
 }
 
 impl NnueBackend for SimdNnueBackend {
@@ -381,26 +318,6 @@ impl NnueBackend for SimdNnueBackend {
     }
 
     #[inline(always)]
-    #[allow(clippy::too_many_arguments)]
-    fn update_move(
-        acc: &mut NNUEAccumulator,
-        net: &NNUENet,
-        st_before: &BoardState,
-        sr: usize,
-        sc: usize,
-        er: usize,
-        ec: usize,
-        promotion: u8,
-    ) -> bool {
-        #[cfg(target_arch = "x86_64")]
-        unsafe {
-            nnue_update_move_x86_v3(acc, net, st_before, sr, sc, er, ec, promotion)
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        acc.update_move_with_backend::<Self>(net, st_before, sr, sc, er, ec, promotion)
-    }
-
-    #[inline(always)]
     fn add_row(acc: &mut [i16], row: &[i16]) {
         #[cfg(target_arch = "x86_64")]
         unsafe {
@@ -418,6 +335,16 @@ impl NnueBackend for SimdNnueBackend {
         }
         #[cfg(not(target_arch = "x86_64"))]
         simd::simd_sub_row(acc, row)
+    }
+
+    #[inline(always)]
+    fn copy_update(dst: &mut [i16], src: &[i16], remove0: &[i16], remove1: &[i16], add: &[i16]) {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            simd::simd_copy_update_x86_v3(dst, src, remove0, remove1, add);
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        simd::simd_copy_update(dst, src, remove0, remove1, add)
     }
 
     #[inline(always)]
@@ -523,21 +450,6 @@ impl NnueBackend for Simd512NnueBackend {
     }
 
     #[inline(always)]
-    #[allow(clippy::too_many_arguments)]
-    fn update_move(
-        acc: &mut NNUEAccumulator,
-        net: &NNUENet,
-        st_before: &BoardState,
-        sr: usize,
-        sc: usize,
-        er: usize,
-        ec: usize,
-        promotion: u8,
-    ) -> bool {
-        acc.update_move_with_backend::<Self>(net, st_before, sr, sc, er, ec, promotion)
-    }
-
-    #[inline(always)]
     fn add_row(acc: &mut [i16], row: &[i16]) {
         simd::simd512_add_row(acc, row)
     }
@@ -545,6 +457,11 @@ impl NnueBackend for Simd512NnueBackend {
     #[inline(always)]
     fn sub_row(acc: &mut [i16], row: &[i16]) {
         simd::simd512_sub_row(acc, row)
+    }
+
+    #[inline(always)]
+    fn copy_update(dst: &mut [i16], src: &[i16], remove0: &[i16], remove1: &[i16], add: &[i16]) {
+        simd::simd512_copy_update(dst, src, remove0, remove1, add)
     }
 
     #[inline(always)]
@@ -622,21 +539,6 @@ impl NnueBackend for Avx512NnueBackend {
     }
 
     #[inline(always)]
-    #[allow(clippy::too_many_arguments)]
-    fn update_move(
-        acc: &mut NNUEAccumulator,
-        net: &NNUENet,
-        st_before: &BoardState,
-        sr: usize,
-        sc: usize,
-        er: usize,
-        ec: usize,
-        promotion: u8,
-    ) -> bool {
-        unsafe { nnue_update_move_x86_avx512(acc, net, st_before, sr, sc, er, ec, promotion) }
-    }
-
-    #[inline(always)]
     fn add_row(acc: &mut [i16], row: &[i16]) {
         unsafe {
             simd::simd_add_row_x86_avx512(acc, row);
@@ -647,6 +549,13 @@ impl NnueBackend for Avx512NnueBackend {
     fn sub_row(acc: &mut [i16], row: &[i16]) {
         unsafe {
             simd::simd_sub_row_x86_avx512(acc, row);
+        }
+    }
+
+    #[inline(always)]
+    fn copy_update(dst: &mut [i16], src: &[i16], remove0: &[i16], remove1: &[i16], add: &[i16]) {
+        unsafe {
+            simd::simd_copy_update_x86_avx512(dst, src, remove0, remove1, add);
         }
     }
 
@@ -1718,13 +1627,45 @@ impl NNUENet {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
+struct FeatureChange {
+    color: u8,
+    piece_type: u8,
+    square: u8,
+}
+
+#[derive(Clone, Copy)]
+struct MoveFeatureChanges {
+    removed: [Option<FeatureChange>; 2],
+    added: Option<FeatureChange>,
+}
+
 pub struct NNUEAccumulator {
     white: Vec<i16>,
     black: Vec<i16>,
     pub hs: usize,
     pub wk: u8,
     pub bk: u8,
+}
+
+impl Clone for NNUEAccumulator {
+    fn clone(&self) -> Self {
+        Self {
+            white: self.white.clone(),
+            black: self.black.clone(),
+            hs: self.hs,
+            wk: self.wk,
+            bk: self.bk,
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.white.clone_from(&source.white);
+        self.black.clone_from(&source.black);
+        self.hs = source.hs;
+        self.wk = source.wk;
+        self.bk = source.bk;
+    }
 }
 
 impl NNUEAccumulator {
@@ -1759,6 +1700,26 @@ impl NNUEAccumulator {
     fn add_feature<B: NnueBackend>(acc: &mut [i16], net: &NNUENet, idx: usize) {
         if let Some(row) = net.input_row_fast(idx) {
             Self::add_row::<B>(acc, row);
+        }
+    }
+
+    #[inline(always)]
+    fn seed_or_add_feature<B: NnueBackend>(
+        acc: &mut [i16],
+        net: &NNUENet,
+        idx: usize,
+        seeded: &mut bool,
+    ) {
+        let Some(row) = net.input_row_fast(idx) else {
+            return;
+        };
+
+        if *seeded {
+            Self::add_row::<B>(acc, row);
+        } else {
+            let zero = &ZERO_FEATURE_ROW[..acc.len()];
+            B::copy_update(acc, &net.input_biases[..acc.len()], zero, zero, row);
+            *seeded = true;
         }
     }
 
@@ -1801,8 +1762,8 @@ impl NNUEAccumulator {
         self.wk = wk;
         self.bk = bk;
 
-        self.white.copy_from_slice(&net.input_biases[..h]);
-        self.black.copy_from_slice(&net.input_biases[..h]);
+        let mut white_seeded = false;
+        let mut black_seeded = false;
 
         for color in 0..2u8 {
             for pt in 0..6u8 {
@@ -1812,10 +1773,27 @@ impl NNUEAccumulator {
                     bb &= bb - 1;
                     let csq = convert(sq);
 
-                    Self::add_feature::<B>(&mut self.white, net, net.halfka(0, wk, color, pt, csq));
-                    Self::add_feature::<B>(&mut self.black, net, net.halfka(1, bk, color, pt, csq));
+                    Self::seed_or_add_feature::<B>(
+                        &mut self.white,
+                        net,
+                        net.halfka(0, wk, color, pt, csq),
+                        &mut white_seeded,
+                    );
+                    Self::seed_or_add_feature::<B>(
+                        &mut self.black,
+                        net,
+                        net.halfka(1, bk, color, pt, csq),
+                        &mut black_seeded,
+                    );
                 }
             }
+        }
+
+        if !white_seeded {
+            self.white.copy_from_slice(&net.input_biases[..h]);
+        }
+        if !black_seeded {
+            self.black.copy_from_slice(&net.input_biases[..h]);
         }
     }
 
@@ -1833,6 +1811,105 @@ impl NNUEAccumulator {
 
         Self::remove_feature::<B>(&mut self.white, net, net.halfka(0, self.wk, color, pt, csq));
         Self::remove_feature::<B>(&mut self.black, net, net.halfka(1, self.bk, color, pt, csq));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn move_feature_changes(
+        st_before: &BoardState,
+        sr: usize,
+        sc: usize,
+        er: usize,
+        ec: usize,
+        promotion: u8,
+    ) -> Option<MoveFeatureChanges> {
+        use crate::board::{is_white_piece, piece_on, piece_type, sq, EMPTY_SQ};
+
+        let from = sq(sr, sc);
+        let to = sq(er, ec);
+        let mover_pi = piece_on(&st_before.bb, from);
+        if mover_pi == EMPTY_SQ {
+            return Some(MoveFeatureChanges {
+                removed: [None, None],
+                added: None,
+            });
+        }
+
+        let mover_type = piece_type(mover_pi);
+        let white = is_white_piece(mover_pi);
+        let color = if white { 0 } else { 1 };
+        if mover_type == 5 {
+            return None;
+        }
+
+        let mut changes = MoveFeatureChanges {
+            removed: [
+                Some(FeatureChange {
+                    color,
+                    piece_type: mover_type,
+                    square: from as u8,
+                }),
+                None,
+            ],
+            added: None,
+        };
+
+        let cap_pi = piece_on(&st_before.bb, to);
+        if cap_pi != EMPTY_SQ {
+            changes.removed[1] = Some(FeatureChange {
+                color: if is_white_piece(cap_pi) { 0 } else { 1 },
+                piece_type: piece_type(cap_pi),
+                square: to as u8,
+            });
+        } else if mover_type == 0 && Some(to) == st_before.ep && sc != ec {
+            changes.removed[1] = Some(FeatureChange {
+                color: if white { 1 } else { 0 },
+                piece_type: 0,
+                square: if white {
+                    (to + 8) as u8
+                } else {
+                    (to - 8) as u8
+                },
+            });
+        }
+
+        let added_type = if mover_type == 0 && (er == 0 || er == 7) {
+            match promotion.to_ascii_uppercase() {
+                b'Q' => 4,
+                b'R' => 3,
+                b'B' => 2,
+                b'N' => 1,
+                _ => 4,
+            }
+        } else {
+            mover_type
+        };
+        changes.added = Some(FeatureChange {
+            color,
+            piece_type: added_type,
+            square: to as u8,
+        });
+
+        Some(changes)
+    }
+
+    #[inline(always)]
+    fn feature_row(
+        net: &NNUENet,
+        perspective: u8,
+        king: u8,
+        change: Option<FeatureChange>,
+    ) -> &[i16] {
+        change
+            .and_then(|change| {
+                net.input_row_fast(net.halfka(
+                    perspective,
+                    king,
+                    change.color,
+                    change.piece_type,
+                    convert(change.square),
+                ))
+            })
+            .unwrap_or(&ZERO_FEATURE_ROW[..net.hidden_size])
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1894,6 +1971,103 @@ impl NNUEAccumulator {
         }
     }
 
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    fn update_from_parent_with_kind(
+        &mut self,
+        backend: NnueBackendKind,
+        parent: &Self,
+        net: &NNUENet,
+        st_before: &BoardState,
+        sr: usize,
+        sc: usize,
+        er: usize,
+        ec: usize,
+        promotion: u8,
+    ) -> bool {
+        debug_assert!(nnue_backend_available(backend));
+        match backend {
+            NnueBackendKind::Scalar => self.update_from_parent_with_backend::<ScalarNnueBackend>(
+                parent, net, st_before, sr, sc, er, ec, promotion,
+            ),
+            NnueBackendKind::Simd128 => self.update_from_parent_with_backend::<Simd128NnueBackend>(
+                parent, net, st_before, sr, sc, er, ec, promotion,
+            ),
+            NnueBackendKind::Simd256 => self.update_from_parent_with_backend::<SimdNnueBackend>(
+                parent, net, st_before, sr, sc, er, ec, promotion,
+            ),
+            NnueBackendKind::Simd512 => self.update_from_parent_with_backend::<Simd512NnueBackend>(
+                parent, net, st_before, sr, sc, er, ec, promotion,
+            ),
+            NnueBackendKind::X86Avx512 => {
+                #[cfg(target_arch = "x86_64")]
+                {
+                    self.update_from_parent_with_backend::<Avx512NnueBackend>(
+                        parent, net, st_before, sr, sc, er, ec, promotion,
+                    )
+                }
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    self.update_from_parent_with_backend::<ScalarNnueBackend>(
+                        parent, net, st_before, sr, sc, er, ec, promotion,
+                    )
+                }
+            }
+        }
+    }
+
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn update_from_parent_with_backend<B: NnueBackend>(
+        &mut self,
+        parent: &Self,
+        net: &NNUENet,
+        st_before: &BoardState,
+        sr: usize,
+        sc: usize,
+        er: usize,
+        ec: usize,
+        promotion: u8,
+    ) -> bool {
+        let Some(changes) = Self::move_feature_changes(st_before, sr, sc, er, ec, promotion) else {
+            return false;
+        };
+
+        if self.white.len() != parent.white.len() {
+            self.white.resize(parent.white.len(), 0);
+        }
+        if self.black.len() != parent.black.len() {
+            self.black.resize(parent.black.len(), 0);
+        }
+
+        let white_remove0 = Self::feature_row(net, 0, parent.wk, changes.removed[0]);
+        let white_remove1 = Self::feature_row(net, 0, parent.wk, changes.removed[1]);
+        let white_add = Self::feature_row(net, 0, parent.wk, changes.added);
+        B::copy_update(
+            &mut self.white,
+            &parent.white,
+            white_remove0,
+            white_remove1,
+            white_add,
+        );
+
+        let black_remove0 = Self::feature_row(net, 1, parent.bk, changes.removed[0]);
+        let black_remove1 = Self::feature_row(net, 1, parent.bk, changes.removed[1]);
+        let black_add = Self::feature_row(net, 1, parent.bk, changes.added);
+        B::copy_update(
+            &mut self.black,
+            &parent.black,
+            black_remove0,
+            black_remove1,
+            black_add,
+        );
+
+        self.hs = parent.hs;
+        self.wk = parent.wk;
+        self.bk = parent.bk;
+        true
+    }
+
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn update_move_with_backend<B: NnueBackend>(
@@ -1906,59 +2080,15 @@ impl NNUEAccumulator {
         ec: usize,
         promotion: u8,
     ) -> bool {
-        use crate::board::{is_white_piece, piece_on, piece_type, sq, EMPTY_SQ};
-
-        let from = sq(sr, sc);
-        let to = sq(er, ec);
-        let mover_pi = piece_on(&st_before.bb, from);
-        if mover_pi == EMPTY_SQ {
-            return true;
-        }
-
-        let mover_type = piece_type(mover_pi);
-        let white = is_white_piece(mover_pi);
-        let color: u8 = if white { 0 } else { 1 };
-
-        if mover_type == 5 {
+        let Some(changes) = Self::move_feature_changes(st_before, sr, sc, er, ec, promotion) else {
             return false;
+        };
+
+        for change in changes.removed.into_iter().flatten() {
+            self.remove_piece::<B>(net, change.color, change.piece_type, change.square);
         }
-
-        self.remove_piece::<B>(net, color, mover_type, from as u8);
-
-        let cap_pi = piece_on(&st_before.bb, to);
-        if cap_pi != EMPTY_SQ {
-            let cap_color: u8 = if is_white_piece(cap_pi) { 0 } else { 1 };
-            let cap_type = piece_type(cap_pi);
-            self.remove_piece::<B>(net, cap_color, cap_type, to as u8);
-        }
-
-        if mover_type == 0 && Some(to) == st_before.ep && sc != ec {
-            let cap_sq = if white { to + 8 } else { to - 8 };
-            let ep_color: u8 = if white { 1 } else { 0 };
-            self.remove_piece::<B>(net, ep_color, 0, cap_sq as u8);
-        }
-
-        if mover_type == 5 && sc == 4 && (ec == 6 || ec == 2) {
-            if ec == 6 {
-                self.remove_piece::<B>(net, color, 3, sq(sr, 7) as u8);
-                self.add_piece::<B>(net, color, 3, sq(sr, 5) as u8);
-            } else {
-                self.remove_piece::<B>(net, color, 3, sq(sr, 0) as u8);
-                self.add_piece::<B>(net, color, 3, sq(sr, 3) as u8);
-            }
-        }
-
-        if mover_type == 0 && (er == 0 || er == 7) {
-            let promo_type = match promotion.to_ascii_uppercase() {
-                b'Q' => 4u8,
-                b'R' => 3,
-                b'B' => 2,
-                b'N' => 1,
-                _ => 4,
-            };
-            self.add_piece::<B>(net, color, promo_type, to as u8);
-        } else {
-            self.add_piece::<B>(net, color, mover_type, to as u8);
+        if let Some(change) = changes.added {
+            self.add_piece::<B>(net, change.color, change.piece_type, change.square);
         }
 
         true
@@ -2020,4 +2150,164 @@ fn validate_correction_offsets(offsets: &[u32]) -> Result<(), String> {
         prev = offset;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{convert, NNUEAccumulator, NNUENet, ScalarNnueBackend};
+    use crate::backend::available_nnue_backends;
+    use crate::Engine;
+
+    const COMPACT_NET: &[u8] = include_bytes!("net.compact.nnue");
+
+    fn parse_uci_move(mv: &str) -> (usize, usize, usize, usize, u8) {
+        let bytes = mv.as_bytes();
+        assert!(matches!(bytes.len(), 4 | 5), "invalid UCI move: {mv}");
+        let sc = (bytes[0] - b'a') as usize;
+        let sr = 8 - (bytes[1] - b'0') as usize;
+        let ec = (bytes[2] - b'a') as usize;
+        let er = 8 - (bytes[3] - b'0') as usize;
+        let promotion = bytes.get(4).copied().unwrap_or(0).to_ascii_uppercase();
+        (sr, sc, er, ec, promotion)
+    }
+
+    fn reference_refresh(net: &NNUENet, engine: &Engine) -> NNUEAccumulator {
+        let mut acc = NNUEAccumulator::new(net.hidden_size);
+        acc.wk = convert(engine.st.king_sq(true) as u8);
+        acc.bk = convert(engine.st.king_sq(false) as u8);
+        acc.white.copy_from_slice(&net.input_biases);
+        acc.black.copy_from_slice(&net.input_biases);
+
+        for color in 0..2u8 {
+            for pt in 0..6u8 {
+                let mut bb = engine.st.bb[(if color == 0 { 0 } else { 6 }) + pt as usize];
+                while bb != 0 {
+                    let sq = bb.trailing_zeros() as u8;
+                    bb &= bb - 1;
+                    let csq = convert(sq);
+                    NNUEAccumulator::add_feature::<ScalarNnueBackend>(
+                        &mut acc.white,
+                        net,
+                        net.halfka(0, acc.wk, color, pt, csq),
+                    );
+                    NNUEAccumulator::add_feature::<ScalarNnueBackend>(
+                        &mut acc.black,
+                        net,
+                        net.halfka(1, acc.bk, color, pt, csq),
+                    );
+                }
+            }
+        }
+
+        acc
+    }
+
+    fn assert_fused_line_matches_reference(net: &NNUENet, fen: &str, moves: &[&str]) {
+        for backend in available_nnue_backends() {
+            let mut engine = Engine::new();
+            engine.try_set_fen(fen).expect("test FEN should parse");
+
+            let expected = reference_refresh(net, &engine);
+            let mut parent = NNUEAccumulator::new(net.hidden_size);
+            parent.refresh_with_kind(backend, net, &engine.st);
+            assert_eq!(parent.white, expected.white);
+            assert_eq!(parent.black, expected.black);
+
+            for &uci in moves {
+                let (sr, sc, er, ec, promotion) = parse_uci_move(uci);
+                let before = engine.st;
+                let mut child = NNUEAccumulator::new(net.hidden_size);
+                let fused = child.update_from_parent_with_kind(
+                    backend, &parent, net, &before, sr, sc, er, ec, promotion,
+                );
+
+                let mut incremental_reference = parent.clone();
+                let incremental = incremental_reference
+                    .update_move_with_kind(backend, net, &before, sr, sc, er, ec, promotion);
+                assert_eq!(fused, incremental, "update kind differs for {uci}");
+
+                assert!(
+                    engine.make_move_uci(sr, sc, er, ec, promotion),
+                    "{uci} should be legal"
+                );
+                if !fused {
+                    child.refresh_with_kind(backend, net, &engine.st);
+                    incremental_reference.refresh_with_kind(backend, net, &engine.st);
+                }
+
+                assert_eq!(
+                    child.white, incremental_reference.white,
+                    "white fused update differs after {uci} with {backend:?}"
+                );
+                assert_eq!(
+                    child.black, incremental_reference.black,
+                    "black fused update differs after {uci} with {backend:?}"
+                );
+                assert_eq!(
+                    (child.wk, child.bk),
+                    (incremental_reference.wk, incremental_reference.bk),
+                    "king metadata differs after {uci} with {backend:?}"
+                );
+
+                let refreshed = reference_refresh(net, &engine);
+                assert_eq!(
+                    child.white, refreshed.white,
+                    "white refresh differs after {uci} with {backend:?}"
+                );
+                assert_eq!(
+                    child.black, refreshed.black,
+                    "black refresh differs after {uci} with {backend:?}"
+                );
+                parent = child;
+            }
+        }
+    }
+
+    #[test]
+    fn accumulator_clone_from_reuses_matching_buffers() {
+        let mut source = NNUEAccumulator::new(1024);
+        source.white[0] = 17;
+        source.black[1023] = -23;
+        source.wk = 7;
+        source.bk = 56;
+
+        let mut destination = NNUEAccumulator::new(1024);
+        let white_ptr = destination.white.as_ptr();
+        let black_ptr = destination.black.as_ptr();
+        let white_capacity = destination.white.capacity();
+        let black_capacity = destination.black.capacity();
+
+        destination.clone_from(&source);
+
+        assert_eq!(destination.white, source.white);
+        assert_eq!(destination.black, source.black);
+        assert_eq!(destination.hs, source.hs);
+        assert_eq!(destination.wk, source.wk);
+        assert_eq!(destination.bk, source.bk);
+        assert_eq!(destination.white.as_ptr(), white_ptr);
+        assert_eq!(destination.black.as_ptr(), black_ptr);
+        assert_eq!(destination.white.capacity(), white_capacity);
+        assert_eq!(destination.black.capacity(), black_capacity);
+    }
+
+    #[test]
+    fn fused_parent_updates_and_refreshes_match_reference_paths() {
+        let net = NNUENet::load_compact_from_bytes(COMPACT_NET, "<move motifs>")
+            .expect("compact NNUE should load");
+
+        assert_fused_line_matches_reference(
+            &net,
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            &["e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "e1g1"],
+        );
+        assert_fused_line_matches_reference(&net, "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", &["e5d6"]);
+        for promotion in ["g7g8q", "g7g8r", "g7g8b", "g7g8n"] {
+            assert_fused_line_matches_reference(
+                &net,
+                "4k3/6P1/8/8/8/8/8/4K3 w - - 0 1",
+                &[promotion],
+            );
+        }
+        assert_fused_line_matches_reference(&net, "4k2r/6P1/8/8/8/8/8/4K3 w - - 0 1", &["g7h8q"]);
+    }
 }

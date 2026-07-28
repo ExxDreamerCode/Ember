@@ -3,6 +3,7 @@ name: CI
 on:
   pull_request:
   push:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,9 +17,7 @@ jobs:
       matrix:
         include:
           - runner: ubuntu-latest
-            quick_nps: true
           - runner: ubuntu-24.04-arm
-            quick_nps: false
 
     steps:
       - name: Checkout
@@ -71,16 +70,139 @@ jobs:
             cargo test --locked --all-features -- --test-threads=1 --nocapture
           "
 
-      - name: Build release binary
-        run: >
-          nix develop .#ci --command cargo build --locked --release
-          --bin ember
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs
+          path: |
+            target/debug/deps/*.stdout
+            target/debug/deps/*.stderr
+          retention-days: 7
+
+  lichess-puzzle-corpus:
+    name: Move regression fixtures
+    runs-on: ubuntu-latest
+
+    env:
+      RUST_BACKTRACE: 1
+      EMBER_LICHESS_CORPUS_THREADS: 4
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run move regression fixtures
+        run: |
+          nix develop .#ci --command bash -c "
+            ulimit -s 65536
+            export RUST_MIN_STACK=16777216
+            cargo test --locked --release --all-features --test lichess_puzzle_corpus -- --ignored --test-threads=4
+          "
+
+  release-linux-windows:
+    name: Linux and Windows release binaries
+    runs-on: ubuntu-latest
+    needs:
+      - rust
+      - lichess-puzzle-corpus
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Linux binaries
+        run: |
+          nix build .#ember-linux-amd64 --out-link result-linux-amd64
+          nix build .#ember-linux-arm64 --out-link result-linux-arm64
+
+      - name: Build Windows binaries
+        run: |
+          nix build .#ember-windows-amd64 --out-link result-windows-amd64
+          nix build .#ember-windows-arm64 --out-link result-windows-arm64
+
+      - name: Check binary formats and static linkage
+        run: |
+          set -euo pipefail
+
+          file result-linux-amd64/bin/ember
+          file result-linux-arm64/bin/ember
+          readelf -h result-linux-amd64/bin/ember | grep -q 'Advanced Micro Devices X86-64'
+          readelf -h result-linux-arm64/bin/ember | grep -q 'AArch64'
+          if readelf -l result-linux-amd64/bin/ember | grep -q 'INTERP'; then
+            echo "linux-amd64 has a dynamic interpreter" >&2
+            exit 1
+          fi
+          if readelf -l result-linux-arm64/bin/ember | grep -q 'INTERP'; then
+            echo "linux-arm64 has a dynamic interpreter" >&2
+            exit 1
+          fi
+          if readelf -d result-linux-amd64/bin/ember 2>/dev/null | grep -q 'NEEDED'; then
+            echo "linux-amd64 has dynamic dependencies" >&2
+            exit 1
+          fi
+          if readelf -d result-linux-arm64/bin/ember 2>/dev/null | grep -q 'NEEDED'; then
+            echo "linux-arm64 has dynamic dependencies" >&2
+            exit 1
+          fi
+
+          nix develop .#release-ci --command \
+            llvm-readobj --file-headers result-windows-amd64/bin/ember.exe \
+            | grep -q 'IMAGE_FILE_MACHINE_AMD64'
+          nix develop .#release-ci --command \
+            llvm-readobj --file-headers result-windows-arm64/bin/ember.exe \
+            | grep -q 'IMAGE_FILE_MACHINE_ARM64'
+          version="$(
+            nix develop .#ci --command python3 -c \
+              'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])'
+          )"
+          grep -aFq "id name Ember $version" result-windows-amd64/bin/ember.exe
+          grep -aFq "id name Ember $version" result-windows-arm64/bin/ember.exe
+
+          for binary in \
+            result-windows-amd64/bin/ember.exe \
+            result-windows-arm64/bin/ember.exe
+          do
+            imports="$(
+              nix develop .#release-ci --command \
+                llvm-readobj --coff-imports "$binary"
+            )"
+            if grep -Eiq 'ucrtbase|vcruntime|msvcp[0-9]' <<<"$imports"; then
+              echo "$binary imports a dynamic MSVC runtime" >&2
+              exit 1
+            fi
+          done
+
+      - name: Run packaged UCI smoke tests
+        run: |
+          nix develop .#release-ci --command python3 tools/smoke_test_uci.py \
+            -- result-linux-amd64/bin/ember
+
+          nix develop .#release-ci --command \
+            python3 tools/smoke_test_uci.py \
+            -- qemu-aarch64 result-linux-arm64/bin/ember
+
+          mkdir -p "$RUNNER_TEMP/ember-wine"
+          WINEDEBUG=-all \
+          WINEPREFIX="$RUNNER_TEMP/ember-wine" \
+            nix develop .#release-ci --command \
+              python3 tools/smoke_test_uci.py --timeout 60 \
+              -- wine result-windows-amd64/bin/ember.exe
 
       - name: Quick no-book NPS smoke benchmark
-        if: matrix.quick_nps
         run: |
           nix develop .#ci --command python3 tools/benchmark_search.py \
-            --binary ember=target/release/ember \
+            --binary ember=result-linux-amd64/bin/ember \
             --depth 7 \
             --repeats 1 \
             --hash-mb 64 \
@@ -134,37 +256,145 @@ jobs:
           )
           PY
 
-      - name: Upload test logs
-        if: failure()
+      - name: Create release archives
+        run: |
+          nix develop .#ci --command python3 tools/package_release_archive.py \
+            --binary result-linux-amd64/bin/ember \
+            --platform linux-amd64 \
+            --commit "$GITHUB_SHA"
+          nix develop .#ci --command python3 tools/package_release_archive.py \
+            --binary result-linux-arm64/bin/ember \
+            --platform linux-arm64 \
+            --commit "$GITHUB_SHA"
+          nix develop .#ci --command python3 tools/package_release_archive.py \
+            --binary result-windows-amd64/bin/ember.exe \
+            --platform windows-amd64 \
+            --commit "$GITHUB_SHA"
+          nix develop .#ci --command python3 tools/package_release_archive.py \
+            --binary result-windows-arm64/bin/ember.exe \
+            --platform windows-arm64 \
+            --commit "$GITHUB_SHA"
+
+      - name: Upload Linux and Windows release archives
         uses: actions/upload-artifact@v4
         with:
-          name: test-logs
-          path: |
-            target/debug/deps/*.stdout
-            target/debug/deps/*.stderr
-          retention-days: 7
+          name: ember-release-linux-windows
+          path: release/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
 
-  lichess-puzzle-corpus:
-    name: Move regression fixtures
-    runs-on: ubuntu-latest
+  release-macos:
+    name: macOS tests and release binaries
+    runs-on: macos-15
 
     env:
       RUST_BACKTRACE: 1
-      EMBER_LICHESS_CORPUS_THREADS: 4
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Require an ARM64 runner
+        run: test "$(uname -m)" = arm64
 
       - name: Install Nix
         uses: cachix/install-nix-action@v31
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Check formatting
+        run: nix develop .#ci --command cargo fmt --all --check
+
+      - name: Run clippy
+        run: >
+          nix develop .#ci --command cargo clippy --locked
+          --all-targets --all-features -- -D warnings
+
+      - name: Run native tests
+        run: |
+          nix develop .#ci --command bash -c "
+            ulimit -s 65536
+            export RUST_MIN_STACK=16777216
+            cargo test --locked --all-features -- --test-threads=1
+          "
+
+      - name: Run Python tool tests
+        run: >
+          nix develop .#ci --command python3 -m unittest discover
+          -s tools/tests -p 'test_*.py'
+
+      - name: Run Windows runner tests
+        run: >
+          nix develop .#ci --command python3 -m unittest discover
+          -s windows/tests -p 'test_*.py'
+
       - name: Run move regression fixtures
         run: |
           nix develop .#ci --command bash -c "
             ulimit -s 65536
             export RUST_MIN_STACK=16777216
-            cargo test --locked --release --all-features --test lichess_puzzle_corpus -- --ignored --test-threads=4
+            fixture_threads=\"\$(sysctl -n hw.logicalcpu)\"
+            export EMBER_LICHESS_CORPUS_THREADS=\"\$fixture_threads\"
+            cargo test --locked --release --all-features --test lichess_puzzle_corpus -- --ignored --test-threads=\"\$fixture_threads\"
           "
+
+      - name: Build macOS binaries
+        run: |
+          nix build .#ember-macos-arm64 --out-link result-macos-arm64
+          nix build .#ember-macos-amd64 --out-link result-macos-amd64
+
+      - name: Check architectures and dynamic dependencies
+        run: |
+          set -euo pipefail
+
+          file result-macos-arm64/bin/ember
+          file result-macos-amd64/bin/ember
+          test "$(lipo -archs result-macos-arm64/bin/ember)" = arm64
+          test "$(lipo -archs result-macos-amd64/bin/ember)" = x86_64
+
+          for binary in \
+            result-macos-arm64/bin/ember \
+            result-macos-amd64/bin/ember
+          do
+            while read -r dependency _; do
+              case "$dependency" in
+                /usr/lib/*|/System/Library/*) ;;
+                *)
+                  echo "$binary has a non-system dependency: $dependency" >&2
+                  exit 1
+                  ;;
+              esac
+            done < <(otool -L "$binary" | tail -n +2)
+          done
+
+      - name: Run packaged UCI smoke tests
+        run: |
+          nix develop .#ci --command python3 tools/smoke_test_uci.py \
+            -- result-macos-arm64/bin/ember
+
+          if ! /usr/bin/arch -x86_64 /usr/bin/true; then
+            sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
+          fi
+          nix develop .#ci --command python3 tools/smoke_test_uci.py \
+            -- /usr/bin/arch -x86_64 result-macos-amd64/bin/ember
+
+      - name: Create release archives
+        run: |
+          nix develop .#ci --command python3 tools/package_release_archive.py \
+            --binary result-macos-arm64/bin/ember \
+            --platform macos-arm64 \
+            --commit "$GITHUB_SHA"
+          nix develop .#ci --command python3 tools/package_release_archive.py \
+            --binary result-macos-amd64/bin/ember \
+            --platform macos-amd64 \
+            --commit "$GITHUB_SHA"
+
+      - name: Upload macOS release archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: ember-release-macos
+          path: release/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

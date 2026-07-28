@@ -44,6 +44,27 @@ pub fn scalar_sub_row(acc: &mut [i16], row: &[i16]) {
 }
 
 #[inline(always)]
+pub fn scalar_copy_update(
+    dst: &mut [i16],
+    src: &[i16],
+    remove0: &[i16],
+    remove1: &[i16],
+    add: &[i16],
+) {
+    debug_assert_eq!(dst.len(), src.len());
+    debug_assert_eq!(dst.len(), remove0.len());
+    debug_assert_eq!(dst.len(), remove1.len());
+    debug_assert_eq!(dst.len(), add.len());
+
+    for index in 0..dst.len() {
+        dst[index] = src[index]
+            .wrapping_sub(remove0[index])
+            .wrapping_sub(remove1[index])
+            .wrapping_add(add[index]);
+    }
+}
+
+#[inline(always)]
 pub fn scalar_forward_base_crelu(
     stm: &[i16],
     ntm: &[i16],
@@ -330,6 +351,43 @@ pub fn simd512_sub_row(acc: &mut [i16], row: &[i16]) {
         *acc_value -= *row_value;
     }
 }
+
+macro_rules! define_simd_copy_update {
+    ($name:ident, $vector:ty, $lanes:expr) => {
+        #[inline(always)]
+        pub fn $name(dst: &mut [i16], src: &[i16], remove0: &[i16], remove1: &[i16], add: &[i16]) {
+            debug_assert_eq!(dst.len(), src.len());
+            debug_assert_eq!(dst.len(), remove0.len());
+            debug_assert_eq!(dst.len(), remove1.len());
+            debug_assert_eq!(dst.len(), add.len());
+
+            let (dst_chunks, dst_tail) = dst.as_chunks_mut::<$lanes>();
+            let (src_chunks, src_tail) = src.as_chunks::<$lanes>();
+            let (remove0_chunks, remove0_tail) = remove0.as_chunks::<$lanes>();
+            let (remove1_chunks, remove1_tail) = remove1.as_chunks::<$lanes>();
+            let (add_chunks, add_tail) = add.as_chunks::<$lanes>();
+
+            for index in 0..dst_chunks.len() {
+                let result = <$vector>::from_array(src_chunks[index])
+                    - <$vector>::from_array(remove0_chunks[index])
+                    - <$vector>::from_array(remove1_chunks[index])
+                    + <$vector>::from_array(add_chunks[index]);
+                dst_chunks[index] = result.to_array();
+            }
+
+            for index in 0..dst_tail.len() {
+                dst_tail[index] = src_tail[index]
+                    .wrapping_sub(remove0_tail[index])
+                    .wrapping_sub(remove1_tail[index])
+                    .wrapping_add(add_tail[index]);
+            }
+        }
+    };
+}
+
+define_simd_copy_update!(simd128_copy_update, I16x128, I16_LANES_128);
+define_simd_copy_update!(simd_copy_update, I16x, I16_LANES);
+define_simd_copy_update!(simd512_copy_update, I16x512, I16_LANES_512);
 
 #[inline(always)]
 pub fn simd128_forward_base_crelu(
@@ -840,6 +898,19 @@ pub unsafe fn simd_sub_row_x86_v3(acc: &mut [i16], row: &[i16]) {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
 #[inline]
+pub unsafe fn simd_copy_update_x86_v3(
+    dst: &mut [i16],
+    src: &[i16],
+    remove0: &[i16],
+    remove1: &[i16],
+    add: &[i16],
+) {
+    simd_copy_update(dst, src, remove0, remove1, add)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
+#[inline]
 pub unsafe fn simd_forward_base_crelu_x86_v3(
     stm: &[i16],
     ntm: &[i16],
@@ -921,6 +992,19 @@ pub unsafe fn simd_add_row_x86_avx512(acc: &mut [i16], row: &[i16]) {
 #[inline]
 pub unsafe fn simd_sub_row_x86_avx512(acc: &mut [i16], row: &[i16]) {
     simd512_sub_row(acc, row)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,avx512f,avx512bw,avx512dq,avx512vl,bmi1,bmi2,fma,lzcnt,popcnt")]
+#[inline]
+pub unsafe fn simd_copy_update_x86_avx512(
+    dst: &mut [i16],
+    src: &[i16],
+    remove0: &[i16],
+    remove1: &[i16],
+    add: &[i16],
+) {
+    simd512_copy_update(dst, src, remove0, remove1, add)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1062,6 +1146,28 @@ mod tests {
 
         simd512_sub_row(&mut actual, &row);
         assert_eq!(actual, original);
+    }
+
+    #[test]
+    fn fused_copy_updates_match_scalar_reference() {
+        for len in [0, 1, 7, 8, 9, 15, 16, 17, 31, 32, 33, 67, 99] {
+            let src: Vec<i16> = (0..len).map(|i| (i as i32 * 29 - 700) as i16).collect();
+            let remove0: Vec<i16> = (0..len).map(|i| (i as i32 * 11 - 300) as i16).collect();
+            let remove1: Vec<i16> = (0..len).map(|i| (i as i32 * 7 - 150) as i16).collect();
+            let add: Vec<i16> = (0..len).map(|i| (i as i32 * 17 - 500) as i16).collect();
+            let mut expected = vec![0; len];
+            scalar_copy_update(&mut expected, &src, &remove0, &remove1, &add);
+
+            for copy_update in [
+                simd128_copy_update as fn(&mut [i16], &[i16], &[i16], &[i16], &[i16]),
+                simd_copy_update,
+                simd512_copy_update,
+            ] {
+                let mut actual = vec![0; len];
+                copy_update(&mut actual, &src, &remove0, &remove1, &add);
+                assert_eq!(actual, expected, "fused copy mismatch at length {len}");
+            }
+        }
     }
 
     #[test]

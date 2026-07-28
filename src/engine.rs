@@ -3,7 +3,7 @@ use crate::board::board_to_fen;
 use crate::board::{
     bit, is_attacked, move_ec, move_er, move_from, move_promotion, move_sc, move_sr, move_to,
     move_to_uci, piece_from_char, piece_type, sq, sq_c, BoardState, Move, BK, BP, BQ, BR, EMPTY_SQ,
-    INF, MATE, MAX_HALF_MOVE_CLOCK, NO_MOVE, WK, WP, WQ, WR,
+    INF, KNIGHT_ATTACKS, MATE, MAX_HALF_MOVE_CLOCK, NO_MOVE, WK, WP, WQ, WR,
 };
 use crate::book::{
     OpeningBook, DEFAULT_BOOK_MIN_MOVE_WEIGHT, DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE,
@@ -35,6 +35,7 @@ pub struct Engine {
     pub num_threads: usize,
     pub stopped: Arc<AtomicBool>,
     pub book: Option<OpeningBook>,
+    pub random_book_move: bool,
     pub book_min_move_weight: u16,
     pub book_min_move_weight_permille: u16,
     #[cfg(feature = "decision-trace")]
@@ -43,6 +44,7 @@ pub struct Engine {
 
 pub struct EngineBookConfig {
     pub book: Option<OpeningBook>,
+    pub random_book_move: bool,
     pub min_move_weight: u16,
     pub min_move_weight_permille: u16,
 }
@@ -55,9 +57,15 @@ impl EngineBookConfig {
     ) -> Self {
         Self {
             book,
+            random_book_move: false,
             min_move_weight,
             min_move_weight_permille,
         }
+    }
+
+    pub fn with_random_book_move(mut self, random_book_move: bool) -> Self {
+        self.random_book_move = random_book_move;
+        self
     }
 }
 
@@ -237,6 +245,44 @@ fn root_move_is_promotion(st: &BoardState, mv: Move) -> bool {
     fpi != EMPTY_SQ && piece_type(fpi) == 0 && (move_er(mv) == 0 || move_er(mv) == 7)
 }
 
+fn root_equal_knight_capture(st: &BoardState, mv: Move) -> bool {
+    if !root_move_is_capture(st, mv) {
+        return false;
+    }
+    let attacker = st.mailbox[move_from(mv)];
+    let victim = st.mailbox[move_to(mv)];
+    attacker != EMPTY_SQ
+        && victim != EMPTY_SQ
+        && piece_type(attacker) == 1
+        && piece_type(victim) == 1
+}
+
+fn root_capture_can_be_recaptured(st: &BoardState, mv: Move) -> bool {
+    let target = move_to(mv);
+    let mut after = *st;
+    apply_move(
+        &mut after,
+        move_sr(mv),
+        move_sc(mv),
+        move_er(mv),
+        move_ec(mv),
+        move_promotion(mv),
+    );
+    generate_moves(&after, after.w, &after.cr, after.ep)
+        .into_iter()
+        .any(|reply| move_to(reply) == target && root_move_is_capture(&after, reply))
+}
+
+fn root_has_more_valuable_capture(st: &BoardState, mv: Move) -> bool {
+    let victim_value = root_piece_value(st.mailbox[move_to(mv)]);
+    generate_moves(st, st.w, &st.cr, st.ep)
+        .into_iter()
+        .any(|candidate| {
+            root_move_is_capture(st, candidate)
+                && root_piece_value(st.mailbox[move_to(candidate)]) > victim_value
+        })
+}
+
 fn root_piece_value(pi: u8) -> i32 {
     if pi == EMPTY_SQ {
         return 0;
@@ -300,12 +346,17 @@ fn root_rook_invasion_score(st: &BoardState, mv: Move) -> Option<i32> {
 }
 
 fn root_depth_extension(st: &BoardState, mv: Move) -> i32 {
-    if root_reduced_rook_check_capture(st, mv) {
+    if root_reduced_rook_check_capture(st, mv)
+        || (root_equal_knight_capture(st, mv)
+            && root_capture_can_be_recaptured(st, mv)
+            && !root_has_more_valuable_capture(st, mv))
+    {
         3
     } else {
         let attacker = st.mailbox[move_from(mv)];
         i32::from(
             root_rook_invasion_score(st, mv).is_some()
+                || root_quiet_queen_rook_battery_order_score(st, mv).is_some()
                 || (attacker != EMPTY_SQ
                     && piece_type(attacker) == 3
                     && root_checking_slider_pawn_capture_order_score(st, mv).is_some()),
@@ -340,6 +391,8 @@ fn rook_attacks_enemy_non_pawn_on_rank(st: &BoardState, rook_sq: usize, rook: u8
 fn root_order_score(st: &BoardState, mv: Move, preferred: Move) -> i32 {
     let mut score = root_forcing_score(st, mv).unwrap_or(0);
     score += root_rook_invasion_score(st, mv).unwrap_or(0);
+    score += root_quiet_knight_major_fork_order_score(st, mv).unwrap_or(0);
+    score += root_quiet_queen_rook_battery_order_score(st, mv).unwrap_or(0);
     if root_minor_king_zone_capture(st, mv) {
         score += 1_500_000;
     }
@@ -347,6 +400,71 @@ fn root_order_score(st: &BoardState, mv: Move, preferred: Move) -> i32 {
         score += 500_000;
     }
     score
+}
+
+fn root_quiet_knight_major_fork_order_score(st: &BoardState, mv: Move) -> Option<i32> {
+    let from = move_from(mv);
+    let to = move_to(mv);
+    let attacker = st.mailbox[from];
+    if attacker == EMPTY_SQ
+        || piece_type(attacker) != 1
+        || root_move_is_capture(st, mv)
+        || root_move_is_promotion(st, mv)
+    {
+        return None;
+    }
+    let (enemy_queen, enemy_rook, enemy_king) = if st.w { (BQ, BR, BK) } else { (WQ, WR, WK) };
+    let attacks = KNIGHT_ATTACKS[to];
+    ((attacks & st.bb[enemy_queen]) != 0
+        && (attacks & (st.bb[enemy_rook] | st.bb[enemy_king])) != 0)
+        .then_some(6_500_000)
+}
+
+fn root_quiet_queen_rook_battery_order_score(st: &BoardState, mv: Move) -> Option<i32> {
+    let from = move_from(mv);
+    let to = move_to(mv);
+    let attacker = st.mailbox[from];
+    if attacker == EMPTY_SQ
+        || piece_type(attacker) != 4
+        || root_move_is_capture(st, mv)
+        || root_move_is_promotion(st, mv)
+    {
+        return None;
+    }
+
+    let mut after = *st;
+    apply_move(
+        &mut after,
+        move_sr(mv),
+        move_sc(mv),
+        move_er(mv),
+        move_ec(mv),
+        move_promotion(mv),
+    );
+    let own_rook = if st.w { WR } else { BR };
+    for (dr, dc) in [
+        (-1isize, -1isize),
+        (-1, 0),
+        (-1, 1),
+        (0, -1),
+        (0, 1),
+        (1, -1),
+        (1, 0),
+        (1, 1),
+    ] {
+        let row = to as isize / 8 + dr;
+        let col = to as isize % 8 + dc;
+        if !(0..8).contains(&row) || !(0..8).contains(&col) {
+            continue;
+        }
+        let rook_square = row as usize * 8 + col as usize;
+        if after.mailbox[rook_square] as usize == own_rook
+            && is_attacked(&after.bb, rook_square, !st.w)
+        {
+            return Some(2_000_000);
+        }
+    }
+    None
 }
 
 fn root_mating_check_order_score(st: &BoardState, mv: Move) -> Option<i32> {
@@ -813,7 +931,7 @@ impl Default for Engine {
 impl Engine {
     pub fn new() -> Self {
         let stopped = Arc::new(AtomicBool::new(false));
-        let shared_tt = Arc::new(SharedTT::new(DEFAULT_HASH_MB));
+        let shared_tt = Arc::new(SharedTT::placeholder());
         let search_pool = Arc::new(LazySmpPool::new());
         let mut e = Engine {
             st: BoardState::empty(),
@@ -823,6 +941,7 @@ impl Engine {
             num_threads: 1,
             stopped,
             book: None,
+            random_book_move: false,
             book_min_move_weight: DEFAULT_BOOK_MIN_MOVE_WEIGHT,
             book_min_move_weight_permille: DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE,
             #[cfg(feature = "decision-trace")]
@@ -831,6 +950,10 @@ impl Engine {
         e.searcher.tt_mb = DEFAULT_HASH_MB;
         e.set_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
         e
+    }
+
+    pub fn ensure_hash_ready(&mut self) {
+        self.shared_tt.ensure_size(self.searcher.tt_mb);
     }
 
     pub fn new_with(
@@ -850,6 +973,7 @@ impl Engine {
             num_threads,
             stopped,
             book: book_config.book,
+            random_book_move: book_config.random_book_move,
             book_min_move_weight: book_config.min_move_weight,
             book_min_move_weight_permille: book_config.min_move_weight_permille,
             #[cfg(feature = "decision-trace")]
@@ -1272,12 +1396,35 @@ impl Engine {
 
         if !self.st.chess960 {
             if let Some(ref book) = self.book {
-                if let Some(choice) = book.best_move_with_confidence(
-                    &self.st,
-                    &moves,
-                    self.book_min_move_weight,
-                    self.book_min_move_weight_permille,
-                ) {
+                let choice = if self.random_book_move {
+                    book.pick_move_with_quality(
+                        &self.st,
+                        &moves,
+                        self.book_min_move_weight,
+                        self.book_min_move_weight_permille,
+                        crate::book::DEFAULT_BOOK_MAX_EVAL_LOSS_CP,
+                        |mv| {
+                            let mut child = self.st;
+                            apply_move(
+                                &mut child,
+                                move_sr(mv),
+                                move_sc(mv),
+                                move_er(mv),
+                                move_ec(mv),
+                                move_promotion(mv),
+                            );
+                            -self.searcher.corrected_eval(&child)
+                        },
+                    )
+                } else {
+                    book.best_move_with_confidence(
+                        &self.st,
+                        &moves,
+                        self.book_min_move_weight,
+                        self.book_min_move_weight_permille,
+                    )
+                };
+                if let Some(choice) = choice {
                     let mv_str = move_to_uci(&self.st, choice.mv);
                     let eval_score = self.searcher.corrected_eval(&self.st);
                     let elapsed = match timer_start {
@@ -1309,6 +1456,7 @@ impl Engine {
         }
 
         let search_threads = threads_for_time_budget(self.num_threads, soft_time_limit);
+        self.ensure_hash_ready();
         self.shared_tt.advance_generation();
         let preferred = tt_root_move(&self.searcher, &self.st, &moves);
         let ordered_moves = sort_root_moves(&self.st, &moves, preferred);
@@ -1411,7 +1559,11 @@ impl Engine {
                     let root_ext = root_depth_extension(&old, mv);
                     let move_nodes_before = nd;
                     #[cfg(feature = "search-debug")]
-                    self.searcher.reset_debug_stats();
+                    {
+                        self.searcher.reset_debug_stats();
+                        self.searcher
+                            .begin_debug_search_dag(depth, &move_to_uci(&old, mv));
+                    }
 
                     let score = if cur_score == -INF {
                         -self.searcher.negamax(
@@ -1465,6 +1617,8 @@ impl Engine {
                         score,
                         move_nodes,
                     );
+                    #[cfg(feature = "search-debug")]
+                    self.searcher.emit_debug_search_dag(score, move_nodes);
 
                     self.searcher.rep_stack.pop();
                     self.searcher.rep_stack_len -= 1;
@@ -1739,6 +1893,21 @@ mod tests {
             ),
             "expected legal move {uci}"
         );
+    }
+
+    #[test]
+    fn engine_defers_hash_materialization_until_ready() {
+        let mut engine = Engine::new();
+        assert_eq!(engine.searcher.tt_mb, DEFAULT_HASH_MB);
+        assert_eq!(engine.shared_tt.allocated_entries(), 1);
+
+        engine.searcher.tt_mb = 1;
+        engine.ensure_hash_ready();
+        let ready_entries = engine.shared_tt.allocated_entries();
+        assert!(ready_entries > 1);
+
+        engine.ensure_hash_ready();
+        assert_eq!(engine.shared_tt.allocated_entries(), ready_entries);
     }
 
     // These position-backed tests observe the internal root-order predicates, scores,
