@@ -646,11 +646,9 @@ pub struct Searcher {
     pub shared_tt: Arc<SharedTT>,
     pub killers: [[Option<Move>; 2]; MAX_PLY],
     pub history: [[i32; 64]; 64],
-    pub continuation_hist: [[i32; 64]; 64],
     pub capture_hist: [[i32; 7]; 7],
     pub counter_move: [[Option<Move>; 64]; 13],
     pub corr_hist: [i32; CORR_HIST_SIZE * 2],
-    pub parent_moves: [Option<Move>; MAX_PLY],
     pub rep_stack: Vec<u64>,
     pub rep_stack_len: usize,
     rep_root_len: usize,
@@ -2063,9 +2061,8 @@ macro_rules! negamax_mode_body {
                     if is_promo {
                         s += 1_500_000 + promotion_value(mv);
                     }
-                    let parent_move = $this.parent_moves[$ply];
                     s += $this
-                        .order_history_score(mv, parent_move, fpi, tpi, true)
+                        .order_history_score(mv, fpi, tpi, true)
                         .clamp(-32768, 32768);
                 } else {
                     if $this.killers[$ply][0] == Some(mv) {
@@ -2081,9 +2078,8 @@ macro_rules! negamax_mode_body {
                     if $this.counter_move[p_idx][to] == Some(mv) {
                         s += 700_000;
                     }
-                    let parent_move = $this.parent_moves[$ply];
                     s += $this
-                        .order_history_score(mv, parent_move, fpi, tpi, false)
+                        .order_history_score(mv, fpi, tpi, false)
                         .clamp(-32768, 32768);
                 }
             }
@@ -2239,9 +2235,7 @@ macro_rules! negamax_mode_body {
                 && is_quiet
                 && !in_check;
             let s = if move_index == 0 {
-                let previous_parent = $this.parent_moves[$ply + 1];
-                $this.parent_moves[$ply + 1] = Some(mv);
-                let s = -$this.$negamax_mode::<CHESS960, E>(
+                -$this.$negamax_mode::<CHESS960, E>(
                     $st,
                     new_depth,
                     $ply + 1,
@@ -2252,9 +2246,7 @@ macro_rules! negamax_mode_body {
                     $tl,
                     $cnt,
                     $eval,
-                );
-                $this.parent_moves[$ply + 1] = previous_parent;
-                s
+                )
             } else if lmr_eligible {
                 let r = {
                     let base =
@@ -2273,8 +2265,6 @@ macro_rules! negamax_mode_body {
                     $this.debug.stats.lmr_max_reduction =
                         $this.debug.stats.lmr_max_reduction.max(r);
                 }
-                let previous_parent = $this.parent_moves[$ply + 1];
-                $this.parent_moves[$ply + 1] = Some(mv);
                 let s2 = -$this.$negamax_mode::<CHESS960, E>(
                     $st,
                     new_depth - r,
@@ -2305,9 +2295,7 @@ macro_rules! negamax_mode_body {
                         $eval,
                     );
                     let s3 = if s3 > $alpha && is_pv {
-                        let previous_parent = $this.parent_moves[$ply + 1];
-                        $this.parent_moves[$ply + 1] = Some(mv);
-                        let s = -$this.$negamax_mode::<CHESS960, E>(
+                        -$this.$negamax_mode::<CHESS960, E>(
                             $st,
                             new_depth,
                             $ply + 1,
@@ -2318,21 +2306,15 @@ macro_rules! negamax_mode_body {
                             $tl,
                             $cnt,
                             $eval,
-                        );
-                        $this.parent_moves[$ply + 1] = previous_parent;
-                        s
+                        )
                     } else {
                         s3
                     };
-                    $this.parent_moves[$ply + 1] = previous_parent;
                     s3
                 } else {
-                    $this.parent_moves[$ply + 1] = previous_parent;
                     s2
                 }
             } else if is_pv {
-                let previous_parent = $this.parent_moves[$ply + 1];
-                $this.parent_moves[$ply + 1] = Some(mv);
                 let s2 = -$this.$negamax_mode::<CHESS960, E>(
                     $st,
                     new_depth,
@@ -2346,7 +2328,7 @@ macro_rules! negamax_mode_body {
                     $eval,
                 );
                 let s2 = if s2 > $alpha && s2 < beta {
-                    let s = -$this.$negamax_mode::<CHESS960, E>(
+                    -$this.$negamax_mode::<CHESS960, E>(
                         $st,
                         new_depth,
                         $ply + 1,
@@ -2357,18 +2339,13 @@ macro_rules! negamax_mode_body {
                         $tl,
                         $cnt,
                         $eval,
-                    );
-                    $this.parent_moves[$ply + 1] = previous_parent;
-                    s
+                    )
                 } else {
-                    $this.parent_moves[$ply + 1] = previous_parent;
                     s2
                 };
                 s2
             } else {
-                let previous_parent = $this.parent_moves[$ply + 1];
-                $this.parent_moves[$ply + 1] = Some(mv);
-                let s = -$this.$negamax_mode::<CHESS960, E>(
+                -$this.$negamax_mode::<CHESS960, E>(
                     $st,
                     new_depth,
                     $ply + 1,
@@ -2379,9 +2356,7 @@ macro_rules! negamax_mode_body {
                     $tl,
                     $cnt,
                     $eval,
-                );
-                $this.parent_moves[$ply + 1] = previous_parent;
-                s
+                )
             };
 
             $this.leave_child_path(path_state);
@@ -2412,7 +2387,7 @@ macro_rules! negamax_mode_body {
                                 $this.killers[$ply][0] = Some(mv);
                             }
                             let bonus = (actual_depth * actual_depth).min(512);
-                            $this.update_history_score(mv, $this.parent_moves[$ply], bonus);
+                            $this.update_history_score(mv, bonus);
                             for &qmv in &quiets_tried {
                                 if qmv == mv {
                                     continue;
@@ -2444,7 +2419,7 @@ macro_rules! negamax_mode_body {
                             && !$this.restricted_verification_active()
                         {
                             let bonus = (actual_depth * actual_depth).min(512);
-                            $this.update_capture_history(mv, fpi, tpi, bonus);
+                            $this.update_capture_history(fpi, tpi, bonus);
                         }
                         break;
                     }
@@ -2495,11 +2470,9 @@ impl Searcher {
             shared_tt,
             killers: [[None; 2]; MAX_PLY],
             history: [[0i32; 64]; 64],
-            continuation_hist: [[0i32; 64]; 64],
             capture_hist: [[0i32; 7]; 7],
             counter_move: [[None; 64]; 13],
             corr_hist: [0i32; CORR_HIST_SIZE * 2],
-            parent_moves: [None; MAX_PLY],
             rep_stack: Vec::with_capacity(512),
             rep_stack_len: 0,
             rep_root_len: 0,
@@ -2627,7 +2600,6 @@ impl Searcher {
     pub fn export_learning(&self) -> SearchLearning {
         SearchLearning {
             history: self.history,
-            continuation_hist: self.continuation_hist,
             capture_hist: self.capture_hist,
             counter_move: self.counter_move,
             corr_hist: self.corr_hist,
@@ -2636,7 +2608,6 @@ impl Searcher {
 
     pub fn import_learning(&mut self, learning: &SearchLearning) {
         self.history = learning.history;
-        self.continuation_hist = learning.continuation_hist;
         self.capture_hist = learning.capture_hist;
         self.counter_move = learning.counter_move;
         self.corr_hist = learning.corr_hist;
@@ -2657,11 +2628,6 @@ impl Searcher {
         self.probcut_verification = false;
         self.killers = [[None; 2]; MAX_PLY];
         for row in &mut self.history {
-            for value in row {
-                *value = *value * 13 / 16;
-            }
-        }
-        for row in &mut self.continuation_hist {
             for value in row {
                 *value = *value * 13 / 16;
             }
@@ -3305,14 +3271,7 @@ impl Searcher {
         }
     }
 
-    fn order_history_score(
-        &self,
-        mv: Move,
-        parent_move: Option<Move>,
-        fpi: u8,
-        tpi: u8,
-        is_capture: bool,
-    ) -> i32 {
+    fn order_history_score(&self, mv: Move, fpi: u8, tpi: u8, is_capture: bool) -> i32 {
         if is_capture {
             let attacker = piece_to_idx(piece_type(fpi));
             let victim = piece_to_idx(piece_type(tpi));
@@ -3320,16 +3279,10 @@ impl Searcher {
         }
 
         let (fk, tk) = from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
-        let mut score = self.history[fk][tk];
-        if let Some(parent_move) = parent_move {
-            let prev_to = move_to(parent_move);
-            let curr_to = move_to(mv);
-            score += self.continuation_hist[prev_to][curr_to];
-        }
-        score
+        self.history[fk][tk]
     }
 
-    fn update_history_score(&mut self, mv: Move, parent_move: Option<Move>, bonus: i32) {
+    fn update_history_score(&mut self, mv: Move, bonus: i32) {
         let (fk, tk) = from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
         self.history[fk][tk] += bonus;
         if self.history[fk][tk] > 16384 {
@@ -3339,35 +3292,14 @@ impl Searcher {
                 }
             }
         }
-        if let Some(parent_move) = parent_move {
-            let prev_to = move_to(parent_move);
-            let curr_to = move_to(mv);
-            self.continuation_hist[prev_to][curr_to] += bonus;
-            if self.continuation_hist[prev_to][curr_to] > 16384 {
-                for row in &mut self.continuation_hist {
-                    for value in row {
-                        *value /= 2;
-                    }
-                }
-            }
-        }
     }
 
-    fn update_capture_history(&mut self, mv: Move, fpi: u8, tpi: u8, bonus: i32) {
+    fn update_capture_history(&mut self, fpi: u8, tpi: u8, bonus: i32) {
         let attacker = piece_to_idx(piece_type(fpi));
         let victim = piece_to_idx(piece_type(tpi));
         self.capture_hist[attacker][victim] += bonus;
         if self.capture_hist[attacker][victim] > 16384 {
             for row in &mut self.capture_hist {
-                for value in row {
-                    *value /= 2;
-                }
-            }
-        }
-        let (fk, tk) = from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
-        self.history[fk][tk] += bonus;
-        if self.history[fk][tk] > 16384 {
-            for row in &mut self.history {
                 for value in row {
                     *value /= 2;
                 }
@@ -4581,7 +4513,6 @@ fn env_usize(name: &str) -> Option<usize> {
 #[derive(Clone)]
 pub struct SearchLearning {
     history: [[i32; 64]; 64],
-    continuation_hist: [[i32; 64]; 64],
     capture_hist: [[i32; 7]; 7],
     counter_move: [[Option<Move>; 64]; 13],
     corr_hist: [i32; CORR_HIST_SIZE * 2],
@@ -5782,13 +5713,11 @@ mod tests {
     }
 
     #[test]
-    fn order_history_score_uses_continuation_and_capture_tables() {
+    fn order_history_score_uses_quiet_and_capture_tables() {
         let stopped = Arc::new(AtomicBool::new(false));
         let shared_tt = Arc::new(SharedTT::new(1));
         let mut searcher = Searcher::new(Arc::clone(&shared_tt), stopped);
-        let st = state_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
 
-        let prev_mv = encode_move(6, 0, 4, 0, 0);
         let quiet_mv = encode_move(1, 0, 3, 0, 0);
         let (fk, tk) = from_to_key(
             move_sr(quiet_mv),
@@ -5797,22 +5726,52 @@ mod tests {
             move_ec(quiet_mv),
         );
         searcher.history[fk][tk] = 100;
-        searcher.continuation_hist[move_to(prev_mv)][move_to(quiet_mv)] = 200;
 
         assert_eq!(
-            searcher.order_history_score(quiet_mv, Some(prev_mv), EMPTY_SQ, EMPTY_SQ, false),
-            300
+            searcher.order_history_score(quiet_mv, EMPTY_SQ, EMPTY_SQ, false),
+            100
         );
 
-        let capture_mv = encode_move(6, 1, 4, 1, 0);
-        let capture_fpi = st.mailbox[move_from(capture_mv)];
-        let capture_tpi = st.mailbox[move_to(capture_mv)];
+        let capture_st = state_from_fen("8/8/8/3p4/4P3/8/8/4K2k w - - 0 1");
+        let capture_mv = legal_move(&capture_st, "e4d5");
+        let capture_fpi = capture_st.mailbox[move_from(capture_mv)];
+        let capture_tpi = capture_st.mailbox[move_to(capture_mv)];
         searcher.capture_hist[piece_to_idx(piece_type(capture_fpi)) as usize]
             [piece_to_idx(piece_type(capture_tpi)) as usize] = 400;
 
         assert_eq!(
-            searcher.order_history_score(capture_mv, None, capture_fpi, capture_tpi, true),
+            searcher.order_history_score(capture_mv, capture_fpi, capture_tpi, true),
             400
+        );
+    }
+
+    #[test]
+    fn capture_history_does_not_train_quiet_history() {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::new(1));
+        let mut searcher = Searcher::new(Arc::clone(&shared_tt), stopped);
+        let st = state_from_fen("8/8/8/3p4/4P3/8/8/4K2k w - - 0 1");
+
+        let capture_mv = legal_move(&st, "e4d5");
+        let capture_fpi = st.mailbox[move_from(capture_mv)];
+        let capture_tpi = st.mailbox[move_to(capture_mv)];
+        let (fk, tk) = from_to_key(
+            move_sr(capture_mv),
+            move_sc(capture_mv),
+            move_er(capture_mv),
+            move_ec(capture_mv),
+        );
+
+        searcher.update_capture_history(capture_fpi, capture_tpi, 256);
+
+        assert_eq!(
+            searcher.capture_hist[piece_to_idx(piece_type(capture_fpi)) as usize]
+                [piece_to_idx(piece_type(capture_tpi)) as usize],
+            256
+        );
+        assert_eq!(
+            searcher.history[fk][tk], 0,
+            "capture cutoffs must not pollute quiet from/to history"
         );
     }
 
