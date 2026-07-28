@@ -11,9 +11,16 @@ const DEFAULT_CORPUS_WORKERS: usize = 4;
 const EXPECTED_HEADER: &str =
     "id\tdepth\tfen_before_blunder\tsetup_move\texpected_move\tthemes\trating\tpopularity\tplays";
 
+#[derive(Clone, Copy)]
+enum FixtureVariant {
+    Standard,
+    Chess960,
+}
+
 struct RegressionCase {
     fixture: String,
     line_number: usize,
+    variant: FixtureVariant,
     id: String,
     depth: i32,
     fen_before_blunder: String,
@@ -71,6 +78,36 @@ fn parse_depth(value: &str, fixture: &str, line_number: usize) -> i32 {
     depth
 }
 
+fn parse_variant(value: &str, fixture: &str, line_number: usize) -> FixtureVariant {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "standard" => FixtureVariant::Standard,
+        "chess960" | "fischerandom" | "fischer random" => FixtureVariant::Chess960,
+        other => panic!(
+            "invalid fixture variant `{other}` at {}",
+            fixture_location(fixture, line_number)
+        ),
+    }
+}
+
+fn fixture_variant(contents: &str, fixture: &str) -> FixtureVariant {
+    let mut variant = FixtureVariant::Standard;
+    for (line_index, line) in contents.lines().enumerate() {
+        let line_number = line_index + 1;
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("# Variant:") {
+            variant = parse_variant(value, fixture, line_number);
+            continue;
+        }
+        if !line.starts_with('#') {
+            break;
+        }
+    }
+    variant
+}
+
 fn fixture_paths() -> Vec<PathBuf> {
     let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     let mut paths = fs::read_dir(&fixture_dir)
@@ -101,6 +138,7 @@ fn parse_fixture(path: &Path, ids: &mut HashSet<String>) -> Vec<RegressionCase> 
         .into_owned();
     let contents = fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+    let variant = fixture_variant(&contents, &fixture);
     let mut lines = contents.lines().enumerate();
     let (header_index, header) = lines
         .by_ref()
@@ -142,6 +180,7 @@ fn parse_fixture(path: &Path, ids: &mut HashSet<String>) -> Vec<RegressionCase> 
         cases.push(RegressionCase {
             fixture: fixture.clone(),
             line_number,
+            variant,
             id,
             depth: parse_depth(columns[1], &fixture, line_number),
             fen_before_blunder: columns[2].to_owned(),
@@ -224,6 +263,7 @@ fn solve_case(case: &RegressionCase) -> Result<(), String> {
         );
     }
     engine.num_threads = 1;
+    engine.st.chess960 = matches!(case.variant, FixtureVariant::Chess960);
     engine
         .try_set_fen(&case.fen_before_blunder)
         .map_err(|error| format!("invalid FEN for {}: {error}", case.id))?;
