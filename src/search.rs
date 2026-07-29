@@ -663,6 +663,8 @@ pub struct Searcher {
     pub tt_mb: usize,
     pub stopped: Arc<AtomicBool>,
     pub pondering: Arc<AtomicBool>,
+    node_limit: Option<u64>,
+    shared_node_counter: Option<Arc<AtomicU64>>,
     pub nnue_stack: Vec<NNUEAccumulator>,
     pub nnue_net: Option<Arc<NNUENet>>,
     pub search_backend: SearchBackendKind,
@@ -1138,7 +1140,7 @@ macro_rules! qsearch_mode_body {
             $this.debug.stats.max_ply = $this.debug.stats.max_ply.max($ply);
             $this.record_debug_dag_node($st, $ply, $depth, $alpha, $beta, true);
         }
-        if $this.time_up($start, $tl) {
+        if $this.search_limit_reached::<NODE_LIMITED>($start, $tl, *$cnt) {
             return 0;
         }
         let excluded_move = $this.excluded_moves.get($ply).copied().flatten();
@@ -1275,7 +1277,7 @@ macro_rules! qsearch_mode_body {
             );
             $this.rep_stack.push($st.hash);
             $this.rep_stack_len += 1;
-            let score = -$this.$qsearch_mode::<CHESS960, E>(
+            let score = -$this.$qsearch_mode::<CHESS960, NODE_LIMITED, E>(
                 $st,
                 -$beta,
                 -$alpha,
@@ -1327,7 +1329,7 @@ macro_rules! negamax_mode_body {
             $this.debug.stats.max_ply = $this.debug.stats.max_ply.max($ply);
             $this.record_debug_dag_node($st, $ply, $depth, $alpha, $beta, false);
         }
-        if $this.time_up($start, $tl) {
+        if $this.search_limit_reached::<NODE_LIMITED>($start, $tl, *$cnt) {
             return 0;
         }
         if $ply >= MAX_PLY {
@@ -1429,7 +1431,7 @@ macro_rules! negamax_mode_body {
         $this.record_debug_dag_eval(h, eval_score);
 
         if actual_depth <= 0 {
-            return $this.$qsearch_mode::<CHESS960, E>(
+            return $this.$qsearch_mode::<CHESS960, NODE_LIMITED, E>(
                 $st, $alpha, beta, QS_DEPTH, $start, $tl, $cnt, $ply, $eval,
             );
         }
@@ -1454,7 +1456,7 @@ macro_rules! negamax_mode_body {
         {
             let margin = 150 * actual_depth;
             if eval_score + margin <= $alpha {
-                let q = $this.$qsearch_mode::<CHESS960, E>(
+                let q = $this.$qsearch_mode::<CHESS960, NODE_LIMITED, E>(
                     $st,
                     $alpha - margin,
                     beta - margin,
@@ -1507,7 +1509,7 @@ macro_rules! negamax_mode_body {
                 $this.rep_stack.push(null_h);
                 $this.rep_stack_len += 1;
                 let path_state = $this.enter_null_path($ply);
-                let s = -$this.$negamax_mode::<CHESS960, E>(
+                let s = -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
                     $st,
                     actual_depth - r - 1,
                     $ply + 1,
@@ -1680,7 +1682,7 @@ macro_rules! negamax_mode_body {
                     $this.rep_stack_len += 1;
                     let path_state = $this.enter_child_path($ply, mv, 0);
 
-                    let qsearch_score = -$this.$qsearch_mode::<CHESS960, E>(
+                    let qsearch_score = -$this.$qsearch_mode::<CHESS960, NODE_LIMITED, E>(
                         $st,
                         -candidate.beta,
                         -candidate.beta + 1,
@@ -1702,18 +1704,19 @@ macro_rules! negamax_mode_body {
                         let nodes_before = *$cnt;
                         let previous_verification = $this.probcut_verification;
                         $this.probcut_verification = true;
-                        full_search_score = Some(-$this.$negamax_mode::<CHESS960, E>(
-                            $st,
-                            candidate.child_depth,
-                            $ply + 1,
-                            -candidate.beta,
-                            -candidate.beta + 1,
-                            false,
-                            $start,
-                            $tl,
-                            $cnt,
-                            $eval,
-                        ));
+                        full_search_score =
+                            Some(-$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
+                                $st,
+                                candidate.child_depth,
+                                $ply + 1,
+                                -candidate.beta,
+                                -candidate.beta + 1,
+                                false,
+                                $start,
+                                $tl,
+                                $cnt,
+                                $eval,
+                            ));
                         $this.probcut_verification = previous_verification;
                         #[cfg(feature = "search-debug")]
                         {
@@ -1827,7 +1830,7 @@ macro_rules! negamax_mode_body {
                 let nodes_before = *$cnt;
                 let previous = $this.excluded_moves[$ply].replace(candidate.mv);
                 let previous_restricted = $this.set_restricted_verification(true);
-                let alternative_score = $this.$negamax_mode::<CHESS960, E>(
+                let alternative_score = $this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
                     $st,
                     candidate.depth,
                     $ply,
@@ -1853,29 +1856,8 @@ macro_rules! negamax_mode_body {
                         $this.debug.stats.singular_verifications += 1;
                     }
                     let threshold = candidate.score - SINGULAR_DOUBLE_MARGIN_CP;
-                    double_alternative_score = Some($this.$negamax_mode::<CHESS960, E>(
-                        $st,
-                        candidate.depth,
-                        $ply,
-                        threshold - 1,
-                        threshold,
-                        false,
-                        $start,
-                        $tl,
-                        $cnt,
-                        $eval,
-                    ));
-                    if !$this.stopped.load(Ordering::Relaxed)
-                        && candidate.max_extension >= 3
-                        && actual_depth >= SINGULAR_TRIPLE_MIN_DEPTH
-                        && double_alternative_score.is_some_and(|score| score < threshold)
-                    {
-                        #[cfg(feature = "search-debug")]
-                        {
-                            $this.debug.stats.singular_verifications += 1;
-                        }
-                        let threshold = candidate.score - SINGULAR_TRIPLE_MARGIN_CP;
-                        triple_alternative_score = Some($this.$negamax_mode::<CHESS960, E>(
+                    double_alternative_score =
+                        Some($this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
                             $st,
                             candidate.depth,
                             $ply,
@@ -1887,6 +1869,29 @@ macro_rules! negamax_mode_body {
                             $cnt,
                             $eval,
                         ));
+                    if !$this.stopped.load(Ordering::Relaxed)
+                        && candidate.max_extension >= 3
+                        && actual_depth >= SINGULAR_TRIPLE_MIN_DEPTH
+                        && double_alternative_score.is_some_and(|score| score < threshold)
+                    {
+                        #[cfg(feature = "search-debug")]
+                        {
+                            $this.debug.stats.singular_verifications += 1;
+                        }
+                        let threshold = candidate.score - SINGULAR_TRIPLE_MARGIN_CP;
+                        triple_alternative_score =
+                            Some($this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
+                                $st,
+                                candidate.depth,
+                                $ply,
+                                threshold - 1,
+                                threshold,
+                                false,
+                                $start,
+                                $tl,
+                                $cnt,
+                                $eval,
+                            ));
                     }
                 }
                 $this.excluded_moves[$ply] = previous;
@@ -2231,7 +2236,7 @@ macro_rules! negamax_mode_body {
                 && is_quiet
                 && !in_check;
             let s = if move_index == 0 {
-                -$this.$negamax_mode::<CHESS960, E>(
+                -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
                     $st,
                     new_depth,
                     $ply + 1,
@@ -2261,7 +2266,7 @@ macro_rules! negamax_mode_body {
                     $this.debug.stats.lmr_max_reduction =
                         $this.debug.stats.lmr_max_reduction.max(r);
                 }
-                let s2 = -$this.$negamax_mode::<CHESS960, E>(
+                let s2 = -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
                     $st,
                     new_depth - r,
                     $ply + 1,
@@ -2278,7 +2283,7 @@ macro_rules! negamax_mode_body {
                     {
                         $this.debug.stats.lmr_researches += 1;
                     }
-                    let s3 = -$this.$negamax_mode::<CHESS960, E>(
+                    let s3 = -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
                         $st,
                         new_depth,
                         $ply + 1,
@@ -2291,7 +2296,7 @@ macro_rules! negamax_mode_body {
                         $eval,
                     );
                     if s3 > $alpha && is_pv {
-                        -$this.$negamax_mode::<CHESS960, E>(
+                        -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
                             $st,
                             new_depth,
                             $ply + 1,
@@ -2310,7 +2315,7 @@ macro_rules! negamax_mode_body {
                     s2
                 }
             } else if is_pv {
-                let s2 = -$this.$negamax_mode::<CHESS960, E>(
+                let s2 = -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
                     $st,
                     new_depth,
                     $ply + 1,
@@ -2323,7 +2328,7 @@ macro_rules! negamax_mode_body {
                     $eval,
                 );
                 if s2 > $alpha && s2 < beta {
-                    -$this.$negamax_mode::<CHESS960, E>(
+                    -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
                         $st,
                         new_depth,
                         $ply + 1,
@@ -2339,7 +2344,7 @@ macro_rules! negamax_mode_body {
                     s2
                 }
             } else {
-                -$this.$negamax_mode::<CHESS960, E>(
+                -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
                     $st,
                     new_depth,
                     $ply + 1,
@@ -2482,6 +2487,8 @@ impl Searcher {
             tt_mb: 128,
             stopped,
             pondering: Arc::new(AtomicBool::new(false)),
+            node_limit: None,
+            shared_node_counter: None,
             nnue_stack: Vec::new(),
             nnue_net: current_nnue_net(),
             search_backend: active_search_backend(),
@@ -2549,8 +2556,58 @@ impl Searcher {
         }
     }
 
+    #[inline]
+    fn search_limit_reached<const NODE_LIMITED: bool>(
+        &self,
+        start: Instant,
+        tl: f64,
+        local_nodes: u64,
+    ) -> bool {
+        if self.stopped.load(Ordering::Relaxed) {
+            return true;
+        }
+        if NODE_LIMITED {
+            let limit = self
+                .node_limit
+                .expect("node-limited search was started without a node limit");
+            let searched_nodes = if let Some(counter) = &self.shared_node_counter {
+                counter.fetch_add(1, Ordering::Relaxed).saturating_add(1)
+            } else {
+                local_nodes
+            };
+            if searched_nodes >= limit {
+                self.set_stopped();
+                return true;
+            }
+        }
+        if self.pondering.load(Ordering::Relaxed) {
+            return false;
+        }
+        if start.elapsed().as_secs_f64() > tl {
+            self.set_stopped();
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn set_stopped(&self) {
         self.stopped.store(true, Ordering::SeqCst);
+    }
+
+    pub fn set_node_limit(&mut self, node_limit: Option<u64>) {
+        self.node_limit = node_limit;
+        self.shared_node_counter = None;
+    }
+
+    fn set_shared_node_limit(&mut self, node_limit: Option<u64>, counter: Option<Arc<AtomicU64>>) {
+        self.node_limit = node_limit;
+        self.shared_node_counter = counter;
+    }
+
+    pub fn clear_node_limit(&mut self) {
+        self.node_limit = None;
+        self.shared_node_counter = None;
     }
 
     const BUF_POOL_CAP: usize = MAX_PLY + 64;
@@ -3401,7 +3458,7 @@ impl Searcher {
     ) -> i32 {
         let nnue_net = self.nnue_net.clone();
         match (st.chess960, nnue_net.as_deref()) {
-            (true, Some(net)) => self.qsearch_mode_scalar::<true, _>(
+            (true, Some(net)) => self.qsearch_mode_scalar::<true, false, _>(
                 st,
                 alpha,
                 beta,
@@ -3415,7 +3472,7 @@ impl Searcher {
                     _backend: ScalarNnueBackend,
                 },
             ),
-            (true, None) => self.qsearch_mode_scalar::<true, _>(
+            (true, None) => self.qsearch_mode_scalar::<true, false, _>(
                 st,
                 alpha,
                 beta,
@@ -3426,7 +3483,7 @@ impl Searcher {
                 ply,
                 ClassicEval,
             ),
-            (false, Some(net)) => self.qsearch_mode_scalar::<false, _>(
+            (false, Some(net)) => self.qsearch_mode_scalar::<false, false, _>(
                 st,
                 alpha,
                 beta,
@@ -3440,7 +3497,7 @@ impl Searcher {
                     _backend: ScalarNnueBackend,
                 },
             ),
-            (false, None) => self.qsearch_mode_scalar::<false, _>(
+            (false, None) => self.qsearch_mode_scalar::<false, false, _>(
                 st,
                 alpha,
                 beta,
@@ -3455,7 +3512,7 @@ impl Searcher {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn qsearch_mode_scalar<const CHESS960: bool, E: SearchEval>(
+    fn qsearch_mode_scalar<const CHESS960: bool, const NODE_LIMITED: bool, E: SearchEval>(
         &mut self,
         st: &mut BoardState,
         mut alpha: i32,
@@ -3483,7 +3540,7 @@ impl Searcher {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn qsearch_mode_simd128<const CHESS960: bool, E: SearchEval>(
+    fn qsearch_mode_simd128<const CHESS960: bool, const NODE_LIMITED: bool, E: SearchEval>(
         &mut self,
         st: &mut BoardState,
         mut alpha: i32,
@@ -3511,7 +3568,7 @@ impl Searcher {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn qsearch_mode_simd256<const CHESS960: bool, E: SearchEval>(
+    fn qsearch_mode_simd256<const CHESS960: bool, const NODE_LIMITED: bool, E: SearchEval>(
         &mut self,
         st: &mut BoardState,
         mut alpha: i32,
@@ -3539,7 +3596,7 @@ impl Searcher {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn qsearch_mode_simd512<const CHESS960: bool, E: SearchEval>(
+    fn qsearch_mode_simd512<const CHESS960: bool, const NODE_LIMITED: bool, E: SearchEval>(
         &mut self,
         st: &mut BoardState,
         mut alpha: i32,
@@ -3569,7 +3626,7 @@ impl Searcher {
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
     #[allow(clippy::too_many_arguments)]
-    unsafe fn qsearch_mode_x86_v3<const CHESS960: bool, E: SearchEval>(
+    unsafe fn qsearch_mode_x86_v3<const CHESS960: bool, const NODE_LIMITED: bool, E: SearchEval>(
         &mut self,
         st: &mut BoardState,
         mut alpha: i32,
@@ -3603,7 +3660,11 @@ impl Searcher {
         enable = "avx,avx2,avx512f,avx512bw,avx512dq,avx512vl,bmi1,bmi2,fma,lzcnt,popcnt"
     )]
     #[allow(clippy::too_many_arguments)]
-    unsafe fn qsearch_mode_x86_avx512<const CHESS960: bool, E: SearchEval>(
+    unsafe fn qsearch_mode_x86_avx512<
+        const CHESS960: bool,
+        const NODE_LIMITED: bool,
+        E: SearchEval,
+    >(
         &mut self,
         st: &mut BoardState,
         mut alpha: i32,
@@ -3645,44 +3706,72 @@ impl Searcher {
         tl: f64,
         cnt: &mut u64,
     ) -> i32 {
+        if self.node_limit.is_some() {
+            self.negamax_with_limits::<true>(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
+        } else {
+            self.negamax_with_limits::<false>(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn negamax_with_limits<const NODE_LIMITED: bool>(
+        &mut self,
+        st: &mut BoardState,
+        depth: i32,
+        ply: usize,
+        alpha: i32,
+        beta: i32,
+        can_null: bool,
+        start: Instant,
+        tl: f64,
+        cnt: &mut u64,
+    ) -> i32 {
         match self.search_backend {
             SearchBackendKind::X86Avx512 => {
                 #[cfg(target_arch = "x86_64")]
                 {
                     return unsafe {
-                        self.negamax_x86_avx512(
+                        self.negamax_x86_avx512::<NODE_LIMITED>(
                             st, depth, ply, alpha, beta, can_null, start, tl, cnt,
                         )
                     };
                 }
                 #[allow(unreachable_code)]
-                self.negamax_scalar(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
+                self.negamax_scalar::<NODE_LIMITED>(
+                    st, depth, ply, alpha, beta, can_null, start, tl, cnt,
+                )
             }
             SearchBackendKind::X86V3 => {
                 #[cfg(target_arch = "x86_64")]
                 {
                     return unsafe {
-                        self.negamax_x86_v3(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
+                        self.negamax_x86_v3::<NODE_LIMITED>(
+                            st, depth, ply, alpha, beta, can_null, start, tl, cnt,
+                        )
                     };
                 }
                 #[allow(unreachable_code)]
-                self.negamax_scalar(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
+                self.negamax_scalar::<NODE_LIMITED>(
+                    st, depth, ply, alpha, beta, can_null, start, tl, cnt,
+                )
             }
-            SearchBackendKind::Aarch64Simd128 => {
-                self.negamax_simd128(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
-            }
-            SearchBackendKind::Aarch64Simd256 => {
-                self.negamax_simd256(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
-            }
-            SearchBackendKind::Aarch64Simd512 => {
-                self.negamax_simd512(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
-            }
-            _ => self.negamax_scalar(st, depth, ply, alpha, beta, can_null, start, tl, cnt),
+            SearchBackendKind::Aarch64Simd128 => self.negamax_simd128::<NODE_LIMITED>(
+                st, depth, ply, alpha, beta, can_null, start, tl, cnt,
+            ),
+            SearchBackendKind::Aarch64Simd256 => self.negamax_simd256::<NODE_LIMITED>(
+                st, depth, ply, alpha, beta, can_null, start, tl, cnt,
+            ),
+            SearchBackendKind::Aarch64Simd512 => self.negamax_simd512::<NODE_LIMITED>(
+                st, depth, ply, alpha, beta, can_null, start, tl, cnt,
+            ),
+            _ => self.negamax_scalar::<NODE_LIMITED>(
+                st, depth, ply, alpha, beta, can_null, start, tl, cnt,
+            ),
         }
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn negamax_scalar(
+    fn negamax_scalar<const NODE_LIMITED: bool>(
         &mut self,
         st: &mut BoardState,
         depth: i32,
@@ -3696,7 +3785,7 @@ impl Searcher {
     ) -> i32 {
         let nnue_net = self.nnue_net.clone();
         match (st.chess960, nnue_net.as_deref()) {
-            (true, Some(net)) => self.negamax_mode_scalar::<true, _>(
+            (true, Some(net)) => self.negamax_mode_scalar::<true, NODE_LIMITED, _>(
                 st,
                 depth,
                 ply,
@@ -3711,7 +3800,7 @@ impl Searcher {
                     _backend: ScalarNnueBackend,
                 },
             ),
-            (true, None) => self.negamax_mode_scalar::<true, _>(
+            (true, None) => self.negamax_mode_scalar::<true, NODE_LIMITED, _>(
                 st,
                 depth,
                 ply,
@@ -3723,7 +3812,7 @@ impl Searcher {
                 cnt,
                 ClassicEval,
             ),
-            (false, Some(net)) => self.negamax_mode_scalar::<false, _>(
+            (false, Some(net)) => self.negamax_mode_scalar::<false, NODE_LIMITED, _>(
                 st,
                 depth,
                 ply,
@@ -3738,7 +3827,7 @@ impl Searcher {
                     _backend: ScalarNnueBackend,
                 },
             ),
-            (false, None) => self.negamax_mode_scalar::<false, _>(
+            (false, None) => self.negamax_mode_scalar::<false, NODE_LIMITED, _>(
                 st,
                 depth,
                 ply,
@@ -3754,7 +3843,7 @@ impl Searcher {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn negamax_simd128(
+    fn negamax_simd128<const NODE_LIMITED: bool>(
         &mut self,
         st: &mut BoardState,
         depth: i32,
@@ -3768,7 +3857,7 @@ impl Searcher {
     ) -> i32 {
         let nnue_net = self.nnue_net.clone();
         match (st.chess960, nnue_net.as_deref()) {
-            (true, Some(net)) => self.negamax_mode_simd128::<true, _>(
+            (true, Some(net)) => self.negamax_mode_simd128::<true, NODE_LIMITED, _>(
                 st,
                 depth,
                 ply,
@@ -3783,7 +3872,7 @@ impl Searcher {
                     _backend: Simd128NnueBackend,
                 },
             ),
-            (true, None) => self.negamax_mode_simd128::<true, _>(
+            (true, None) => self.negamax_mode_simd128::<true, NODE_LIMITED, _>(
                 st,
                 depth,
                 ply,
@@ -3795,7 +3884,7 @@ impl Searcher {
                 cnt,
                 ClassicEval,
             ),
-            (false, Some(net)) => self.negamax_mode_simd128::<false, _>(
+            (false, Some(net)) => self.negamax_mode_simd128::<false, NODE_LIMITED, _>(
                 st,
                 depth,
                 ply,
@@ -3810,7 +3899,7 @@ impl Searcher {
                     _backend: Simd128NnueBackend,
                 },
             ),
-            (false, None) => self.negamax_mode_simd128::<false, _>(
+            (false, None) => self.negamax_mode_simd128::<false, NODE_LIMITED, _>(
                 st,
                 depth,
                 ply,
@@ -3826,7 +3915,7 @@ impl Searcher {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn negamax_simd256(
+    fn negamax_simd256<const NODE_LIMITED: bool>(
         &mut self,
         st: &mut BoardState,
         depth: i32,
@@ -3840,7 +3929,7 @@ impl Searcher {
     ) -> i32 {
         let nnue_net = self.nnue_net.clone();
         match (st.chess960, nnue_net.as_deref()) {
-            (true, Some(net)) => self.negamax_mode_simd256::<true, _>(
+            (true, Some(net)) => self.negamax_mode_simd256::<true, NODE_LIMITED, _>(
                 st,
                 depth,
                 ply,
@@ -3855,7 +3944,7 @@ impl Searcher {
                     _backend: SimdNnueBackend,
                 },
             ),
-            (true, None) => self.negamax_mode_simd256::<true, _>(
+            (true, None) => self.negamax_mode_simd256::<true, NODE_LIMITED, _>(
                 st,
                 depth,
                 ply,
@@ -3867,7 +3956,7 @@ impl Searcher {
                 cnt,
                 ClassicEval,
             ),
-            (false, Some(net)) => self.negamax_mode_simd256::<false, _>(
+            (false, Some(net)) => self.negamax_mode_simd256::<false, NODE_LIMITED, _>(
                 st,
                 depth,
                 ply,
@@ -3882,7 +3971,7 @@ impl Searcher {
                     _backend: SimdNnueBackend,
                 },
             ),
-            (false, None) => self.negamax_mode_simd256::<false, _>(
+            (false, None) => self.negamax_mode_simd256::<false, NODE_LIMITED, _>(
                 st,
                 depth,
                 ply,
@@ -3898,7 +3987,7 @@ impl Searcher {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn negamax_simd512(
+    fn negamax_simd512<const NODE_LIMITED: bool>(
         &mut self,
         st: &mut BoardState,
         depth: i32,
@@ -3912,7 +4001,7 @@ impl Searcher {
     ) -> i32 {
         let nnue_net = self.nnue_net.clone();
         match (st.chess960, nnue_net.as_deref()) {
-            (true, Some(net)) => self.negamax_mode_simd512::<true, _>(
+            (true, Some(net)) => self.negamax_mode_simd512::<true, NODE_LIMITED, _>(
                 st,
                 depth,
                 ply,
@@ -3927,7 +4016,7 @@ impl Searcher {
                     _backend: Simd512NnueBackend,
                 },
             ),
-            (true, None) => self.negamax_mode_simd512::<true, _>(
+            (true, None) => self.negamax_mode_simd512::<true, NODE_LIMITED, _>(
                 st,
                 depth,
                 ply,
@@ -3939,7 +4028,7 @@ impl Searcher {
                 cnt,
                 ClassicEval,
             ),
-            (false, Some(net)) => self.negamax_mode_simd512::<false, _>(
+            (false, Some(net)) => self.negamax_mode_simd512::<false, NODE_LIMITED, _>(
                 st,
                 depth,
                 ply,
@@ -3954,7 +4043,7 @@ impl Searcher {
                     _backend: Simd512NnueBackend,
                 },
             ),
-            (false, None) => self.negamax_mode_simd512::<false, _>(
+            (false, None) => self.negamax_mode_simd512::<false, NODE_LIMITED, _>(
                 st,
                 depth,
                 ply,
@@ -3972,7 +4061,7 @@ impl Searcher {
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
     #[allow(clippy::too_many_arguments)]
-    unsafe fn negamax_x86_v3(
+    unsafe fn negamax_x86_v3<const NODE_LIMITED: bool>(
         &mut self,
         st: &mut BoardState,
         depth: i32,
@@ -3987,7 +4076,7 @@ impl Searcher {
         let nnue_net = self.nnue_net.clone();
         unsafe {
             match (st.chess960, nnue_net.as_deref()) {
-                (true, Some(net)) => self.negamax_mode_x86_v3::<true, _>(
+                (true, Some(net)) => self.negamax_mode_x86_v3::<true, NODE_LIMITED, _>(
                     st,
                     depth,
                     ply,
@@ -4002,7 +4091,7 @@ impl Searcher {
                         _backend: SimdNnueBackend,
                     },
                 ),
-                (true, None) => self.negamax_mode_x86_v3::<true, _>(
+                (true, None) => self.negamax_mode_x86_v3::<true, NODE_LIMITED, _>(
                     st,
                     depth,
                     ply,
@@ -4014,7 +4103,7 @@ impl Searcher {
                     cnt,
                     ClassicEval,
                 ),
-                (false, Some(net)) => self.negamax_mode_x86_v3::<false, _>(
+                (false, Some(net)) => self.negamax_mode_x86_v3::<false, NODE_LIMITED, _>(
                     st,
                     depth,
                     ply,
@@ -4029,7 +4118,7 @@ impl Searcher {
                         _backend: SimdNnueBackend,
                     },
                 ),
-                (false, None) => self.negamax_mode_x86_v3::<false, _>(
+                (false, None) => self.negamax_mode_x86_v3::<false, NODE_LIMITED, _>(
                     st,
                     depth,
                     ply,
@@ -4050,7 +4139,7 @@ impl Searcher {
         enable = "avx,avx2,avx512f,avx512bw,avx512dq,avx512vl,bmi1,bmi2,fma,lzcnt,popcnt"
     )]
     #[allow(clippy::too_many_arguments)]
-    unsafe fn negamax_x86_avx512(
+    unsafe fn negamax_x86_avx512<const NODE_LIMITED: bool>(
         &mut self,
         st: &mut BoardState,
         depth: i32,
@@ -4065,7 +4154,7 @@ impl Searcher {
         let nnue_net = self.nnue_net.clone();
         unsafe {
             match (st.chess960, nnue_net.as_deref()) {
-                (true, Some(net)) => self.negamax_mode_x86_avx512::<true, _>(
+                (true, Some(net)) => self.negamax_mode_x86_avx512::<true, NODE_LIMITED, _>(
                     st,
                     depth,
                     ply,
@@ -4080,7 +4169,7 @@ impl Searcher {
                         _backend: Avx512NnueBackend,
                     },
                 ),
-                (true, None) => self.negamax_mode_x86_avx512::<true, _>(
+                (true, None) => self.negamax_mode_x86_avx512::<true, NODE_LIMITED, _>(
                     st,
                     depth,
                     ply,
@@ -4092,7 +4181,7 @@ impl Searcher {
                     cnt,
                     ClassicEval,
                 ),
-                (false, Some(net)) => self.negamax_mode_x86_avx512::<false, _>(
+                (false, Some(net)) => self.negamax_mode_x86_avx512::<false, NODE_LIMITED, _>(
                     st,
                     depth,
                     ply,
@@ -4107,7 +4196,7 @@ impl Searcher {
                         _backend: Avx512NnueBackend,
                     },
                 ),
-                (false, None) => self.negamax_mode_x86_avx512::<false, _>(
+                (false, None) => self.negamax_mode_x86_avx512::<false, NODE_LIMITED, _>(
                     st,
                     depth,
                     ply,
@@ -4124,7 +4213,7 @@ impl Searcher {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn negamax_mode_scalar<const CHESS960: bool, E: SearchEval>(
+    fn negamax_mode_scalar<const CHESS960: bool, const NODE_LIMITED: bool, E: SearchEval>(
         &mut self,
         st: &mut BoardState,
         depth: i32,
@@ -4155,7 +4244,7 @@ impl Searcher {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn negamax_mode_simd128<const CHESS960: bool, E: SearchEval>(
+    fn negamax_mode_simd128<const CHESS960: bool, const NODE_LIMITED: bool, E: SearchEval>(
         &mut self,
         st: &mut BoardState,
         depth: i32,
@@ -4186,7 +4275,7 @@ impl Searcher {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn negamax_mode_simd256<const CHESS960: bool, E: SearchEval>(
+    fn negamax_mode_simd256<const CHESS960: bool, const NODE_LIMITED: bool, E: SearchEval>(
         &mut self,
         st: &mut BoardState,
         depth: i32,
@@ -4217,7 +4306,7 @@ impl Searcher {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn negamax_mode_simd512<const CHESS960: bool, E: SearchEval>(
+    fn negamax_mode_simd512<const CHESS960: bool, const NODE_LIMITED: bool, E: SearchEval>(
         &mut self,
         st: &mut BoardState,
         depth: i32,
@@ -4250,7 +4339,7 @@ impl Searcher {
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
     #[allow(clippy::too_many_arguments)]
-    unsafe fn negamax_mode_x86_v3<const CHESS960: bool, E: SearchEval>(
+    unsafe fn negamax_mode_x86_v3<const CHESS960: bool, const NODE_LIMITED: bool, E: SearchEval>(
         &mut self,
         st: &mut BoardState,
         depth: i32,
@@ -4287,7 +4376,11 @@ impl Searcher {
         enable = "avx,avx2,avx512f,avx512bw,avx512dq,avx512vl,bmi1,bmi2,fma,lzcnt,popcnt"
     )]
     #[allow(clippy::too_many_arguments)]
-    unsafe fn negamax_mode_x86_avx512<const CHESS960: bool, E: SearchEval>(
+    unsafe fn negamax_mode_x86_avx512<
+        const CHESS960: bool,
+        const NODE_LIMITED: bool,
+        E: SearchEval,
+    >(
         &mut self,
         st: &mut BoardState,
         depth: i32,
@@ -4483,6 +4576,7 @@ pub struct LazySmpSearchLimits {
     pub soft_time: f64,
     pub hard_time: f64,
     pub depth: i32,
+    pub node_limit: Option<u64>,
     pub start: Instant,
 }
 
@@ -4558,6 +4652,7 @@ struct LazySmpSearchJob {
     start: Instant,
     global_best_depth: Arc<AtomicI32>,
     global_nodes: Arc<AtomicU64>,
+    node_limit_counter: Option<Arc<AtomicU64>>,
     worker_best_moves: Vec<AtomicU64>,
     worker_depths: Vec<AtomicI32>,
 }
@@ -4728,6 +4823,7 @@ impl LazySmpPool {
             start: limits.start,
             global_best_depth: Arc::new(AtomicI32::new(0)),
             global_nodes: Arc::new(AtomicU64::new(0)),
+            node_limit_counter: limits.node_limit.map(|_| Arc::new(AtomicU64::new(0))),
             worker_best_moves: (0..num_threads).map(|_| AtomicU64::new(0)).collect(),
             worker_depths: (0..num_threads).map(|_| AtomicI32::new(0)).collect(),
         });
@@ -5188,6 +5284,7 @@ fn run_lazy_smp_worker(
     let start = job.start;
     let stopped = &job.stopped;
     let my_moves = lazy_smp_worker_root_moves(&st, &job.root_moves, thread_id, job.num_threads);
+    searcher.set_shared_node_limit(limits.node_limit, job.node_limit_counter.clone());
 
     let mut best_move = my_moves[0];
     let mut best_score = 0i32;
@@ -5413,14 +5510,16 @@ fn run_lazy_smp_worker(
         }
     }
 
-    ThreadResult {
+    let result = ThreadResult {
         thread_id,
         best_move,
         score: best_score,
         depth: best_depth,
         nodes: total_nodes,
         learning: (thread_id == 0).then(|| Box::new(searcher.export_learning())),
-    }
+    };
+    searcher.clear_node_limit();
+    result
 }
 
 #[cfg(test)]
@@ -6554,6 +6653,7 @@ mod tests {
                 soft_time: 0.0,
                 hard_time: 10.0,
                 depth: 4,
+                node_limit: None,
                 start: Instant::now(),
             },
             2,
@@ -6579,6 +6679,7 @@ mod tests {
                 soft_time: 10.0,
                 hard_time: 10.0,
                 depth: 1,
+                node_limit: None,
                 start: Instant::now(),
             },
             2,
@@ -6676,12 +6777,14 @@ mod tests {
                 soft_time: 1.0,
                 hard_time: 2.0,
                 depth: 20,
+                node_limit: None,
                 start: Instant::now(),
             },
             root_context: Arc::new(LazySmpRootContext::from_searcher(&root_searcher)),
             start: Instant::now(),
             global_best_depth: Arc::new(AtomicI32::new(0)),
             global_nodes: Arc::new(AtomicU64::new(0)),
+            node_limit_counter: None,
             worker_best_moves: (0..3).map(|_| AtomicU64::new(0)).collect(),
             worker_depths: (0..3).map(|_| AtomicI32::new(0)).collect(),
         };

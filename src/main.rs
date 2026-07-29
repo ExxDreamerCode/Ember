@@ -82,6 +82,7 @@ struct SearchLimits {
     soft_seconds: f64,
     hard_seconds: f64,
     depth: i32,
+    node_limit: Option<u64>,
     clock_managed: bool,
     ponder: bool,
 }
@@ -394,6 +395,7 @@ fn main() {
                         limits.soft_seconds,
                         limits.hard_seconds,
                         limits.depth,
+                        limits.node_limit,
                         search_start,
                     );
                     print_bestmove(&engine, &result.0, ponder_enabled);
@@ -456,13 +458,15 @@ fn main() {
                                 limits.soft_seconds,
                                 limits.hard_seconds,
                                 limits.depth,
+                                limits.node_limit,
                                 search_start,
                             )
                         } else {
-                            search_engine.find_best_move_with_time_limits_prepared(
+                            search_engine.find_best_move_with_time_limits_prepared_with_node_limit(
                                 limits.soft_seconds,
                                 limits.hard_seconds,
                                 limits.depth,
+                                limits.node_limit,
                             )
                         };
                         let learning = search_engine.searcher.export_learning();
@@ -790,26 +794,32 @@ fn parse_go_params(
     let mut binc = 0f64;
     let mut movetime = 0f64;
     let mut depth = 64i32;
+    let mut node_limit = None;
     let mut movestogo = 0i32;
     let mut ponder = false;
+    let mut has_clock_limit = false;
 
     let mut i = 1;
     while i < parts.len() {
         match parts[i] {
             "wtime" if i + 1 < parts.len() => {
                 wtime = parts[i + 1].parse().unwrap_or(300000.0);
+                has_clock_limit = true;
                 i += 1;
             }
             "btime" if i + 1 < parts.len() => {
                 btime = parts[i + 1].parse().unwrap_or(300000.0);
+                has_clock_limit = true;
                 i += 1;
             }
             "winc" if i + 1 < parts.len() => {
                 winc = parts[i + 1].parse().unwrap_or(0.0);
+                has_clock_limit = true;
                 i += 1;
             }
             "binc" if i + 1 < parts.len() => {
                 binc = parts[i + 1].parse().unwrap_or(0.0);
+                has_clock_limit = true;
                 i += 1;
             }
             "movetime" if i + 1 < parts.len() => {
@@ -820,8 +830,13 @@ fn parse_go_params(
                 depth = parts[i + 1].parse().unwrap_or(64);
                 i += 1;
             }
+            "nodes" if i + 1 < parts.len() => {
+                node_limit = parts[i + 1].parse::<u64>().ok().filter(|&nodes| nodes > 0);
+                i += 1;
+            }
             "movestogo" if i + 1 < parts.len() => {
                 movestogo = parts[i + 1].parse().unwrap_or(0);
+                has_clock_limit = true;
                 i += 1;
             }
             "infinite" => {
@@ -840,7 +855,7 @@ fn parse_go_params(
     let (soft_seconds, hard_seconds, clock_managed) = if movetime > 0.0 {
         let t = movetime / 1000.0;
         (t, t, true)
-    } else if depth < 64 {
+    } else if depth < 64 || (node_limit.is_some() && !has_clock_limit) {
         (1_000_000_000.0, 1_000_000_000.0, false)
     } else {
         let budget = time_manager.clock_budget(time_ms, inc, movestogo, engine.st.mc);
@@ -851,6 +866,7 @@ fn parse_go_params(
         soft_seconds,
         hard_seconds,
         depth,
+        node_limit,
         clock_managed,
         ponder,
     }

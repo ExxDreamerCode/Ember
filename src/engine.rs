@@ -1262,6 +1262,7 @@ impl Engine {
         soft_time_limit: f64,
         time_limit: f64,
         depth_limit: i32,
+        node_limit: Option<u64>,
         start: Instant,
     ) -> (String, i32, u64, f64) {
         self.searcher.stopped.store(false, Ordering::SeqCst);
@@ -1270,6 +1271,7 @@ impl Engine {
             soft_time_limit,
             time_limit,
             depth_limit,
+            node_limit,
             start,
         )
     }
@@ -1284,6 +1286,23 @@ impl Engine {
             soft_time_limit,
             time_limit,
             depth_limit,
+            None,
+            SearchTimerStart::AfterSetup,
+        )
+    }
+
+    pub fn find_best_move_with_time_limits_prepared_with_node_limit(
+        &mut self,
+        soft_time_limit: f64,
+        time_limit: f64,
+        depth_limit: i32,
+        node_limit: Option<u64>,
+    ) -> (String, i32, u64, f64) {
+        self.find_best_move_with_time_limits_prepared_with_timer(
+            soft_time_limit,
+            time_limit,
+            depth_limit,
+            node_limit,
             SearchTimerStart::AfterSetup,
         )
     }
@@ -1293,12 +1312,14 @@ impl Engine {
         soft_time_limit: f64,
         time_limit: f64,
         depth_limit: i32,
+        node_limit: Option<u64>,
         start: Instant,
     ) -> (String, i32, u64, f64) {
         self.find_best_move_with_time_limits_prepared_with_timer(
             soft_time_limit,
             time_limit,
             depth_limit,
+            node_limit,
             SearchTimerStart::BeforeSetup(start),
         )
     }
@@ -1308,6 +1329,7 @@ impl Engine {
         soft_time_limit: f64,
         time_limit: f64,
         depth_limit: i32,
+        node_limit: Option<u64>,
         timer_start: SearchTimerStart,
     ) -> (String, i32, u64, f64) {
         let soft_time_limit = soft_time_limit.min(time_limit);
@@ -1477,6 +1499,7 @@ impl Engine {
                     soft_time: soft_time_limit,
                     hard_time: time_limit,
                     depth: depth_limit,
+                    node_limit,
                     start,
                 },
                 search_threads,
@@ -1491,6 +1514,7 @@ impl Engine {
         }
 
         self.searcher.prepare_for_search();
+        self.searcher.set_node_limit(node_limit);
         self.searcher.init_nnue_stack(&self.st);
 
         let start = match timer_start {
@@ -1682,10 +1706,10 @@ impl Engine {
                 break;
             }
 
+            total_nodes += nd;
             if self.searcher.stopped.load(Ordering::Relaxed) {
                 break;
             }
-            total_nodes += nd;
             let elapsed = start.elapsed().as_secs_f64();
 
             if elapsed <= time_limit || self.searcher.pondering.load(Ordering::Relaxed) {
@@ -1764,6 +1788,7 @@ impl Engine {
         let elapsed = start.elapsed().as_secs_f64();
         self.searcher
             .update_correction_history(&self.st, best_score, best_depth);
+        self.searcher.clear_node_limit();
         #[cfg(feature = "decision-trace")]
         self.trace.emit_decision(DecisionTrace {
             fen: &root_fen,

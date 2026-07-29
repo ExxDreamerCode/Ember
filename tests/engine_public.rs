@@ -95,8 +95,13 @@ fn caller_supplied_start_time_is_used_for_clock_search() {
     engine.set_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
     let expired_start = Instant::now() - Duration::from_millis(50);
 
-    let (_, _, nodes, elapsed) =
-        engine.find_best_move_with_time_limits_prepared_started_at(0.005, 0.010, 64, expired_start);
+    let (_, _, nodes, elapsed) = engine.find_best_move_with_time_limits_prepared_started_at(
+        0.005,
+        0.010,
+        64,
+        None,
+        expired_start,
+    );
 
     assert_eq!(nodes, 0, "search ignored the already-expired clock");
     assert!(

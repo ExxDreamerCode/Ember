@@ -70,6 +70,48 @@ fn wait_for_exit(child: &mut Child, timeout: Duration) -> Option<ExitStatus> {
     None
 }
 
+fn assert_go_nodes_returns_promptly(threads: usize) {
+    let (mut child, rx) = spawn_ember();
+    let mut stdin = child.stdin.take().expect("capture Ember stdin");
+    writeln!(stdin, "uci").unwrap();
+    writeln!(stdin, "setoption name Hash value 16").unwrap();
+    writeln!(stdin, "setoption name Threads value {threads}").unwrap();
+    writeln!(stdin, "setoption name Book value").unwrap();
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(
+        wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some(),
+        "Ember did not finish UCI initialization"
+    );
+
+    writeln!(stdin, "position startpos").unwrap();
+    writeln!(stdin, "go nodes 1").unwrap();
+    stdin.flush().unwrap();
+
+    let bestmove = wait_for_line(&rx, "bestmove ", Duration::from_secs(2));
+    if bestmove.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("go nodes 1 was ignored with Threads={threads}");
+    }
+
+    writeln!(stdin, "quit").unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+    let status = child.wait().expect("wait for Ember UCI process");
+    assert!(status.success(), "Ember exited with {status}");
+}
+
+#[test]
+fn go_nodes_returns_promptly_in_single_threaded_search() {
+    assert_go_nodes_returns_promptly(1);
+}
+
+#[test]
+fn go_nodes_returns_promptly_in_lazy_smp_search() {
+    assert_go_nodes_returns_promptly(4);
+}
+
 #[test]
 fn malformed_uci_input_is_rejected_without_crashing() {
     let (mut child, rx) = spawn_ember();
