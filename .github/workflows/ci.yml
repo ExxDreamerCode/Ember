@@ -113,7 +113,10 @@ jobs:
 
     env:
       CARGO_TERM_COLOR: always
-      RUSTFLAGS: -C target-cpu=x86-64-v3 -C target-feature=+crt-static
+      RUSTFLAGS: >
+        -C target-cpu=x86-64-v3
+        -C target-feature=+crt-static
+        -C link-arg=/STACK:16777216
 
     steps:
       - name: Checkout
@@ -145,6 +148,12 @@ jobs:
         shell: pwsh
         run: >
           python tools/smoke_test_uci.py --
+          target/x86_64-pc-windows-msvc/release/ember.exe
+
+      - name: Run native UCI stress test
+        shell: pwsh
+        run: >
+          python tools/stress_test_uci.py --
           target/x86_64-pc-windows-msvc/release/ember.exe
 
       - name: Check static MSVC runtime
@@ -258,6 +267,13 @@ jobs:
             nix develop .#release-ci --command \
               python3 tools/smoke_test_uci.py --timeout 60 \
               -- wine result-windows-amd64/bin/ember.exe
+
+          nix develop .#release-ci --command python3 tools/stress_test_uci.py \
+            -- result-linux-amd64/bin/ember
+
+          nix develop .#release-ci --command \
+            python3 tools/stress_test_uci.py --timeout 60 \
+            -- qemu-aarch64 result-linux-arm64/bin/ember
 
       - name: Quick no-book NPS smoke benchmark
         run: |
@@ -437,6 +453,12 @@ jobs:
             sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
           fi
           nix develop .#ci --command python3 tools/smoke_test_uci.py \
+            -- /usr/bin/arch -x86_64 result-macos-amd64/bin/ember
+
+          nix develop .#ci --command python3 tools/stress_test_uci.py \
+            -- result-macos-arm64/bin/ember
+
+          nix develop .#ci --command python3 tools/stress_test_uci.py \
             -- /usr/bin/arch -x86_64 result-macos-amd64/bin/ember
 
       - name: Create release archives

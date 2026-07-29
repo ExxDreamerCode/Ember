@@ -59,6 +59,7 @@ let
     --bin ember
     --target ${target}
   '';
+  rustFlags = "-C target-cpu=${defaultTargetCpu} -C target-feature=+crt-static -C link-arg=/STACK:16777216";
 
   # Keep cargo-xwin's network access in a fixed-output derivation. Both the
   # exposed Windows package and the portable ZIP use this exact SDK cache.
@@ -120,7 +121,7 @@ let
       mkdir -p "$HOME" "$XWIN_CACHE_DIR"
       cp -R "${xwinSdk}/." "$XWIN_CACHE_DIR/"
       chmod -R u+w "$XWIN_CACHE_DIR"
-      export RUSTFLAGS="-C target-cpu=${defaultTargetCpu} -C target-feature=+crt-static"
+      export RUSTFLAGS="${rustFlags}"
       cargo_xwin_args=(
         --offline
         ${cargoBuildArrayItems}
@@ -172,7 +173,7 @@ let
       export PATH="${pkgs.llvmPackages.clang-unwrapped}/bin:$PATH"
 
       target_cpu="''${EMBER_WINDOWS_TARGET_CPU:-${defaultTargetCpu}}"
-      export RUSTFLAGS="-C target-cpu=$target_cpu -C target-feature=+crt-static ''${EMBER_WINDOWS_RUSTFLAGS:-}"
+      export RUSTFLAGS="-C target-cpu=$target_cpu -C target-feature=+crt-static -C link-arg=/STACK:16777216 ''${EMBER_WINDOWS_RUSTFLAGS:-}"
       cargo_xwin_args=(
         ${cargoBuildArrayItems}
       )

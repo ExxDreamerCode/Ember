@@ -624,6 +624,7 @@ fn special_move_gives_check(st: &BoardState, mv: Move) -> bool {
 }
 
 const CORR_HIST_SIZE: usize = 16384;
+pub const SEARCH_THREAD_STACK_SIZE: usize = 16 * 1024 * 1024;
 fn corr_idx(h: u64, side: bool) -> usize {
     let k = h
         .wrapping_mul(0x9E3779B97F4A7C15)
@@ -4581,7 +4582,7 @@ fn spawn_lazy_smp_worker(thread_id: usize) -> std::io::Result<LazySmpWorker> {
     let (command_tx, command_rx) = mpsc::channel();
     let handle = std::thread::Builder::new()
         .name(format!("rts-{thread_id}"))
-        .stack_size(8 * 1024 * 1024)
+        .stack_size(SEARCH_THREAD_STACK_SIZE)
         .spawn(move || {
             let mut searcher = None;
             while let Ok(command) = command_rx.recv() {

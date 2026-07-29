@@ -4,7 +4,9 @@ use chess_rs_lib::backend::{
 use chess_rs_lib::board::{piece_on, piece_type, EMPTY_SQ};
 use chess_rs_lib::book::{DEFAULT_BOOK_MIN_MOVE_WEIGHT, DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE};
 use chess_rs_lib::evaluate;
-use chess_rs_lib::search::{active_search_backend, set_search_backend_override, SearchLearning};
+use chess_rs_lib::search::{
+    active_search_backend, set_search_backend_override, SearchLearning, SEARCH_THREAD_STACK_SIZE,
+};
 use chess_rs_lib::syzygy::SyzygyTables;
 use chess_rs_lib::time_management::TimeManager;
 use chess_rs_lib::zobrist::compute_hash;
@@ -434,7 +436,7 @@ fn main() {
 
                 let handle = thread::Builder::new()
                     .name("search".into())
-                    .stack_size(8 * 1024 * 1024)
+                    .stack_size(SEARCH_THREAD_STACK_SIZE)
                     .spawn(move || {
                         let mut search_engine = Engine::new_with(
                             st,
@@ -748,24 +750,28 @@ fn apply_position_moves(engine: &mut Engine, moves: &[&str]) {
 }
 
 fn parse_uci_move(mv: &str) -> Option<(usize, usize, usize, usize, u8)> {
-    if mv.len() < 4 {
+    if !matches!(mv.len(), 4 | 5) {
         return None;
     }
     let b = mv.as_bytes();
-    let sc = (b[0] - b'a') as usize;
-    let sr = 8 - (b[1] - b'0') as usize;
-    let ec = (b[2] - b'a') as usize;
-    let er = 8 - (b[3] - b'0') as usize;
-    if sr >= 8 || sc >= 8 || er >= 8 || ec >= 8 {
+    if !(b'a'..=b'h').contains(&b[0])
+        || !(b'1'..=b'8').contains(&b[1])
+        || !(b'a'..=b'h').contains(&b[2])
+        || !(b'1'..=b'8').contains(&b[3])
+    {
         return None;
     }
+    let sc = (b[0] - b'a') as usize;
+    let sr = (b'8' - b[1]) as usize;
+    let ec = (b[2] - b'a') as usize;
+    let er = (b'8' - b[3]) as usize;
     let promotion = if mv.len() >= 5 {
         match b[4] {
             b'q' | b'Q' => b'Q',
             b'r' | b'R' => b'R',
             b'b' | b'B' => b'B',
             b'n' | b'N' => b'N',
-            _ => 0,
+            _ => return None,
         }
     } else {
         0
@@ -954,6 +960,19 @@ mod tests {
 
         assert_eq!(name, "nnue backend");
         assert_eq!(value, "scalar");
+    }
+
+    #[test]
+    fn uci_move_parser_rejects_malformed_input() {
+        assert_eq!(parse_uci_move("e2e4"), Some((6, 4, 4, 4, 0)));
+        assert_eq!(parse_uci_move("e7e8q"), Some((1, 4, 0, 4, b'Q')));
+
+        for mv in ["", "e2", "0000", "zzzz", "i2e4", "e9e4", "e2e4x", "e2e4qq"] {
+            assert!(
+                parse_uci_move(mv).is_none(),
+                "malformed UCI move {mv:?} must be rejected without panicking"
+            );
+        }
     }
 
     #[test]
