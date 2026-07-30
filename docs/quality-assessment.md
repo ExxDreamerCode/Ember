@@ -85,3 +85,33 @@ nix run .#search-shape-benchmark -- \
 By default the script disables the opening book with `setoption name Book value`, uses the
 starting position, `Hash=64`, and `Threads=1`. A custom position set can be passed as JSON
 through `--positions`.
+
+## Advantage-defense matches
+
+When a suspicious move occurs in a position where Ember already has a large advantage,
+analyze more than the root move. Let Ember play the position out against a much stronger
+Stockfish that has a larger time budget. This checks whether Ember can preserve the
+advantage against an opponent that actively searches for the most inconvenient defensive
+resources.
+
+Use this for won endgames, conversion problems, horizon suspicions, and positions where a
+move looks odd but a static engine evaluation still says Ember is winning. Run the match
+from the exact suspicious position and also from one or two earlier positions. The earlier
+positions are important: a move can be individually defensible only because a previous
+decision already allowed the opponent's saving resource.
+
+Keep the setup paired and explicit:
+
+- test every candidate move or policy branch from the same position;
+- test both the baseline and candidate Ember binaries;
+- give Stockfish at least twice Ember's time when the goal is to find Ember's conversion
+  weakness rather than to estimate match strength;
+- disable books unless book behavior is the subject of the test;
+- record the FEN or full move history, side to move, UCI options, Stockfish version, time
+  control, result, final termination, and the first move where the advantage materially
+  changes.
+
+This technique is not an Elo test. A single saved or spoiled win is diagnostic evidence. If
+Stockfish repeatedly holds or wins from a position that should be technically won for Ember,
+reduce the game to the earliest failing decision and add the narrowest regression that
+captures the underlying invariant.
