@@ -5,7 +5,7 @@
 # 🔥 Ember — a chess engine written in Rust
 
 <p align="center">
-  <img src="https://img.shields.io/badge/rust-1.70%2B-orange" alt="Rust Version">
+  <img src="https://img.shields.io/badge/rust-nightly--2026--02--08%2B-orange" alt="Rust Version">
   <img src="https://img.shields.io/badge/UCI-compatible-brightgreen" alt="UCI Compatible">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License">
 </p>
@@ -16,7 +16,9 @@ Russian version: [docs/README.ru.md](docs/README.ru.md).
 
 ## 📋 Requirements
 
-- **Rust** 1.70 or newer
+- **Rust nightly** to build from source. Use the pinned toolchain in
+  `rust-toolchain.toml` (`nightly-2026-07-07`). The oldest nightly empirically
+  verified for this revision is `nightly-2026-02-08`.
 - A UCI-compatible chess interface, for example [Arena](http://www.playwitharena.com/), [Cute Chess](https://cutechess.com/), or [Lichess](https://lichess.org/)
 
 ## 🔧 Installation

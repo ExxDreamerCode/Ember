@@ -5,7 +5,7 @@
 # 🔥 Ember — шахматный движок на Rust
 
 <p align="center">
-  <img src="https://img.shields.io/badge/rust-1.70%2B-orange" alt="Rust Version">
+  <img src="https://img.shields.io/badge/rust-nightly--2026--02--08%2B-orange" alt="Rust Version">
   <img src="https://img.shields.io/badge/UCI-compatible-brightgreen" alt="UCI Compatible">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License">
 </p>
@@ -14,7 +14,9 @@
 
 ## 📋 Требования
 
-- **Rust** 1.70 или новее
+- **Rust nightly** для сборки из исходников. Используйте закреплённый toolchain
+  из `rust-toolchain.toml` (`nightly-2026-07-07`). Самый старый nightly,
+  который был проверен на этой ревизии, — `nightly-2026-02-08`.
 - UCI-совместимая оболочка (например, [Arena](http://www.playwitharena.com/), [Cute Chess](https://cutechess.com/), [Lichess](https://lichess.org/))
 
 ## 🔧 Установка
