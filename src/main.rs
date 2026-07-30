@@ -155,20 +155,14 @@ fn main() {
         Err(e) => eprintln!("info string Failed to load embedded NNUE: {}", e),
     }
 
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            try_load_book(&mut engine, &exe_dir.join("book.bin"));
+    eprintln!("info string Loading embedded book...");
+    match OpeningBook::load_from_bytes(opening_book::BOOK_DATA, "<embedded>") {
+        Ok(book) => {
+            engine.book = Some(book);
+            eprintln!("info string Embedded book loaded");
         }
-    }
-    let local_book = std::path::Path::new("book.bin");
-    if engine.book.is_none() && local_book.exists() {
-        try_load_book(&mut engine, local_book);
-    }
-    if engine.book.is_none() {
-        eprintln!("info string Book file not found, using embedded book");
-        match OpeningBook::load_from_bytes(opening_book::BOOK_DATA, "<embedded>") {
-            Ok(book) => engine.book = Some(book),
-            Err(e) => eprintln!("info string Failed to load embedded book: {}", e),
+        Err(e) => {
+            eprintln!("info string Failed to load embedded book: {}", e);
         }
     }
 

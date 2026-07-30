@@ -508,7 +508,9 @@ class BattleRunnerTests(unittest.TestCase):
         ):
             battle_runner.raise_for_lichess_error(response, "authentication check failed")
 
-    def test_generated_config_has_no_token_or_tablebases(self) -> None:
+    def test_generated_config_has_no_token_and_uses_online_endgame_tablebases(
+        self,
+    ) -> None:
         template = {
             "token": "placeholder",
             "url": "https://lichess.org/",
@@ -549,6 +551,16 @@ class BattleRunnerTests(unittest.TestCase):
         self.assertEqual(generated["token"], "")
         self.assertEqual(generated["engine"]["uci_options"]["Threads"], 8)
         self.assertEqual(generated["engine"]["uci_options"]["SyzygyPath"], "")
+        self.assertEqual(
+            generated["engine"]["online_moves"]["online_egtb"],
+            {
+                "enabled": True,
+                "min_time": 0,
+                "max_pieces": 7,
+                "source": "lichess",
+                "move_quality": "best",
+            },
+        )
         self.assertFalse(generated["engine"]["lichess_bot_tbs"]["syzygy"]["enabled"])
         self.assertFalse(generated["matchmaking"]["allow_matchmaking"])
 

@@ -161,13 +161,17 @@ dedicated CI job.
 4. Analyze the suspicious position with a strong Stockfish build at a stable, explicitly
    recorded node or depth budget. Compare Ember's move with the best alternative, then
    follow both lines for several moves. A shallow one-ply comparison is often misleading.
-5. Reproduce Ember's choice with the original move history and deployment settings. Then
+5. If Ember is already clearly better, run advantage-defense matches: make Ember play from
+   the suspicious position and from nearby earlier positions against a stronger Stockfish
+   with a larger clock. Use this to check whether the advantage is practically convertible
+   or whether the opponent can expose a hidden search, tablebase, or fifty-move weakness.
+6. Reproduce Ember's choice with the original move history and deployment settings. Then
    vary one dimension at a time: book on/off, one thread versus deployment threads, fixed
    depth versus clocked search, clean versus reused process, and tablebases on/off.
-6. Compare the same position on known-good and candidate revisions with identical binaries,
+7. Compare the same position on known-good and candidate revisions with identical binaries,
    settings, and hardware. Use a targeted history search or bisect when the first bad
    revision is unknown.
-7. Classify the failure before editing:
+8. Classify the failure before editing:
 
    - **Book:** Was the position actually in the book? Was the selected move legal, within
      the configured quality window, and evaluated from the correct side? Did the engine
