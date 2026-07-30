@@ -17,11 +17,18 @@ use crate::time_management::{iteration_time_decision, threads_for_time_budget, I
 use crate::trace::{DecisionTrace, DepthInfo, TraceLogger};
 use crate::tt::SharedTT;
 use crate::zobrist::compute_hash;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
 const DEFAULT_HASH_MB: usize = 256;
+const FIFTY_MOVE_ROOT_MIN_CLOCK: u8 = 80;
+const FIFTY_MOVE_ROOT_MAX_PIECES: u32 = 7;
+const FIFTY_MOVE_ROOT_MIN_SCORE: i32 = 500;
+const FIFTY_MOVE_ROOT_STATIC_MARGIN_CP: i32 = 350;
+const FIFTY_MOVE_ROOT_MATERIAL_MARGIN_CP: i32 = 150;
+const FIFTY_MOVE_ROOT_VERIFY_NODE_LIMIT: u32 = 1_000;
 
 #[derive(Clone, Copy)]
 enum SearchTimerStart {
@@ -402,6 +409,149 @@ fn root_order_score(st: &BoardState, mv: Move, preferred: Move) -> i32 {
         score += 500_000;
     }
     score
+}
+
+fn root_total_piece_count(st: &BoardState) -> u32 {
+    st.bb.iter().map(|bb| bb.count_ones()).sum()
+}
+
+fn root_material_score(st: &BoardState, white: bool) -> i32 {
+    st.bb
+        .iter()
+        .enumerate()
+        .map(|(pi, bb)| {
+            let value = root_piece_value(pi as u8) * bb.count_ones() as i32;
+            if (pi < 6) == white {
+                value
+            } else {
+                -value
+            }
+        })
+        .sum()
+}
+
+fn root_child_after(st: &BoardState, mv: Move) -> BoardState {
+    let mut after = *st;
+    apply_move(
+        &mut after,
+        move_sr(mv),
+        move_sc(mv),
+        move_er(mv),
+        move_ec(mv),
+        move_promotion(mv),
+    );
+    after
+}
+
+fn root_move_resets_halfmove(st: &BoardState, mv: Move) -> bool {
+    let from = move_from(mv);
+    let mover = st.mailbox[from];
+    mover != EMPTY_SQ && (piece_type(mover) == 0 || root_move_is_capture(st, mv))
+}
+
+fn root_move_preserves_fifty_move_conversion(st: &BoardState, mv: Move) -> Option<bool> {
+    let attacker = st.w;
+    let after = root_child_after(st, mv);
+    let material_floor =
+        root_material_score(&after, attacker).saturating_sub(FIFTY_MOVE_ROOT_MATERIAL_MARGIN_CP);
+    fifty_move_attacker_can_force_progress(&after, attacker, material_floor)
+}
+
+fn fifty_move_attacker_can_force_progress(
+    st: &BoardState,
+    attacker: bool,
+    material_floor: i32,
+) -> Option<bool> {
+    let defender = st.w;
+    let mut memo = HashMap::new();
+    let mut nodes = 0u32;
+    fifty_move_attacker_can_force_progress_inner(
+        st,
+        defender,
+        attacker,
+        material_floor,
+        &mut memo,
+        &mut nodes,
+    )
+}
+
+fn fifty_move_attacker_can_force_progress_inner(
+    st: &BoardState,
+    defender: bool,
+    attacker: bool,
+    material_floor: i32,
+    memo: &mut HashMap<(u64, u8), bool>,
+    nodes: &mut u32,
+) -> Option<bool> {
+    if *nodes >= FIFTY_MOVE_ROOT_VERIFY_NODE_LIMIT {
+        return None;
+    }
+    *nodes += 1;
+
+    let mut legal = generate_moves(st, st.w, &st.cr, st.ep);
+    if legal.is_empty() {
+        let king = st.king_sq(st.w);
+        let checkmate = is_attacked(&st.bb, king, !st.w);
+        return Some(checkmate && st.w == defender);
+    }
+    if st.halfmove_clock >= 100 {
+        return Some(false);
+    }
+
+    let key = (st.hash, st.halfmove_clock);
+    if let Some(&cached) = memo.get(&key) {
+        return Some(cached);
+    }
+
+    let defender_to_move = st.w == defender;
+    legal.sort_by_key(|mv| {
+        let resets = root_move_resets_halfmove(st, *mv);
+        if defender_to_move {
+            resets
+        } else {
+            !resets
+        }
+    });
+    let mut saw_unknown = false;
+    for mv in legal {
+        let outcome = if root_move_resets_halfmove(st, mv) {
+            let child = root_child_after(st, mv);
+            Some(root_material_score(&child, attacker) >= material_floor)
+        } else {
+            let child = root_child_after(st, mv);
+            fifty_move_attacker_can_force_progress_inner(
+                &child,
+                defender,
+                attacker,
+                material_floor,
+                memo,
+                nodes,
+            )
+        };
+
+        match (defender_to_move, outcome) {
+            (true, Some(false)) => {
+                memo.insert(key, false);
+                return Some(false);
+            }
+            (true, Some(true)) => {}
+            (true, None) => saw_unknown = true,
+            (false, Some(true)) => {
+                memo.insert(key, true);
+                return Some(true);
+            }
+            (false, Some(false)) => {}
+            (false, None) => saw_unknown = true,
+        }
+    }
+
+    if saw_unknown {
+        None
+    } else {
+        let result = defender_to_move;
+        memo.insert(key, result);
+        Some(result)
+    }
 }
 
 fn root_quiet_knight_major_fork_order_score(st: &BoardState, mv: Move) -> Option<i32> {
@@ -958,6 +1108,63 @@ impl Engine {
         self.shared_tt.ensure_size(self.searcher.tt_mb);
     }
 
+    fn root_static_score_after(&self, mv: Move) -> i32 {
+        let child = root_child_after(&self.st, mv);
+        -self.searcher.corrected_eval(&child)
+    }
+
+    fn root_fifty_move_conversion_choice(
+        &self,
+        legal_root_moves: &[Move],
+        best_move: Move,
+        best_score: i32,
+    ) -> Move {
+        if self.st.halfmove_clock < FIFTY_MOVE_ROOT_MIN_CLOCK
+            || root_total_piece_count(&self.st) > FIFTY_MOVE_ROOT_MAX_PIECES
+            || best_score < FIFTY_MOVE_ROOT_MIN_SCORE
+        {
+            return best_move;
+        }
+
+        if root_move_preserves_fifty_move_conversion(&self.st, best_move) == Some(true) {
+            return best_move;
+        }
+
+        // This verifier is a bounded fallback, not exact DTZ. Near the claim boundary an
+        // unproven best move is not trusted when a close root alternative has a proven
+        // capture, pawn move, or mate before the fifty-move draw.
+        let best_static = self.root_static_score_after(best_move);
+        let mut replacement: Option<(Move, i32)> = None;
+        for &candidate in legal_root_moves {
+            if candidate == best_move {
+                continue;
+            }
+
+            let static_score = self.root_static_score_after(candidate);
+            if static_score + FIFTY_MOVE_ROOT_STATIC_MARGIN_CP < best_static {
+                continue;
+            }
+            if root_move_preserves_fifty_move_conversion(&self.st, candidate) != Some(true) {
+                continue;
+            }
+
+            if replacement.is_none_or(|(_, replacement_score)| static_score > replacement_score) {
+                replacement = Some((candidate, static_score));
+            }
+        }
+
+        if let Some((replacement, _)) = replacement {
+            println!(
+                "info string fifty-move root verifier replaced {} with {}",
+                move_to_uci(&self.st, best_move),
+                move_to_uci(&self.st, replacement)
+            );
+            replacement
+        } else {
+            best_move
+        }
+    }
+
     pub fn new_with(
         st: BoardState,
         searcher: Searcher,
@@ -1506,6 +1713,8 @@ impl Engine {
                 &mut self.searcher,
             );
 
+            let best_move =
+                self.root_fifty_move_conversion_choice(&ordered_moves, best_move, best_score);
             let mv_str = move_to_uci(&self.st, best_move);
             let elapsed = start.elapsed().as_secs_f64();
             self.searcher
@@ -1784,6 +1993,8 @@ impl Engine {
             }
         }
 
+        let best_move =
+            self.root_fifty_move_conversion_choice(&ordered_moves, best_move, best_score);
         let mv_str = move_to_uci(&self.st, best_move);
         let elapsed = start.elapsed().as_secs_f64();
         self.searcher
@@ -2212,6 +2423,54 @@ mod tests {
         assert!(sorted
             .first()
             .is_some_and(|mv| move_to_uci(&engine.st, *mv).starts_with("a7a8")));
+    }
+
+    #[test]
+    fn fifty_move_verifier_does_not_trust_blessed_loss_rook_moves() {
+        let engine = engine_from_fen("R7/8/8/7k/4K3/2r2P2/8/3r4 b - - 86 166");
+        let rb3 = root_move(&engine, "c3b3");
+        let kh6 = root_move(&engine, "h5g6");
+        let rd8 = root_move(&engine, "d1d8");
+        let kh4 = root_move(&engine, "h5h4");
+        let rf1 = root_move(&engine, "d1f1");
+
+        assert_ne!(
+            root_move_preserves_fifty_move_conversion(&engine.st, rb3),
+            Some(true),
+            "https://lichess.org/v8jiQh6Z: 166...Rb3 must not be trusted as conversion-safe"
+        );
+        assert_ne!(
+            root_move_preserves_fifty_move_conversion(&engine.st, kh6),
+            Some(true),
+            "https://lichess.org/v8jiQh6Z: 166...Kh6 must not be trusted as conversion-safe"
+        );
+        assert_ne!(
+            root_move_preserves_fifty_move_conversion(&engine.st, rd8),
+            Some(true),
+            "https://lichess.org/v8jiQh6Z: exact tablebase reports 166...Rd8 as drawn"
+        );
+        assert_eq!(
+            root_move_preserves_fifty_move_conversion(&engine.st, kh4),
+            Some(true)
+        );
+        assert_eq!(
+            root_move_preserves_fifty_move_conversion(&engine.st, rf1),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn fifty_move_root_choice_replaces_blessed_loss_bestmove() {
+        let engine = engine_from_fen("R7/8/8/7k/4K3/2r2P2/8/3r4 b - - 86 166");
+        let moves = sort_root_moves(&engine.st, &root_moves(&engine), NO_MOVE);
+        let rb3 = root_move(&engine, "c3b3");
+        let chosen = engine.root_fifty_move_conversion_choice(&moves, rb3, 728);
+        let chosen_uci = move_to_uci(&engine.st, chosen);
+
+        assert!(
+            ["h5h4", "d1f1", "h5g5", "d1d3", "d1e1", "d1d7"].contains(&chosen_uci.as_str()),
+            "https://lichess.org/v8jiQh6Z: expected a 50-move preserving root, got {chosen_uci}"
+        );
     }
 
     #[test]
