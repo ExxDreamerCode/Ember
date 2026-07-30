@@ -59,3 +59,7 @@ baseline-00zoq-rook-capture	3	2r3k1/p7/7p/1p4p1/6R1/3B1q1P/2P4P/2B3RK w - - 6 35
 
 # Lichess PsmkiN5M before 19...Ng7, https://lichess.org/PsmkiN5M. Rules-correct search-local cycle handling changed the root tree and left the immediately recapturable Nxh4 exchange three plies beyond the depth-16 horizon; Stockfish 18 at 100M nodes prefers Nxh4 over Ng7 by about 1.19 pawns. Extend only recapturable equal-knight trades when no higher-value capture competes.
 psmkin5m-19-nxh4	16	r1q2rk1/pp3p1p/1np2Bp1/5n2/2P2Q1N/8/P1P2PPP/4RRK1 b - - 6 19	-	f5h4	lichess,PsmkiN5M,quiescence,check,horizon	0	0	0
+
+# Lichess v8jiQh6Z before 166...Rb3, https://lichess.org/v8jiQh6Z. Black is winning a six-piece rook ending, but the halfmove clock is already 86; exact tablebase says 166...Rb3 and 166...Kh6 no longer preserve a 50-move-rule conversion. Search must keep quiet defender draw resources visible near the claim boundary instead of assuming White will reset the counter with f4.
+# DISABLED: this is a tablebase-sensitive fifty-move conversion weakness. A broad pruning/TT guard was too expensive or still chose another blessed-loss move; keep the position visible until the engine has a safe high-halfmove endgame policy.
+# v8jiqh6z-166-rb3	16	R7/8/8/7k/4K3/2r2P2/8/3r4 b - - 86 166	-	h5h4|d1f1|h5g5|d1d3|d1e1|d1d7	lichess,v8jiQh6Z,fiftyMove,endgame,rook	0	0	0

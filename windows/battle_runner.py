@@ -560,7 +560,12 @@ def generate_lichess_config(
     engine_config["online_moves"]["chessdb_book"]["enabled"] = False
     engine_config["online_moves"]["lichess_cloud_analysis"]["enabled"] = False
     engine_config["online_moves"]["lichess_opening_explorer"]["enabled"] = False
-    engine_config["online_moves"]["online_egtb"]["enabled"] = False
+    online_egtb = engine_config["online_moves"]["online_egtb"]
+    online_egtb["enabled"] = True
+    online_egtb["min_time"] = 0
+    online_egtb["max_pieces"] = 7
+    online_egtb["source"] = "lichess"
+    online_egtb["move_quality"] = "best"
     engine_config["lichess_bot_tbs"]["syzygy"]["enabled"] = False
     engine_config["lichess_bot_tbs"]["gaviota"]["enabled"] = False
     engine_config["uci_options"] = {
