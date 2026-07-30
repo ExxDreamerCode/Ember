@@ -1,15 +1,24 @@
+use std::fs;
 use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 fn spawn_ember() -> (Child, Receiver<String>) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ember"))
+    spawn_ember_in_dir(None)
+}
+
+fn spawn_ember_in_dir(current_dir: Option<&Path>) -> (Child, Receiver<String>) {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_ember"));
+    command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn Ember UCI process");
+        .stderr(Stdio::null());
+    if let Some(current_dir) = current_dir {
+        command.current_dir(current_dir);
+    }
+    let mut child = command.spawn().expect("spawn Ember UCI process");
     let stdout = child.stdout.take().expect("capture Ember stdout");
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -20,6 +29,31 @@ fn spawn_ember() -> (Child, Receiver<String>) {
         }
     });
     (child, rx)
+}
+
+fn temp_book_dir() -> PathBuf {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "ember-uci-book-test-{}-{unique}",
+        std::process::id()
+    ));
+    fs::create_dir(&dir).unwrap();
+    dir
+}
+
+fn write_startpos_book(path: &Path, raw_move: u16) {
+    let startpos_polyglot_key = 0x463b_9618_1691_fc9c_u64;
+    let weight = 100_u16;
+    let learn = 0_u32;
+    let mut data = Vec::new();
+    data.extend_from_slice(&startpos_polyglot_key.to_be_bytes());
+    data.extend_from_slice(&raw_move.to_be_bytes());
+    data.extend_from_slice(&weight.to_be_bytes());
+    data.extend_from_slice(&learn.to_be_bytes());
+    fs::write(path, data).unwrap();
 }
 
 fn wait_for_line(rx: &Receiver<String>, prefix: &str, timeout: Duration) -> Option<String> {
@@ -476,6 +510,57 @@ fn random_book_move_is_opt_in_and_returns_without_searching() {
     stdin.flush().unwrap();
     drop(stdin);
     assert!(child.wait().expect("wait for Ember").success());
+}
+
+#[test]
+fn startup_ignores_local_book_until_explicitly_selected() {
+    let dir = temp_book_dir();
+    let book_path = dir.join("book.bin");
+    // Polyglot encoding for 1.a3. This is deliberately not the embedded
+    // book's normal deterministic start-position choice.
+    write_startpos_book(&book_path, 0x0210);
+
+    let (mut child, rx) = spawn_ember_in_dir(Some(&dir));
+    let mut stdin = child.stdin.take().expect("capture Ember stdin");
+    writeln!(stdin, "uci").unwrap();
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some());
+
+    writeln!(stdin, "position startpos").unwrap();
+    writeln!(stdin, "go depth 64").unwrap();
+    stdin.flush().unwrap();
+    let embedded_bestmove = wait_for_line(&rx, "bestmove ", Duration::from_secs(5))
+        .expect("embedded book move did not return");
+    assert_ne!(
+        embedded_bestmove, "bestmove a2a3",
+        "startup must ignore an unrelated working-directory book.bin"
+    );
+
+    writeln!(
+        stdin,
+        "setoption name Book value {}",
+        book_path.to_str().unwrap()
+    )
+    .unwrap();
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some());
+
+    writeln!(stdin, "position startpos").unwrap();
+    writeln!(stdin, "go depth 64").unwrap();
+    stdin.flush().unwrap();
+    assert_eq!(
+        wait_for_line(&rx, "bestmove ", Duration::from_secs(5)).as_deref(),
+        Some("bestmove a2a3"),
+        "explicit Book option should still load the selected external book"
+    );
+
+    writeln!(stdin, "quit").unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+    assert!(child.wait().expect("wait for Ember").success());
+    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

@@ -88,13 +88,12 @@ setoption name SyzygyPath value ./result/share/syzygy/3-4-5-6
 
 ### Opening book
 
-The engine supports opening books in Polyglot `.bin` format. A default book is **embedded** in the binary and is loaded automatically when no `book.bin` is found next to the executable.
+The engine supports opening books in Polyglot `.bin` format. A default book is
+**embedded** in the binary and is loaded automatically at startup.
 
-Load priority:
-
-1. `book.bin` next to the executable
-2. `book.bin` in the current working directory
-3. The **embedded book** if no external book is found
+Ember does not auto-discover `book.bin` next to the executable or in the current
+working directory. External books are used only after an explicit UCI `Book`
+option.
 
 You can set a book path through UCI:
 
