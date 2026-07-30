@@ -59,7 +59,7 @@ echo -e "uci\nisready\nquit" | cargo run --release
 | `NNUEBackend` | combo | `auto` | `auto`, available backends | Backend used for NNUE search |
 | `TraceFile` | string | `<empty>` | — | Path to a `.jsonl` traceback file |
 | `SyzygyPath` | string | `<empty>` | — | Path to a Syzygy tablebase directory with DTZ files |
-| `UCI_Chess960` | string | `false` | — | Enable or disable Chess960 |
+| `UCI_Chess960` | check | `false` | — | Enable or disable Chess960 |
 
 ### Syzygy through Nix
 
