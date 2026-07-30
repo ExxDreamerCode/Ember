@@ -1,5 +1,5 @@
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
@@ -57,6 +57,130 @@ fn wait_for_info_time_at_least(rx: &Receiver<String>, minimum_ms: u64, timeout: 
         }
     }
     false
+}
+
+fn wait_for_exit(child: &mut Child, timeout: Duration) -> Option<ExitStatus> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if let Some(status) = child.try_wait().expect("poll Ember UCI process") {
+            return Some(status);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    None
+}
+
+fn assert_go_nodes_returns_promptly(threads: usize) {
+    let (mut child, rx) = spawn_ember();
+    let mut stdin = child.stdin.take().expect("capture Ember stdin");
+    writeln!(stdin, "uci").unwrap();
+    writeln!(stdin, "setoption name Hash value 16").unwrap();
+    writeln!(stdin, "setoption name Threads value {threads}").unwrap();
+    writeln!(stdin, "setoption name Book value").unwrap();
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(
+        wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some(),
+        "Ember did not finish UCI initialization"
+    );
+
+    writeln!(stdin, "position startpos").unwrap();
+    writeln!(stdin, "go nodes 1").unwrap();
+    stdin.flush().unwrap();
+
+    let bestmove = wait_for_line(&rx, "bestmove ", Duration::from_secs(2));
+    if bestmove.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("go nodes 1 was ignored with Threads={threads}");
+    }
+
+    writeln!(stdin, "quit").unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+    let status = child.wait().expect("wait for Ember UCI process");
+    assert!(status.success(), "Ember exited with {status}");
+}
+
+#[test]
+fn go_nodes_returns_promptly_in_single_threaded_search() {
+    assert_go_nodes_returns_promptly(1);
+}
+
+#[test]
+fn go_nodes_returns_promptly_in_lazy_smp_search() {
+    assert_go_nodes_returns_promptly(4);
+}
+
+#[test]
+fn malformed_uci_input_is_rejected_without_crashing() {
+    let (mut child, rx) = spawn_ember();
+    let mut stdin = child.stdin.take().expect("capture Ember stdin");
+    writeln!(stdin, "uci").unwrap();
+    writeln!(stdin, "setoption name Hash value 16").unwrap();
+    writeln!(stdin, "setoption name Threads value 1").unwrap();
+    writeln!(stdin, "setoption name Book value").unwrap();
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some());
+
+    writeln!(stdin, "position startpos moves 0000 g1f3").unwrap();
+    writeln!(stdin, "position startpos moves zzzz").unwrap();
+    writeln!(stdin, "position startpos moves e2e4x").unwrap();
+    writeln!(stdin, "position fen 8/8/8/8/8/8/8/8 w - - 0 1").unwrap();
+    writeln!(stdin, "go movetime nope depth 1").unwrap();
+    stdin.flush().unwrap();
+
+    assert!(
+        wait_for_line(&rx, "bestmove ", Duration::from_secs(5)).is_some(),
+        "Ember did not recover after malformed UCI input"
+    );
+
+    writeln!(stdin, "quit").unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+    let status = child.wait().expect("wait for Ember UCI process");
+    assert!(status.success(), "Ember exited with {status}");
+}
+
+#[test]
+fn queued_quit_during_search_exits_cleanly() {
+    let (mut child, _rx) = spawn_ember();
+    let mut stdin = child.stdin.take().expect("capture Ember stdin");
+    write!(
+        stdin,
+        "uci\nsetoption name Hash value 16\nsetoption name Threads value 2\nsetoption name Book value\nisready\nposition startpos\ngo depth 16\nquit\n"
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+
+    let Some(status) = wait_for_exit(&mut child, Duration::from_secs(5)) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("Ember did not exit after queued quit during search");
+    };
+    assert!(status.success(), "Ember exited with {status}");
+}
+
+#[test]
+fn input_eof_during_search_exits_cleanly() {
+    let (mut child, _rx) = spawn_ember();
+    let mut stdin = child.stdin.take().expect("capture Ember stdin");
+    write!(
+        stdin,
+        "uci\nsetoption name Hash value 16\nsetoption name Threads value 2\nsetoption name Book value\nisready\nposition startpos\ngo depth 16\n"
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+
+    let Some(status) = wait_for_exit(&mut child, Duration::from_secs(5)) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("Ember did not exit after stdin EOF during search");
+    };
+    assert!(status.success(), "Ember exited with {status}");
 }
 
 #[test]

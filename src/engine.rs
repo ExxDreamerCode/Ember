@@ -9,7 +9,9 @@ use crate::book::{
     OpeningBook, DEFAULT_BOOK_MIN_MOVE_WEIGHT, DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE,
 };
 use crate::movegen::{apply_move, generate_moves};
-use crate::search::{lazy_smp_search, LazySmpPool, LazySmpSearchLimits, Searcher};
+use crate::search::{
+    format_pv_line_uci, lazy_smp_search, LazySmpPool, LazySmpSearchLimits, Searcher,
+};
 use crate::time_management::{iteration_time_decision, threads_for_time_budget, IterationTiming};
 #[cfg(feature = "decision-trace")]
 use crate::trace::{DecisionTrace, DepthInfo, TraceLogger};
@@ -1260,6 +1262,7 @@ impl Engine {
         soft_time_limit: f64,
         time_limit: f64,
         depth_limit: i32,
+        node_limit: Option<u64>,
         start: Instant,
     ) -> (String, i32, u64, f64) {
         self.searcher.stopped.store(false, Ordering::SeqCst);
@@ -1268,6 +1271,7 @@ impl Engine {
             soft_time_limit,
             time_limit,
             depth_limit,
+            node_limit,
             start,
         )
     }
@@ -1282,6 +1286,23 @@ impl Engine {
             soft_time_limit,
             time_limit,
             depth_limit,
+            None,
+            SearchTimerStart::AfterSetup,
+        )
+    }
+
+    pub fn find_best_move_with_time_limits_prepared_with_node_limit(
+        &mut self,
+        soft_time_limit: f64,
+        time_limit: f64,
+        depth_limit: i32,
+        node_limit: Option<u64>,
+    ) -> (String, i32, u64, f64) {
+        self.find_best_move_with_time_limits_prepared_with_timer(
+            soft_time_limit,
+            time_limit,
+            depth_limit,
+            node_limit,
             SearchTimerStart::AfterSetup,
         )
     }
@@ -1291,12 +1312,14 @@ impl Engine {
         soft_time_limit: f64,
         time_limit: f64,
         depth_limit: i32,
+        node_limit: Option<u64>,
         start: Instant,
     ) -> (String, i32, u64, f64) {
         self.find_best_move_with_time_limits_prepared_with_timer(
             soft_time_limit,
             time_limit,
             depth_limit,
+            node_limit,
             SearchTimerStart::BeforeSetup(start),
         )
     }
@@ -1306,6 +1329,7 @@ impl Engine {
         soft_time_limit: f64,
         time_limit: f64,
         depth_limit: i32,
+        node_limit: Option<u64>,
         timer_start: SearchTimerStart,
     ) -> (String, i32, u64, f64) {
         let soft_time_limit = soft_time_limit.min(time_limit);
@@ -1475,6 +1499,7 @@ impl Engine {
                     soft_time: soft_time_limit,
                     hard_time: time_limit,
                     depth: depth_limit,
+                    node_limit,
                     start,
                 },
                 search_threads,
@@ -1489,6 +1514,7 @@ impl Engine {
         }
 
         self.searcher.prepare_for_search();
+        self.searcher.set_node_limit(node_limit);
         self.searcher.init_nnue_stack(&self.st);
 
         let start = match timer_start {
@@ -1680,10 +1706,10 @@ impl Engine {
                 break;
             }
 
+            total_nodes += nd;
             if self.searcher.stopped.load(Ordering::Relaxed) {
                 break;
             }
-            total_nodes += nd;
             let elapsed = start.elapsed().as_secs_f64();
 
             if elapsed <= time_limit || self.searcher.pondering.load(Ordering::Relaxed) {
@@ -1737,11 +1763,7 @@ impl Engine {
                 };
                 let pv_line =
                     crate::search::extract_pv_line(&self.searcher.shared_tt, &self.st, best_move);
-                let pv_str = pv_line
-                    .iter()
-                    .map(|m| move_to_uci(&self.st, *m))
-                    .collect::<Vec<_>>()
-                    .join(" ");
+                let pv_str = format_pv_line_uci(&self.st, &pv_line);
                 println!(
                     "info depth {} score {} nodes {} nps {} time {} pv {}",
                     depth, score_str, total_nodes, nps, time_ms, pv_str
@@ -1766,6 +1788,7 @@ impl Engine {
         let elapsed = start.elapsed().as_secs_f64();
         self.searcher
             .update_correction_history(&self.st, best_score, best_depth);
+        self.searcher.clear_node_limit();
         #[cfg(feature = "decision-trace")]
         self.trace.emit_decision(DecisionTrace {
             fen: &root_fen,

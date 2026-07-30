@@ -101,6 +101,9 @@ id	depth	fen_before_blunder	setup_move	expected_move	themes	rating	popularity	pl
 Fixture conventions:
 
 - IDs must be descriptive and globally unique across all fixture files.
+- A fixture file may declare `# Variant: Chess960` before the header. The row format stays
+  unchanged, but the runner must set Chess960 mode before loading each FEN from that file.
+  Omit the directive for normal chess.
 - Put a comment immediately before every hand-written regression. Explain the source,
   link to the game or report when possible, state what went wrong, and state the intended
   invariant. Separate hand-written cases with an empty line.

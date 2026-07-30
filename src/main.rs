@@ -4,7 +4,9 @@ use chess_rs_lib::backend::{
 use chess_rs_lib::board::{piece_on, piece_type, EMPTY_SQ};
 use chess_rs_lib::book::{DEFAULT_BOOK_MIN_MOVE_WEIGHT, DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE};
 use chess_rs_lib::evaluate;
-use chess_rs_lib::search::{active_search_backend, set_search_backend_override, SearchLearning};
+use chess_rs_lib::search::{
+    active_search_backend, set_search_backend_override, SearchLearning, SEARCH_THREAD_STACK_SIZE,
+};
 use chess_rs_lib::syzygy::SyzygyTables;
 use chess_rs_lib::time_management::TimeManager;
 use chess_rs_lib::zobrist::compute_hash;
@@ -80,6 +82,7 @@ struct SearchLimits {
     soft_seconds: f64,
     hard_seconds: f64,
     depth: i32,
+    node_limit: Option<u64>,
     clock_managed: bool,
     ponder: bool,
 }
@@ -222,7 +225,7 @@ fn main() {
 
         match parts[0] {
             "uci" => {
-                println!("id name Ember 1.1.2");
+                println!("id name Ember 1.2.0");
                 println!("id author ExxDreamerCode");
                 println!(
                     "option name Hash type spin default 256 min {} max {}",
@@ -392,6 +395,7 @@ fn main() {
                         limits.soft_seconds,
                         limits.hard_seconds,
                         limits.depth,
+                        limits.node_limit,
                         search_start,
                     );
                     print_bestmove(&engine, &result.0, ponder_enabled);
@@ -434,7 +438,7 @@ fn main() {
 
                 let handle = thread::Builder::new()
                     .name("search".into())
-                    .stack_size(8 * 1024 * 1024)
+                    .stack_size(SEARCH_THREAD_STACK_SIZE)
                     .spawn(move || {
                         let mut search_engine = Engine::new_with(
                             st,
@@ -454,13 +458,15 @@ fn main() {
                                 limits.soft_seconds,
                                 limits.hard_seconds,
                                 limits.depth,
+                                limits.node_limit,
                                 search_start,
                             )
                         } else {
-                            search_engine.find_best_move_with_time_limits_prepared(
+                            search_engine.find_best_move_with_time_limits_prepared_with_node_limit(
                                 limits.soft_seconds,
                                 limits.hard_seconds,
                                 limits.depth,
+                                limits.node_limit,
                             )
                         };
                         let learning = search_engine.searcher.export_learning();
@@ -748,24 +754,28 @@ fn apply_position_moves(engine: &mut Engine, moves: &[&str]) {
 }
 
 fn parse_uci_move(mv: &str) -> Option<(usize, usize, usize, usize, u8)> {
-    if mv.len() < 4 {
+    if !matches!(mv.len(), 4 | 5) {
         return None;
     }
     let b = mv.as_bytes();
-    let sc = (b[0] - b'a') as usize;
-    let sr = 8 - (b[1] - b'0') as usize;
-    let ec = (b[2] - b'a') as usize;
-    let er = 8 - (b[3] - b'0') as usize;
-    if sr >= 8 || sc >= 8 || er >= 8 || ec >= 8 {
+    if !(b'a'..=b'h').contains(&b[0])
+        || !(b'1'..=b'8').contains(&b[1])
+        || !(b'a'..=b'h').contains(&b[2])
+        || !(b'1'..=b'8').contains(&b[3])
+    {
         return None;
     }
+    let sc = (b[0] - b'a') as usize;
+    let sr = (b'8' - b[1]) as usize;
+    let ec = (b[2] - b'a') as usize;
+    let er = (b'8' - b[3]) as usize;
     let promotion = if mv.len() >= 5 {
         match b[4] {
             b'q' | b'Q' => b'Q',
             b'r' | b'R' => b'R',
             b'b' | b'B' => b'B',
             b'n' | b'N' => b'N',
-            _ => 0,
+            _ => return None,
         }
     } else {
         0
@@ -784,26 +794,32 @@ fn parse_go_params(
     let mut binc = 0f64;
     let mut movetime = 0f64;
     let mut depth = 64i32;
+    let mut node_limit = None;
     let mut movestogo = 0i32;
     let mut ponder = false;
+    let mut has_clock_limit = false;
 
     let mut i = 1;
     while i < parts.len() {
         match parts[i] {
             "wtime" if i + 1 < parts.len() => {
                 wtime = parts[i + 1].parse().unwrap_or(300000.0);
+                has_clock_limit = true;
                 i += 1;
             }
             "btime" if i + 1 < parts.len() => {
                 btime = parts[i + 1].parse().unwrap_or(300000.0);
+                has_clock_limit = true;
                 i += 1;
             }
             "winc" if i + 1 < parts.len() => {
                 winc = parts[i + 1].parse().unwrap_or(0.0);
+                has_clock_limit = true;
                 i += 1;
             }
             "binc" if i + 1 < parts.len() => {
                 binc = parts[i + 1].parse().unwrap_or(0.0);
+                has_clock_limit = true;
                 i += 1;
             }
             "movetime" if i + 1 < parts.len() => {
@@ -814,8 +830,13 @@ fn parse_go_params(
                 depth = parts[i + 1].parse().unwrap_or(64);
                 i += 1;
             }
+            "nodes" if i + 1 < parts.len() => {
+                node_limit = parts[i + 1].parse::<u64>().ok().filter(|&nodes| nodes > 0);
+                i += 1;
+            }
             "movestogo" if i + 1 < parts.len() => {
                 movestogo = parts[i + 1].parse().unwrap_or(0);
+                has_clock_limit = true;
                 i += 1;
             }
             "infinite" => {
@@ -834,7 +855,7 @@ fn parse_go_params(
     let (soft_seconds, hard_seconds, clock_managed) = if movetime > 0.0 {
         let t = movetime / 1000.0;
         (t, t, true)
-    } else if depth < 64 {
+    } else if depth < 64 || (node_limit.is_some() && !has_clock_limit) {
         (1_000_000_000.0, 1_000_000_000.0, false)
     } else {
         let budget = time_manager.clock_budget(time_ms, inc, movestogo, engine.st.mc);
@@ -845,6 +866,7 @@ fn parse_go_params(
         soft_seconds,
         hard_seconds,
         depth,
+        node_limit,
         clock_managed,
         ponder,
     }
@@ -954,6 +976,19 @@ mod tests {
 
         assert_eq!(name, "nnue backend");
         assert_eq!(value, "scalar");
+    }
+
+    #[test]
+    fn uci_move_parser_rejects_malformed_input() {
+        assert_eq!(parse_uci_move("e2e4"), Some((6, 4, 4, 4, 0)));
+        assert_eq!(parse_uci_move("e7e8q"), Some((1, 4, 0, 4, b'Q')));
+
+        for mv in ["", "e2", "0000", "zzzz", "i2e4", "e9e4", "e2e4x", "e2e4qq"] {
+            assert!(
+                parse_uci_move(mv).is_none(),
+                "malformed UCI move {mv:?} must be rejected without panicking"
+            );
+        }
     }
 
     #[test]

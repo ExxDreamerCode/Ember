@@ -45,6 +45,7 @@ class FixtureCheck:
     line_number: int
     activation: str
     fixture_format: str
+    variant: str
     case_id: str
     depth: int
     fen: str
@@ -56,7 +57,14 @@ class FixtureCheck:
         return (self.fixture, self.line_number, self.depth)
 
 
-def _standard_check(path, line_number, activation, columns):
+def _parse_variant(path, line_number, raw):
+    variant = raw.strip().lower()
+    if variant in ("standard", "chess960", "fischerandom", "fischer random"):
+        return "chess960" if variant != "standard" else "standard"
+    raise ValueError(f"{path}:{line_number}: invalid fixture variant {raw!r}")
+
+
+def _standard_check(path, line_number, activation, columns, variant):
     try:
         depth = int(columns[1])
     except ValueError as error:
@@ -68,6 +76,7 @@ def _standard_check(path, line_number, activation, columns):
         line_number=line_number,
         activation=activation,
         fixture_format="standard",
+        variant=variant,
         case_id=columns[0],
         depth=depth,
         fen=columns[2],
@@ -79,8 +88,13 @@ def _standard_check(path, line_number, activation, columns):
 def parse_fixture(path):
     path = Path(path)
     checks = []
+    variant = "standard"
     for line_number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not raw.strip():
+            continue
+
+        if raw.startswith("# Variant:"):
+            variant = _parse_variant(path, line_number, raw[len("# Variant:") :])
             continue
 
         if raw.startswith("# "):
@@ -88,7 +102,9 @@ def parse_fixture(path):
             if columns == MINED_HEADER:
                 continue
             if len(columns) == len(STANDARD_HEADER):
-                checks.append(_standard_check(path, line_number, "disabled", columns))
+                checks.append(
+                    _standard_check(path, line_number, "disabled", columns, variant)
+                )
             elif len(columns) == len(MINED_HEADER):
                 for depth in (2, 3, 4):
                     checks.append(
@@ -97,6 +113,7 @@ def parse_fixture(path):
                             line_number=line_number,
                             activation="disabled",
                             fixture_format="mined",
+                            variant=variant,
                             case_id=columns[0],
                             depth=depth,
                             fen=columns[1],
@@ -116,7 +133,7 @@ def parse_fixture(path):
                 f"{path}:{line_number}: expected {len(STANDARD_HEADER)} columns, "
                 f"got {len(columns)}"
             )
-        checks.append(_standard_check(path, line_number, "active", columns))
+        checks.append(_standard_check(path, line_number, "active", columns, variant))
 
     return checks
 
@@ -154,11 +171,12 @@ def _read_until(lines, prefix, deadline, output):
             return line
 
 
-def uci_setup_commands(hash_mb, use_embedded_book=False):
+def uci_setup_commands(hash_mb, use_embedded_book=False, chess960=False):
     return (
         "uci",
         "setoption name Threads value 1",
         f"setoption name Hash value {hash_mb}",
+        "setoption name UCI_Chess960 value true" if chess960 else None,
         "setoption name Book value <embedded>"
         if use_embedded_book
         else "setoption name Book value",
@@ -198,10 +216,14 @@ def run_check(binary, check, timeout, hash_mb):
         process.stdin.flush()
 
     try:
-        setup_commands = uci_setup_commands(hash_mb, check.depth == 0)
+        setup_commands = uci_setup_commands(
+            hash_mb, check.depth == 0, check.variant == "chess960"
+        )
         send(setup_commands[0])
         _read_until(lines, "uciok", deadline, output)
         for command in setup_commands[1:]:
+            if command is None:
+                continue
             send(command)
         _read_until(lines, "readyok", deadline, output)
         position = f"position fen {check.fen}"
@@ -333,6 +355,7 @@ def write_tsv(path, rows):
         "line",
         "activation",
         "format",
+        "variant",
         "id",
         "depth",
         "expected",
@@ -352,6 +375,7 @@ def write_tsv(path, rows):
             str(check["line_number"]),
             check["activation"],
             check["fixture_format"],
+            check["variant"],
             check["case_id"],
             str(check["depth"]),
             check["expected_move"],

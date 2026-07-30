@@ -2,353 +2,147 @@
   <img src="logo.png" alt="Ember Logo" width="200">
 </p>
 
-# 🔥 Ember — шахматный движок на Rust
+# 🔥 Ember — a chess engine written in Rust
 
 <p align="center">
-  <img src="https://img.shields.io/badge/rust-1.70%2B-orange" alt="Rust Version">
+  <img src="https://img.shields.io/badge/rust-nightly--2026--02--08%2B-orange" alt="Rust Version">
   <img src="https://img.shields.io/badge/UCI-compatible-brightgreen" alt="UCI Compatible">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License">
 </p>
 
-**Ember** — это UCI-совместимый шахматный движок на Rust, который я пишу для изучения и экспериментов. Проект в активной разработке, регулярно допиливается и улучшается.
+**Ember** is a UCI-compatible chess engine written in Rust. I build it for learning, experimentation, and steady engine work. The project is under active development and is regularly refined and improved.
 
-## 📋 Требования
+Russian version: [docs/README.ru.md](docs/README.ru.md).
 
-- **Rust** 1.70 или новее
-- UCI-совместимая оболочка (например, [Arena](http://www.playwitharena.com/), [Cute Chess](https://cutechess.com/), [Lichess](https://lichess.org/))
+## 📋 Requirements
 
-## 🔧 Установка
+- **Rust nightly** to build from source. Use the pinned toolchain in
+  `rust-toolchain.toml` (`nightly-2026-07-07`). The oldest nightly empirically
+  verified for this revision is `nightly-2026-02-08`.
+- A UCI-compatible chess interface, for example [Arena](http://www.playwitharena.com/), [Cute Chess](https://cutechess.com/), or [Lichess](https://lichess.org/)
 
-- Скачайте [последний релиз](https://github.com/ExxDreamerCode/Ember/releases/tag/V1.1.2)
+## 🔧 Installation
 
-### Выпускные бинарники через Nix
+- Download the [latest release](https://github.com/ExxDreamerCode/Ember/releases/tag/V1.2.0)
 
-Для каждой поддерживаемой системы и архитектуры есть отдельная Nix-цель:
+Detailed instructions for reproducible Nix builds, release archives, and the portable Windows bundle are in [BUILD.md](BUILD.md).
 
-```bash
-# На Linux
-nix build .#ember-linux-amd64
-nix build .#ember-linux-arm64
-nix build .#ember-windows-amd64
-nix build .#ember-windows-arm64
+## ♟️ Usage
 
-# На macOS
-nix build .#ember-macos-amd64
-nix build .#ember-macos-arm64
-```
+### With a graphical interface
 
-Linux-бинарники полностью статические и используют musl, Windows-бинарники
-статически связывают MSVC CRT. В macOS системная `libSystem` всегда остаётся
-динамической; выпускные бинарники не зависят от Homebrew, MacPorts, Nix store
-или других сторонних библиотек. x86-64 сборки сохраняют автоматический выбор
-ускоренных AVX2 и AVX-512 реализаций на подходящих процессорах. macOS x86-64
-также работает через Rosetta 2.
+1. Open your UCI-compatible chess program.
+2. Add the engine and point it to the downloaded binary.
+3. Start playing.
 
-CI собирает все шесть вариантов только в двух заданиях: Linux собирает
-Linux и Windows, а нативный ARM64 macOS runner запускает полный набор тестов
-и собирает обе macOS-архитектуры. Перед загрузкой Linux и обе macOS-сборки
-проходят короткий UCI-тест, Windows amd64 дополнительно запускается через
-Wine, а Windows arm64 проверяется как корректный PE ARM64 со статическим CRT.
-Сборку можно запустить вручную кнопкой `Run workflow` на странице Actions.
-
-Каждый бинарник упаковывается отдельно. Windows использует ZIP, Linux и
-macOS — `tar.gz`. Например:
-
-```text
-ember-1.1.2-01234567-linux-amd64.tar.gz
-ember-1.1.2-01234567-windows-arm64.zip
-```
-
-Имя каталога внутри совпадает с именем архива без расширения. Рядом с
-бинарником лежат `BUILD-INFO.txt` с системой, архитектурой, версией, полным
-хешем коммита и SHA-256 бинарника, а также `SHA256SUMS.txt`.
-
-Чтобы скачать из одного GitHub Actions запуска все шесть готовых архивов в
-каталог `release/`, передайте скрипту номер запуска из его URL:
+### Command line
 
 ```bash
-python3 tools/download_release_archives.py RUN_ID
-```
-
-Скрипт скачивает оба CI-артефакта, извлекает из них готовые выпускные архивы
-и проверяет, что получены все платформы одной версии и одного коммита. Для
-закрытого репозитория или если GitHub требует авторизацию задайте `GH_TOKEN`;
-другой репозиторий можно указать через
-`--repo OWNER/REPOSITORY`.
-
-Короткий путь создать токен через сайт GitHub:
-
-1. Откройте GitHub и нажмите на аватар в правом верхнем углу.
-2. Перейдите в `Settings` → `Developer settings` → `Personal access tokens` →
-   `Fine-grained tokens`.
-3. Нажмите `Generate new token`.
-4. Укажите понятное имя, например `download Ember CI artifacts`, и короткий
-   срок действия.
-5. В `Resource owner` выберите владельца нужного репозитория.
-6. В `Repository access` выберите `Only select repositories` и отметьте
-   репозиторий с Ember.
-7. В `Repository permissions` выставьте `Actions` в `Read-only` и `Contents` в
-   `Read-only`.
-8. Сгенерируйте токен и сразу сохраните его: GitHub показывает его только один
-   раз.
-
-Пример запуска с токеном из файла:
-
-```bash
-GH_TOKEN="$(tr -d '\r\n' < ../gh-token.txt)" \
-  python3 tools/download_release_archives.py RUN_ID --repo OWNER/REPOSITORY
-```
-
-### Сборка Windows-версии через Nix
-
-На Linux воспроизводимый Windows-бинарник с ABI MSVC собирается как обычный
-Nix package на базе `cargo-xwin`, Clang и LLD:
-
-```bash
-nix build .#windows-ember
-```
-
-Готовый файл появится по пути:
-
-```text
-result/bin/ember.exe
-```
-
-Эта цель собирает автономный бинарник со статически связанным
-MSVC CRT и оптимизацией `x86-64-v3`. Такой бинарник рассчитан на современные
-x86-64 процессоры с AVX2, BMI2 и FMA. Portable ZIP использует ровно этот же
-package, а все xwin-параметры и сама сборка определены в одном файле
-`nix/windows-ember.nix`.
-
-На x86-64 под Windows и Linux Ember по умолчанию использует статически
-связанный `mimalloc`. На ARM64, macOS и остальных платформах остаётся системный
-распределитель памяти. Для сравнительной сборки с системным распределителем на
-x86-64 передайте Cargo флаг `--no-default-features`.
-
-Для итеративной разработки сохранён совместимый frontend, который собирает в
-`target/xwin/x86_64-pc-windows-msvc/release/ember.exe` и позволяет выбрать
-переносимый baseline для старого процессора:
-
-```bash
-EMBER_WINDOWS_TARGET_CPU=x86-64 nix run .#windows-release
-```
-
-Дополнительные флаги `rustc` передаются через
-`EMBER_WINDOWS_RUSTFLAGS`, а дополнительные аргументы Cargo — после `--`:
-
-```bash
-EMBER_WINDOWS_RUSTFLAGS="-C debuginfo=1" \
-  nix run .#windows-release -- --features decision-trace
-```
-
-Обе цели получают версии Windows SDK, CRT и Cargo-параметры из общей Nix-
-дефиниции. Итеративный frontend кэширует скачанные `cargo-xwin` файлы в
-`$HOME/.cache/cargo-xwin`. Использование Microsoft CRT и Windows SDK
-подразумевает принятие их лицензий.
-
-### Portable Ember + lichess-bot для Windows
-
-Полностью автономный Windows ZIP (Ember, встроенный Python, `lichess-bot` и
-последовательный планировщик вызовов) собирается одной Nix-целью:
-
-```bash
-nix build .#windows-portable
-```
-
-Результат:
-
-```text
-result/ember-lichess-windows.zip
-result/ember-lichess-windows.zip.sha256
-```
-
-Все загружаемые при сборке компоненты закреплены в Nix и проверяются по
-криптографическим хешам. Внутри ZIP также находится `SHA256SUMS.txt`, который
-проверяется `Verify.cmd` и автоматически перед каждым запуском. Пользовательский
-`battle.toml` и каталог `results/` намеренно не входят во внутренний манифест.
-Создаваемые Python каталоги `__pycache__` и файлы байт-кода также не
-проверяются: их содержимое зависит от локального интерпретатора и может
-пересоздаваться при обычном запуске.
-
-Короткая инструкция для Windows:
-
-1. Распакуйте ZIP целиком в доступный для записи каталог, например
-   `C:\EmberBattle`.
-2. Откройте `battle.toml` в Notepad и задайте список игр. Конфигурация из ZIP
-   уже готова к casual 3+2 матчам со случайными доступными ботами из пула.
-3. Запустите `Verify.cmd`.
-4. Запустите `Run Battle.cmd`, проверьте напечатанный план, введите `YES`,
-   укажите число партий или `INF` для непрерывной игры, затем введите токен
-   Lichess в скрытом приглашении.
-
-Токен никогда не включается в исходники, Nix derivation, ZIP или
-`battle.toml`. Он берётся только из переменной процесса `LICHESS_BOT_TOKEN`
-либо из скрытого приглашения и передаётся `lichess-bot` в памяти.
-Токен bot-аккаунта должен иметь разрешения `bot:play` и `challenge:write`.
-
-Пул по умолчанию содержит 50 community-ботов разной силы. Их рейтинг и
-доступность со временем меняются. Runner одним запросом проверяет
-online/busy-статус всего пула, перемешивает свободных соперников и вызывает
-одного из них, а при отказе или отсутствии ответа в течение
-`challenge_timeout_seconds` отменяет вызов и пробует следующего. Сообщение
-Lichess с точным `please wait until ...` превращается в cooldown именно для
-этого бота.
-
-Число `Threads` определяется автоматически как число логических процессоров
-Windows (не более поддерживаемых Ember 256) и одинаково применяется в
-предварительном NPS-тесте и играх. `hash_mb` в `battle.toml` — объём памяти в
-MiB для transposition table Ember, а не контрольная сумма; допустимо 1–4096,
-по умолчанию 1024.
-
-Игры создаются как прямые вызовы строго по очереди. Выбранное перед запуском
-число партий повторяет настроенные шаблоны по кругу, а `INF` продолжает серию
-до нажатия Ctrl-C. Один процесс `lichess-bot` и один управляющий поток
-используются для всей серии. В каждой `[[games]]` можно
-задать старое одиночное `opponent = "name"` или пул
-`opponents = ["bot1", "bot2"]`. Если весь пул offline, busy или на cooldown,
-runner по умолчанию ждёт без таймаута и опрашивает статус каждые 15 секунд;
-это явно задаётся `opponent_wait_timeout_seconds = 0`. Каждый отдельный вызов
-по умолчанию ждёт принятия 15 секунд (`challenge_timeout_seconds = 15`), после
-чего отменяется. Все попытки, причины отказов, cooldown, время ожидания и
-выбранный соперник записываются. Ошибки токена и его permissions остаются
-фатальными. `scoring` и `tags` — метки для последующего анализа; casual/rated
-задаётся полем `mode`. Matchmaking и Syzygy отключены. Запуск остаётся в видимом
-окне и не создаёт сервис, autostart, scheduled task и не меняет power/sleep,
-registry, PATH или firewall Windows.
-
-После принятия вызова только `lichess-bot` обращается к живому потоку партии.
-Runner следит за его локальным журналом и ждёт сохранённый им PGN, поэтому два
-процесса больше не конкурируют за лимит запросов одного токена. HTTP 429 в
-потоке выдерживает обязательную паузу и повторяет тот же запрос; если игровой
-worker всё же завершился до `gameFinish`, run падает с явной ошибкой вместо
-ложного отчёта об успешно завершённой прерванной партии.
-
-## ♟️ Использование
-
-### С графической оболочкой
-
-1. Откройте вашу UCI-совместимую шахматную программу
-2. Добавьте движок: укажите путь к скачанному бинарнику
-3. Начинайте игру!
-
-### Командная строка
-
-```bash
-# Интерактивный режим
+# Interactive mode
 cargo run --release
 
-# Или передача UCI-команд
+# Or send UCI commands directly
 echo -e "uci\nisready\nquit" | cargo run --release
 ```
 
-### UCI-опции
+### UCI options
 
-| Опция       | Тип    | По умолч.    | Диапазон | Описание                          |
-|-------------|--------|--------------|----------|-----------------------------------|
-| `Hash`      | spin   | 256          | 1–4096   | Размер TT в мегабайтах            |
-| `Threads`   | spin   | 1            | 1-256        | Количество потоков     |
-| `Book`      | string | `<embedded>` | —        | Путь к дебютной книге .bin        |
-| `RandomBookMove` | check | false | — | Равновероятно выбирать среди надёжных ходов из книги в пределах 5 сантипешек от лучшей статической оценки |
-| `BookMinMoveWeight` | spin | 2 | 1-65535 | Минимальный абсолютный вес хода из книги |
-| `BookMinMoveWeightPermille` | spin | 10 | 0-1000 | Минимальная доля веса хода в промилле |
-| `NNUE`      | string | `<embedded>` | —        | Путь к файлу нейросети .nnue      |
-| `NNUEBackend` | combo | `auto` | `auto`, доступные backend-ы | Backend для NNUE-поиска |
-| `TraceFile` | string | `<empty>`    | —        | Путь к TraceBack файлу .jsonl     |
-| `SyzygyPath` | string | `<empty>` | — | Путь к папке с Syzygy таблицами (DTZ) |
-| `UCI_Chess960` | string | `false`    | —        | Включение/отключение Chess 960     |
+| Option | Type | Default | Range | Description |
+| --- | --- | --- | --- | --- |
+| `Hash` | spin | 256 | 1–4096 | Transposition table size in megabytes |
+| `Threads` | spin | 1 | 1–256 | Number of search threads |
+| `Book` | string | `<embedded>` | — | Path to a `.bin` opening book |
+| `RandomBookMove` | check | false | — | Pick uniformly among safe book moves within 5 centipawns of the best static evaluation |
+| `BookMinMoveWeight` | spin | 2 | 1–65535 | Minimum absolute book move weight |
+| `BookMinMoveWeightPermille` | spin | 10 | 0–1000 | Minimum move weight share in permille |
+| `NNUE` | string | `<embedded>` | — | Path to an `.nnue` network file |
+| `NNUEBackend` | combo | `auto` | `auto`, available backends | Backend used for NNUE search |
+| `TraceFile` | string | `<empty>` | — | Path to a `.jsonl` traceback file |
+| `SyzygyPath` | string | `<empty>` | — | Path to a Syzygy tablebase directory with DTZ files |
+| `UCI_Chess960` | string | `false` | — | Enable or disable Chess960 |
 
-### Syzygy через Nix
+### Syzygy through Nix
 
-Репозиторий содержит Nix-цель для полного набора Syzygy 3-4-5 WDL+DTZ
-из зеркала Lichess:
+The repository contains a Nix target for the complete Syzygy 3-4-5 WDL+DTZ set from the Lichess mirror:
 
-```
+```bash
 nix build .#syzygy
 ```
 
-Все 290 файлов скачиваются как fixed-output derivations с SHA-256 из
-`nix/syzygy-3-4-5.json`. Получившийся путь можно передать движку:
+All 290 files are downloaded as fixed-output derivations with SHA-256 hashes from `nix/syzygy-3-4-5.json`. The resulting path can be passed to the engine:
 
-```
+```text
 setoption name SyzygyPath value ./result/share/syzygy/3-4-5
 ```
 
-Это набор до 5 фигур, размером 983957920 байт. Алиас `syzygy` намеренно
-остаётся этим небольшим набором.
+This is the up-to-5-piece set and is 983957920 bytes. The `syzygy` alias intentionally points to this smaller set.
 
-Для полного набора до 6 фигур используйте отдельную цель:
+Use a separate target for the complete up-to-6-piece set:
 
-```
+```bash
 nix build .#syzygy-6
 setoption name SyzygyPath value ./result/share/syzygy/3-4-5-6
 ```
 
-`syzygy-6` (также доступен как `syzygy-3-4-5-6`) объединяет таблицы 3-5
-и 6 фигур в одной папке, чтобы переходы после взятия также можно было
-пробовать через Syzygy. Набор содержит 1020 файлов и занимает
-161209573952 байта (около 150 GiB), поэтому для Nix store понадобится
-значительный запас свободного места. SHA-256 и размеры 6-фигурных файлов
-зафиксированы в `nix/syzygy-6.json`; манифест можно воспроизвести скриптом
-`nix/generate-syzygy-manifest.py` из метаданных зеркала Lichess.
+`syzygy-6`, also available as `syzygy-3-4-5-6`, combines the 3-5-piece and 6-piece tables in one directory so transitions after captures can also be probed through Syzygy. The set contains 1020 files and takes 161209573952 bytes, about 150 GiB, so the Nix store needs a large amount of free space. SHA-256 hashes and sizes for the 6-piece files are pinned in `nix/syzygy-6.json`; the manifest can be reproduced with `nix/generate-syzygy-manifest.py` from the Lichess mirror metadata.
 
-### Дебютная книга
+### Opening book
 
-Движок поддерживает Polyglot-формат дебютных книг (.bin). В бинарник **встроена** книга по умолчанию — она загружается автоматически, если `book.bin` не найден рядом с исполняемым файлом.
+The engine supports opening books in Polyglot `.bin` format. A default book is **embedded** in the binary and is loaded automatically when no `book.bin` is found next to the executable.
 
-Приоритет загрузки:
-1. `book.bin` рядом с исполняемым файлом
-2. `book.bin` в текущей рабочей папке
-3. **Встроенная книга** (если внешняя не найдена)
+Load priority:
 
-Можно указать путь к книге через UCI:
+1. `book.bin` next to the executable
+2. `book.bin` in the current working directory
+3. The **embedded book** if no external book is found
 
-```
-setoption name Book value C:\путь\к\book.bin
+You can set a book path through UCI:
+
+```text
+setoption name Book value C:\path\to\book.bin
 ```
 
-Если книга лежит в одной папке с движком, достаточно имени файла:
+If the book is in the same directory as the engine, the file name is enough:
 
-```
+```text
 setoption name Book value book.bin
 ```
 
-Чтобы **отключить** книгу — передать пустое значение:
+To **disable** the book, pass an empty value:
 
-```
+```text
 setoption name Book value
 ```
 
-Чтобы **вернуться** к встроенной книге:
+To return to the embedded book:
 
-```
+```text
 setoption name Book value <embedded>
 ```
 
-Поддерживаются любые Polyglot-совместимые книги (например, от Stockfish).
+Any Polyglot-compatible book is supported, including Stockfish books.
 
-### Нейросеть (NNUE)
+### Neural network (NNUE)
 
-В бинарник **встроена** NNUE-сеть — она загружается автоматически при старте. 
-Внешний файл `net.nnue` рядом с исполняемым файлом **не требуется**.
+An NNUE network is **embedded** in the binary and loads automatically at startup. An external `net.nnue` file next to the executable is **not required**.
 
-По умолчанию используется встроенная сеть. Управление через UCI-опцию `NNUE`:
+The embedded network is used by default. It is controlled through the `NNUE` UCI option:
 
+```text
+setoption name NNUE value                      # disable NNUE and fall back to classic eval
+setoption name NNUE value <embedded>            # return to the embedded network
+setoption name NNUE value C:\path\to\file.nnue  # load an external network
 ```
-setoption name NNUE value                  # отключить NNUE (фолбэк на классический eval)
-setoption name NNUE value <embedded>        # вернуться к встроенной сети
-setoption name NNUE value C:\путь\к\file.nnue  # загрузить внешнюю сеть
-```
 
-Если файл лежит рядом с движком, можно указать только имя:
+If the file is next to the engine, you can specify only the file name:
 
-```
+```text
 setoption name NNUE value my-net.nnue
 ```
 
-Backend для NNUE-поиска выбирается автоматически по процессору. Для
-проверок и замеров его можно переопределить:
+The NNUE backend is selected automatically based on the CPU. For testing and benchmarking it can be overridden:
 
-```
+```text
 setoption name NNUEBackend value scalar
 setoption name NNUEBackend value x86-v3
 setoption name NNUEBackend value x86-avx512
@@ -356,130 +150,49 @@ setoption name NNUEBackend value aarch64-simd512
 setoption name NNUEBackend value auto
 ```
 
-Недоступный на текущем процессоре backend будет проигнорирован.
+A backend that is not available on the current CPU will be ignored.
 
-При загрузке внешней сети движок выведет информацию о её версии и архитектуре:
+When an external network is loaded, the engine prints its version and architecture:
 
-```
+```text
 info string Loaded NNUE v6 my-net.nnue SCReLU (FT=1024 L1=0 L2=0)
 ```
 
-## ⚙️ Настройка
+## ⚙️ Configuration
 
-Изменение параметров движка через UCI-команду `setoption`:
+Engine parameters are changed through the UCI `setoption` command:
 
-```
+```text
 setoption name Hash value 256
 setoption name Book value book.bin
-setoption option name TraceFile value Trace.jsonl
+setoption name TraceFile value Trace.jsonl
 ```
 
-## 📊 Измерение Elo
+## 📊 Quality assessment
 
-В репозитории есть Nix-окружение и скрипты для автоматического прогона
-матчей через Cute Chess:
+Elo measurement, paired version comparisons, and search-shape benchmarks are documented in
+[docs/quality-assessment.md](docs/quality-assessment.md).
 
-```bash
-nix develop .#elo-runner
-python3 tools/measure_elo.py all --config configs/elo/default.toml
-```
-
-Для более точной оценки силы против Stockfish можно использовать
-адаптивный режим. Он сначала играет короткий пилотный матч на нескольких
-значениях `UCI_Elo`, затем выбирает уровень Stockfish, близкий к 50%
-результата Ember, и тратит оставшийся бюджет игр на этот уровень:
+## 🛠️ Development
 
 ```bash
-python3 tools/measure_elo.py all \
-  --config configs/elo/stockfish-adaptive.toml \
-  --max-games 500
-```
-
-`--max-games` задаёт верхнюю границу числа игр, которые можно запланировать.
-Результат адаптивного режима — это `Stockfish UCI_Elo equivalent` для
-данного контроля времени, книги и набора дебютов, а не точная внешняя
-CCRL-оценка.
-
-Для поиска регрессий между двумя версиями есть отдельный попарный прогон
-против общего набора соперников:
-
-```bash
-python3 tools/compare_versions.py all \
-  --config configs/version-opponents/default.toml \
-  --baseline-revision OLD \
-  --candidate-revision NEW
-```
-
-По начальному зерну он воспроизводимо выбирает дебют, контроль времени,
-соперника и режим обдумывания на чужом времени. Каждая версия играет один
-и тот же мини-матч из двух партий с перестановкой цветов. В отчёте отдельно
-перечислены партии, в которых результат изменился, а оценка разницы Elo и
-доверительный интервал считаются по общим сценариям, а не по партиям как
-будто они независимы.
-
-Ориентировочная цена точности ниже рассчитана для 8-ядерного CPU, где
-автоматический режим использует `ceil(8 * 1.5) = 12` workers, контроль
-времени `8+0.08`, и соперник подобран так, чтобы результат был около 50%.
-
-| 95% CI | Ширина интервала | Игры | Примерное время |
-| ---: | ---: | ---: | ---: |
-| ±50 Elo | 100 Elo | ~185 | ~8-12 мин |
-| ±40 Elo | 80 Elo | ~290 | ~13-18 мин |
-| ±30 Elo | 60 Elo | ~515 | ~22-33 мин |
-| ±20 Elo | 40 Elo | ~1 160 | ~50-75 мин |
-| ±15 Elo | 30 Elo | ~2 060 | ~1.5-2.2 ч |
-| ±10 Elo | 20 Elo | ~4 640 | ~3.3-5 ч |
-| ±7.5 Elo | 15 Elo | ~8 250 | ~6-9 ч |
-| ±5 Elo | 10 Elo | ~18 550 | ~13-20 ч |
-
-Рейтинг последней протестированной CCRL версии Ember **3040** +- 70 elo (В однопоточном режиме)
-
-## 📈 Замер формы поиска
-
-Для проверки регрессий, где важны не только NPS, но и достигнутая глубина,
-число узлов и форма дерева, есть отдельный UCI-бенч:
-
-```bash
-cargo build --release
-nix run .#search-shape-benchmark -- \
-  current=./target/release/ember \
-  --repeats 3
-```
-
-Можно сравнивать несколько бинарников одним запуском:
-
-```bash
-nix run .#search-shape-benchmark -- \
-  good=/path/to/good-ember \
-  bad=/path/to/bad-ember \
-  --repeats 3 \
-  --go-command "go depth 20"
-```
-
-По умолчанию скрипт отключает книгу через `setoption name Book value`,
-использует стартовую позицию, `Hash=64` и `Threads=1`. Для своего набора
-позиций можно передать JSON-файл через `--positions`.
-
-## 🛠️ Разработка
-
-```bash
-# Запуск тестов
+# Run tests
 cargo test
 
-# Проверка ошибок
+# Check for errors
 cargo check
 
-# Запуск с оптимизациями
+# Run with optimizations
 cargo run --release
 
-# Компиляция в релиз - режиме
+# Build in release mode
 cargo build --release
 ```
 
-## 🤝 Вклад
+## 🤝 Contributing
 
-Нашёлся баг? Есть идея? Открывайте issue или PR — буду рад помощи и обратной связи!
+Found a bug or have an idea? Open an issue or PR — help and feedback are welcome.
 
-## 📄 Лицензия
+## 📄 License
 
-Этот проект распространяется под лицензией MIT.
+This project is distributed under the MIT license.
