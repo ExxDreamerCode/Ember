@@ -33,6 +33,7 @@ FIXTURE_HEADER = (
     "\tthemes\trating\tpopularity\tplays"
 )
 MATE_CP = 100_000
+IMMEDIATE_LOSS_BUCKET_CP = 150
 
 
 @dataclass
@@ -481,10 +482,17 @@ def play_replay(
     if first_bad is None:
         return None
 
-    bucket = classify_case(first_bad["bad_fen"], first_bad["bad_move"], first_bad["stockfish_best_move"], result, termination)
     eval_loss = None
     if first_bad.get("stockfish_best_score_cp") is not None and first_bad.get("bad_score_cp") is not None:
         eval_loss = first_bad["stockfish_best_score_cp"] - first_bad["bad_score_cp"]
+    bucket = classify_case(
+        first_bad["bad_fen"],
+        first_bad["bad_move"],
+        first_bad["stockfish_best_move"],
+        result,
+        termination,
+        eval_loss,
+    )
     return LostAdvantageCase(
         case_id=f"advpres-{case_index:04d}",
         seed=anchor.seed,
@@ -588,7 +596,14 @@ def label_failure(
     failure["bad_score_cp"] = score_for_side(board, bad.score_cp, strong_side)
 
 
-def classify_case(fen: str, bad_move: str, stockfish_best: str | None, result: str, termination: str) -> str:
+def classify_case(
+    fen: str,
+    bad_move: str,
+    stockfish_best: str | None,
+    result: str,
+    termination: str,
+    eval_loss_cp: int | None,
+) -> str:
     board = chess.Board(fen)
     piece_count = len(board.piece_map())
     try:
@@ -599,12 +614,22 @@ def classify_case(fen: str, bad_move: str, stockfish_best: str | None, result: s
         best = chess.Move.from_uci(stockfish_best) if stockfish_best else None
     except ValueError:
         best = None
+    if piece_count <= 7:
+        return "low-material-conversion"
+    if eval_loss_cp is not None and eval_loss_cp >= IMMEDIATE_LOSS_BUCKET_CP:
+        return classify_move_shape(board, bad, best)
     if "threefold" in termination:
         return "repetition-conversion"
     if "fifty" in termination or board.halfmove_clock >= 70:
         return "fifty-move-conversion"
-    if piece_count <= 7:
-        return "low-material-conversion"
+    return classify_move_shape(board, bad, best)
+
+
+def classify_move_shape(
+    board: chess.Board,
+    bad: chess.Move | None,
+    best: chess.Move | None,
+) -> str:
     if best and board.is_capture(best) and (bad is None or not board.is_capture(bad)):
         return "missed-capture-or-tactic"
     if bad and board.gives_check(bad):
