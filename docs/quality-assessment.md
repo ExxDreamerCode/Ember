@@ -115,3 +115,36 @@ This technique is not an Elo test. A single saved or spoiled win is diagnostic e
 Stockfish repeatedly holds or wins from a position that should be technically won for Ember,
 reduce the game to the earliest failing decision and add the narrowest regression that
 captures the underlying invariant.
+
+## Lost-advantage hunting
+
+`tools/hunt_lost_advantage.py` scales the advantage-defense idea into a repeatable corpus
+mining pass. It first lets Ember play against stronger Stockfish from randomized book
+starts. When Stockfish gets a large advantage immediately after an Ember move, the tool
+starts a second game from that position with colors swapped: Ember receives the advantaged
+side and Stockfish defends with more time. If Ember loses the advantage, the run records the
+first large evaluation drop, writes PGNs and JSON traces, classifies the case, and emits a
+disabled TSV row in `tests/fixtures/advantage_preservation.tsv`.
+
+Example:
+
+```bash
+python3 tools/hunt_lost_advantage.py \
+  --ember ./target/release/ember \
+  --stockfish stockfish \
+  --cases 100 \
+  --seed 20260730 \
+  --output-dir results/lost-advantage
+```
+
+The generated TSV rows are deliberately disabled. Treat them as a triage queue, not as a
+green test suite to satisfy immediately. First inspect the bucket summary, pick the largest
+or most clearly causal class, and verify a representative sample with deeper analysis. Only
+uncomment a row in the same commit that fixes the underlying class or establishes a narrow
+invariant that Ember should already satisfy.
+
+The run is diagnostic rather than statistical. Its value is the preserved artifact set:
+source PGNs, replay PGNs, raw UCI logs, per-move JSON, the generated fixture rows, the seed,
+engine paths, thread counts, hash, movetimes, and thresholds. Keep those artifacts available
+when making a search change from the corpus, because many collected positions are broad
+finite-depth conversion weaknesses rather than isolated code defects.
