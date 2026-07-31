@@ -3,7 +3,9 @@ use crate::board::{
     KING_ATTACKS, KNIGHT_ATTACKS, WB, WK, WN, WP, WQ, WR,
 };
 use crate::magic::{bishop_attacks, rook_attacks};
-use crate::nnue::{NNUEAccumulator, NNUENet, NnueBackend, ScalarNnueBackend};
+use crate::nnue::{
+    NNUEAccumulator, NNUENet, NNUEThreatAccumulator, NnueBackend, ScalarNnueBackend,
+};
 use crate::types::*;
 use std::sync::{Arc, RwLock};
 
@@ -398,8 +400,22 @@ pub(crate) fn evaluate_nnue_acc_with_backend<B: NnueBackend>(
 pub fn evaluate_nnue(st: &BoardState) -> i32 {
     with_nnue_net(|net| {
         let mut acc = NNUEAccumulator::new(net.hidden_size);
-        acc.refresh(net, st);
-        evaluate_nnue_acc(net, &acc, st)
+        if net.has_threat_features() {
+            acc.refresh_with_backend::<ScalarNnueBackend>(net, st);
+            let mut threats = NNUEThreatAccumulator::new(net.hidden_size);
+            threats.refresh(net, st);
+            let stm = if st.w { WHITE } else { BLACK };
+            let pc: u32 = (0..12).map(|i| st.bb[i].count_ones()).sum();
+            let score = net.forward_with_threats::<ScalarNnueBackend>(&acc, &threats, stm, pc);
+            if stm == WHITE {
+                score
+            } else {
+                -score
+            }
+        } else {
+            acc.refresh(net, st);
+            evaluate_nnue_acc(net, &acc, st)
+        }
     })
     .unwrap_or_else(|| evaluate(st))
 }

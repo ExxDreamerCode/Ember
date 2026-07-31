@@ -14,12 +14,13 @@ use crate::movegen::{
 #[cfg(target_arch = "x86_64")]
 use crate::nnue::Avx512NnueBackend;
 use crate::nnue::{
-    NNUEAccumulator, NNUENet, NnueBackend, ScalarNnueBackend, Simd128NnueBackend,
-    Simd512NnueBackend, SimdNnueBackend,
+    NNUEAccumulator, NNUENet, NNUEThreatAccumulator, NnueBackend, ScalarNnueBackend,
+    Simd128NnueBackend, Simd512NnueBackend, SimdNnueBackend,
 };
 use crate::syzygy::SyzygyTables;
 use crate::time_management::{iteration_time_decision, IterationTiming};
 use crate::tt::{SharedTT, TT_ALPHA, TT_BETA, TT_EXACT};
+use crate::types::{BLACK, WHITE};
 use crate::zobrist::{compute_pawn_hash, ep_hash_square, zobrist};
 #[cfg(feature = "search-debug")]
 use std::collections::BTreeMap;
@@ -686,6 +687,7 @@ pub struct Searcher {
     node_limit: Option<u64>,
     shared_node_counter: Option<Arc<AtomicU64>>,
     pub nnue_stack: Vec<NNUEAccumulator>,
+    pub threat_stack: Vec<NNUEThreatAccumulator>,
     pub nnue_net: Option<Arc<NNUENet>>,
     pub search_backend: SearchBackendKind,
     pub syzygy: SyzygyTables,
@@ -702,6 +704,12 @@ struct ClassicEval;
 
 #[derive(Clone, Copy)]
 struct NnueEval<'a, B: NnueBackend> {
+    net: &'a NNUENet,
+    _backend: B,
+}
+
+#[derive(Clone, Copy)]
+struct ThreatNnueEval<'a, B: NnueBackend> {
     net: &'a NNUENet,
     _backend: B,
 }
@@ -2510,6 +2518,7 @@ impl Searcher {
             node_limit: None,
             shared_node_counter: None,
             nnue_stack: Vec::new(),
+            threat_stack: Vec::new(),
             nnue_net: current_nnue_net(),
             search_backend: active_search_backend(),
             syzygy: SyzygyTables::new(),
@@ -2545,7 +2554,16 @@ impl Searcher {
                 self.nnue_stack
                     .resize(MAX_PLY + 1, NNUEAccumulator::new(net.hidden_size));
             }
-            self.nnue_stack[0].refresh(net, st);
+            if net.has_threat_features() {
+                self.nnue_stack[0].refresh_with_backend::<ScalarNnueBackend>(net, st);
+                if self.threat_stack.len() < MAX_PLY + 1 {
+                    self.threat_stack
+                        .resize(MAX_PLY + 1, NNUEThreatAccumulator::new(net.hidden_size));
+                }
+                self.threat_stack[0].refresh(net, st);
+            } else {
+                self.nnue_stack[0].refresh(net, st);
+            }
         }
     }
 
@@ -2557,7 +2575,16 @@ impl Searcher {
             self.nnue_stack
                 .resize(ply + 1, NNUEAccumulator::new(net.hidden_size));
         }
-        self.nnue_stack[ply].refresh(net, st);
+        if net.has_threat_features() {
+            self.nnue_stack[ply].refresh_with_backend::<ScalarNnueBackend>(net, st);
+            if self.threat_stack.len() <= ply {
+                self.threat_stack
+                    .resize(ply + 1, NNUEThreatAccumulator::new(net.hidden_size));
+            }
+            self.threat_stack[ply].refresh(net, st);
+        } else {
+            self.nnue_stack[ply].refresh(net, st);
+        }
     }
 
     #[inline]
@@ -3267,19 +3294,62 @@ impl Searcher {
         }
     }
 
+    #[inline(always)]
+    fn static_eval_threat_nnue<const CHESS960: bool, B: NnueBackend>(
+        &self,
+        st: &BoardState,
+        ply: usize,
+        net: &NNUENet,
+    ) -> i32 {
+        if CHESS960 && st.mc <= 3 {
+            return evaluate(st) * if st.w { 1 } else { -1 };
+        }
+        let stm = if st.w { WHITE } else { BLACK };
+        let pc: u32 = (0..12).map(|i| st.bb[i].count_ones()).sum();
+        if ply < self.nnue_stack.len() && ply < self.threat_stack.len() {
+            net.forward_with_threats::<B>(&self.nnue_stack[ply], &self.threat_stack[ply], stm, pc)
+        } else {
+            let mut acc = NNUEAccumulator::new(net.hidden_size);
+            acc.refresh_with_backend::<B>(net, st);
+            let mut threats = NNUEThreatAccumulator::new(net.hidden_size);
+            threats.refresh(net, st);
+            net.forward_with_threats::<B>(&acc, &threats, stm, pc)
+        }
+    }
+
     pub fn corrected_eval(&self, st: &BoardState) -> i32 {
         match (st.chess960, self.nnue_net.as_deref()) {
-            (true, Some(net)) => NnueEval {
-                net,
-                _backend: ScalarNnueBackend,
+            (true, Some(net)) => {
+                if net.has_threat_features() {
+                    ThreatNnueEval {
+                        net,
+                        _backend: ScalarNnueBackend,
+                    }
+                    .corrected_eval::<true>(self, st)
+                } else {
+                    NnueEval {
+                        net,
+                        _backend: ScalarNnueBackend,
+                    }
+                    .corrected_eval::<true>(self, st)
+                }
             }
-            .corrected_eval::<true>(self, st),
             (true, None) => ClassicEval.corrected_eval::<true>(self, st),
-            (false, Some(net)) => NnueEval {
-                net,
-                _backend: ScalarNnueBackend,
+            (false, Some(net)) => {
+                if net.has_threat_features() {
+                    ThreatNnueEval {
+                        net,
+                        _backend: ScalarNnueBackend,
+                    }
+                    .corrected_eval::<false>(self, st)
+                } else {
+                    NnueEval {
+                        net,
+                        _backend: ScalarNnueBackend,
+                    }
+                    .corrected_eval::<false>(self, st)
+                }
             }
-            .corrected_eval::<false>(self, st),
             (false, None) => ClassicEval.corrected_eval::<false>(self, st),
         }
     }
@@ -3320,6 +3390,24 @@ impl Searcher {
         } else {
             -score
         }
+    }
+
+    #[inline(always)]
+    fn corrected_eval_threat_nnue<const CHESS960: bool, B: NnueBackend>(
+        &self,
+        st: &BoardState,
+        net: &NNUENet,
+    ) -> i32 {
+        if CHESS960 && st.mc <= 3 {
+            return self.corrected_eval_classic::<CHESS960>(st);
+        }
+        let mut acc = NNUEAccumulator::new(net.hidden_size);
+        acc.refresh_with_backend::<B>(net, st);
+        let mut threats = NNUEThreatAccumulator::new(net.hidden_size);
+        threats.refresh(net, st);
+        let stm = if st.w { WHITE } else { BLACK };
+        let pc: u32 = (0..12).map(|i| st.bb[i].count_ones()).sum();
+        net.forward_with_threats::<B>(&acc, &threats, stm, pc)
     }
 
     pub fn update_correction_history(&mut self, st: &BoardState, score: i32, depth: i32) {
@@ -3451,6 +3539,47 @@ impl Searcher {
         }
     }
 
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn push_threat_nnue_acc<B: NnueBackend>(
+        &mut self,
+        net: &NNUENet,
+        st_before: &BoardState,
+        st_after: &BoardState,
+        sr: usize,
+        sc: usize,
+        er: usize,
+        ec: usize,
+        promotion: u8,
+        ply: usize,
+    ) {
+        if ply + 1 >= self.nnue_stack.len() || ply + 1 > MAX_PLY {
+            return;
+        }
+        let ok = {
+            let (left, right) = self.nnue_stack.split_at_mut(ply + 1);
+            right[0].update_from_parent_with_backend::<B>(
+                &left[ply], net, st_before, sr, sc, er, ec, promotion,
+            )
+        };
+
+        if !ok {
+            self.nnue_stack[ply + 1].refresh_with_backend::<B>(net, st_after);
+        }
+
+        if ply + 1 >= self.threat_stack.len() {
+            self.threat_stack
+                .resize(ply + 2, NNUEThreatAccumulator::new(net.hidden_size));
+        }
+        let updated = {
+            let (left, right) = self.threat_stack.split_at_mut(ply + 1);
+            right[0].update_from_parent(&left[ply], net, st_before, st_after)
+        };
+        if !updated {
+            self.threat_stack[ply + 1].refresh(net, st_after);
+        }
+    }
+
     #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn qsearch(
@@ -3482,20 +3611,39 @@ impl Searcher {
     ) -> i32 {
         let nnue_net = self.nnue_net.clone();
         match (st.chess960, nnue_net.as_deref()) {
-            (true, Some(net)) => self.qsearch_mode_scalar::<true, false, _>(
-                st,
-                alpha,
-                beta,
-                depth,
-                start,
-                tl,
-                cnt,
-                ply,
-                NnueEval {
-                    net,
-                    _backend: ScalarNnueBackend,
-                },
-            ),
+            (true, Some(net)) => {
+                if net.has_threat_features() {
+                    self.qsearch_mode_scalar::<true, false, _>(
+                        st,
+                        alpha,
+                        beta,
+                        depth,
+                        start,
+                        tl,
+                        cnt,
+                        ply,
+                        ThreatNnueEval {
+                            net,
+                            _backend: ScalarNnueBackend,
+                        },
+                    )
+                } else {
+                    self.qsearch_mode_scalar::<true, false, _>(
+                        st,
+                        alpha,
+                        beta,
+                        depth,
+                        start,
+                        tl,
+                        cnt,
+                        ply,
+                        NnueEval {
+                            net,
+                            _backend: ScalarNnueBackend,
+                        },
+                    )
+                }
+            }
             (true, None) => self.qsearch_mode_scalar::<true, false, _>(
                 st,
                 alpha,
@@ -3507,20 +3655,39 @@ impl Searcher {
                 ply,
                 ClassicEval,
             ),
-            (false, Some(net)) => self.qsearch_mode_scalar::<false, false, _>(
-                st,
-                alpha,
-                beta,
-                depth,
-                start,
-                tl,
-                cnt,
-                ply,
-                NnueEval {
-                    net,
-                    _backend: ScalarNnueBackend,
-                },
-            ),
+            (false, Some(net)) => {
+                if net.has_threat_features() {
+                    self.qsearch_mode_scalar::<false, false, _>(
+                        st,
+                        alpha,
+                        beta,
+                        depth,
+                        start,
+                        tl,
+                        cnt,
+                        ply,
+                        ThreatNnueEval {
+                            net,
+                            _backend: ScalarNnueBackend,
+                        },
+                    )
+                } else {
+                    self.qsearch_mode_scalar::<false, false, _>(
+                        st,
+                        alpha,
+                        beta,
+                        depth,
+                        start,
+                        tl,
+                        cnt,
+                        ply,
+                        NnueEval {
+                            net,
+                            _backend: ScalarNnueBackend,
+                        },
+                    )
+                }
+            }
             (false, None) => self.qsearch_mode_scalar::<false, false, _>(
                 st,
                 alpha,
@@ -3809,21 +3976,41 @@ impl Searcher {
     ) -> i32 {
         let nnue_net = self.nnue_net.clone();
         match (st.chess960, nnue_net.as_deref()) {
-            (true, Some(net)) => self.negamax_mode_scalar::<true, NODE_LIMITED, _>(
-                st,
-                depth,
-                ply,
-                alpha,
-                beta,
-                can_null,
-                start,
-                tl,
-                cnt,
-                NnueEval {
-                    net,
-                    _backend: ScalarNnueBackend,
-                },
-            ),
+            (true, Some(net)) => {
+                if net.has_threat_features() {
+                    self.negamax_mode_scalar::<true, NODE_LIMITED, _>(
+                        st,
+                        depth,
+                        ply,
+                        alpha,
+                        beta,
+                        can_null,
+                        start,
+                        tl,
+                        cnt,
+                        ThreatNnueEval {
+                            net,
+                            _backend: ScalarNnueBackend,
+                        },
+                    )
+                } else {
+                    self.negamax_mode_scalar::<true, NODE_LIMITED, _>(
+                        st,
+                        depth,
+                        ply,
+                        alpha,
+                        beta,
+                        can_null,
+                        start,
+                        tl,
+                        cnt,
+                        NnueEval {
+                            net,
+                            _backend: ScalarNnueBackend,
+                        },
+                    )
+                }
+            }
             (true, None) => self.negamax_mode_scalar::<true, NODE_LIMITED, _>(
                 st,
                 depth,
@@ -3836,21 +4023,41 @@ impl Searcher {
                 cnt,
                 ClassicEval,
             ),
-            (false, Some(net)) => self.negamax_mode_scalar::<false, NODE_LIMITED, _>(
-                st,
-                depth,
-                ply,
-                alpha,
-                beta,
-                can_null,
-                start,
-                tl,
-                cnt,
-                NnueEval {
-                    net,
-                    _backend: ScalarNnueBackend,
-                },
-            ),
+            (false, Some(net)) => {
+                if net.has_threat_features() {
+                    self.negamax_mode_scalar::<false, NODE_LIMITED, _>(
+                        st,
+                        depth,
+                        ply,
+                        alpha,
+                        beta,
+                        can_null,
+                        start,
+                        tl,
+                        cnt,
+                        ThreatNnueEval {
+                            net,
+                            _backend: ScalarNnueBackend,
+                        },
+                    )
+                } else {
+                    self.negamax_mode_scalar::<false, NODE_LIMITED, _>(
+                        st,
+                        depth,
+                        ply,
+                        alpha,
+                        beta,
+                        can_null,
+                        start,
+                        tl,
+                        cnt,
+                        NnueEval {
+                            net,
+                            _backend: ScalarNnueBackend,
+                        },
+                    )
+                }
+            }
             (false, None) => self.negamax_mode_scalar::<false, NODE_LIMITED, _>(
                 st,
                 depth,
@@ -3881,21 +4088,41 @@ impl Searcher {
     ) -> i32 {
         let nnue_net = self.nnue_net.clone();
         match (st.chess960, nnue_net.as_deref()) {
-            (true, Some(net)) => self.negamax_mode_simd128::<true, NODE_LIMITED, _>(
-                st,
-                depth,
-                ply,
-                alpha,
-                beta,
-                can_null,
-                start,
-                tl,
-                cnt,
-                NnueEval {
-                    net,
-                    _backend: Simd128NnueBackend,
-                },
-            ),
+            (true, Some(net)) => {
+                if net.has_threat_features() {
+                    self.negamax_mode_simd128::<true, NODE_LIMITED, _>(
+                        st,
+                        depth,
+                        ply,
+                        alpha,
+                        beta,
+                        can_null,
+                        start,
+                        tl,
+                        cnt,
+                        ThreatNnueEval {
+                            net,
+                            _backend: Simd128NnueBackend,
+                        },
+                    )
+                } else {
+                    self.negamax_mode_simd128::<true, NODE_LIMITED, _>(
+                        st,
+                        depth,
+                        ply,
+                        alpha,
+                        beta,
+                        can_null,
+                        start,
+                        tl,
+                        cnt,
+                        NnueEval {
+                            net,
+                            _backend: Simd128NnueBackend,
+                        },
+                    )
+                }
+            }
             (true, None) => self.negamax_mode_simd128::<true, NODE_LIMITED, _>(
                 st,
                 depth,
@@ -3908,21 +4135,41 @@ impl Searcher {
                 cnt,
                 ClassicEval,
             ),
-            (false, Some(net)) => self.negamax_mode_simd128::<false, NODE_LIMITED, _>(
-                st,
-                depth,
-                ply,
-                alpha,
-                beta,
-                can_null,
-                start,
-                tl,
-                cnt,
-                NnueEval {
-                    net,
-                    _backend: Simd128NnueBackend,
-                },
-            ),
+            (false, Some(net)) => {
+                if net.has_threat_features() {
+                    self.negamax_mode_simd128::<false, NODE_LIMITED, _>(
+                        st,
+                        depth,
+                        ply,
+                        alpha,
+                        beta,
+                        can_null,
+                        start,
+                        tl,
+                        cnt,
+                        ThreatNnueEval {
+                            net,
+                            _backend: Simd128NnueBackend,
+                        },
+                    )
+                } else {
+                    self.negamax_mode_simd128::<false, NODE_LIMITED, _>(
+                        st,
+                        depth,
+                        ply,
+                        alpha,
+                        beta,
+                        can_null,
+                        start,
+                        tl,
+                        cnt,
+                        NnueEval {
+                            net,
+                            _backend: Simd128NnueBackend,
+                        },
+                    )
+                }
+            }
             (false, None) => self.negamax_mode_simd128::<false, NODE_LIMITED, _>(
                 st,
                 depth,
@@ -3953,21 +4200,41 @@ impl Searcher {
     ) -> i32 {
         let nnue_net = self.nnue_net.clone();
         match (st.chess960, nnue_net.as_deref()) {
-            (true, Some(net)) => self.negamax_mode_simd256::<true, NODE_LIMITED, _>(
-                st,
-                depth,
-                ply,
-                alpha,
-                beta,
-                can_null,
-                start,
-                tl,
-                cnt,
-                NnueEval {
-                    net,
-                    _backend: SimdNnueBackend,
-                },
-            ),
+            (true, Some(net)) => {
+                if net.has_threat_features() {
+                    self.negamax_mode_simd256::<true, NODE_LIMITED, _>(
+                        st,
+                        depth,
+                        ply,
+                        alpha,
+                        beta,
+                        can_null,
+                        start,
+                        tl,
+                        cnt,
+                        ThreatNnueEval {
+                            net,
+                            _backend: SimdNnueBackend,
+                        },
+                    )
+                } else {
+                    self.negamax_mode_simd256::<true, NODE_LIMITED, _>(
+                        st,
+                        depth,
+                        ply,
+                        alpha,
+                        beta,
+                        can_null,
+                        start,
+                        tl,
+                        cnt,
+                        NnueEval {
+                            net,
+                            _backend: SimdNnueBackend,
+                        },
+                    )
+                }
+            }
             (true, None) => self.negamax_mode_simd256::<true, NODE_LIMITED, _>(
                 st,
                 depth,
@@ -3980,21 +4247,41 @@ impl Searcher {
                 cnt,
                 ClassicEval,
             ),
-            (false, Some(net)) => self.negamax_mode_simd256::<false, NODE_LIMITED, _>(
-                st,
-                depth,
-                ply,
-                alpha,
-                beta,
-                can_null,
-                start,
-                tl,
-                cnt,
-                NnueEval {
-                    net,
-                    _backend: SimdNnueBackend,
-                },
-            ),
+            (false, Some(net)) => {
+                if net.has_threat_features() {
+                    self.negamax_mode_simd256::<false, NODE_LIMITED, _>(
+                        st,
+                        depth,
+                        ply,
+                        alpha,
+                        beta,
+                        can_null,
+                        start,
+                        tl,
+                        cnt,
+                        ThreatNnueEval {
+                            net,
+                            _backend: SimdNnueBackend,
+                        },
+                    )
+                } else {
+                    self.negamax_mode_simd256::<false, NODE_LIMITED, _>(
+                        st,
+                        depth,
+                        ply,
+                        alpha,
+                        beta,
+                        can_null,
+                        start,
+                        tl,
+                        cnt,
+                        NnueEval {
+                            net,
+                            _backend: SimdNnueBackend,
+                        },
+                    )
+                }
+            }
             (false, None) => self.negamax_mode_simd256::<false, NODE_LIMITED, _>(
                 st,
                 depth,
@@ -4025,21 +4312,41 @@ impl Searcher {
     ) -> i32 {
         let nnue_net = self.nnue_net.clone();
         match (st.chess960, nnue_net.as_deref()) {
-            (true, Some(net)) => self.negamax_mode_simd512::<true, NODE_LIMITED, _>(
-                st,
-                depth,
-                ply,
-                alpha,
-                beta,
-                can_null,
-                start,
-                tl,
-                cnt,
-                NnueEval {
-                    net,
-                    _backend: Simd512NnueBackend,
-                },
-            ),
+            (true, Some(net)) => {
+                if net.has_threat_features() {
+                    self.negamax_mode_simd512::<true, NODE_LIMITED, _>(
+                        st,
+                        depth,
+                        ply,
+                        alpha,
+                        beta,
+                        can_null,
+                        start,
+                        tl,
+                        cnt,
+                        ThreatNnueEval {
+                            net,
+                            _backend: Simd512NnueBackend,
+                        },
+                    )
+                } else {
+                    self.negamax_mode_simd512::<true, NODE_LIMITED, _>(
+                        st,
+                        depth,
+                        ply,
+                        alpha,
+                        beta,
+                        can_null,
+                        start,
+                        tl,
+                        cnt,
+                        NnueEval {
+                            net,
+                            _backend: Simd512NnueBackend,
+                        },
+                    )
+                }
+            }
             (true, None) => self.negamax_mode_simd512::<true, NODE_LIMITED, _>(
                 st,
                 depth,
@@ -4052,21 +4359,41 @@ impl Searcher {
                 cnt,
                 ClassicEval,
             ),
-            (false, Some(net)) => self.negamax_mode_simd512::<false, NODE_LIMITED, _>(
-                st,
-                depth,
-                ply,
-                alpha,
-                beta,
-                can_null,
-                start,
-                tl,
-                cnt,
-                NnueEval {
-                    net,
-                    _backend: Simd512NnueBackend,
-                },
-            ),
+            (false, Some(net)) => {
+                if net.has_threat_features() {
+                    self.negamax_mode_simd512::<false, NODE_LIMITED, _>(
+                        st,
+                        depth,
+                        ply,
+                        alpha,
+                        beta,
+                        can_null,
+                        start,
+                        tl,
+                        cnt,
+                        ThreatNnueEval {
+                            net,
+                            _backend: Simd512NnueBackend,
+                        },
+                    )
+                } else {
+                    self.negamax_mode_simd512::<false, NODE_LIMITED, _>(
+                        st,
+                        depth,
+                        ply,
+                        alpha,
+                        beta,
+                        can_null,
+                        start,
+                        tl,
+                        cnt,
+                        NnueEval {
+                            net,
+                            _backend: Simd512NnueBackend,
+                        },
+                    )
+                }
+            }
             (false, None) => self.negamax_mode_simd512::<false, NODE_LIMITED, _>(
                 st,
                 depth,
@@ -4100,21 +4427,41 @@ impl Searcher {
         let nnue_net = self.nnue_net.clone();
         unsafe {
             match (st.chess960, nnue_net.as_deref()) {
-                (true, Some(net)) => self.negamax_mode_x86_v3::<true, NODE_LIMITED, _>(
-                    st,
-                    depth,
-                    ply,
-                    alpha,
-                    beta,
-                    can_null,
-                    start,
-                    tl,
-                    cnt,
-                    NnueEval {
-                        net,
-                        _backend: SimdNnueBackend,
-                    },
-                ),
+                (true, Some(net)) => {
+                    if net.has_threat_features() {
+                        self.negamax_mode_x86_v3::<true, NODE_LIMITED, _>(
+                            st,
+                            depth,
+                            ply,
+                            alpha,
+                            beta,
+                            can_null,
+                            start,
+                            tl,
+                            cnt,
+                            ThreatNnueEval {
+                                net,
+                                _backend: SimdNnueBackend,
+                            },
+                        )
+                    } else {
+                        self.negamax_mode_x86_v3::<true, NODE_LIMITED, _>(
+                            st,
+                            depth,
+                            ply,
+                            alpha,
+                            beta,
+                            can_null,
+                            start,
+                            tl,
+                            cnt,
+                            NnueEval {
+                                net,
+                                _backend: SimdNnueBackend,
+                            },
+                        )
+                    }
+                }
                 (true, None) => self.negamax_mode_x86_v3::<true, NODE_LIMITED, _>(
                     st,
                     depth,
@@ -4127,21 +4474,41 @@ impl Searcher {
                     cnt,
                     ClassicEval,
                 ),
-                (false, Some(net)) => self.negamax_mode_x86_v3::<false, NODE_LIMITED, _>(
-                    st,
-                    depth,
-                    ply,
-                    alpha,
-                    beta,
-                    can_null,
-                    start,
-                    tl,
-                    cnt,
-                    NnueEval {
-                        net,
-                        _backend: SimdNnueBackend,
-                    },
-                ),
+                (false, Some(net)) => {
+                    if net.has_threat_features() {
+                        self.negamax_mode_x86_v3::<false, NODE_LIMITED, _>(
+                            st,
+                            depth,
+                            ply,
+                            alpha,
+                            beta,
+                            can_null,
+                            start,
+                            tl,
+                            cnt,
+                            ThreatNnueEval {
+                                net,
+                                _backend: SimdNnueBackend,
+                            },
+                        )
+                    } else {
+                        self.negamax_mode_x86_v3::<false, NODE_LIMITED, _>(
+                            st,
+                            depth,
+                            ply,
+                            alpha,
+                            beta,
+                            can_null,
+                            start,
+                            tl,
+                            cnt,
+                            NnueEval {
+                                net,
+                                _backend: SimdNnueBackend,
+                            },
+                        )
+                    }
+                }
                 (false, None) => self.negamax_mode_x86_v3::<false, NODE_LIMITED, _>(
                     st,
                     depth,
@@ -4178,21 +4545,41 @@ impl Searcher {
         let nnue_net = self.nnue_net.clone();
         unsafe {
             match (st.chess960, nnue_net.as_deref()) {
-                (true, Some(net)) => self.negamax_mode_x86_avx512::<true, NODE_LIMITED, _>(
-                    st,
-                    depth,
-                    ply,
-                    alpha,
-                    beta,
-                    can_null,
-                    start,
-                    tl,
-                    cnt,
-                    NnueEval {
-                        net,
-                        _backend: Avx512NnueBackend,
-                    },
-                ),
+                (true, Some(net)) => {
+                    if net.has_threat_features() {
+                        self.negamax_mode_x86_avx512::<true, NODE_LIMITED, _>(
+                            st,
+                            depth,
+                            ply,
+                            alpha,
+                            beta,
+                            can_null,
+                            start,
+                            tl,
+                            cnt,
+                            ThreatNnueEval {
+                                net,
+                                _backend: Avx512NnueBackend,
+                            },
+                        )
+                    } else {
+                        self.negamax_mode_x86_avx512::<true, NODE_LIMITED, _>(
+                            st,
+                            depth,
+                            ply,
+                            alpha,
+                            beta,
+                            can_null,
+                            start,
+                            tl,
+                            cnt,
+                            NnueEval {
+                                net,
+                                _backend: Avx512NnueBackend,
+                            },
+                        )
+                    }
+                }
                 (true, None) => self.negamax_mode_x86_avx512::<true, NODE_LIMITED, _>(
                     st,
                     depth,
@@ -4205,21 +4592,41 @@ impl Searcher {
                     cnt,
                     ClassicEval,
                 ),
-                (false, Some(net)) => self.negamax_mode_x86_avx512::<false, NODE_LIMITED, _>(
-                    st,
-                    depth,
-                    ply,
-                    alpha,
-                    beta,
-                    can_null,
-                    start,
-                    tl,
-                    cnt,
-                    NnueEval {
-                        net,
-                        _backend: Avx512NnueBackend,
-                    },
-                ),
+                (false, Some(net)) => {
+                    if net.has_threat_features() {
+                        self.negamax_mode_x86_avx512::<false, NODE_LIMITED, _>(
+                            st,
+                            depth,
+                            ply,
+                            alpha,
+                            beta,
+                            can_null,
+                            start,
+                            tl,
+                            cnt,
+                            ThreatNnueEval {
+                                net,
+                                _backend: Avx512NnueBackend,
+                            },
+                        )
+                    } else {
+                        self.negamax_mode_x86_avx512::<false, NODE_LIMITED, _>(
+                            st,
+                            depth,
+                            ply,
+                            alpha,
+                            beta,
+                            can_null,
+                            start,
+                            tl,
+                            cnt,
+                            NnueEval {
+                                net,
+                                _backend: Avx512NnueBackend,
+                            },
+                        )
+                    }
+                }
                 (false, None) => self.negamax_mode_x86_avx512::<false, NODE_LIMITED, _>(
                     st,
                     depth,
@@ -4524,6 +4931,68 @@ impl<'a, B: NnueBackend> SearchEval for NnueEval<'a, B> {
     fn copy_null_acc(self, searcher: &mut Searcher, ply: usize) {
         if ply + 1 < searcher.nnue_stack.len() {
             let (left, right) = searcher.nnue_stack.split_at_mut(ply + 1);
+            right[0].clone_from(&left[ply]);
+        }
+    }
+}
+
+impl<'a, B: NnueBackend> SearchEval for ThreatNnueEval<'a, B> {
+    #[inline(always)]
+    fn static_eval<const CHESS960: bool>(
+        self,
+        searcher: &Searcher,
+        st: &BoardState,
+        ply: usize,
+    ) -> i32 {
+        searcher.static_eval_threat_nnue::<CHESS960, B>(st, ply, self.net)
+    }
+
+    #[inline(always)]
+    fn corrected_eval<const CHESS960: bool>(self, searcher: &Searcher, st: &BoardState) -> i32 {
+        searcher.corrected_eval_threat_nnue::<CHESS960, B>(st, self.net)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn push_acc(
+        self,
+        searcher: &mut Searcher,
+        st_before: &BoardState,
+        st_after: &BoardState,
+        sr: usize,
+        sc: usize,
+        er: usize,
+        ec: usize,
+        promotion: u8,
+        ply: usize,
+    ) {
+        searcher.push_threat_nnue_acc::<B>(
+            self.net, st_before, st_after, sr, sc, er, ec, promotion, ply,
+        );
+    }
+
+    #[inline(always)]
+    fn ensure_child_stack(self, searcher: &mut Searcher, ply: usize) {
+        if ply + 1 >= searcher.nnue_stack.len() && ply + 1 < MAX_PLY + 1 {
+            searcher
+                .nnue_stack
+                .resize(ply + 2, NNUEAccumulator::new(self.net.hidden_size));
+        }
+        if ply + 1 >= searcher.threat_stack.len() && ply + 1 < MAX_PLY + 1 {
+            searcher
+                .threat_stack
+                .resize(ply + 2, NNUEThreatAccumulator::new(self.net.hidden_size));
+        }
+    }
+
+    #[inline(always)]
+    fn copy_null_acc(self, searcher: &mut Searcher, ply: usize) {
+        if ply + 1 < searcher.nnue_stack.len() {
+            let (left, right) = searcher.nnue_stack.split_at_mut(ply + 1);
+            right[0].clone_from(&left[ply]);
+        }
+        if ply + 1 < searcher.threat_stack.len() {
+            let (left, right) = searcher.threat_stack.split_at_mut(ply + 1);
             right[0].clone_from(&left[ply]);
         }
     }
