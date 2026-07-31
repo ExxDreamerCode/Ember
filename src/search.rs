@@ -54,6 +54,9 @@ const SINGULAR_TRIPLE_MARGIN_CP: i32 = 240;
 const PROBCUT_MIN_DEPTH: i32 = 8;
 const PROBCUT_REDUCTION: i32 = 2;
 const PROBCUT_MARGIN_CP: i32 = 350;
+const ROOT_REPETITION_TIE_MIN_SCORE: i32 = 300;
+const ROOT_REPETITION_TIE_MIN_HALFMOVE_CLOCK: u8 = 40;
+const ROOT_REPETITION_TIE_MAX_PIECES: u32 = 11;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DrawStatus {
@@ -61,6 +64,23 @@ enum DrawStatus {
     SearchCycle,
     Claimable,
     Automatic,
+}
+
+pub(crate) fn root_repetition_tie_scope(st: &BoardState) -> bool {
+    // A broad "avoid any root twofold" policy lost Elo. Keep this as a narrow
+    // high-halfmove conversion guard where another reversible shuffle has real
+    // fifty-move-rule cost and the normal search has no score preference.
+    st.halfmove_clock >= ROOT_REPETITION_TIE_MIN_HALFMOVE_CLOCK
+        && (0..12).map(|piece| st.bb[piece].count_ones()).sum::<u32>()
+            <= ROOT_REPETITION_TIE_MAX_PIECES
+}
+
+pub(crate) fn prefer_non_repeating_root_on_tie(
+    score: i32,
+    current_best_repeats: bool,
+    candidate_repeats: bool,
+) -> bool {
+    score >= ROOT_REPETITION_TIE_MIN_SCORE && current_best_repeats && !candidate_repeats
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3353,6 +3373,10 @@ impl Searcher {
         (occurrences, repeated_after_root)
     }
 
+    pub(crate) fn current_position_repeats(&self, reversible_plies: usize) -> bool {
+        self.repetition_info(reversible_plies).0 >= 2
+    }
+
     #[cfg(test)]
     fn is_repetition(&self) -> bool {
         self.repetition_info(usize::MAX).0 >= 3
@@ -5322,10 +5346,12 @@ fn run_lazy_smp_worker(
                     sorted.swap(0, pos);
                 }
             }
+            let repetition_tie_scope = root_repetition_tie_scope(&st);
 
             let mut cur_best = sorted[0];
             let mut cur_score = -INF;
             let mut cur_best_nodes = 0u64;
+            let mut cur_best_repeats = false;
             let mut loop_alpha = alpha;
 
             for &mv in &sorted {
@@ -5390,6 +5416,13 @@ fn run_lazy_smp_worker(
                     }
                 };
                 let move_nodes = nd.saturating_sub(move_nodes_before);
+                let root_repeats = if repetition_tie_scope
+                    && (score > cur_score || (score == cur_score && cur_best_repeats))
+                {
+                    searcher.current_position_repeats(usize::from(s.halfmove_clock))
+                } else {
+                    false
+                };
 
                 searcher.rep_stack.pop();
                 searcher.rep_stack_len -= 1;
@@ -5398,10 +5431,14 @@ fn run_lazy_smp_worker(
                 if stopped.load(Ordering::Relaxed) {
                     break;
                 }
-                if score > cur_score {
+                if score > cur_score
+                    || (score == cur_score
+                        && prefer_non_repeating_root_on_tie(score, cur_best_repeats, root_repeats))
+                {
                     cur_score = score;
                     cur_best = mv;
                     cur_best_nodes = move_nodes;
+                    cur_best_repeats = root_repeats;
                 }
                 if score > loop_alpha {
                     loop_alpha = score;
