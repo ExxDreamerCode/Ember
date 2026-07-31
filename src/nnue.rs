@@ -755,6 +755,9 @@ struct VersionFlags {
     nkb: usize,
     layout: KbLayout,
     ft: usize,
+    has_threats: bool,
+    num_threat_features: usize,
+    xray_threats: bool,
 }
 
 type FeatureWeights = (Vec<i16>, Vec<u16>, Vec<i16>);
@@ -1135,6 +1138,9 @@ impl NNUENet {
             nkb: 16,
             layout: KbLayout::Uniform,
             ft: 0,
+            has_threats: false,
+            num_threat_features: 0,
+            xray_threats: false,
         };
 
         match ver {
@@ -1159,10 +1165,15 @@ impl NNUENet {
                 flags.dual = f & 16 != 0;
                 let ext = f & 128 != 0;
                 let cons_inline = if !ext { f & 32 != 0 } else { false };
+                flags.has_threats = f & 64 != 0;
 
                 flags.ft = read_u16(r)? as usize;
                 flags.l1s = read_u16(r)? as usize;
                 flags.l2s = read_u16(r)? as usize;
+
+                if flags.has_threats {
+                    flags.num_threat_features = read_u32(r)? as usize;
+                }
 
                 if ext {
                     flags.nkb = read_u8(r)? as usize;
@@ -1172,7 +1183,19 @@ impl NNUENet {
                 }
 
                 if ver >= 10 {
-                    let _ = read_u8(r)?;
+                    let training_flags = read_u8(r)?;
+                    flags.xray_threats = flags.has_threats && training_flags & 1 != 0;
+                    if training_flags & 2 != 0 {
+                        return Err("unsupported NNUE output-bucket training layout".to_string());
+                    }
+                    if training_flags & !3 != 0 {
+                        return Err(format!(
+                            "unsupported NNUE v{} training flags 0x{:02x}",
+                            ver, training_flags
+                        ));
+                    }
+                } else if flags.has_threats {
+                    flags.xray_threats = true;
                 }
             }
             _ => return Err(format!("unsupported v{}", ver)),
@@ -1210,6 +1233,10 @@ impl NNUENet {
         hs: usize,
         flags: &VersionFlags,
     ) -> Result<FeatureWeights, String> {
+        if flags.has_threats {
+            return Err("unsupported NNUE threat features".into());
+        }
+
         let psq = flags.nkb * PSQ_INPUTS_PER_BUCKET;
         let mut dense_weights = vec![0i16; psq * hs];
         read_i16s(r, &mut dense_weights)?;

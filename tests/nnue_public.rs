@@ -83,6 +83,38 @@ fn nnue_score(net: &NNUENet, fen: &str) -> i32 {
     }
 }
 
+fn push_u16(bytes: &mut Vec<u8>, value: u16) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+#[test]
+fn dense_loader_parses_v10_threat_header_before_rejecting_it() {
+    let mut bytes = Vec::new();
+    push_u32(&mut bytes, 0x4e4e5545);
+    push_u32(&mut bytes, 10);
+    bytes.push(0xe7);
+    push_u16(&mut bytes, 1024);
+    push_u16(&mut bytes, 32);
+    push_u16(&mut bytes, 32);
+    push_u32(&mut bytes, 66_864);
+    bytes.push(48);
+    bytes.push(1);
+    bytes.push(1);
+
+    let error = match NNUENet::load_from_bytes(&bytes, "<v10 threat header>") {
+        Ok(_) => panic!("v10 threat net should be rejected"),
+        Err(error) => error,
+    };
+    assert!(
+        error.contains("unsupported NNUE threat features"),
+        "expected threat-feature rejection, got {error}"
+    );
+}
+
 #[test]
 fn compact_embedded_nnue_matches_dense_scores() {
     let dense =
