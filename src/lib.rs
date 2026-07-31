@@ -8,6 +8,8 @@ pub mod evaluate;
 pub mod magic;
 pub mod movegen;
 pub mod polyglot_randoms;
+#[cfg(feature = "gnn-root-policy")]
+pub mod root_policy;
 pub mod search;
 #[cfg(feature = "decision-trace")]
 pub mod trace;

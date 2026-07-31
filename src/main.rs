@@ -233,6 +233,8 @@ fn main() {
                 println!("option name Ponder type check default false");
                 println!("option name Book type string default <embedded>");
                 println!("option name RandomBookMove type check default false");
+                #[cfg(feature = "gnn-root-policy")]
+                println!("option name UseGNNRoot type check default false");
                 println!(
                     "option name BookMinMoveWeight type spin default {} min 1 max 65535",
                     DEFAULT_BOOK_MIN_MOVE_WEIGHT
@@ -414,7 +416,8 @@ fn main() {
                     engine.book_min_move_weight,
                     engine.book_min_move_weight_permille,
                 )
-                .with_random_book_move(engine.random_book_move);
+                .with_random_book_move(engine.random_book_move)
+                .with_gnn_root(engine.use_gnn_root);
 
                 let mut search_searcher = chess_rs_lib::search::Searcher::new(
                     Arc::clone(&shared_tt),
@@ -625,6 +628,10 @@ fn parse_setoption(engine: &mut Engine, name: &str, val: &str) {
             }
             None => eprintln!("info string Ignoring invalid RandomBookMove value: {}", val),
         },
+        "usegnnroot" | "use gnn root" => match parse_check_value(val) {
+            Some(enabled) => set_gnn_root_policy(engine, enabled),
+            None => eprintln!("info string Ignoring invalid UseGNNRoot value: {}", val),
+        },
         "bookminmoveweight" | "book min move weight" => {
             if let Ok(weight) = val.parse::<u16>() {
                 if weight >= 1 {
@@ -685,6 +692,7 @@ fn reset_engine(engine: &mut Engine) {
     let chess960 = engine.st.chess960;
     let syzygy = engine.searcher.syzygy.clone();
     let random_book_move = engine.random_book_move;
+    let use_gnn_root = engine.use_gnn_root;
     let book_min_move_weight = engine.book_min_move_weight;
     let book_min_move_weight_permille = engine.book_min_move_weight_permille;
     #[cfg(feature = "decision-trace")]
@@ -694,6 +702,7 @@ fn reset_engine(engine: &mut Engine) {
     *engine = Engine::new();
     engine.book = book;
     engine.random_book_move = random_book_move;
+    engine.use_gnn_root = use_gnn_root;
     engine.book_min_move_weight = book_min_move_weight;
     engine.book_min_move_weight_permille = book_min_move_weight_permille;
     engine.search_pool = search_pool;
@@ -706,6 +715,36 @@ fn reset_engine(engine: &mut Engine) {
     }
     engine.searcher.tt_mb = tt_mb;
     engine.ensure_hash_ready();
+}
+
+#[cfg(feature = "gnn-root-policy")]
+fn set_gnn_root_policy(engine: &mut Engine, enabled: bool) {
+    if !enabled {
+        engine.use_gnn_root = false;
+        eprintln!("info string Set UseGNNRoot to false");
+        return;
+    }
+
+    match chess_rs_lib::root_policy::warm_up() {
+        Ok(()) => {
+            engine.use_gnn_root = true;
+            eprintln!("info string Set UseGNNRoot to true");
+        }
+        Err(error) => {
+            engine.use_gnn_root = false;
+            eprintln!("info string Failed to enable GNN root policy: {error}");
+        }
+    }
+}
+
+#[cfg(not(feature = "gnn-root-policy"))]
+fn set_gnn_root_policy(engine: &mut Engine, enabled: bool) {
+    engine.use_gnn_root = false;
+    if enabled {
+        eprintln!("info string GNN root policy was not compiled into this binary");
+    } else {
+        eprintln!("info string Set UseGNNRoot to false");
+    }
 }
 
 fn parse_position(engine: &mut Engine, parts: &[&str]) {
@@ -1000,6 +1039,22 @@ mod tests {
 
         parse_setoption(&mut engine, "randombookmove", "false");
         assert!(!engine.random_book_move);
+    }
+
+    #[test]
+    fn disabled_gnn_root_option_is_parsed_and_preserved_on_reset() {
+        let mut engine = Engine::new();
+        engine.use_gnn_root = true;
+
+        parse_setoption(&mut engine, "usegnnroot", "false");
+        assert!(!engine.use_gnn_root);
+
+        engine.use_gnn_root = true;
+        reset_engine(&mut engine);
+        assert!(
+            engine.use_gnn_root,
+            "ucinewgame must preserve the configured UseGNNRoot value"
+        );
     }
 
     #[test]

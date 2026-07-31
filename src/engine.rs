@@ -9,6 +9,8 @@ use crate::book::{
     OpeningBook, DEFAULT_BOOK_MIN_MOVE_WEIGHT, DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE,
 };
 use crate::movegen::{apply_move, generate_moves};
+#[cfg(feature = "gnn-root-policy")]
+use crate::root_policy;
 use crate::search::{
     format_pv_line_uci, lazy_smp_search, prefer_non_repeating_root_on_tie,
     root_repetition_tie_scope, LazySmpPool, LazySmpSearchLimits, Searcher,
@@ -46,6 +48,7 @@ pub struct Engine {
     pub stopped: Arc<AtomicBool>,
     pub book: Option<OpeningBook>,
     pub random_book_move: bool,
+    pub use_gnn_root: bool,
     pub book_min_move_weight: u16,
     pub book_min_move_weight_permille: u16,
     #[cfg(feature = "decision-trace")]
@@ -55,6 +58,7 @@ pub struct Engine {
 pub struct EngineBookConfig {
     pub book: Option<OpeningBook>,
     pub random_book_move: bool,
+    pub use_gnn_root: bool,
     pub min_move_weight: u16,
     pub min_move_weight_permille: u16,
 }
@@ -68,6 +72,7 @@ impl EngineBookConfig {
         Self {
             book,
             random_book_move: false,
+            use_gnn_root: false,
             min_move_weight,
             min_move_weight_permille,
         }
@@ -75,6 +80,11 @@ impl EngineBookConfig {
 
     pub fn with_random_book_move(mut self, random_book_move: bool) -> Self {
         self.random_book_move = random_book_move;
+        self
+    }
+
+    pub fn with_gnn_root(mut self, use_gnn_root: bool) -> Self {
+        self.use_gnn_root = use_gnn_root;
         self
     }
 }
@@ -792,6 +802,38 @@ fn root_queen_pawn_check_capture_order_score(st: &BoardState, mv: Move) -> Optio
 }
 
 fn sort_root_moves(st: &BoardState, moves: &[Move], preferred: Move) -> Vec<Move> {
+    sort_root_moves_with_policy(st, moves, preferred, None)
+}
+
+fn root_policy_order_bonuses(moves: &[Move], policy_scores: Option<&[f32]>) -> Vec<i32> {
+    let Some(policy_scores) = policy_scores.filter(|scores| scores.len() == moves.len()) else {
+        return vec![0; moves.len()];
+    };
+
+    let mut ranked: Vec<(usize, f32)> = policy_scores
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(_, score)| score.is_finite())
+        .collect();
+    ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+    let mut bonuses = vec![0; moves.len()];
+    let ranked_len = ranked.len();
+    for (rank, (idx, _score)) in ranked.into_iter().enumerate() {
+        bonuses[idx] = (ranked_len - rank) as i32 * 1_000;
+    }
+    bonuses
+}
+
+fn sort_root_moves_with_policy(
+    st: &BoardState,
+    moves: &[Move],
+    preferred: Move,
+    policy_scores: Option<&[f32]>,
+) -> Vec<Move> {
+    let policy_bonuses = root_policy_order_bonuses(moves, policy_scores);
+    let use_policy_order = policy_bonuses.iter().any(|&score| score != 0);
     let sparse_endgame = root_non_king_piece_count(st) <= 8
         && (root_side_has_major(st, st.w) || root_promotion_race(st));
     let has_rook_invasion = moves
@@ -950,6 +992,7 @@ fn sort_root_moves(st: &BoardState, moves: &[Move], preferred: Move) -> Vec<Move
         && !use_checking_pawn_capture_order
         && !use_queen_pawn_check_capture_order
         && !use_quiet_queen_check_order
+        && !use_policy_order
     {
         let mut ordered = moves.to_vec();
         if let Some(position) = ordered.iter().position(|&mv| mv == preferred) {
@@ -979,7 +1022,7 @@ fn sort_root_moves(st: &BoardState, moves: &[Move], preferred: Move) -> Vec<Move
                     quiet_queen_check_scores[idx]
                 };
                 fallback_score + i32::from(mv == preferred) * 500_000
-            };
+            } + policy_bonuses[idx];
             (score, idx, mv)
         })
         .collect();
@@ -1095,6 +1138,7 @@ impl Engine {
             stopped,
             book: None,
             random_book_move: false,
+            use_gnn_root: false,
             book_min_move_weight: DEFAULT_BOOK_MIN_MOVE_WEIGHT,
             book_min_move_weight_permille: DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE,
             #[cfg(feature = "decision-trace")]
@@ -1112,6 +1156,33 @@ impl Engine {
     fn root_static_score_after(&self, mv: Move) -> i32 {
         let child = root_child_after(&self.st, mv);
         -self.searcher.corrected_eval(&child)
+    }
+
+    #[cfg(feature = "gnn-root-policy")]
+    fn root_policy_scores(&mut self, moves: &[Move]) -> Option<Vec<f32>> {
+        if !self.use_gnn_root {
+            return None;
+        }
+        if self.st.chess960 {
+            return None;
+        }
+        match root_policy::score_moves(&self.st, moves) {
+            Ok(scores) => Some(scores),
+            Err(error) => {
+                eprintln!("info string Disabling GNN root policy: {error}");
+                self.use_gnn_root = false;
+                None
+            }
+        }
+    }
+
+    #[cfg(not(feature = "gnn-root-policy"))]
+    fn root_policy_scores(&mut self, _moves: &[Move]) -> Option<Vec<f32>> {
+        if self.use_gnn_root {
+            eprintln!("info string GNN root policy was not compiled into this binary");
+            self.use_gnn_root = false;
+        }
+        None
     }
 
     fn root_fifty_move_conversion_choice(
@@ -1184,6 +1255,7 @@ impl Engine {
             stopped,
             book: book_config.book,
             random_book_move: book_config.random_book_move,
+            use_gnn_root: book_config.use_gnn_root,
             book_min_move_weight: book_config.min_move_weight,
             book_min_move_weight_permille: book_config.min_move_weight_permille,
             #[cfg(feature = "decision-trace")]
@@ -1691,7 +1763,9 @@ impl Engine {
         self.ensure_hash_ready();
         self.shared_tt.advance_generation();
         let preferred = tt_root_move(&self.searcher, &self.st, &moves);
-        let ordered_moves = sort_root_moves(&self.st, &moves, preferred);
+        let root_policy_scores = self.root_policy_scores(&moves);
+        let ordered_moves =
+            sort_root_moves_with_policy(&self.st, &moves, preferred, root_policy_scores.as_deref());
         if search_threads > 1 {
             let start = match timer_start {
                 SearchTimerStart::BeforeSetup(start) => start,
@@ -2105,6 +2179,32 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_with_preserves_gnn_root_configuration() {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let shared_tt = Arc::new(SharedTT::placeholder());
+        let searcher = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
+        let engine = Engine::new_with(
+            BoardState::empty(),
+            searcher,
+            shared_tt,
+            Arc::new(LazySmpPool::new()),
+            1,
+            stopped,
+            EngineBookConfig::new(
+                None,
+                DEFAULT_BOOK_MIN_MOVE_WEIGHT,
+                DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE,
+            )
+            .with_gnn_root(true),
+        );
+
+        assert!(
+            engine.use_gnn_root,
+            "UCI worker engines must preserve the configured root policy"
+        );
+    }
 
     fn engine_from_fen(fen: &str) -> Engine {
         let mut engine = Engine::new();
