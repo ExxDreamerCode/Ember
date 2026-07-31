@@ -148,3 +148,43 @@ source PGNs, replay PGNs, raw UCI logs, per-move JSON, the generated fixture row
 engine paths, thread counts, hash, movetimes, and thresholds. Keep those artifacts available
 when making a search change from the corpus, because many collected positions are broad
 finite-depth conversion weaknesses rather than isolated code defects.
+
+## Comparative witness tracing
+
+Use comparative witness tracing after a corpus or game analysis identifies a concrete Ember
+mistake and a strong reference engine has a plausible better move. The goal is not to trace
+Stockfish's full tree. First extract one high-quality Stockfish witness line, then ask a
+smaller question: did Ember's own fixed-depth search visit the same line, and if it did,
+where did Ember evaluate or prune it differently?
+
+`tools/compare_mistake_trace.py` automates this first pass for TSV-backed positions. It
+parses active or disabled fixture rows, reconstructs the full move history, labels the root
+with Stockfish, runs Ember with `EMBER_TRACE_SEARCH_DAG` restricted to the suspicious root
+move and the witness root move, and writes both JSON and Markdown summaries. For repetition
+conversion triage, combine:
+
+```bash
+python3 tools/compare_mistake_trace.py \
+  --ember ./target/release/ember \
+  --stockfish stockfish \
+  --out-dir results/comparative-traces/repetition \
+  --fixture tests/fixtures/advantage_preservation.tsv \
+  --bucket repetition-conversion \
+  --direct-repetition-only \
+  --stockfish-nonrepeat-only
+```
+
+Read the report by classifying the first missing witness position, not just the root move.
+If the witness root itself is missing, the issue is root move generation, legality, or root
+filtering. If only the first reply is missing, the likely cause is ordering, null-window
+search, pruning, or a cutoff before the witness line becomes visible. If the witness line
+is visited but evaluated differently, inspect the recorded node summaries: static eval
+visits, TT flags, qsearch visits, search-cycle returns, claimable draw returns, and automatic
+draw returns. If Ember and the reference move have equal root scores, treat that as a
+tie-breaking/order hypothesis, not as proof that any non-repeating move is safe.
+
+Use the trace result to propose the narrowest policy, then run the normal quality gates. A
+policy that fixes disabled fixture rows but loses a paired head-to-head gate is rejected;
+keep the trace artifact and leave the rows disabled until a narrower cause is found. The
+technique is evidence for where to look next, not a substitute for Elo, NPS, active fixture,
+and clock-safety checks.
