@@ -10,6 +10,7 @@ sys.path.insert(0, str(TOOLS_DIR))
 from compare_fixture_corpus import (  # noqa: E402
     DEFAULT_HASH_MB,
     direction,
+    disabled_status,
     move_matches,
     parse_fixture,
     summarize,
@@ -59,6 +60,32 @@ book\t0\tbook fen\t-\ta2a3\tbook\t0\t0\t0
         self.assertEqual(direction(False, True), "candidate-only")
         self.assertEqual(direction(False, False), "neither-pass")
 
+    def test_disabled_status_marks_stale_and_newly_fixed_rows(self):
+        def row(activation, baseline, candidate):
+            return {
+                "check": {"activation": activation},
+                "baseline": {"passed": baseline},
+                "candidate": {"passed": candidate},
+            }
+
+        self.assertEqual(disabled_status(row("active", True, True)), "-")
+        self.assertEqual(
+            disabled_status(row("disabled", False, False)),
+            "still-red",
+        )
+        self.assertEqual(
+            disabled_status(row("disabled", False, True)),
+            "fixed-by-candidate",
+        )
+        self.assertEqual(
+            disabled_status(row("disabled", True, True)),
+            "stale-passes-in-both",
+        )
+        self.assertEqual(
+            disabled_status(row("disabled", True, False)),
+            "lost-while-disabled",
+        )
+
     def test_uci_setup_matches_the_engine_fixture_defaults(self):
         self.assertEqual(DEFAULT_HASH_MB, 256)
         self.assertIn(
@@ -99,6 +126,10 @@ book\t0\tbook fen\t-\ta2a3\tbook\t0\t0\t0
         self.assertEqual(summary["baseline-better-positions"], 0)
         self.assertEqual(summary["candidate-better-positions"], 1)
         self.assertEqual(summary["equal-positions"], 1)
+        self.assertEqual(
+            summary["disabled-status"],
+            {"lost-while-disabled": 1, "fixed-by-candidate": 2},
+        )
 
 
 if __name__ == "__main__":
