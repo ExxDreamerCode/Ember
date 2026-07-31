@@ -46,4 +46,5 @@ results/
 ratings/ccrl/
 __pycache__/
 *.py[cod]
+training/gnn_root_policy/artifacts/
 1.sh
