@@ -290,6 +290,20 @@ def direction(baseline_passed, candidate_passed):
     return "neither-pass"
 
 
+def disabled_status(row):
+    if row["check"]["activation"] != "disabled":
+        return "-"
+    baseline_passed = row["baseline"]["passed"]
+    candidate_passed = row["candidate"]["passed"]
+    if baseline_passed and candidate_passed:
+        return "stale-passes-in-both"
+    if candidate_passed:
+        return "fixed-by-candidate"
+    if baseline_passed:
+        return "lost-while-disabled"
+    return "still-red"
+
+
 def summarize(rows):
     groups = {}
     for row in rows:
@@ -308,6 +322,7 @@ def summarize(rows):
                     "baseline-only": 0,
                     "candidate-only": 0,
                     "neither-pass": 0,
+                    "disabled-status": {},
                     "baseline-errors": 0,
                     "candidate-errors": 0,
                 },
@@ -321,6 +336,11 @@ def summarize(rows):
             scores[0] += row["baseline"]["passed"]
             scores[1] += row["candidate"]["passed"]
             summary[row["direction"]] += 1
+            status = disabled_status(row)
+            if status != "-":
+                summary["disabled-status"][status] = (
+                    summary["disabled-status"].get(status, 0) + 1
+                )
             summary["baseline-errors"] += row["baseline"]["error"] is not None
             summary["candidate-errors"] += row["candidate"]["error"] is not None
 
@@ -364,6 +384,7 @@ def write_tsv(path, rows):
         "candidate_move",
         "candidate_passed",
         "direction",
+        "disabled_status",
         "baseline_error",
         "candidate_error",
     ]
@@ -384,6 +405,7 @@ def write_tsv(path, rows):
             row["candidate"]["bestmove"] or "-",
             str(row["candidate"]["passed"]).lower(),
             row["direction"],
+            disabled_status(row),
             row["baseline"]["error"] or "-",
             row["candidate"]["error"] or "-",
         ]

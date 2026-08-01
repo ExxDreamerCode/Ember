@@ -10,7 +10,8 @@ use crate::book::{
 };
 use crate::movegen::{apply_move, generate_moves};
 use crate::search::{
-    format_pv_line_uci, lazy_smp_search, LazySmpPool, LazySmpSearchLimits, Searcher,
+    format_pv_line_uci, lazy_smp_search, prefer_non_repeating_root_on_tie,
+    root_repetition_tie_scope, LazySmpPool, LazySmpSearchLimits, Searcher,
 };
 use crate::time_management::{iteration_time_decision, threads_for_time_budget, IterationTiming};
 #[cfg(feature = "decision-trace")]
@@ -1765,10 +1766,12 @@ impl Engine {
 
             'asp: loop {
                 let sorted = sort_root_moves(&self.st, &ordered_moves, asp_best);
+                let repetition_tie_scope = root_repetition_tie_scope(&self.st);
 
                 let mut cur_best = sorted[0];
                 let mut cur_score = -INF;
                 let mut cur_best_nodes = 0u64;
+                let mut cur_best_repeats = false;
                 let mut loop_alpha = alpha;
 
                 for (_root_index, &mv) in sorted.iter().enumerate() {
@@ -1841,6 +1844,14 @@ impl Engine {
                         }
                     };
                     let move_nodes = nd.saturating_sub(move_nodes_before);
+                    let root_repeats = if repetition_tie_scope
+                        && (score > cur_score || (score == cur_score && cur_best_repeats))
+                    {
+                        self.searcher
+                            .current_position_repeats(usize::from(self.st.halfmove_clock))
+                    } else {
+                        false
+                    };
 
                     #[cfg(feature = "search-debug")]
                     self.searcher.emit_debug_root_trace(
@@ -1863,10 +1874,18 @@ impl Engine {
                     if self.searcher.stopped.load(Ordering::Relaxed) {
                         break;
                     }
-                    if score > cur_score {
+                    if score > cur_score
+                        || (score == cur_score
+                            && prefer_non_repeating_root_on_tie(
+                                score,
+                                cur_best_repeats,
+                                root_repeats,
+                            ))
+                    {
                         cur_score = score;
                         cur_best = mv;
                         cur_best_nodes = move_nodes;
+                        cur_best_repeats = root_repeats;
                     }
                     if score > loop_alpha {
                         loop_alpha = score;

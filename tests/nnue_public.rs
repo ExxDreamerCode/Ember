@@ -1,5 +1,5 @@
 use chess_rs_lib::backend::available_nnue_backends;
-use chess_rs_lib::nnue::{NNUEAccumulator, NNUENet};
+use chess_rs_lib::nnue::{threat_feature_count, NNUEAccumulator, NNUENet, NNUEThreatAccumulator};
 use chess_rs_lib::types::{BLACK, WHITE};
 use chess_rs_lib::Engine;
 
@@ -80,6 +80,148 @@ fn nnue_score(net: &NNUENet, fen: &str) -> i32 {
         score
     } else {
         -score
+    }
+}
+
+fn push_u16(bytes: &mut Vec<u8>, value: u16) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_i16(bytes: &mut Vec<u8>, value: i16) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_i32(bytes: &mut Vec<u8>, value: i32) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn synthetic_threat_net(threat_weight: impl Fn(usize) -> i8) -> NNUENet {
+    let hidden = 16usize;
+    let threat_features = threat_feature_count();
+    let mut bytes = Vec::new();
+    push_u32(&mut bytes, 0x4e4e5545);
+    push_u32(&mut bytes, 10);
+    bytes.push(0xc6);
+    push_u16(&mut bytes, hidden as u16);
+    push_u16(&mut bytes, 1);
+    push_u16(&mut bytes, 0);
+    push_u32(&mut bytes, threat_features as u32);
+    bytes.push(16);
+    bytes.push(0);
+    bytes.push(0);
+
+    for _ in 0..16 * 768 * hidden {
+        push_i16(&mut bytes, 0);
+    }
+    for _ in 0..hidden {
+        push_i16(&mut bytes, 0);
+    }
+    for index in 0..threat_features * hidden {
+        bytes.push(threat_weight(index) as u8);
+    }
+    for _ in 0..hidden {
+        push_i16(&mut bytes, 1);
+    }
+    push_i16(&mut bytes, 0);
+    for _ in 0..8 {
+        push_i16(&mut bytes, 1);
+    }
+    for _ in 0..8 {
+        push_i32(&mut bytes, 0);
+    }
+
+    NNUENet::load_from_bytes(&bytes, "<synthetic threat net>")
+        .expect("synthetic threat net should load")
+}
+
+#[test]
+fn dense_loader_parses_v10_threat_header_before_rejecting_it() {
+    let mut bytes = Vec::new();
+    push_u32(&mut bytes, 0x4e4e5545);
+    push_u32(&mut bytes, 10);
+    bytes.push(0xe7);
+    push_u16(&mut bytes, 1024);
+    push_u16(&mut bytes, 32);
+    push_u16(&mut bytes, 32);
+    push_u32(&mut bytes, 66_864);
+    bytes.push(48);
+    bytes.push(1);
+    bytes.push(1);
+
+    let error = match NNUENet::load_from_bytes(&bytes, "<v10 threat header>") {
+        Ok(_) => panic!("v10 threat net should be rejected"),
+        Err(error) => error,
+    };
+    assert!(
+        error.contains("unsupported NNUE threat features"),
+        "expected threat-feature rejection, got {error}"
+    );
+}
+
+#[test]
+fn threat_accumulator_incremental_updates_match_refresh() {
+    let net = synthetic_threat_net(|index| (index % 5) as i8 - 2);
+    let mut engine = Engine::new();
+
+    let mut incremental = NNUEThreatAccumulator::new(net.hidden_size);
+    incremental.refresh(&net, &engine.st);
+
+    for uci in [
+        "e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6", "b5c6", "d7c6", "d2d4", "e5d4",
+    ] {
+        let (sr, sc, er, ec, promotion) = parse_uci_move(uci);
+        let before = engine.st;
+        assert!(
+            engine.make_move_uci(sr, sc, er, ec, promotion),
+            "{uci} should be legal"
+        );
+        let parent = incremental.clone();
+        if !incremental.update_from_parent(&parent, &net, &before, &engine.st) {
+            incremental.refresh(&net, &engine.st);
+        }
+
+        let mut refreshed = NNUEThreatAccumulator::new(net.hidden_size);
+        refreshed.refresh(&net, &engine.st);
+        assert_eq!(
+            incremental.white(),
+            refreshed.white(),
+            "white threat accumulator drift after {uci}"
+        );
+        assert_eq!(
+            incremental.black(),
+            refreshed.black(),
+            "black threat accumulator drift after {uci}"
+        );
+    }
+}
+
+#[test]
+fn threat_accumulator_uses_board_pawn_attack_direction() {
+    let net = synthetic_threat_net(|_| 1);
+
+    for fen in [
+        "4k3/8/8/3n4/4P3/8/8/4K3 w - - 0 1",
+        "4k3/8/8/4p3/3N4/8/8/4K3 b - - 0 1",
+    ] {
+        let mut engine = Engine::new();
+        engine
+            .try_set_fen(fen)
+            .expect("pawn-threat FEN should parse");
+
+        let mut threats = NNUEThreatAccumulator::new(net.hidden_size);
+        threats.refresh(&net, &engine.st);
+        assert!(
+            threats.white().iter().any(|&value| value != 0),
+            "white-perspective threats should include pawn attack in {fen}"
+        );
+        assert!(
+            threats.black().iter().any(|&value| value != 0),
+            "black-perspective threats should include pawn attack in {fen}"
+        );
     }
 }
 

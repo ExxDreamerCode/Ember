@@ -165,6 +165,9 @@ dedicated CI job.
    the suspicious position and from nearby earlier positions against a stronger Stockfish
    with a larger clock. Use this to check whether the advantage is practically convertible
    or whether the opponent can expose a hidden search, tablebase, or fifty-move weakness.
+   For corpus mining, use `tools/hunt_lost_advantage.py` and keep generated cases in
+   `tests/fixtures/advantage_preservation.tsv` as disabled rows until a bucket is understood
+   and fixed. Classify the failures before tuning search around individual positions.
 6. Reproduce Ember's choice with the original move history and deployment settings. Then
    vary one dimension at a time: book on/off, one thread versus deployment threads, fixed
    depth versus clocked search, clean versus reused process, and tablebases on/off.
