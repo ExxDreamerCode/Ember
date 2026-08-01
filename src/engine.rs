@@ -32,6 +32,13 @@ const FIFTY_MOVE_ROOT_MIN_SCORE: i32 = 500;
 const FIFTY_MOVE_ROOT_STATIC_MARGIN_CP: i32 = 350;
 const FIFTY_MOVE_ROOT_MATERIAL_MARGIN_CP: i32 = 150;
 const FIFTY_MOVE_ROOT_VERIFY_NODE_LIMIT: u32 = 1_000;
+#[cfg(feature = "gnn-root-policy")]
+const GNN_LMR_EXEMPTION_MIN_PROBABILITY: f32 = 0.15;
+#[cfg(feature = "gnn-root-policy")]
+const GNN_LMR_EXEMPTION_MAX_MOVES: usize = 3;
+#[cfg(feature = "gnn-root-policy")]
+const GNN_LMR_EXEMPTION_MIN_CLASSIC_RANK: usize = 9;
+const GNN_LMR_EXEMPTION_ROOT_DEPTH_BONUS: i32 = 1;
 
 #[derive(Clone, Copy)]
 enum SearchTimerStart {
@@ -49,6 +56,7 @@ pub struct Engine {
     pub book: Option<OpeningBook>,
     pub random_book_move: bool,
     pub use_gnn_root: bool,
+    pub use_gnn_lmr_exemption: bool,
     pub book_min_move_weight: u16,
     pub book_min_move_weight_permille: u16,
     #[cfg(feature = "decision-trace")]
@@ -59,6 +67,7 @@ pub struct EngineBookConfig {
     pub book: Option<OpeningBook>,
     pub random_book_move: bool,
     pub use_gnn_root: bool,
+    pub use_gnn_lmr_exemption: bool,
     pub min_move_weight: u16,
     pub min_move_weight_permille: u16,
 }
@@ -73,6 +82,7 @@ impl EngineBookConfig {
             book,
             random_book_move: false,
             use_gnn_root: false,
+            use_gnn_lmr_exemption: false,
             min_move_weight,
             min_move_weight_permille,
         }
@@ -87,6 +97,17 @@ impl EngineBookConfig {
         self.use_gnn_root = use_gnn_root;
         self
     }
+
+    pub fn with_gnn_lmr_exemption(mut self, use_gnn_lmr_exemption: bool) -> Self {
+        self.use_gnn_lmr_exemption = use_gnn_lmr_exemption;
+        self
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct RootPolicyContext {
+    logits: Vec<f32>,
+    lmr_exemptions: Vec<Move>,
 }
 
 fn set_castling_rook_by_side(st: &mut BoardState, white: bool, kingside: bool) {
@@ -1139,6 +1160,7 @@ impl Engine {
             book: None,
             random_book_move: false,
             use_gnn_root: false,
+            use_gnn_lmr_exemption: false,
             book_min_move_weight: DEFAULT_BOOK_MIN_MOVE_WEIGHT,
             book_min_move_weight_permille: DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE,
             #[cfg(feature = "decision-trace")]
@@ -1159,28 +1181,101 @@ impl Engine {
     }
 
     #[cfg(feature = "gnn-root-policy")]
-    fn root_policy_scores(&mut self, moves: &[Move]) -> Option<Vec<f32>> {
-        if !self.use_gnn_root {
+    fn root_move_is_quiet_lmr_candidate(&self, mv: Move) -> bool {
+        let in_check = is_attacked(&self.st.bb, self.st.king_sq(self.st.w), !self.st.w);
+        !in_check
+            && !root_move_is_capture(&self.st, mv)
+            && !root_move_is_promotion(&self.st, mv)
+            && !root_move_gives_check(&self.st, mv)
+    }
+
+    #[cfg(feature = "gnn-root-policy")]
+    fn select_gnn_lmr_exemptions(
+        &self,
+        moves: &[Move],
+        classic_ordered_moves: &[Move],
+        policy_scores: &[root_policy::RootPolicyMoveScore],
+    ) -> Vec<Move> {
+        if !self.use_gnn_lmr_exemption || policy_scores.len() != moves.len() {
+            return Vec::new();
+        }
+
+        let mut candidates: Vec<(usize, f32, Move)> = policy_scores
+            .iter()
+            .filter_map(|score| {
+                let classic_rank = classic_ordered_moves
+                    .iter()
+                    .position(|&candidate| candidate == score.mv)?;
+                (classic_rank >= GNN_LMR_EXEMPTION_MIN_CLASSIC_RANK
+                    && score.probability >= GNN_LMR_EXEMPTION_MIN_PROBABILITY
+                    && self.root_move_is_quiet_lmr_candidate(score.mv))
+                .then_some((classic_rank, score.probability, score.mv))
+            })
+            .collect();
+        candidates.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        candidates
+            .into_iter()
+            .take(GNN_LMR_EXEMPTION_MAX_MOVES)
+            .map(|(_, _, mv)| mv)
+            .collect()
+    }
+
+    fn root_gnn_lmr_extension(&self, policy_context: Option<&RootPolicyContext>, mv: Move) -> i32 {
+        i32::from(policy_context.is_some_and(|context| context.lmr_exemptions.contains(&mv)))
+            * GNN_LMR_EXEMPTION_ROOT_DEPTH_BONUS
+    }
+
+    #[cfg(feature = "gnn-root-policy")]
+    fn root_policy_context(
+        &mut self,
+        moves: &[Move],
+        classic_ordered_moves: &[Move],
+    ) -> Option<RootPolicyContext> {
+        if !self.use_gnn_root && !self.use_gnn_lmr_exemption {
             return None;
         }
         if self.st.chess960 {
             return None;
         }
-        match root_policy::score_moves(&self.st, moves) {
-            Ok(scores) => Some(scores),
+        match root_policy::score_legal_moves(&self.st, moves) {
+            Ok(scores) => {
+                let logits = scores.iter().map(|score| score.logit).collect();
+                let lmr_exemptions =
+                    self.select_gnn_lmr_exemptions(moves, classic_ordered_moves, &scores);
+                if std::env::var_os("EMBER_TRACE_GNN_LMR_EXEMPTIONS").is_some()
+                    && !lmr_exemptions.is_empty()
+                {
+                    let moves = lmr_exemptions
+                        .iter()
+                        .map(|&mv| move_to_uci(&self.st, mv))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    eprintln!("info string GNN LMR exemptions: {moves}");
+                }
+                Some(RootPolicyContext {
+                    logits,
+                    lmr_exemptions,
+                })
+            }
             Err(error) => {
                 eprintln!("info string Disabling GNN root policy: {error}");
                 self.use_gnn_root = false;
+                self.use_gnn_lmr_exemption = false;
                 None
             }
         }
     }
 
     #[cfg(not(feature = "gnn-root-policy"))]
-    fn root_policy_scores(&mut self, _moves: &[Move]) -> Option<Vec<f32>> {
-        if self.use_gnn_root {
+    fn root_policy_context(
+        &mut self,
+        _moves: &[Move],
+        _classic_ordered_moves: &[Move],
+    ) -> Option<RootPolicyContext> {
+        if self.use_gnn_root || self.use_gnn_lmr_exemption {
             eprintln!("info string GNN root policy was not compiled into this binary");
             self.use_gnn_root = false;
+            self.use_gnn_lmr_exemption = false;
         }
         None
     }
@@ -1256,6 +1351,7 @@ impl Engine {
             book: book_config.book,
             random_book_move: book_config.random_book_move,
             use_gnn_root: book_config.use_gnn_root,
+            use_gnn_lmr_exemption: book_config.use_gnn_lmr_exemption,
             book_min_move_weight: book_config.min_move_weight,
             book_min_move_weight_permille: book_config.min_move_weight_permille,
             #[cfg(feature = "decision-trace")]
@@ -1763,9 +1859,17 @@ impl Engine {
         self.ensure_hash_ready();
         self.shared_tt.advance_generation();
         let preferred = tt_root_move(&self.searcher, &self.st, &moves);
-        let root_policy_scores = self.root_policy_scores(&moves);
-        let ordered_moves =
-            sort_root_moves_with_policy(&self.st, &moves, preferred, root_policy_scores.as_deref());
+        let classic_ordered_moves = sort_root_moves(&self.st, &moves, preferred);
+        let root_policy_context = self.root_policy_context(&moves, &classic_ordered_moves);
+        let ordered_moves = sort_root_moves_with_policy(
+            &self.st,
+            &moves,
+            preferred,
+            root_policy_context
+                .as_ref()
+                .filter(|_| self.use_gnn_root)
+                .map(|context| context.logits.as_slice()),
+        );
         if search_threads > 1 {
             let start = match timer_start {
                 SearchTimerStart::BeforeSetup(start) => start,
@@ -1777,6 +1881,10 @@ impl Engine {
                 &self.st,
                 &ordered_moves,
                 root_depth_extension,
+                root_policy_context
+                    .as_ref()
+                    .map(|context| context.lmr_exemptions.as_slice())
+                    .unwrap_or(&[]),
                 LazySmpSearchLimits {
                     soft_time: soft_time_limit,
                     hard_time: time_limit,
@@ -1868,7 +1976,8 @@ impl Engine {
                     let h = self.st.hash;
                     self.searcher.rep_stack.push(h);
                     self.searcher.rep_stack_len += 1;
-                    let root_ext = root_depth_extension(&old, mv);
+                    let root_ext = root_depth_extension(&old, mv)
+                        + self.root_gnn_lmr_extension(root_policy_context.as_ref(), mv);
                     let move_nodes_before = nd;
                     #[cfg(feature = "search-debug")]
                     {
@@ -2197,12 +2306,17 @@ mod tests {
                 DEFAULT_BOOK_MIN_MOVE_WEIGHT,
                 DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE,
             )
-            .with_gnn_root(true),
+            .with_gnn_root(true)
+            .with_gnn_lmr_exemption(true),
         );
 
         assert!(
             engine.use_gnn_root,
             "UCI worker engines must preserve the configured root policy"
+        );
+        assert!(
+            engine.use_gnn_lmr_exemption,
+            "UCI worker engines must preserve the configured GNN LMR exemption"
         );
     }
 
@@ -2222,6 +2336,85 @@ mod tests {
             .into_iter()
             .find(|mv| move_to_uci(&engine.st, *mv) == uci)
             .unwrap_or_else(|| panic!("expected legal root move {uci}"))
+    }
+
+    #[cfg(feature = "gnn-root-policy")]
+    fn synthetic_policy_scores(
+        moves: &[Move],
+        scored_moves: &[(Move, f32)],
+    ) -> Vec<root_policy::RootPolicyMoveScore> {
+        moves
+            .iter()
+            .copied()
+            .map(|mv| {
+                let probability = scored_moves
+                    .iter()
+                    .find_map(|&(candidate, probability)| (candidate == mv).then_some(probability))
+                    .unwrap_or(0.0);
+                root_policy::RootPolicyMoveScore {
+                    mv,
+                    logit: probability,
+                    probability,
+                }
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "gnn-root-policy")]
+    #[test]
+    fn gnn_lmr_exemptions_select_only_late_top_three_quiet_root_moves() {
+        let mut engine =
+            engine_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        engine.use_gnn_lmr_exemption = true;
+
+        let moves = root_moves(&engine);
+        let classic = sort_root_moves(&engine.st, &moves, NO_MOVE);
+        assert!(classic.len() > GNN_LMR_EXEMPTION_MIN_CLASSIC_RANK + 4);
+
+        let early_high_probability = classic[GNN_LMR_EXEMPTION_MIN_CLASSIC_RANK - 1];
+        let top_late = classic[GNN_LMR_EXEMPTION_MIN_CLASSIC_RANK + 3];
+        let second_late = classic[GNN_LMR_EXEMPTION_MIN_CLASSIC_RANK + 1];
+        let third_late = classic[GNN_LMR_EXEMPTION_MIN_CLASSIC_RANK + 2];
+        let fourth_late = classic[GNN_LMR_EXEMPTION_MIN_CLASSIC_RANK];
+        let below_threshold = classic[GNN_LMR_EXEMPTION_MIN_CLASSIC_RANK + 4];
+        let scores = synthetic_policy_scores(
+            &moves,
+            &[
+                (early_high_probability, 0.95),
+                (top_late, 0.30),
+                (second_late, 0.25),
+                (third_late, 0.20),
+                (fourth_late, 0.19),
+                (below_threshold, 0.14),
+            ],
+        );
+
+        let exemptions = engine.select_gnn_lmr_exemptions(&moves, &classic, &scores);
+        assert_eq!(exemptions, vec![top_late, second_late, third_late]);
+        assert!(!exemptions.contains(&early_high_probability));
+        assert!(!exemptions.contains(&fourth_late));
+        assert!(!exemptions.contains(&below_threshold));
+    }
+
+    #[cfg(feature = "gnn-root-policy")]
+    #[test]
+    fn gnn_lmr_exemptions_never_select_tactical_root_moves() {
+        let mut engine =
+            engine_from_fen("r3k2r/ppp2ppp/2n5/4q3/4Q3/2N5/PPP2PPP/R3K2R w KQkq - 0 1");
+        engine.use_gnn_lmr_exemption = true;
+        let queen_trade = root_move(&engine, "e4e5");
+        let moves = root_moves(&engine);
+        assert!(moves.contains(&queen_trade));
+        let mut classic = sort_root_moves(&engine.st, &moves, NO_MOVE);
+        classic.retain(|&mv| mv != queen_trade);
+        classic.push(queen_trade);
+        let scores = synthetic_policy_scores(&moves, &[(queen_trade, 0.99)]);
+
+        let exemptions = engine.select_gnn_lmr_exemptions(&moves, &classic, &scores);
+        assert!(
+            exemptions.is_empty(),
+            "captures/checks/promotions must not receive LMR exemptions"
+        );
     }
 
     fn play_uci(engine: &mut Engine, uci: &str) {

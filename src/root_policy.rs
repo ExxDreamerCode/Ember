@@ -14,6 +14,13 @@ pub struct RootPolicy {
     plan: RunnableRootPolicy,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct RootPolicyMoveScore {
+    pub mv: Move,
+    pub logit: f32,
+    pub probability: f32,
+}
+
 impl RootPolicy {
     fn load() -> Result<Self, String> {
         let mut cursor = Cursor::new(MODEL_BYTES);
@@ -54,6 +61,9 @@ impl RootPolicy {
                 logits.len()
             ));
         }
+        if logits.iter().any(|score| !score.is_finite()) {
+            return Err("root policy output contains a non-finite logit".to_string());
+        }
 
         moves
             .iter()
@@ -63,6 +73,26 @@ impl RootPolicy {
                     .ok_or_else(|| format!("legal move cannot be mapped to policy index: {mv}"))
             })
             .collect()
+    }
+
+    pub fn score_legal_moves(
+        &self,
+        st: &BoardState,
+        moves: &[Move],
+    ) -> Result<Vec<RootPolicyMoveScore>, String> {
+        let logits = self.score_moves(st, moves)?;
+        let probabilities = legal_move_probabilities(&logits)?;
+        Ok(moves
+            .iter()
+            .copied()
+            .zip(logits)
+            .zip(probabilities)
+            .map(|((mv, logit), probability)| RootPolicyMoveScore {
+                mv,
+                logit,
+                probability,
+            })
+            .collect())
     }
 }
 
@@ -74,6 +104,13 @@ pub fn warm_up() -> Result<(), String> {
 
 pub fn score_moves(st: &BoardState, moves: &[Move]) -> Result<Vec<f32>, String> {
     embedded()?.score_moves(st, moves)
+}
+
+pub fn score_legal_moves(
+    st: &BoardState,
+    moves: &[Move],
+) -> Result<Vec<RootPolicyMoveScore>, String> {
+    embedded()?.score_legal_moves(st, moves)
 }
 
 fn embedded() -> Result<&'static RootPolicy, String> {
@@ -105,7 +142,7 @@ fn root_features(st: &BoardState) -> Vec<f32> {
     features
 }
 
-fn policy_index(mv: Move) -> Option<usize> {
+pub(crate) fn policy_index(mv: Move) -> Option<usize> {
     let from = ember_to_policy_square(move_from(mv));
     let to = ember_to_policy_square(move_to(mv));
     let promotion = match move_promotion(mv).to_ascii_uppercase() {
@@ -118,6 +155,53 @@ fn policy_index(mv: Move) -> Option<usize> {
     };
     let plane = move_plane(from, to, promotion)?;
     Some(from * POLICY_PLANES + plane)
+}
+
+#[cfg(test)]
+fn legal_move_at_policy_index(legal_moves: &[Move], policy_index: usize) -> Option<Move> {
+    if policy_index >= POLICY_SIZE {
+        return None;
+    }
+    legal_moves
+        .iter()
+        .copied()
+        .find(|&mv| self::policy_index(mv) == Some(policy_index))
+}
+
+fn legal_move_probabilities(logits: &[f32]) -> Result<Vec<f32>, String> {
+    if logits.iter().any(|score| !score.is_finite()) {
+        return Err("root policy legal logits contain a non-finite value".to_string());
+    }
+    if logits.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let max_logit = logits
+        .iter()
+        .copied()
+        .fold(f32::NEG_INFINITY, |best, score| best.max(score));
+    let mut sum = 0.0f32;
+    let mut probabilities: Vec<f32> = logits
+        .iter()
+        .map(|score| {
+            let value = (*score - max_logit).exp();
+            sum += value;
+            value
+        })
+        .collect();
+    if !sum.is_finite() || sum <= 0.0 {
+        return Err("root policy legal softmax is not finite".to_string());
+    }
+    for probability in &mut probabilities {
+        *probability /= sum;
+    }
+    if probabilities
+        .iter()
+        .any(|probability| !probability.is_finite())
+    {
+        return Err("root policy legal probabilities contain a non-finite value".to_string());
+    }
+    Ok(probabilities)
 }
 
 fn ember_to_policy_square(square: usize) -> usize {
@@ -201,6 +285,8 @@ fn ray_direction(dx: i8, dy: i8) -> Option<(usize, usize)> {
 mod tests {
     use super::*;
     use crate::board::encode_move;
+    use crate::engine::Engine;
+    use crate::movegen::generate_moves;
 
     #[test]
     fn policy_square_mapping_round_trips() {
@@ -227,6 +313,41 @@ mod tests {
         assert_eq!(policy_index(g1f3), Some(6 * 73 + 56 + 7));
         assert_eq!(policy_index(e7e8q), Some(52 * 73));
         assert_eq!(policy_index(e7f8n), Some(52 * 73 + 70));
+    }
+
+    #[test]
+    fn legal_policy_indices_round_trip_through_ember_moves() {
+        let mut engine = Engine::new();
+        for fen in [
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "8/P6k/8/8/8/8/6K1/8 w - - 0 1",
+        ] {
+            engine.set_fen(fen);
+            let moves = generate_moves(&engine.st, engine.st.w, &engine.st.cr, engine.st.ep);
+            for mv in &moves {
+                let index = policy_index(*mv).expect("legal move must have a policy index");
+                assert_eq!(
+                    legal_move_at_policy_index(&moves, index),
+                    Some(*mv),
+                    "policy index {index} did not map back to move {mv}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn legal_move_probabilities_reject_non_finite_logits() {
+        assert!(legal_move_probabilities(&[0.0, f32::NAN]).is_err());
+        assert!(legal_move_probabilities(&[0.0, f32::INFINITY]).is_err());
+    }
+
+    #[test]
+    fn legal_move_probabilities_sum_to_one() {
+        let probabilities = legal_move_probabilities(&[1.0, 2.0, 3.0]).unwrap();
+        let sum: f32 = probabilities.iter().sum();
+        assert!((sum - 1.0).abs() <= 1e-6);
+        assert!(probabilities[2] > probabilities[1]);
+        assert!(probabilities[1] > probabilities[0]);
     }
 
     #[test]

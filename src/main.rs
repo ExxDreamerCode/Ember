@@ -235,6 +235,8 @@ fn main() {
                 println!("option name RandomBookMove type check default false");
                 #[cfg(feature = "gnn-root-policy")]
                 println!("option name UseGNNRoot type check default false");
+                #[cfg(feature = "gnn-root-policy")]
+                println!("option name UseGNNLmrExemption type check default false");
                 println!(
                     "option name BookMinMoveWeight type spin default {} min 1 max 65535",
                     DEFAULT_BOOK_MIN_MOVE_WEIGHT
@@ -417,7 +419,8 @@ fn main() {
                     engine.book_min_move_weight_permille,
                 )
                 .with_random_book_move(engine.random_book_move)
-                .with_gnn_root(engine.use_gnn_root);
+                .with_gnn_root(engine.use_gnn_root)
+                .with_gnn_lmr_exemption(engine.use_gnn_lmr_exemption);
 
                 let mut search_searcher = chess_rs_lib::search::Searcher::new(
                     Arc::clone(&shared_tt),
@@ -632,6 +635,13 @@ fn parse_setoption(engine: &mut Engine, name: &str, val: &str) {
             Some(enabled) => set_gnn_root_policy(engine, enabled),
             None => eprintln!("info string Ignoring invalid UseGNNRoot value: {}", val),
         },
+        "usegnnlmrexemption" | "use gnn lmr exemption" => match parse_check_value(val) {
+            Some(enabled) => set_gnn_lmr_exemption(engine, enabled),
+            None => eprintln!(
+                "info string Ignoring invalid UseGNNLmrExemption value: {}",
+                val
+            ),
+        },
         "bookminmoveweight" | "book min move weight" => {
             if let Ok(weight) = val.parse::<u16>() {
                 if weight >= 1 {
@@ -693,6 +703,7 @@ fn reset_engine(engine: &mut Engine) {
     let syzygy = engine.searcher.syzygy.clone();
     let random_book_move = engine.random_book_move;
     let use_gnn_root = engine.use_gnn_root;
+    let use_gnn_lmr_exemption = engine.use_gnn_lmr_exemption;
     let book_min_move_weight = engine.book_min_move_weight;
     let book_min_move_weight_permille = engine.book_min_move_weight_permille;
     #[cfg(feature = "decision-trace")]
@@ -703,6 +714,7 @@ fn reset_engine(engine: &mut Engine) {
     engine.book = book;
     engine.random_book_move = random_book_move;
     engine.use_gnn_root = use_gnn_root;
+    engine.use_gnn_lmr_exemption = use_gnn_lmr_exemption;
     engine.book_min_move_weight = book_min_move_weight;
     engine.book_min_move_weight_permille = book_min_move_weight_permille;
     engine.search_pool = search_pool;
@@ -744,6 +756,36 @@ fn set_gnn_root_policy(engine: &mut Engine, enabled: bool) {
         eprintln!("info string GNN root policy was not compiled into this binary");
     } else {
         eprintln!("info string Set UseGNNRoot to false");
+    }
+}
+
+#[cfg(feature = "gnn-root-policy")]
+fn set_gnn_lmr_exemption(engine: &mut Engine, enabled: bool) {
+    if !enabled {
+        engine.use_gnn_lmr_exemption = false;
+        eprintln!("info string Set UseGNNLmrExemption to false");
+        return;
+    }
+
+    match chess_rs_lib::root_policy::warm_up() {
+        Ok(()) => {
+            engine.use_gnn_lmr_exemption = true;
+            eprintln!("info string Set UseGNNLmrExemption to true");
+        }
+        Err(error) => {
+            engine.use_gnn_lmr_exemption = false;
+            eprintln!("info string Failed to enable GNN LMR exemption: {error}");
+        }
+    }
+}
+
+#[cfg(not(feature = "gnn-root-policy"))]
+fn set_gnn_lmr_exemption(engine: &mut Engine, enabled: bool) {
+    engine.use_gnn_lmr_exemption = false;
+    if enabled {
+        eprintln!("info string GNN LMR exemption was not compiled into this binary");
+    } else {
+        eprintln!("info string Set UseGNNLmrExemption to false");
     }
 }
 
@@ -1054,6 +1096,22 @@ mod tests {
         assert!(
             engine.use_gnn_root,
             "ucinewgame must preserve the configured UseGNNRoot value"
+        );
+    }
+
+    #[test]
+    fn disabled_gnn_lmr_exemption_option_is_parsed_and_preserved_on_reset() {
+        let mut engine = Engine::new();
+        engine.use_gnn_lmr_exemption = true;
+
+        parse_setoption(&mut engine, "usegnnlmrexemption", "false");
+        assert!(!engine.use_gnn_lmr_exemption);
+
+        engine.use_gnn_lmr_exemption = true;
+        reset_engine(&mut engine);
+        assert!(
+            engine.use_gnn_lmr_exemption,
+            "ucinewgame must preserve the configured UseGNNLmrExemption value"
         );
     }
 

@@ -200,6 +200,7 @@ fn lazy_smp_honors_the_root_searcher_stop_token() {
         &st,
         &root_moves,
         |_, _| 0,
+        &[],
         LazySmpSearchLimits {
             soft_time: 10.0,
             hard_time: 10.0,
@@ -229,6 +230,7 @@ fn lazy_smp_uses_the_caller_start_time() {
         &st,
         &root_moves,
         |_, _| 0,
+        &[],
         LazySmpSearchLimits {
             soft_time: 0.010,
             hard_time: 0.010,
@@ -279,6 +281,7 @@ fn lazy_smp_counts_work_from_an_interrupted_iteration() {
         &st,
         &root_moves,
         start_a_deep_root_search,
+        &[],
         LazySmpSearchLimits {
             soft_time: 10.0,
             hard_time: 10.0,
@@ -315,6 +318,7 @@ fn lazy_smp_soft_completion_signals_the_root_searcher() {
         &st,
         &root_moves,
         |_, _| 0,
+        &[],
         LazySmpSearchLimits {
             soft_time: 0.0,
             hard_time: 10.0,
@@ -370,6 +374,7 @@ fn immature_lazy_smp_helper_cannot_end_the_leader_iteration_at_soft_time() {
         &st,
         &root_moves,
         delay_leader_until_the_helper_finishes,
+        &[],
         LazySmpSearchLimits {
             soft_time: 0.0,
             hard_time: 10.0,
@@ -413,6 +418,7 @@ fn lazy_smp_applies_root_depth_extension_policy() {
         &st,
         &root_moves,
         count_extension_calls,
+        &[],
         LazySmpSearchLimits {
             soft_time: 10.0,
             hard_time: 10.0,

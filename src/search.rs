@@ -5140,6 +5140,7 @@ struct LazySmpSearchJob {
     root_moves: Arc<Vec<Move>>,
     num_threads: usize,
     root_depth_extension: fn(&BoardState, Move) -> i32,
+    root_lmr_exemptions: Arc<Vec<Move>>,
     limits: LazySmpSearchLimits,
     root_context: Arc<LazySmpRootContext>,
     start: Instant,
@@ -5284,6 +5285,7 @@ impl LazySmpPool {
         st: &BoardState,
         root_moves: &[Move],
         root_depth_extension: fn(&BoardState, Move) -> i32,
+        root_lmr_exemptions: &[Move],
         limits: LazySmpSearchLimits,
         num_threads: usize,
         root_searcher: &mut Searcher,
@@ -5311,6 +5313,7 @@ impl LazySmpPool {
             root_moves: Arc::new(root_moves.to_vec()),
             num_threads,
             root_depth_extension,
+            root_lmr_exemptions: Arc::new(root_lmr_exemptions.to_vec()),
             limits,
             root_context: Arc::new(LazySmpRootContext::from_searcher(root_searcher)),
             start: limits.start,
@@ -5513,6 +5516,10 @@ fn lazy_smp_root_moves(root_moves: &[Move], thread_id: usize, num_threads: usize
     moves
 }
 
+fn root_lmr_exemption_depth_bonus(exemptions: &[Move], mv: Move) -> i32 {
+    i32::from(exemptions.contains(&mv))
+}
+
 fn print_lazy_smp_info(
     job: &LazySmpSearchJob,
     best_move: Move,
@@ -5663,6 +5670,7 @@ pub fn lazy_smp_search(
     st: &BoardState,
     root_moves: &[Move],
     root_depth_extension: fn(&BoardState, Move) -> i32,
+    root_lmr_exemptions: &[Move],
     limits: LazySmpSearchLimits,
     num_threads: usize,
     root_searcher: &mut Searcher,
@@ -5672,6 +5680,7 @@ pub fn lazy_smp_search(
         st,
         root_moves,
         root_depth_extension,
+        root_lmr_exemptions,
         limits,
         num_threads,
         root_searcher,
@@ -5841,7 +5850,8 @@ fn run_lazy_smp_worker(
                 let h = s.hash;
                 searcher.rep_stack.push(h);
                 searcher.rep_stack_len += 1;
-                let root_ext = (job.root_depth_extension)(&st, mv);
+                let root_ext = (job.root_depth_extension)(&st, mv)
+                    + root_lmr_exemption_depth_bonus(&job.root_lmr_exemptions, mv);
                 let move_nodes_before = nd;
 
                 let score = if cur_score == -INF {
@@ -7155,6 +7165,7 @@ mod tests {
             &st,
             &root_moves,
             |_, _| 0,
+            &[],
             LazySmpSearchLimits {
                 soft_time: 0.0,
                 hard_time: 10.0,
@@ -7181,6 +7192,7 @@ mod tests {
             &st,
             &root_moves,
             |_, _| 0,
+            &[],
             LazySmpSearchLimits {
                 soft_time: 10.0,
                 hard_time: 10.0,
@@ -7279,6 +7291,7 @@ mod tests {
             root_moves,
             num_threads: 3,
             root_depth_extension: |_, _| 0,
+            root_lmr_exemptions: Arc::new(Vec::new()),
             limits: LazySmpSearchLimits {
                 soft_time: 1.0,
                 hard_time: 2.0,
