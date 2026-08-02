@@ -42,18 +42,6 @@ impl SearchBackendKind {
             SearchBackendKind::X86Avx512 => "x86-avx512",
         }
     }
-
-    pub fn nnue_backend(self) -> NnueBackendKind {
-        match self {
-            SearchBackendKind::Scalar => NnueBackendKind::Scalar,
-            SearchBackendKind::Aarch64Simd128 => NnueBackendKind::Simd128,
-            SearchBackendKind::X86V3 | SearchBackendKind::Aarch64Simd256 => {
-                NnueBackendKind::Simd256
-            }
-            SearchBackendKind::Aarch64Simd512 => NnueBackendKind::Simd512,
-            SearchBackendKind::X86Avx512 => NnueBackendKind::X86Avx512,
-        }
-    }
 }
 
 pub fn parse_search_backend_name(value: &str) -> Option<SearchBackendKind> {

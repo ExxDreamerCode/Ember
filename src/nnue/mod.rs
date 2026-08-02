@@ -1,6 +1,6 @@
 use crate::backend::{nnue_backend_available, NnueBackendKind};
 use crate::board::BoardState;
-use crate::types::*;
+use crate::types::WHITE;
 use std::mem::MaybeUninit;
 use std::slice;
 
@@ -79,17 +79,6 @@ pub struct NNUENet {
 impl NNUENet {
     pub fn halfka(&self, persp: u8, ks: u8, pc: u8, pt: u8, ps: u8) -> usize {
         halfka_idx(&self.king_bucket, &self.king_mirror, persp, ks, pc, pt, ps)
-    }
-
-    pub fn input_row(&self, idx: usize) -> Option<&[i16]> {
-        let physical_row = *self.input_row_map.get(idx)?;
-        if physical_row == COMPACT_ZERO_ROW {
-            return None;
-        }
-
-        let physical_row = physical_row as usize;
-        let start = physical_row * self.hidden_size;
-        Some(&self.input_weights[start..start + self.hidden_size])
     }
 
     #[inline(always)]

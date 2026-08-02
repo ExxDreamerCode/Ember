@@ -6,7 +6,7 @@ use crate::magic::{bishop_attacks, rook_attacks};
 use crate::nnue::{
     NNUEAccumulator, NNUENet, NNUEThreatAccumulator, NnueBackend, ScalarNnueBackend,
 };
-use crate::types::*;
+use crate::types::{BLACK, WHITE};
 use std::sync::{Arc, RwLock};
 
 const MG_VALUE: [i32; 6] = [82, 337, 365, 477, 1025, 0];
@@ -354,17 +354,6 @@ pub fn init_embedded_nnue() -> Result<(), String> {
     let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
     *lock = Some(Arc::new(net));
     Ok(())
-}
-
-pub fn init_nnue_from_bytes(data: &[u8]) -> Result<(), String> {
-    let net = NNUENet::load_from_bytes(data, "<embedded>")?;
-    let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
-    *lock = Some(Arc::new(net));
-    Ok(())
-}
-
-pub fn nnue_loaded() -> bool {
-    NNUE_NET.read().is_ok_and(|lock| lock.is_some())
 }
 
 pub fn current_nnue_net() -> Option<Arc<NNUENet>> {

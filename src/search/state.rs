@@ -43,10 +43,6 @@ impl Searcher {
         self.tt_mb = mb;
     }
 
-    pub fn set_syzygy(&mut self, syzygy: SyzygyTables) {
-        self.syzygy = syzygy;
-    }
-
     pub fn refresh_nnue_net(&mut self) {
         self.nnue_net = current_nnue_net();
     }

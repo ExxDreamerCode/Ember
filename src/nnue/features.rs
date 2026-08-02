@@ -1,6 +1,6 @@
 use super::{convert, NNUENet};
 use crate::board::{BoardState, BB, BK, BN, BP, BQ, BR, WB, WK, WN, WP, WQ, WR};
-use crate::types::*;
+use crate::types::{BISHOP, BLACK, KING, KNIGHT, PAWN, QUEEN, ROOK, WHITE};
 
 const NNUE_NUM_PIECE_TYPES: usize = 12;
 
