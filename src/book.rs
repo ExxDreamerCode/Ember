@@ -8,6 +8,8 @@ use crate::board::{
 };
 use crate::polyglot_randoms::POLYGLOT_RANDOMS;
 
+pub const BOOK_DATA: &[u8] = include_bytes!("book.bin");
+
 #[derive(Clone)]
 struct BookMove {
     raw_move: u16,
@@ -61,22 +63,6 @@ impl OpeningBook {
         let count = entries.len();
         eprintln!("info string Book loaded: {} positions from {}", count, name);
         Ok(OpeningBook { entries })
-    }
-
-    pub fn pick_move(&self, st: &BoardState, moves: &[Move]) -> Option<Move> {
-        self.pick_move_with_confidence(st, moves, 1, 0)
-            .map(|choice| choice.mv)
-    }
-
-    pub fn pick_move_with_confidence(
-        &self,
-        st: &BoardState,
-        moves: &[Move],
-        min_weight: u16,
-        min_weight_permille: u16,
-    ) -> Option<BookChoice> {
-        let candidates = self.confident_choices(st, moves, min_weight, min_weight_permille)?;
-        pick_weighted_choice(&candidates)
     }
 
     pub fn pick_move_with_quality<F>(
@@ -173,33 +159,6 @@ impl OpeningBook {
                 .collect(),
         )
     }
-}
-
-fn pick_weighted_choice(candidates: &[BookChoice]) -> Option<BookChoice> {
-    if candidates.is_empty() {
-        return None;
-    }
-    let total_weight = candidates
-        .iter()
-        .map(|choice| choice.weight as u32)
-        .sum::<u32>();
-    if total_weight == 0 {
-        return None;
-    }
-
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos();
-    let r = nanos % total_weight;
-    let mut cumulative = 0u32;
-    for choice in candidates {
-        cumulative += choice.weight as u32;
-        if r < cumulative {
-            return Some(*choice);
-        }
-    }
-    Some(candidates[0])
 }
 
 fn pick_uniform_choice(candidates: &[BookChoice]) -> Option<BookChoice> {

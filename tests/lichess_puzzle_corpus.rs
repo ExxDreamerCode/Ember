@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, Once};
 use std::thread;
 
-use chess_rs_lib::{evaluate, opening_book, Engine, OpeningBook};
+use chess_rs_lib::{book, evaluate, Engine, OpeningBook};
 
 const DEFAULT_CORPUS_WORKERS: usize = 4;
 const EXPECTED_HEADER: &str =
@@ -258,7 +258,7 @@ fn solve_case(case: &RegressionCase) -> Result<(), String> {
     let is_book_case = case.depth == 0;
     if is_book_case {
         engine.book = Some(
-            OpeningBook::load_from_bytes(opening_book::BOOK_DATA, "<embedded>")
+            OpeningBook::load_from_bytes(book::BOOK_DATA, "<embedded>")
                 .map_err(|error| format!("failed to load embedded book: {error}"))?,
         );
     }

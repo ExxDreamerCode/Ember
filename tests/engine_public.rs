@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use chess_rs_lib::{opening_book, Engine, OpeningBook};
+use chess_rs_lib::{book, Engine, OpeningBook};
 
 fn play_uci(engine: &mut Engine, uci: &str) {
     let bytes = uci.as_bytes();
@@ -21,8 +21,7 @@ fn play_uci(engine: &mut Engine, uci: &str) {
 #[test]
 fn embedded_book_ponder_fallback_uses_book_reply_without_tt() {
     let mut engine = Engine::new();
-    engine.book =
-        Some(OpeningBook::load_from_bytes(opening_book::BOOK_DATA, "<embedded>").unwrap());
+    engine.book = Some(OpeningBook::load_from_bytes(book::BOOK_DATA, "<embedded>").unwrap());
 
     let ponder = engine
         .ponder_move_after("e2e4")
@@ -37,8 +36,7 @@ fn embedded_book_ponder_fallback_uses_book_reply_without_tt() {
 #[test]
 fn ponder_book_reply_can_relax_normal_book_confidence() {
     let mut engine = Engine::new();
-    engine.book =
-        Some(OpeningBook::load_from_bytes(opening_book::BOOK_DATA, "<embedded>").unwrap());
+    engine.book = Some(OpeningBook::load_from_bytes(book::BOOK_DATA, "<embedded>").unwrap());
     engine.book_min_move_weight = u16::MAX;
 
     let ponder = engine
@@ -51,8 +49,7 @@ fn ponder_book_reply_can_relax_normal_book_confidence() {
 #[test]
 fn book_confidence_cutoff_rejects_weight_one_tail_move() {
     let mut engine = Engine::new();
-    engine.book =
-        Some(OpeningBook::load_from_bytes(opening_book::BOOK_DATA, "<embedded>").unwrap());
+    engine.book = Some(OpeningBook::load_from_bytes(book::BOOK_DATA, "<embedded>").unwrap());
     for mv in [
         "e2e4", "e7e6", "d2d4", "d7d5", "e4e5", "c7c5", "c2c3", "c5d4", "c3d4", "b8c6", "g1f3",
         "g8e7", "f1d3", "e7f5", "d3f5", "e6f5", "b1c3", "f8e7",
@@ -72,8 +69,7 @@ fn book_confidence_cutoff_rejects_weight_one_tail_move() {
 #[test]
 fn random_book_move_returns_before_search_when_a_good_move_exists() {
     let mut engine = Engine::new();
-    engine.book =
-        Some(OpeningBook::load_from_bytes(opening_book::BOOK_DATA, "<embedded>").unwrap());
+    engine.book = Some(OpeningBook::load_from_bytes(book::BOOK_DATA, "<embedded>").unwrap());
     engine.random_book_move = true;
     for mv in ["g1f3", "c7c5", "e2e4", "a7a6"] {
         play_uci(&mut engine, mv);

@@ -1037,20 +1037,6 @@ pub fn generate_moves_mode<const CHESS960: bool>(
     out
 }
 
-pub fn generate_moves_into(
-    st: &BoardState,
-    wturn: bool,
-    cr: &[bool; 4],
-    ep: Option<usize>,
-    out: &mut Vec<Move>,
-) {
-    if st.chess960 {
-        generate_moves_into_mode::<true>(st, wturn, cr, ep, out);
-    } else {
-        generate_moves_into_mode::<false>(st, wturn, cr, ep, out);
-    }
-}
-
 pub fn generate_moves_into_mode<const CHESS960: bool>(
     st: &BoardState,
     wturn: bool,

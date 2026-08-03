@@ -10,7 +10,7 @@ use chess_rs_lib::search::{
 use chess_rs_lib::syzygy::SyzygyTables;
 use chess_rs_lib::time_management::TimeManager;
 use chess_rs_lib::zobrist::compute_hash;
-use chess_rs_lib::{opening_book, Engine, EngineBookConfig, OpeningBook};
+use chess_rs_lib::{book, Engine, EngineBookConfig, OpeningBook};
 use std::io::{self, BufRead};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -156,7 +156,7 @@ fn main() {
     }
 
     eprintln!("info string Loading embedded book...");
-    match OpeningBook::load_from_bytes(opening_book::BOOK_DATA, "<embedded>") {
+    match OpeningBook::load_from_bytes(book::BOOK_DATA, "<embedded>") {
         Ok(book) => {
             engine.book = Some(book);
             eprintln!("info string Embedded book loaded");
@@ -275,10 +275,7 @@ fn main() {
                         } else if val.to_lowercase() == "<embedded>"
                             || val.to_lowercase() == "<default>"
                         {
-                            match OpeningBook::load_from_bytes(
-                                opening_book::BOOK_DATA,
-                                "<embedded>",
-                            ) {
+                            match OpeningBook::load_from_bytes(book::BOOK_DATA, "<embedded>") {
                                 Ok(book) => {
                                     engine.book = Some(book);
                                     eprintln!("info string Book switched to embedded");

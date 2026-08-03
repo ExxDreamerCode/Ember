@@ -213,11 +213,6 @@ impl BoardState {
     }
 
     #[inline(always)]
-    pub fn piece_at(&self, s: usize) -> u8 {
-        self.mailbox[s]
-    }
-
-    #[inline(always)]
     pub fn king_sq(&self, white: bool) -> usize {
         let k = if white { self.bb[WK] } else { self.bb[BK] };
         if k == 0 {
