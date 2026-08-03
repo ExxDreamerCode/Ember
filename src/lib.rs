@@ -14,8 +14,6 @@ pub mod trace;
 pub mod tt;
 pub mod zobrist;
 
-pub mod opening_book;
-
 pub mod nnue;
 mod simd;
 pub mod syzygy;

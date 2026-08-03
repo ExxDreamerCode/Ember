@@ -1,1 +1,0 @@
-pub const BOOK_DATA: &[u8] = include_bytes!("book.bin");

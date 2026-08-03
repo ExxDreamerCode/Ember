@@ -8,6 +8,8 @@ use crate::board::{
 };
 use crate::polyglot_randoms::POLYGLOT_RANDOMS;
 
+pub const BOOK_DATA: &[u8] = include_bytes!("book.bin");
+
 #[derive(Clone)]
 struct BookMove {
     raw_move: u16,
