@@ -957,24 +957,6 @@ pub fn simd512_l1_matmul(
 }
 
 #[inline(always)]
-pub fn simd_screlu_activation(
-    hidden: &[i32],
-    pw_scale: i32,
-    qa_l1: i32,
-    out: &mut [MaybeUninit<f32>],
-) {
-    let len = hidden.len();
-    debug_assert!(len <= out.len());
-    let qf = qa_l1 as f32;
-    let qsq = qf * qf;
-
-    for i in 0..len {
-        let v = (hidden[i] / pw_scale).clamp(0, qa_l1);
-        out[i].write((v * v) as f32 / qsq);
-    }
-}
-
-#[inline(always)]
 #[allow(clippy::too_many_arguments)]
 pub fn simd128_forward_l2(
     l1_out: &[f32],
@@ -1311,18 +1293,6 @@ pub unsafe fn simd_l1_matmul_x86_v3(
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
 #[inline]
-pub unsafe fn simd_screlu_activation_x86_v3(
-    hidden: &[i32],
-    pw_scale: i32,
-    qa_l1: i32,
-    out: &mut [MaybeUninit<f32>],
-) {
-    simd_screlu_activation(hidden, pw_scale, qa_l1, out)
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
-#[inline]
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn simd_forward_l2_x86_v3(
     l1_out: &[f32],
@@ -1407,18 +1377,6 @@ pub unsafe fn simd_l1_matmul_x86_avx512(
     simd512_l1_matmul(
         sp, np, l1_total, l1, l1_off, pw, pw_scale, l1_weights, l1_biases, out,
     )
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx,avx2,avx512f,avx512bw,avx512dq,avx512vl,bmi1,bmi2,fma,lzcnt,popcnt")]
-#[inline]
-pub unsafe fn simd_screlu_activation_x86_avx512(
-    hidden: &[i32],
-    pw_scale: i32,
-    qa_l1: i32,
-    out: &mut [MaybeUninit<f32>],
-) {
-    simd_screlu_activation(hidden, pw_scale, qa_l1, out)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1785,7 +1743,7 @@ mod tests {
     }
 
     #[test]
-    fn screlu_activation_matches_scalar_integer_reference() {
+    fn scalar_screlu_activation_matches_integer_reference() {
         let pw_scale = (QA * QA) >> 9;
         let qa_l1 = 255;
         let hidden = vec![
@@ -1809,7 +1767,7 @@ mod tests {
         ];
 
         let mut actual = vec![MaybeUninit::<f32>::uninit(); hidden.len()];
-        simd_screlu_activation(&hidden, pw_scale, qa_l1, &mut actual);
+        scalar_screlu_activation(&hidden, pw_scale, qa_l1, &mut actual);
 
         let qsq = (qa_l1 as f32) * (qa_l1 as f32);
         let expected: Vec<f32> = hidden

@@ -209,7 +209,7 @@ impl NnueBackend for Simd128NnueBackend {
 
     #[inline(always)]
     fn screlu_activation(hidden: &[i32], pw_scale: i32, qa_l1: i32, out: &mut [MaybeUninit<f32>]) {
-        simd::simd_screlu_activation(hidden, pw_scale, qa_l1, out)
+        simd::scalar_screlu_activation(hidden, pw_scale, qa_l1, out)
     }
 
     #[inline(always)]
@@ -380,12 +380,7 @@ impl NnueBackend for SimdNnueBackend {
 
     #[inline(always)]
     fn screlu_activation(hidden: &[i32], pw_scale: i32, qa_l1: i32, out: &mut [MaybeUninit<f32>]) {
-        #[cfg(target_arch = "x86_64")]
-        unsafe {
-            simd::simd_screlu_activation_x86_v3(hidden, pw_scale, qa_l1, out);
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        simd::simd_screlu_activation(hidden, pw_scale, qa_l1, out)
+        simd::scalar_screlu_activation(hidden, pw_scale, qa_l1, out)
     }
 
     #[inline(always)]
@@ -487,7 +482,7 @@ impl NnueBackend for Simd512NnueBackend {
 
     #[inline(always)]
     fn screlu_activation(hidden: &[i32], pw_scale: i32, qa_l1: i32, out: &mut [MaybeUninit<f32>]) {
-        simd::simd_screlu_activation(hidden, pw_scale, qa_l1, out)
+        simd::scalar_screlu_activation(hidden, pw_scale, qa_l1, out)
     }
 
     #[inline(always)]
@@ -596,9 +591,7 @@ impl NnueBackend for Avx512NnueBackend {
 
     #[inline(always)]
     fn screlu_activation(hidden: &[i32], pw_scale: i32, qa_l1: i32, out: &mut [MaybeUninit<f32>]) {
-        unsafe {
-            simd::simd_screlu_activation_x86_avx512(hidden, pw_scale, qa_l1, out);
-        }
+        simd::scalar_screlu_activation(hidden, pw_scale, qa_l1, out)
     }
 
     #[inline(always)]
