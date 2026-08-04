@@ -204,8 +204,8 @@ machine busy. It changes no Windows service, autostart, scheduled task, power,
 sleep, registry, PATH, or firewall setting. Keep the console and machine awake.
 
 The default template is a casual, non-scoring 3+2 standard game against a
-random ready bot in a 50-opponent pool. The requested game count repeats the
-configured templates sequentially; INF continues until Ctrl-C. One lichess-bot
+random ready bot from the configured opponent pool. The requested game count
+repeats the configured templates sequentially; INF continues until Ctrl-C. One lichess-bot
 process and control stream are retained for the whole series. Busy, offline,
 rate-limited,
 declining, or non-responding bots are bypassed. Unaccepted challenges are

@@ -52,8 +52,8 @@ class BattleRunnerTests(unittest.TestCase):
         config = battle_runner.load_config(WINDOWS_DIR / "battle.toml")
         self.assertEqual(config.hash_mb, 1024)
         self.assertEqual(config.games[0].opponent, "Lynx_BOT")
-        self.assertEqual(len(config.games[0].opponents), 50)
-        self.assertEqual(len({name.casefold() for name in config.games[0].opponents}), 50)
+        self.assertEqual(len(config.games[0].opponents), 45)
+        self.assertEqual(len({name.casefold() for name in config.games[0].opponents}), 45)
         self.assertEqual(
             config.games[0].opponents[:5],
             ["Lynx_BOT", "pawn_git", "simbelmyne-bot", "CubixChess", "bot_adario"],
