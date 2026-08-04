@@ -108,6 +108,28 @@ impl VersionFlags {
 }
 
 impl NNUENet {
+    fn max_abs_output_weight(outw: &[i16]) -> i64 {
+        outw.iter()
+            .map(|&weight| (weight as i64).abs())
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn screlu_i32_output_safe(outw: &[i16]) -> bool {
+        const I32_DOT_LANES: i64 = 8;
+        let max_abs_weight = Self::max_abs_output_weight(outw);
+        max_abs_weight * QA as i64 * QA as i64 * I32_DOT_LANES <= i32::MAX as i64
+    }
+
+    fn screlu_i32_accumulator_safe(hidden_size: usize, outw: &[i16]) -> bool {
+        const X86_V3_VALUES_PER_CHUNK: usize = 16;
+        const TERMS_PER_CHUNK_PER_LANE_FOR_BOTH_SIDES: i64 = 4;
+        let chunks = (hidden_size / X86_V3_VALUES_PER_CHUNK) as i64;
+        let max_abs_weight = Self::max_abs_output_weight(outw);
+        max_abs_weight * QA as i64 * QA as i64 * chunks * TERMS_PER_CHUNK_PER_LANE_FOR_BOTH_SIDES
+            <= i32::MAX as i64
+    }
+
     pub fn load(path: &str) -> Result<Self, String> {
         let len = std::fs::metadata(path)
             .map_err(|e| format!("stat: {}", e))?
@@ -240,6 +262,9 @@ impl NNUENet {
             .collect();
 
         let _l1t = Self::transpose_l1_weights(hs, &flags, &l1w);
+        let screlu_i32_output_safe = flags.screlu && Self::screlu_i32_output_safe(&outw);
+        let screlu_i32_accumulator_safe =
+            flags.screlu && Self::screlu_i32_accumulator_safe(hs, &outw);
 
         Ok(NNUENet {
             hidden_size: hs,
@@ -251,6 +276,8 @@ impl NNUENet {
             output_weights: outw,
             output_bias: outb,
             use_screlu: flags.screlu,
+            screlu_i32_output_safe,
+            screlu_i32_accumulator_safe,
             use_pairwise: flags.pairwise,
             l1_size: flags.l1s,
             l1_per_bucket: flags.l1s,

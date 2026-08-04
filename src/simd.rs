@@ -4,6 +4,9 @@ use std::simd::cmp::SimdOrd;
 use std::simd::num::{SimdFloat, SimdInt};
 use std::simd::{simd_swizzle, Simd};
 
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
+
 const QA: i32 = 255;
 const I16_LANES_128: usize = 8;
 const I32_LANES_128: usize = 4;
@@ -248,6 +251,122 @@ fn dot_i16_512(a: I16x512, b: I16x512) -> i64 {
 }
 
 #[inline(always)]
+fn sum_i32x128(values: I32x128) -> i64 {
+    let values: Simd<i64, I32_LANES_128> = values.cast();
+    values.reduce_sum()
+}
+
+#[inline(always)]
+fn sum_i32x(values: I32x) -> i64 {
+    let values: Simd<i64, I32_LANES> = values.cast();
+    values.reduce_sum()
+}
+
+#[inline(always)]
+fn dot_screlu_i16x4(values: I16x4, weights: I16x4) -> i64 {
+    let values = values
+        .cast::<i32>()
+        .simd_clamp(I32x128::splat(0), I32x128::splat(QA));
+    let products = values * values * weights.cast::<i32>();
+    sum_i32x128(products)
+}
+
+#[inline(always)]
+fn dot_screlu_i16x4_i32(values: I16x4, weights: I16x4) -> i64 {
+    let values = values
+        .cast::<i32>()
+        .simd_clamp(I32x128::splat(0), I32x128::splat(QA));
+    let products = values * values * weights.cast::<i32>();
+    products.reduce_sum() as i64
+}
+
+#[inline(always)]
+fn dot_screlu_i16x8(values: I16x8, weights: I16x8) -> i64 {
+    let values = values
+        .cast::<i32>()
+        .simd_clamp(I32x::splat(0), I32x::splat(QA));
+    let products = values * values * weights.cast::<i32>();
+    sum_i32x(products)
+}
+
+#[inline(always)]
+fn dot_screlu_i16x8_i32(values: I16x8, weights: I16x8) -> i64 {
+    let values = values
+        .cast::<i32>()
+        .simd_clamp(I32x::splat(0), I32x::splat(QA));
+    let products = values * values * weights.cast::<i32>();
+    products.reduce_sum() as i64
+}
+
+#[inline(always)]
+fn dot_screlu_i16_128(values: I16x128, weights: I16x128) -> i64 {
+    let values_lo: I16x4 = simd_swizzle!(values, [0, 1, 2, 3]);
+    let values_hi: I16x4 = simd_swizzle!(values, [4, 5, 6, 7]);
+    let weights_lo: I16x4 = simd_swizzle!(weights, [0, 1, 2, 3]);
+    let weights_hi: I16x4 = simd_swizzle!(weights, [4, 5, 6, 7]);
+    dot_screlu_i16x4(values_lo, weights_lo) + dot_screlu_i16x4(values_hi, weights_hi)
+}
+
+#[inline(always)]
+fn dot_screlu_i16_128_i32(values: I16x128, weights: I16x128) -> i64 {
+    let values_lo: I16x4 = simd_swizzle!(values, [0, 1, 2, 3]);
+    let values_hi: I16x4 = simd_swizzle!(values, [4, 5, 6, 7]);
+    let weights_lo: I16x4 = simd_swizzle!(weights, [0, 1, 2, 3]);
+    let weights_hi: I16x4 = simd_swizzle!(weights, [4, 5, 6, 7]);
+    dot_screlu_i16x4_i32(values_lo, weights_lo) + dot_screlu_i16x4_i32(values_hi, weights_hi)
+}
+
+#[inline(always)]
+fn dot_screlu_i16(values: I16x, weights: I16x) -> i64 {
+    let values_lo: I16x8 = simd_swizzle!(values, [0, 1, 2, 3, 4, 5, 6, 7]);
+    let values_hi: I16x8 = simd_swizzle!(values, [8, 9, 10, 11, 12, 13, 14, 15]);
+    let weights_lo: I16x8 = simd_swizzle!(weights, [0, 1, 2, 3, 4, 5, 6, 7]);
+    let weights_hi: I16x8 = simd_swizzle!(weights, [8, 9, 10, 11, 12, 13, 14, 15]);
+    dot_screlu_i16x8(values_lo, weights_lo) + dot_screlu_i16x8(values_hi, weights_hi)
+}
+
+#[inline(always)]
+fn dot_screlu_i16_i32(values: I16x, weights: I16x) -> i64 {
+    let values_lo: I16x8 = simd_swizzle!(values, [0, 1, 2, 3, 4, 5, 6, 7]);
+    let values_hi: I16x8 = simd_swizzle!(values, [8, 9, 10, 11, 12, 13, 14, 15]);
+    let weights_lo: I16x8 = simd_swizzle!(weights, [0, 1, 2, 3, 4, 5, 6, 7]);
+    let weights_hi: I16x8 = simd_swizzle!(weights, [8, 9, 10, 11, 12, 13, 14, 15]);
+    dot_screlu_i16x8_i32(values_lo, weights_lo) + dot_screlu_i16x8_i32(values_hi, weights_hi)
+}
+
+#[inline(always)]
+fn dot_screlu_i16_512(values: I16x512, weights: I16x512) -> i64 {
+    let values_0: I16x8 = simd_swizzle!(values, [0, 1, 2, 3, 4, 5, 6, 7]);
+    let values_1: I16x8 = simd_swizzle!(values, [8, 9, 10, 11, 12, 13, 14, 15]);
+    let values_2: I16x8 = simd_swizzle!(values, [16, 17, 18, 19, 20, 21, 22, 23]);
+    let values_3: I16x8 = simd_swizzle!(values, [24, 25, 26, 27, 28, 29, 30, 31]);
+    let weights_0: I16x8 = simd_swizzle!(weights, [0, 1, 2, 3, 4, 5, 6, 7]);
+    let weights_1: I16x8 = simd_swizzle!(weights, [8, 9, 10, 11, 12, 13, 14, 15]);
+    let weights_2: I16x8 = simd_swizzle!(weights, [16, 17, 18, 19, 20, 21, 22, 23]);
+    let weights_3: I16x8 = simd_swizzle!(weights, [24, 25, 26, 27, 28, 29, 30, 31]);
+    dot_screlu_i16x8(values_0, weights_0)
+        + dot_screlu_i16x8(values_1, weights_1)
+        + dot_screlu_i16x8(values_2, weights_2)
+        + dot_screlu_i16x8(values_3, weights_3)
+}
+
+#[inline(always)]
+fn dot_screlu_i16_512_i32(values: I16x512, weights: I16x512) -> i64 {
+    let values_0: I16x8 = simd_swizzle!(values, [0, 1, 2, 3, 4, 5, 6, 7]);
+    let values_1: I16x8 = simd_swizzle!(values, [8, 9, 10, 11, 12, 13, 14, 15]);
+    let values_2: I16x8 = simd_swizzle!(values, [16, 17, 18, 19, 20, 21, 22, 23]);
+    let values_3: I16x8 = simd_swizzle!(values, [24, 25, 26, 27, 28, 29, 30, 31]);
+    let weights_0: I16x8 = simd_swizzle!(weights, [0, 1, 2, 3, 4, 5, 6, 7]);
+    let weights_1: I16x8 = simd_swizzle!(weights, [8, 9, 10, 11, 12, 13, 14, 15]);
+    let weights_2: I16x8 = simd_swizzle!(weights, [16, 17, 18, 19, 20, 21, 22, 23]);
+    let weights_3: I16x8 = simd_swizzle!(weights, [24, 25, 26, 27, 28, 29, 30, 31]);
+    dot_screlu_i16x8_i32(values_0, weights_0)
+        + dot_screlu_i16x8_i32(values_1, weights_1)
+        + dot_screlu_i16x8_i32(values_2, weights_2)
+        + dot_screlu_i16x8_i32(values_3, weights_3)
+}
+
+#[inline(always)]
 fn clamp_crelu_i16_128(value: I16x128) -> I16x128 {
     value.simd_clamp(I16x128::splat(0), I16x128::splat(QA as i16))
 }
@@ -260,6 +379,86 @@ fn clamp_crelu_i16(value: I16x) -> I16x {
 #[inline(always)]
 fn clamp_crelu_i16_512(value: I16x512) -> I16x512 {
     value.simd_clamp(I16x512::splat(0), I16x512::splat(QA as i16))
+}
+
+#[cfg(target_arch = "x86_64")]
+macro_rules! add_i32x8_to_i64x4_sum_x86_v3 {
+    ($sum:expr, $products:expr) => {{
+        let products_lo = _mm256_castsi256_si128($products);
+        let products_hi = _mm256_extracti128_si256::<1>($products);
+        let sum = _mm256_add_epi64($sum, _mm256_cvtepi32_epi64(products_lo));
+        _mm256_add_epi64(sum, _mm256_cvtepi32_epi64(products_hi))
+    }};
+}
+
+#[cfg(target_arch = "x86_64")]
+macro_rules! add_screlu_i16x16_to_i64x4_sum_x86_v3 {
+    ($sum:expr, $values:expr, $weights:expr) => {{
+        let values = _mm256_loadu_si256($values.cast());
+        let weights = _mm256_loadu_si256($weights.cast());
+        let values = _mm256_min_epi16(
+            _mm256_max_epi16(values, _mm256_setzero_si256()),
+            _mm256_set1_epi16(QA as i16),
+        );
+
+        let values_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(values));
+        let values_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256::<1>(values));
+        let weights_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(weights));
+        let weights_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256::<1>(weights));
+
+        let products_lo = _mm256_mullo_epi32(_mm256_mullo_epi32(values_lo, values_lo), weights_lo);
+        let products_hi = _mm256_mullo_epi32(_mm256_mullo_epi32(values_hi, values_hi), weights_hi);
+        let sum = add_i32x8_to_i64x4_sum_x86_v3!($sum, products_lo);
+        add_i32x8_to_i64x4_sum_x86_v3!(sum, products_hi)
+    }};
+}
+
+#[cfg(target_arch = "x86_64")]
+macro_rules! add_screlu_i16x16_to_i32x8_sum_x86_v3 {
+    ($sum:expr, $values:expr, $weights:expr) => {{
+        let values = _mm256_loadu_si256($values.cast());
+        let weights = _mm256_loadu_si256($weights.cast());
+        let values = _mm256_min_epi16(
+            _mm256_max_epi16(values, _mm256_setzero_si256()),
+            _mm256_set1_epi16(QA as i16),
+        );
+
+        let values_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(values));
+        let values_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256::<1>(values));
+        let weights_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(weights));
+        let weights_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256::<1>(weights));
+
+        let products_lo = _mm256_mullo_epi32(_mm256_mullo_epi32(values_lo, values_lo), weights_lo);
+        let products_hi = _mm256_mullo_epi32(_mm256_mullo_epi32(values_hi, values_hi), weights_hi);
+        _mm256_add_epi32($sum, _mm256_add_epi32(products_lo, products_hi))
+    }};
+}
+
+#[cfg(target_arch = "x86_64")]
+macro_rules! dot_screlu_i32_safe_i16x16_x86_v3 {
+    ($values:expr, $weights:expr) => {{
+        let values = _mm256_loadu_si256($values.cast());
+        let weights = _mm256_loadu_si256($weights.cast());
+        let values = _mm256_min_epi16(
+            _mm256_max_epi16(values, _mm256_setzero_si256()),
+            _mm256_set1_epi16(QA as i16),
+        );
+
+        let values_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(values));
+        let values_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256::<1>(values));
+        let weights_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(weights));
+        let weights_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256::<1>(weights));
+
+        let products_lo = _mm256_mullo_epi32(_mm256_mullo_epi32(values_lo, values_lo), weights_lo);
+        let products_hi = _mm256_mullo_epi32(_mm256_mullo_epi32(values_hi, values_hi), weights_hi);
+        let products = _mm256_add_epi32(products_lo, products_hi);
+        let sums = _mm256_hadd_epi32(products, products);
+        let sums = _mm256_hadd_epi32(sums, sums);
+        let lo = _mm256_castsi256_si128(sums);
+        let hi = _mm256_extracti128_si256::<1>(sums);
+        let total = _mm_add_epi32(lo, hi);
+        _mm_cvtsi128_si32(total) as i64
+    }};
 }
 
 #[inline(always)]
@@ -396,25 +595,55 @@ pub fn simd128_forward_base_crelu(
     out_w: &[i16],
     h: usize,
     use_screlu: bool,
+    screlu_i32_output_safe: bool,
 ) -> i64 {
     let mut sum = 0i64;
-
-    if use_screlu {
-        for j in 0..h {
-            let v = stm[j].clamp(0, QA as i16) as i64;
-            sum += v * v * out_w[j] as i64;
-        }
-        for j in 0..h {
-            let v = ntm[j].clamp(0, QA as i16) as i64;
-            sum += v * v * out_w[h + j] as i64;
-        }
-        return sum;
-    }
 
     let (stm_chunks, stm_tail) = stm[..h].as_chunks::<I16_LANES_128>();
     let (ntm_chunks, ntm_tail) = ntm[..h].as_chunks::<I16_LANES_128>();
     let (sw_chunks, sw_tail) = out_w[..h].as_chunks::<I16_LANES_128>();
     let (nw_chunks, nw_tail) = out_w[h..h + h].as_chunks::<I16_LANES_128>();
+
+    if use_screlu {
+        for (((stm_chunk, ntm_chunk), sw_chunk), nw_chunk) in stm_chunks
+            .iter()
+            .zip(ntm_chunks)
+            .zip(sw_chunks)
+            .zip(nw_chunks)
+        {
+            if screlu_i32_output_safe {
+                sum += dot_screlu_i16_128_i32(
+                    I16x128::from_array(*stm_chunk),
+                    I16x128::from_array(*sw_chunk),
+                );
+                sum += dot_screlu_i16_128_i32(
+                    I16x128::from_array(*ntm_chunk),
+                    I16x128::from_array(*nw_chunk),
+                );
+            } else {
+                sum += dot_screlu_i16_128(
+                    I16x128::from_array(*stm_chunk),
+                    I16x128::from_array(*sw_chunk),
+                );
+                sum += dot_screlu_i16_128(
+                    I16x128::from_array(*ntm_chunk),
+                    I16x128::from_array(*nw_chunk),
+                );
+            }
+        }
+
+        for (((stm_value, ntm_value), sw_value), nw_value) in
+            stm_tail.iter().zip(ntm_tail).zip(sw_tail).zip(nw_tail)
+        {
+            let v = (*stm_value as i32).clamp(0, QA) as i64;
+            sum += v * v * *sw_value as i64;
+            let v = (*ntm_value as i32).clamp(0, QA) as i64;
+            sum += v * v * *nw_value as i64;
+        }
+
+        return sum;
+    }
+
     for (((stm_chunk, ntm_chunk), sw_chunk), nw_chunk) in stm_chunks
         .iter()
         .zip(ntm_chunks)
@@ -448,25 +677,45 @@ pub fn simd_forward_base_crelu(
     out_w: &[i16],
     h: usize,
     use_screlu: bool,
+    screlu_i32_output_safe: bool,
 ) -> i64 {
     let mut sum = 0i64;
-
-    if use_screlu {
-        for j in 0..h {
-            let v = stm[j].clamp(0, QA as i16) as i64;
-            sum += v * v * out_w[j] as i64;
-        }
-        for j in 0..h {
-            let v = ntm[j].clamp(0, QA as i16) as i64;
-            sum += v * v * out_w[h + j] as i64;
-        }
-        return sum;
-    }
 
     let (stm_chunks, stm_tail) = stm[..h].as_chunks::<I16_LANES>();
     let (ntm_chunks, ntm_tail) = ntm[..h].as_chunks::<I16_LANES>();
     let (sw_chunks, sw_tail) = out_w[..h].as_chunks::<I16_LANES>();
     let (nw_chunks, nw_tail) = out_w[h..h + h].as_chunks::<I16_LANES>();
+
+    if use_screlu {
+        for (((stm_chunk, ntm_chunk), sw_chunk), nw_chunk) in stm_chunks
+            .iter()
+            .zip(ntm_chunks)
+            .zip(sw_chunks)
+            .zip(nw_chunks)
+        {
+            if screlu_i32_output_safe {
+                sum +=
+                    dot_screlu_i16_i32(I16x::from_array(*stm_chunk), I16x::from_array(*sw_chunk));
+                sum +=
+                    dot_screlu_i16_i32(I16x::from_array(*ntm_chunk), I16x::from_array(*nw_chunk));
+            } else {
+                sum += dot_screlu_i16(I16x::from_array(*stm_chunk), I16x::from_array(*sw_chunk));
+                sum += dot_screlu_i16(I16x::from_array(*ntm_chunk), I16x::from_array(*nw_chunk));
+            }
+        }
+
+        for (((stm_value, ntm_value), sw_value), nw_value) in
+            stm_tail.iter().zip(ntm_tail).zip(sw_tail).zip(nw_tail)
+        {
+            let v = (*stm_value as i32).clamp(0, QA) as i64;
+            sum += v * v * *sw_value as i64;
+            let v = (*ntm_value as i32).clamp(0, QA) as i64;
+            sum += v * v * *nw_value as i64;
+        }
+
+        return sum;
+    }
+
     for (((stm_chunk, ntm_chunk), sw_chunk), nw_chunk) in stm_chunks
         .iter()
         .zip(ntm_chunks)
@@ -500,25 +749,55 @@ pub fn simd512_forward_base_crelu(
     out_w: &[i16],
     h: usize,
     use_screlu: bool,
+    screlu_i32_output_safe: bool,
 ) -> i64 {
     let mut sum = 0i64;
-
-    if use_screlu {
-        for j in 0..h {
-            let v = stm[j].clamp(0, QA as i16) as i64;
-            sum += v * v * out_w[j] as i64;
-        }
-        for j in 0..h {
-            let v = ntm[j].clamp(0, QA as i16) as i64;
-            sum += v * v * out_w[h + j] as i64;
-        }
-        return sum;
-    }
 
     let (stm_chunks, stm_tail) = stm[..h].as_chunks::<I16_LANES_512>();
     let (ntm_chunks, ntm_tail) = ntm[..h].as_chunks::<I16_LANES_512>();
     let (sw_chunks, sw_tail) = out_w[..h].as_chunks::<I16_LANES_512>();
     let (nw_chunks, nw_tail) = out_w[h..h + h].as_chunks::<I16_LANES_512>();
+
+    if use_screlu {
+        for (((stm_chunk, ntm_chunk), sw_chunk), nw_chunk) in stm_chunks
+            .iter()
+            .zip(ntm_chunks)
+            .zip(sw_chunks)
+            .zip(nw_chunks)
+        {
+            if screlu_i32_output_safe {
+                sum += dot_screlu_i16_512_i32(
+                    I16x512::from_array(*stm_chunk),
+                    I16x512::from_array(*sw_chunk),
+                );
+                sum += dot_screlu_i16_512_i32(
+                    I16x512::from_array(*ntm_chunk),
+                    I16x512::from_array(*nw_chunk),
+                );
+            } else {
+                sum += dot_screlu_i16_512(
+                    I16x512::from_array(*stm_chunk),
+                    I16x512::from_array(*sw_chunk),
+                );
+                sum += dot_screlu_i16_512(
+                    I16x512::from_array(*ntm_chunk),
+                    I16x512::from_array(*nw_chunk),
+                );
+            }
+        }
+
+        for (((stm_value, ntm_value), sw_value), nw_value) in
+            stm_tail.iter().zip(ntm_tail).zip(sw_tail).zip(nw_tail)
+        {
+            let v = (*stm_value as i32).clamp(0, QA) as i64;
+            sum += v * v * *sw_value as i64;
+            let v = (*ntm_value as i32).clamp(0, QA) as i64;
+            sum += v * v * *nw_value as i64;
+        }
+
+        return sum;
+    }
+
     for (((stm_chunk, ntm_chunk), sw_chunk), nw_chunk) in stm_chunks
         .iter()
         .zip(ntm_chunks)
@@ -917,8 +1196,95 @@ pub unsafe fn simd_forward_base_crelu_x86_v3(
     out_w: &[i16],
     h: usize,
     use_screlu: bool,
+    screlu_i32_output_safe: bool,
+    screlu_i32_accumulator_safe: bool,
 ) -> i64 {
-    simd_forward_base_crelu(stm, ntm, out_w, h, use_screlu)
+    if use_screlu {
+        if screlu_i32_accumulator_safe {
+            let chunked_len = h / I16_LANES * I16_LANES;
+            let mut sum = _mm256_setzero_si256();
+
+            for offset in (0..chunked_len).step_by(I16_LANES) {
+                sum = add_screlu_i16x16_to_i32x8_sum_x86_v3!(
+                    sum,
+                    stm.as_ptr().add(offset),
+                    out_w.as_ptr().add(offset)
+                );
+                sum = add_screlu_i16x16_to_i32x8_sum_x86_v3!(
+                    sum,
+                    ntm.as_ptr().add(offset),
+                    out_w.as_ptr().add(h + offset)
+                );
+            }
+
+            let sum64 = add_i32x8_to_i64x4_sum_x86_v3!(_mm256_setzero_si256(), sum);
+            let mut lanes = [0i64; 4];
+            _mm256_storeu_si256(lanes.as_mut_ptr().cast(), sum64);
+            let mut total: i64 = lanes.iter().sum();
+            for j in chunked_len..h {
+                let v = (stm[j] as i32).clamp(0, QA) as i64;
+                total += v * v * out_w[j] as i64;
+                let v = (ntm[j] as i32).clamp(0, QA) as i64;
+                total += v * v * out_w[h + j] as i64;
+            }
+
+            return total;
+        }
+
+        if screlu_i32_output_safe {
+            let chunked_len = h / I16_LANES * I16_LANES;
+            let mut total = 0i64;
+
+            for offset in (0..chunked_len).step_by(I16_LANES) {
+                total += dot_screlu_i32_safe_i16x16_x86_v3!(
+                    stm.as_ptr().add(offset),
+                    out_w.as_ptr().add(offset)
+                );
+                total += dot_screlu_i32_safe_i16x16_x86_v3!(
+                    ntm.as_ptr().add(offset),
+                    out_w.as_ptr().add(h + offset)
+                );
+            }
+
+            for j in chunked_len..h {
+                let v = (stm[j] as i32).clamp(0, QA) as i64;
+                total += v * v * out_w[j] as i64;
+                let v = (ntm[j] as i32).clamp(0, QA) as i64;
+                total += v * v * out_w[h + j] as i64;
+            }
+
+            return total;
+        }
+
+        let chunked_len = h / I16_LANES * I16_LANES;
+        let mut sum = _mm256_setzero_si256();
+
+        for offset in (0..chunked_len).step_by(I16_LANES) {
+            sum = add_screlu_i16x16_to_i64x4_sum_x86_v3!(
+                sum,
+                stm.as_ptr().add(offset),
+                out_w.as_ptr().add(offset)
+            );
+            sum = add_screlu_i16x16_to_i64x4_sum_x86_v3!(
+                sum,
+                ntm.as_ptr().add(offset),
+                out_w.as_ptr().add(h + offset)
+            );
+        }
+
+        let mut lanes = [0i64; 4];
+        _mm256_storeu_si256(lanes.as_mut_ptr().cast(), sum);
+        let mut total: i64 = lanes.iter().sum();
+        for j in chunked_len..h {
+            let v = (stm[j] as i32).clamp(0, QA) as i64;
+            total += v * v * out_w[j] as i64;
+            let v = (ntm[j] as i32).clamp(0, QA) as i64;
+            total += v * v * out_w[h + j] as i64;
+        }
+
+        return total;
+    }
+    simd_forward_base_crelu(stm, ntm, out_w, h, use_screlu, screlu_i32_output_safe)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1016,8 +1382,10 @@ pub unsafe fn simd_forward_base_crelu_x86_avx512(
     out_w: &[i16],
     h: usize,
     use_screlu: bool,
+    screlu_i32_output_safe: bool,
+    _screlu_i32_accumulator_safe: bool,
 ) -> i64 {
-    simd512_forward_base_crelu(stm, ntm, out_w, h, use_screlu)
+    simd512_forward_base_crelu(stm, ntm, out_w, h, use_screlu, screlu_i32_output_safe)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1178,7 +1546,7 @@ mod tests {
         let out_w: Vec<i16> = (0..2 * h).map(|i| ((i * 19 % 101) as i16) - 50).collect();
 
         for use_screlu in [false, true] {
-            let actual = simd_forward_base_crelu(&stm, &ntm, &out_w, h, use_screlu);
+            let actual = simd_forward_base_crelu(&stm, &ntm, &out_w, h, use_screlu, use_screlu);
             let mut expected = 0i64;
             for i in 0..h {
                 let v = stm[i].clamp(0, QA as i16) as i64;
@@ -1200,7 +1568,7 @@ mod tests {
         let out_w: Vec<i16> = (0..2 * h).map(|i| ((i * 19 % 101) as i16) - 50).collect();
 
         for use_screlu in [false, true] {
-            let actual = simd128_forward_base_crelu(&stm, &ntm, &out_w, h, use_screlu);
+            let actual = simd128_forward_base_crelu(&stm, &ntm, &out_w, h, use_screlu, use_screlu);
             let expected = scalar_forward_base_crelu(&stm, &ntm, &out_w, h, use_screlu);
             assert_eq!(actual, expected);
         }
@@ -1214,10 +1582,74 @@ mod tests {
         let out_w: Vec<i16> = (0..2 * h).map(|i| ((i * 19 % 101) as i16) - 50).collect();
 
         for use_screlu in [false, true] {
-            let actual = simd512_forward_base_crelu(&stm, &ntm, &out_w, h, use_screlu);
+            let actual = simd512_forward_base_crelu(&stm, &ntm, &out_w, h, use_screlu, use_screlu);
             let expected = scalar_forward_base_crelu(&stm, &ntm, &out_w, h, use_screlu);
             assert_eq!(actual, expected);
         }
+    }
+
+    #[test]
+    fn forward_base_screlu_extreme_values_match_scalar_reference() {
+        let h = 103usize;
+        let values = [i16::MIN, -300, -1, 0, 1, 127, 254, 255, 256, 600, i16::MAX];
+        let weights = [i16::MIN, -30_000, -1024, -1, 0, 1, 1024, 30_000, i16::MAX];
+        let stm: Vec<i16> = (0..h).map(|i| values[i % values.len()]).collect();
+        let ntm: Vec<i16> = (0..h).map(|i| values[(i * 5 + 3) % values.len()]).collect();
+        let out_w: Vec<i16> = (0..2 * h)
+            .map(|i| weights[(i * 7 + 4) % weights.len()])
+            .collect();
+        let expected = scalar_forward_base_crelu(&stm, &ntm, &out_w, h, true);
+
+        assert_eq!(
+            simd128_forward_base_crelu(&stm, &ntm, &out_w, h, true, false),
+            expected
+        );
+        assert_eq!(
+            simd_forward_base_crelu(&stm, &ntm, &out_w, h, true, false),
+            expected
+        );
+        assert_eq!(
+            simd512_forward_base_crelu(&stm, &ntm, &out_w, h, true, false),
+            expected
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn forward_base_screlu_x86_v3_paths_match_scalar_reference() {
+        if !(std::arch::is_x86_feature_detected!("avx")
+            && std::arch::is_x86_feature_detected!("avx2")
+            && std::arch::is_x86_feature_detected!("bmi1")
+            && std::arch::is_x86_feature_detected!("bmi2")
+            && std::arch::is_x86_feature_detected!("fma")
+            && std::arch::is_x86_feature_detected!("lzcnt")
+            && std::arch::is_x86_feature_detected!("popcnt"))
+        {
+            return;
+        }
+
+        let h = 103usize;
+        let values = [i16::MIN, -300, -1, 0, 1, 127, 254, 255, 256, 600, i16::MAX];
+        let safe_weights = [-127, -19, -1, 0, 1, 23, 127];
+        let stm: Vec<i16> = (0..h).map(|i| values[i % values.len()]).collect();
+        let ntm: Vec<i16> = (0..h).map(|i| values[(i * 5 + 3) % values.len()]).collect();
+        let out_w: Vec<i16> = (0..2 * h)
+            .map(|i| safe_weights[(i * 7 + 4) % safe_weights.len()])
+            .collect();
+        let expected = scalar_forward_base_crelu(&stm, &ntm, &out_w, h, true);
+
+        assert_eq!(
+            unsafe { simd_forward_base_crelu_x86_v3(&stm, &ntm, &out_w, h, true, true, true) },
+            expected
+        );
+        assert_eq!(
+            unsafe { simd_forward_base_crelu_x86_v3(&stm, &ntm, &out_w, h, true, true, false) },
+            expected
+        );
+        assert_eq!(
+            unsafe { simd_forward_base_crelu_x86_v3(&stm, &ntm, &out_w, h, true, false, false) },
+            expected
+        );
     }
 
     #[test]

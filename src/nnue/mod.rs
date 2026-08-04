@@ -56,6 +56,8 @@ pub struct NNUENet {
     pub output_weights: Vec<i16>,
     pub output_bias: [i32; NNUE_OUTPUT_BUCKETS],
     pub use_screlu: bool,
+    pub screlu_i32_output_safe: bool,
+    pub screlu_i32_accumulator_safe: bool,
     pub use_pairwise: bool,
     pub l1_size: usize,
     pub l1_per_bucket: usize,
@@ -221,10 +223,18 @@ impl NNUENet {
         let mut output = self.output_bias[bucket] as i64;
 
         if self.use_screlu {
-            output += B::forward_base_crelu(stm, ntm, out_w, h, true);
+            output += B::forward_base_crelu(
+                stm,
+                ntm,
+                out_w,
+                h,
+                true,
+                self.screlu_i32_output_safe,
+                self.screlu_i32_accumulator_safe,
+            );
             output /= QA as i64;
         } else {
-            output += B::forward_base_crelu(stm, ntm, out_w, h, false);
+            output += B::forward_base_crelu(stm, ntm, out_w, h, false, false, false);
         }
 
         let mut result = (output * EVAL_SCALE as i64 / QAB as i64) as i32;

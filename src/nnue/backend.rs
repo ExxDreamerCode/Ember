@@ -15,6 +15,8 @@ pub(crate) trait NnueBackend: Copy {
         out_w: &[i16],
         h: usize,
         use_screlu: bool,
+        screlu_i32_output_safe: bool,
+        screlu_i32_accumulator_safe: bool,
     ) -> i64;
     #[allow(clippy::too_many_arguments)]
     fn l1_matmul(
@@ -92,6 +94,8 @@ impl NnueBackend for ScalarNnueBackend {
         out_w: &[i16],
         h: usize,
         use_screlu: bool,
+        _screlu_i32_output_safe: bool,
+        _screlu_i32_accumulator_safe: bool,
     ) -> i64 {
         simd::scalar_forward_base_crelu(stm, ntm, out_w, h, use_screlu)
     }
@@ -178,8 +182,10 @@ impl NnueBackend for Simd128NnueBackend {
         out_w: &[i16],
         h: usize,
         use_screlu: bool,
+        screlu_i32_output_safe: bool,
+        _screlu_i32_accumulator_safe: bool,
     ) -> i64 {
-        simd::simd128_forward_base_crelu(stm, ntm, out_w, h, use_screlu)
+        simd::simd128_forward_base_crelu(stm, ntm, out_w, h, use_screlu, screlu_i32_output_safe)
     }
 
     #[inline(always)]
@@ -327,13 +333,23 @@ impl NnueBackend for SimdNnueBackend {
         out_w: &[i16],
         h: usize,
         use_screlu: bool,
+        screlu_i32_output_safe: bool,
+        screlu_i32_accumulator_safe: bool,
     ) -> i64 {
         #[cfg(target_arch = "x86_64")]
         unsafe {
-            simd::simd_forward_base_crelu_x86_v3(stm, ntm, out_w, h, use_screlu)
+            simd::simd_forward_base_crelu_x86_v3(
+                stm,
+                ntm,
+                out_w,
+                h,
+                use_screlu,
+                screlu_i32_output_safe,
+                screlu_i32_accumulator_safe,
+            )
         }
         #[cfg(not(target_arch = "x86_64"))]
-        simd::simd_forward_base_crelu(stm, ntm, out_w, h, use_screlu)
+        simd::simd_forward_base_crelu(stm, ntm, out_w, h, use_screlu, screlu_i32_output_safe)
     }
 
     #[inline(always)]
@@ -444,8 +460,10 @@ impl NnueBackend for Simd512NnueBackend {
         out_w: &[i16],
         h: usize,
         use_screlu: bool,
+        screlu_i32_output_safe: bool,
+        _screlu_i32_accumulator_safe: bool,
     ) -> i64 {
-        simd::simd512_forward_base_crelu(stm, ntm, out_w, h, use_screlu)
+        simd::simd512_forward_base_crelu(stm, ntm, out_w, h, use_screlu, screlu_i32_output_safe)
     }
 
     #[inline(always)]
@@ -539,8 +557,20 @@ impl NnueBackend for Avx512NnueBackend {
         out_w: &[i16],
         h: usize,
         use_screlu: bool,
+        screlu_i32_output_safe: bool,
+        screlu_i32_accumulator_safe: bool,
     ) -> i64 {
-        unsafe { simd::simd_forward_base_crelu_x86_avx512(stm, ntm, out_w, h, use_screlu) }
+        unsafe {
+            simd::simd_forward_base_crelu_x86_avx512(
+                stm,
+                ntm,
+                out_w,
+                h,
+                use_screlu,
+                screlu_i32_output_safe,
+                screlu_i32_accumulator_safe,
+            )
+        }
     }
 
     #[inline(always)]
