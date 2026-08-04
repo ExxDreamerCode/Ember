@@ -62,3 +62,19 @@ psmkin5m-19-nxh4	16	r1q2rk1/pp3p1p/1np2Bp1/5n2/2P2Q1N/8/P1P2PPP/4RRK1 b - - 6 19
 
 # Lichess v8jiQh6Z before 166...Rb3, https://lichess.org/v8jiQh6Z. Black is winning a six-piece rook ending, but the halfmove clock is already 86; exact tablebase says 166...Rb3 and 166...Kh6 no longer preserve a 50-move-rule conversion. Search must keep quiet defender draw resources visible near the claim boundary instead of assuming White will reset the counter with f4.
 v8jiqh6z-166-rb3	1	R7/8/8/7k/4K3/2r2P2/8/3r4 b - - 86 166	-	h5h4|d1f1|h5g5|d1d3|d1e1|d1d7	lichess,v8jiQh6Z,fiftyMove,endgame,rook	0	0	0
+
+# Lichess aPSrt6iF before 21.d4, https://lichess.org/aPSrt6iF. In the game Ember spent 7 seconds and chose the central pawn shove; Stockfish 18 at 60 seconds prefers Qxa4 by about 1.8 pawns over d4 because Black's g-pawn/rook attack is already more important than the slow central passer plan.
+# DISABLED: keep as a search/evaluation regression candidate until a general king-safety or attacking-race fix makes Ember reject the d4 plan without hurting broader quality.
+# apsrt6if-21-qxa4	23	3r2r1/1kpnb3/1pp1q3/4p1pp/pPP1P3/P2PBN2/2Q2PP1/1R3RK1 w - - 0 21	-	c2a4	lichess,aPSrt6iF,kingSafety,passedPawn,horizon	0	0	0
+
+# Lichess aPSrt6iF before 22.d5, https://lichess.org/aPSrt6iF. After 21...g4, Ember spent 29 seconds and continued the same faulty plan with d5; Stockfish 18 at 60 seconds prefers Nxe5 by about 2.6 pawns and shows 22.d5 gxf3 23.dxe6 Rxg2+ as the tactical punishment.
+# DISABLED: companion to apsrt6if-21-qxa4; do not tune this narrowly unless the fix addresses the underlying king-attack versus passed-pawn race.
+# apsrt6if-22-nxe5	23	3r2r1/1kpnb3/1pp1q3/4p2p/pPPPP1p1/P3BN2/2Q2PP1/1R3RK1 w - - 0 22	-	f3e5	lichess,aPSrt6iF,kingSafety,passedPawn,horizon	0	0	0
+
+# Lichess mamfZxnW before 51.Re1, https://lichess.org/mamfZxnW. The later 65.Kd5 position is already forced-lost at deep Stockfish, but the earlier root cause is here: Ember played a quiet rook move while Stockfish 18 at 20 seconds prefers the immediate g4 break by about 1.2 pawns, keeping the rook/passed-pawn ending close to balanced.
+# DISABLED: low-material race regression candidate; the intended fix should make pawn-break urgency visible without overfitting one rook ending.
+# mamfzxnw-51-g4	23	8/1p4p1/1P2r2p/P1k1Pp1P/Kpp2P2/6P1/4R3/8 w - - 2 51	-	g3g4	lichess,mamfZxnW,endgame,passedPawn,pawnBreak	0	0	0
+
+# Lichess VIVYb2Xq before 75.Rf7, https://lichess.org/VIVYb2Xq. Ember still won, and deeper Stockfish makes this only a conversion nit: Nb4/Ne7/Rf7 are all clearly winning, with Stockfish 18 at 15 seconds putting Nb4 about half a pawn above Rf7. Keep it as an optional cleanup target, not a release blocker.
+# DISABLED: this is a high-winning-score conversion preference, not evidence of a lost advantage.
+# vivyb2xq-75-nb4	19	1kb4r/8/1K6/1P1NP3/2P5/8/5R2/8 w - - 7 75	-	d5b4	lichess,VIVYb2Xq,endgame,conversion,nit	0	0	0
