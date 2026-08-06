@@ -325,7 +325,8 @@ impl NnueBackend for SimdNnueBackend {
         #[cfg(not(target_arch = "x86_64"))]
         simd::simd_copy_update(dst, src, remove0, remove1, add)
     }
-
+    
+    #[allow(unused_variables)]
     #[inline(always)]
     fn forward_base_crelu(
         stm: &[i16],
@@ -334,7 +335,7 @@ impl NnueBackend for SimdNnueBackend {
         h: usize,
         use_screlu: bool,
         screlu_i32_output_safe: bool,
-        _screlu_i32_accumulator_safe: bool,
+        screlu_i32_accumulator_safe: bool,
     ) -> i64 {
         #[cfg(target_arch = "x86_64")]
         unsafe {
