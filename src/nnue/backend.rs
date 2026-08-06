@@ -325,7 +325,6 @@ impl NnueBackend for SimdNnueBackend {
         #[cfg(not(target_arch = "x86_64"))]
         simd::simd_copy_update(dst, src, remove0, remove1, add)
     }
-    
     #[allow(unused_variables)]
     #[inline(always)]
     fn forward_base_crelu(
