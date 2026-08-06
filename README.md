@@ -23,7 +23,7 @@ Russian version: [docs/README.ru.md](docs/README.ru.md).
 
 ## 🔧 Installation
 
-- Download the [latest release](https://github.com/ExxDreamerCode/Ember/releases/tag/V1.2.0)
+- Download the [latest release](https://github.com/ExxDreamerCode/Ember/releases/latest)
 
 Detailed instructions for reproducible Nix builds, release archives, and the portable Windows bundle are in [BUILD.md](BUILD.md).
 
