@@ -21,7 +21,7 @@
 
 ## 🔧 Установка
 
-- Скачайте [последний релиз](https://github.com/ExxDreamerCode/Ember/releases/tag/V1.2.0)
+- Скачайте [последний релиз](https://github.com/ExxDreamerCode/Ember/releases/latest)
 
 Подробная инструкция по воспроизводимым Nix-сборкам, выпускным архивам и
 portable Windows bundle вынесена в [BUILD.md](../BUILD.md).
