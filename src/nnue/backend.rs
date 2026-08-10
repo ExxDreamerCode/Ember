@@ -336,6 +336,9 @@ impl NnueBackend for SimdNnueBackend {
         screlu_i32_output_safe: bool,
         screlu_i32_accumulator_safe: bool,
     ) -> i64 {
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = screlu_i32_accumulator_safe;
+
         #[cfg(target_arch = "x86_64")]
         unsafe {
             simd::simd_forward_base_crelu_x86_v3(
