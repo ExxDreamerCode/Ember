@@ -1,5 +1,6 @@
 use super::{convert, NNUENet};
 use crate::board::{BoardState, BB, BK, BN, BP, BQ, BR, WB, WK, WN, WP, WQ, WR};
+use crate::simd;
 use crate::types::{BISHOP, BLACK, KING, KNIGHT, PAWN, QUEEN, ROOK, WHITE};
 
 const NNUE_NUM_PIECE_TYPES: usize = 12;
@@ -500,17 +501,13 @@ impl NNUEThreatAccumulator {
     fn add_threat_row(acc: &mut [i16], net: &NNUENet, index: usize) {
         let start = index * net.hidden_size;
         let row = &net.threat_weights[start..start + net.hidden_size];
-        for (slot, &weight) in acc.iter_mut().zip(row) {
-            *slot += i16::from(weight);
-        }
+        simd::simd_add_i8_row(acc, row);
     }
 
     fn sub_threat_row(acc: &mut [i16], net: &NNUENet, index: usize) {
         let start = index * net.hidden_size;
         let row = &net.threat_weights[start..start + net.hidden_size];
-        for (slot, &weight) in acc.iter_mut().zip(row) {
-            *slot -= i16::from(weight);
-        }
+        simd::simd_sub_i8_row(acc, row);
     }
 
     fn apply_piece_threats(

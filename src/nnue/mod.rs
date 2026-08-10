@@ -263,12 +263,12 @@ impl NNUENet {
         (output * EVAL_SCALE as i64 / QAB as i64) as i32
     }
 
-    #[inline(always)]
+    #[inline(never)]
     fn forward_l1_pairwise<B: NnueBackend>(&self, stm: &[i16], ntm: &[i16], bucket: usize) -> i32 {
         self.forward_l1_pairwise_inner::<B>(stm, ntm, None, None, bucket)
     }
 
-    #[inline(always)]
+    #[inline(never)]
     fn forward_l1_pairwise_with_threats<B: NnueBackend>(
         &self,
         stm: &[i16],
@@ -311,11 +311,11 @@ impl NNUENet {
         let mut sp = uninit_array::<u8, { MAX_HIDDEN_SIZE / 2 }>();
         let mut np = uninit_array::<u8, { MAX_HIDDEN_SIZE / 2 }>();
         if let (Some(stm_threat), Some(ntm_threat)) = (stm_threat, ntm_threat) {
-            Self::pairwise_pack_with_threats(stm, stm_threat, pw, &mut sp[..pw]);
-            Self::pairwise_pack_with_threats(ntm, ntm_threat, pw, &mut np[..pw]);
+            B::pairwise_pack_with_threats(stm, stm_threat, pw, &mut sp[..pw]);
+            B::pairwise_pack_with_threats(ntm, ntm_threat, pw, &mut np[..pw]);
         } else {
-            Self::pairwise_pack(stm, pw, &mut sp[..pw]);
-            Self::pairwise_pack(ntm, pw, &mut np[..pw]);
+            B::pairwise_pack(stm, pw, &mut sp[..pw]);
+            B::pairwise_pack(ntm, pw, &mut np[..pw]);
         }
         let sp = unsafe { assume_init_slice(&sp[..pw]) };
         let np = unsafe { assume_init_slice(&np[..pw]) };
@@ -342,29 +342,6 @@ impl NNUENet {
             self.forward_l2::<B>(l1_out, bucket, l1)
         } else {
             self.forward_l1_output(l1_out, bucket, l1)
-        }
-    }
-
-    fn pairwise_pack(input: &[i16], pw: usize, out: &mut [MaybeUninit<u8>]) {
-        debug_assert!(pw <= out.len());
-        for i in 0..pw {
-            let a = (input[i] as i32).clamp(0, QA);
-            let b = (input[i + pw] as i32).clamp(0, QA);
-            out[i].write(((a * b) >> FT_SHIFT) as u8);
-        }
-    }
-
-    fn pairwise_pack_with_threats(
-        input: &[i16],
-        threats: &[i16],
-        pw: usize,
-        out: &mut [MaybeUninit<u8>],
-    ) {
-        debug_assert!(pw <= out.len());
-        for i in 0..pw {
-            let a = (input[i] as i32 + threats[i] as i32).clamp(0, QA);
-            let b = (input[i + pw] as i32 + threats[i + pw] as i32).clamp(0, QA);
-            out[i].write(((a * b) >> FT_SHIFT) as u8);
         }
     }
 
@@ -421,6 +398,7 @@ impl NNUENet {
         };
 
         let ow = &self.out_weights_f[bucket * l2_pb..bucket * l2_pb + l2_pb];
+        let mut scratch = uninit_array::<f32, MAX_HIDDEN_SIZE>();
         let of = B::forward_l2(
             l1_out,
             &self.l2_weights_f,
@@ -430,6 +408,7 @@ impl NNUENet {
             l2_off,
             ow,
             self.out_bias_f[bucket],
+            &mut scratch[..l2],
         );
         (of * EVAL_SCALE as f32) as i32
     }

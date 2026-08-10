@@ -32,6 +32,13 @@ pub(crate) trait NnueBackend: Copy {
         out: &mut [MaybeUninit<i32>],
     );
     fn screlu_activation(hidden: &[i32], pw_scale: i32, qa_l1: i32, out: &mut [MaybeUninit<f32>]);
+    fn pairwise_pack(input: &[i16], pw: usize, out: &mut [MaybeUninit<u8>]);
+    fn pairwise_pack_with_threats(
+        input: &[i16],
+        threats: &[i16],
+        pw: usize,
+        out: &mut [MaybeUninit<u8>],
+    );
     #[allow(clippy::too_many_arguments)]
     fn forward_l2(
         l1_out: &[f32],
@@ -42,6 +49,7 @@ pub(crate) trait NnueBackend: Copy {
         l2_off: usize,
         out_weights: &[f32],
         out_bias: f32,
+        scratch: &mut [MaybeUninit<f32>],
     ) -> f32;
 }
 
@@ -125,6 +133,21 @@ impl NnueBackend for ScalarNnueBackend {
     }
 
     #[inline(always)]
+    fn pairwise_pack(input: &[i16], pw: usize, out: &mut [MaybeUninit<u8>]) {
+        simd::scalar_pairwise_pack(input, pw, out)
+    }
+
+    #[inline(always)]
+    fn pairwise_pack_with_threats(
+        input: &[i16],
+        threats: &[i16],
+        pw: usize,
+        out: &mut [MaybeUninit<u8>],
+    ) {
+        simd::scalar_pairwise_pack_with_threats(input, threats, pw, out)
+    }
+
+    #[inline(always)]
     #[allow(clippy::too_many_arguments)]
     fn forward_l2(
         l1_out: &[f32],
@@ -135,6 +158,7 @@ impl NnueBackend for ScalarNnueBackend {
         l2_off: usize,
         out_weights: &[f32],
         out_bias: f32,
+        scratch: &mut [MaybeUninit<f32>],
     ) -> f32 {
         simd::scalar_forward_l2(
             l1_out,
@@ -145,6 +169,7 @@ impl NnueBackend for ScalarNnueBackend {
             l2_off,
             out_weights,
             out_bias,
+            scratch,
         )
     }
 }
@@ -209,7 +234,22 @@ impl NnueBackend for Simd128NnueBackend {
 
     #[inline(always)]
     fn screlu_activation(hidden: &[i32], pw_scale: i32, qa_l1: i32, out: &mut [MaybeUninit<f32>]) {
-        simd::scalar_screlu_activation(hidden, pw_scale, qa_l1, out)
+        simd::simd128_screlu_activation(hidden, pw_scale, qa_l1, out)
+    }
+
+    #[inline(always)]
+    fn pairwise_pack(input: &[i16], pw: usize, out: &mut [MaybeUninit<u8>]) {
+        simd::simd128_pairwise_pack(input, pw, out)
+    }
+
+    #[inline(always)]
+    fn pairwise_pack_with_threats(
+        input: &[i16],
+        threats: &[i16],
+        pw: usize,
+        out: &mut [MaybeUninit<u8>],
+    ) {
+        simd::simd128_pairwise_pack_with_threats(input, threats, pw, out)
     }
 
     #[inline(always)]
@@ -223,6 +263,7 @@ impl NnueBackend for Simd128NnueBackend {
         l2_off: usize,
         out_weights: &[f32],
         out_bias: f32,
+        scratch: &mut [MaybeUninit<f32>],
     ) -> f32 {
         simd::simd128_forward_l2(
             l1_out,
@@ -233,6 +274,7 @@ impl NnueBackend for Simd128NnueBackend {
             l2_off,
             out_weights,
             out_bias,
+            scratch,
         )
     }
 }
@@ -383,7 +425,22 @@ impl NnueBackend for SimdNnueBackend {
 
     #[inline(always)]
     fn screlu_activation(hidden: &[i32], pw_scale: i32, qa_l1: i32, out: &mut [MaybeUninit<f32>]) {
-        simd::scalar_screlu_activation(hidden, pw_scale, qa_l1, out)
+        simd::simd_screlu_activation(hidden, pw_scale, qa_l1, out)
+    }
+
+    #[inline(always)]
+    fn pairwise_pack(input: &[i16], pw: usize, out: &mut [MaybeUninit<u8>]) {
+        simd::simd_pairwise_pack(input, pw, out)
+    }
+
+    #[inline(always)]
+    fn pairwise_pack_with_threats(
+        input: &[i16],
+        threats: &[i16],
+        pw: usize,
+        out: &mut [MaybeUninit<u8>],
+    ) {
+        simd::simd_pairwise_pack_with_threats(input, threats, pw, out)
     }
 
     #[inline(always)]
@@ -397,6 +454,7 @@ impl NnueBackend for SimdNnueBackend {
         l2_off: usize,
         out_weights: &[f32],
         out_bias: f32,
+        scratch: &mut [MaybeUninit<f32>],
     ) -> f32 {
         #[cfg(target_arch = "x86_64")]
         unsafe {
@@ -409,6 +467,7 @@ impl NnueBackend for SimdNnueBackend {
                 l2_off,
                 out_weights,
                 out_bias,
+                scratch,
             )
         }
         #[cfg(not(target_arch = "x86_64"))]
@@ -421,6 +480,7 @@ impl NnueBackend for SimdNnueBackend {
             l2_off,
             out_weights,
             out_bias,
+            scratch,
         )
     }
 }
@@ -485,7 +545,22 @@ impl NnueBackend for Simd512NnueBackend {
 
     #[inline(always)]
     fn screlu_activation(hidden: &[i32], pw_scale: i32, qa_l1: i32, out: &mut [MaybeUninit<f32>]) {
-        simd::scalar_screlu_activation(hidden, pw_scale, qa_l1, out)
+        simd::simd512_screlu_activation(hidden, pw_scale, qa_l1, out)
+    }
+
+    #[inline(always)]
+    fn pairwise_pack(input: &[i16], pw: usize, out: &mut [MaybeUninit<u8>]) {
+        simd::simd512_pairwise_pack(input, pw, out)
+    }
+
+    #[inline(always)]
+    fn pairwise_pack_with_threats(
+        input: &[i16],
+        threats: &[i16],
+        pw: usize,
+        out: &mut [MaybeUninit<u8>],
+    ) {
+        simd::simd512_pairwise_pack_with_threats(input, threats, pw, out)
     }
 
     #[inline(always)]
@@ -499,6 +574,7 @@ impl NnueBackend for Simd512NnueBackend {
         l2_off: usize,
         out_weights: &[f32],
         out_bias: f32,
+        scratch: &mut [MaybeUninit<f32>],
     ) -> f32 {
         simd::simd512_forward_l2(
             l1_out,
@@ -509,6 +585,7 @@ impl NnueBackend for Simd512NnueBackend {
             l2_off,
             out_weights,
             out_bias,
+            scratch,
         )
     }
 }
@@ -594,7 +671,22 @@ impl NnueBackend for Avx512NnueBackend {
 
     #[inline(always)]
     fn screlu_activation(hidden: &[i32], pw_scale: i32, qa_l1: i32, out: &mut [MaybeUninit<f32>]) {
-        simd::scalar_screlu_activation(hidden, pw_scale, qa_l1, out)
+        simd::simd512_screlu_activation(hidden, pw_scale, qa_l1, out)
+    }
+
+    #[inline(always)]
+    fn pairwise_pack(input: &[i16], pw: usize, out: &mut [MaybeUninit<u8>]) {
+        simd::simd512_pairwise_pack(input, pw, out)
+    }
+
+    #[inline(always)]
+    fn pairwise_pack_with_threats(
+        input: &[i16],
+        threats: &[i16],
+        pw: usize,
+        out: &mut [MaybeUninit<u8>],
+    ) {
+        simd::simd512_pairwise_pack_with_threats(input, threats, pw, out)
     }
 
     #[inline(always)]
@@ -608,6 +700,7 @@ impl NnueBackend for Avx512NnueBackend {
         l2_off: usize,
         out_weights: &[f32],
         out_bias: f32,
+        scratch: &mut [MaybeUninit<f32>],
     ) -> f32 {
         unsafe {
             simd::simd_forward_l2_x86_avx512(
@@ -619,6 +712,7 @@ impl NnueBackend for Avx512NnueBackend {
                 l2_off,
                 out_weights,
                 out_bias,
+                scratch,
             )
         }
     }

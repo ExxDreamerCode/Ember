@@ -8,6 +8,7 @@ use std::simd::{simd_swizzle, Simd};
 use std::arch::x86_64::*;
 
 const QA: i32 = 255;
+const FT_SHIFT: i32 = 9;
 const I16_LANES_128: usize = 8;
 const I32_LANES_128: usize = 4;
 const F32_LANES_128: usize = 4;
@@ -23,6 +24,7 @@ type I16x4 = Simd<i16, I32_LANES_128>;
 type I32x128 = Simd<i32, I32_LANES_128>;
 type F32x128 = Simd<f32, F32_LANES_128>;
 type I16x = Simd<i16, I16_LANES>;
+type I8x = Simd<i8, I16_LANES>;
 type I16x8 = Simd<i16, I32_LANES>;
 type I32x = Simd<i32, I32_LANES>;
 type F32x = Simd<f32, F32_LANES>;
@@ -66,6 +68,54 @@ pub fn scalar_copy_update(
             .wrapping_add(add[index]);
     }
 }
+
+#[inline(always)]
+pub fn scalar_add_i8_row(acc: &mut [i16], row: &[i8]) {
+    debug_assert_eq!(acc.len(), row.len());
+    for (acc_value, row_value) in acc.iter_mut().zip(row) {
+        *acc_value += i16::from(*row_value);
+    }
+}
+
+#[inline(always)]
+pub fn scalar_sub_i8_row(acc: &mut [i16], row: &[i8]) {
+    debug_assert_eq!(acc.len(), row.len());
+    for (acc_value, row_value) in acc.iter_mut().zip(row) {
+        *acc_value -= i16::from(*row_value);
+    }
+}
+
+macro_rules! define_simd_i8_row_update {
+    ($add_name:ident, $sub_name:ident, $acc_vector:ty, $row_vector:ty, $lanes:expr) => {
+        #[inline(always)]
+        pub fn $add_name(acc: &mut [i16], row: &[i8]) {
+            debug_assert_eq!(acc.len(), row.len());
+            let (acc_chunks, acc_tail) = acc.as_chunks_mut::<$lanes>();
+            let (row_chunks, row_tail) = row.as_chunks::<$lanes>();
+            for (acc_chunk, row_chunk) in acc_chunks.iter_mut().zip(row_chunks) {
+                let acc_values = <$acc_vector>::from_array(*acc_chunk);
+                let row_values = <$row_vector>::from_array(*row_chunk).cast::<i16>();
+                *acc_chunk = (acc_values + row_values).to_array();
+            }
+            scalar_add_i8_row(acc_tail, row_tail);
+        }
+
+        #[inline(always)]
+        pub fn $sub_name(acc: &mut [i16], row: &[i8]) {
+            debug_assert_eq!(acc.len(), row.len());
+            let (acc_chunks, acc_tail) = acc.as_chunks_mut::<$lanes>();
+            let (row_chunks, row_tail) = row.as_chunks::<$lanes>();
+            for (acc_chunk, row_chunk) in acc_chunks.iter_mut().zip(row_chunks) {
+                let acc_values = <$acc_vector>::from_array(*acc_chunk);
+                let row_values = <$row_vector>::from_array(*row_chunk).cast::<i16>();
+                *acc_chunk = (acc_values - row_values).to_array();
+            }
+            scalar_sub_i8_row(acc_tail, row_tail);
+        }
+    };
+}
+
+define_simd_i8_row_update!(simd_add_i8_row, simd_sub_i8_row, I16x, I8x, I16_LANES);
 
 #[inline(always)]
 pub fn scalar_forward_base_crelu(
@@ -141,6 +191,164 @@ pub fn scalar_screlu_activation(
     }
 }
 
+macro_rules! define_simd_screlu_activation {
+    ($name:ident, $vector:ty, $float_vector:ty, $lanes:expr) => {
+        #[inline(always)]
+        pub fn $name(hidden: &[i32], pw_scale: i32, qa_l1: i32, out: &mut [MaybeUninit<f32>]) {
+            debug_assert_eq!(hidden.len(), out.len());
+            let (hidden_chunks, hidden_tail) = hidden.as_chunks::<$lanes>();
+            let (out_chunks, out_tail) = out.as_chunks_mut::<$lanes>();
+            let pw_scale_value = pw_scale;
+            let pw_scale = <$vector>::splat(pw_scale_value);
+            let zero = <$vector>::splat(0);
+            let qa = <$vector>::splat(qa_l1);
+            let q = qa_l1 as f32;
+            let inv_qsq = <$float_vector>::splat(1.0 / (q * q));
+
+            for (hidden_chunk, out_chunk) in hidden_chunks.iter().zip(out_chunks) {
+                let values = (<$vector>::from_array(*hidden_chunk) / pw_scale)
+                    .simd_clamp(zero, qa)
+                    .cast::<f32>();
+                write_f32_array(out_chunk, (values * values * inv_qsq).to_array());
+            }
+
+            scalar_screlu_activation(hidden_tail, pw_scale_value, qa_l1, out_tail);
+        }
+    };
+}
+
+define_simd_screlu_activation!(simd128_screlu_activation, I32x128, F32x128, I32_LANES_128);
+define_simd_screlu_activation!(simd_screlu_activation, I32x, F32x, I32_LANES);
+define_simd_screlu_activation!(simd512_screlu_activation, I32x512, F32x512, I32_LANES_512);
+
+#[inline(always)]
+pub fn scalar_pairwise_pack(input: &[i16], pw: usize, out: &mut [MaybeUninit<u8>]) {
+    debug_assert!(pw <= out.len());
+    for i in 0..pw {
+        let a = (input[i] as i32).clamp(0, QA);
+        let b = (input[i + pw] as i32).clamp(0, QA);
+        out[i].write(((a * b) >> FT_SHIFT) as u8);
+    }
+}
+
+#[inline(always)]
+pub fn scalar_pairwise_pack_with_threats(
+    input: &[i16],
+    threats: &[i16],
+    pw: usize,
+    out: &mut [MaybeUninit<u8>],
+) {
+    debug_assert!(pw <= out.len());
+    for i in 0..pw {
+        let a = (input[i] as i32 + threats[i] as i32).clamp(0, QA);
+        let b = (input[i + pw] as i32 + threats[i + pw] as i32).clamp(0, QA);
+        out[i].write(((a * b) >> FT_SHIFT) as u8);
+    }
+}
+
+macro_rules! define_simd_pairwise_pack {
+    ($name:ident, $lanes:expr) => {
+        #[inline(always)]
+        pub fn $name(input: &[i16], pw: usize, out: &mut [MaybeUninit<u8>]) {
+            debug_assert!(pw <= out.len());
+            let first = &input[..pw];
+            let second = &input[pw..pw + pw];
+            let (first_chunks, first_tail) = first.as_chunks::<$lanes>();
+            let (second_chunks, second_tail) = second.as_chunks::<$lanes>();
+            let (out_chunks, out_tail) = out[..pw].as_chunks_mut::<$lanes>();
+            let qa = Simd::<i32, $lanes>::splat(QA);
+            let zero = Simd::<i32, $lanes>::splat(0);
+            for ((first_chunk, second_chunk), out_chunk) in first_chunks
+                .iter()
+                .zip(second_chunks)
+                .zip(out_chunks.iter_mut())
+            {
+                let a = Simd::<i16, $lanes>::from_array(*first_chunk)
+                    .cast::<i32>()
+                    .simd_clamp(zero, qa);
+                let b = Simd::<i16, $lanes>::from_array(*second_chunk)
+                    .cast::<i32>()
+                    .simd_clamp(zero, qa);
+                let packed = ((a * b) >> Simd::<i32, $lanes>::splat(FT_SHIFT)).to_array();
+                let mut values = [0u8; $lanes];
+                for (dst, src) in values.iter_mut().zip(packed) {
+                    *dst = src as u8;
+                }
+                write_u8_array(out_chunk, values);
+            }
+            for ((first_value, second_value), out_value) in
+                first_tail.iter().zip(second_tail).zip(out_tail)
+            {
+                let a = (*first_value as i32).clamp(0, QA);
+                let b = (*second_value as i32).clamp(0, QA);
+                out_value.write(((a * b) >> FT_SHIFT) as u8);
+            }
+        }
+    };
+}
+
+macro_rules! define_simd_pairwise_pack_with_threats {
+    ($name:ident, $lanes:expr) => {
+        #[inline(always)]
+        pub fn $name(input: &[i16], threats: &[i16], pw: usize, out: &mut [MaybeUninit<u8>]) {
+            debug_assert!(pw <= out.len());
+            let first = &input[..pw];
+            let second = &input[pw..pw + pw];
+            let first_threats = &threats[..pw];
+            let second_threats = &threats[pw..pw + pw];
+            let (first_chunks, first_tail) = first.as_chunks::<$lanes>();
+            let (second_chunks, second_tail) = second.as_chunks::<$lanes>();
+            let (first_threat_chunks, first_threat_tail) = first_threats.as_chunks::<$lanes>();
+            let (second_threat_chunks, second_threat_tail) = second_threats.as_chunks::<$lanes>();
+            let (out_chunks, out_tail) = out[..pw].as_chunks_mut::<$lanes>();
+            let qa = Simd::<i32, $lanes>::splat(QA);
+            let zero = Simd::<i32, $lanes>::splat(0);
+            for (
+                (((first_chunk, second_chunk), first_threat_chunk), second_threat_chunk),
+                out_chunk,
+            ) in first_chunks
+                .iter()
+                .zip(second_chunks)
+                .zip(first_threat_chunks)
+                .zip(second_threat_chunks)
+                .zip(out_chunks.iter_mut())
+            {
+                let a = (Simd::<i16, $lanes>::from_array(*first_chunk).cast::<i32>()
+                    + Simd::<i16, $lanes>::from_array(*first_threat_chunk).cast::<i32>())
+                .simd_clamp(zero, qa);
+                let b = (Simd::<i16, $lanes>::from_array(*second_chunk).cast::<i32>()
+                    + Simd::<i16, $lanes>::from_array(*second_threat_chunk).cast::<i32>())
+                .simd_clamp(zero, qa);
+                let packed = ((a * b) >> Simd::<i32, $lanes>::splat(FT_SHIFT)).to_array();
+                let mut values = [0u8; $lanes];
+                for (dst, src) in values.iter_mut().zip(packed) {
+                    *dst = src as u8;
+                }
+                write_u8_array(out_chunk, values);
+            }
+            for ((((first_value, second_value), first_threat), second_threat), out_value) in
+                first_tail
+                    .iter()
+                    .zip(second_tail)
+                    .zip(first_threat_tail)
+                    .zip(second_threat_tail)
+                    .zip(out_tail)
+            {
+                let a = (*first_value as i32 + *first_threat as i32).clamp(0, QA);
+                let b = (*second_value as i32 + *second_threat as i32).clamp(0, QA);
+                out_value.write(((a * b) >> FT_SHIFT) as u8);
+            }
+        }
+    };
+}
+
+define_simd_pairwise_pack!(simd128_pairwise_pack, I16_LANES_128);
+define_simd_pairwise_pack!(simd_pairwise_pack, I16_LANES);
+define_simd_pairwise_pack!(simd512_pairwise_pack, I16_LANES_512);
+define_simd_pairwise_pack_with_threats!(simd128_pairwise_pack_with_threats, I16_LANES_128);
+define_simd_pairwise_pack_with_threats!(simd_pairwise_pack_with_threats, I16_LANES);
+define_simd_pairwise_pack_with_threats!(simd512_pairwise_pack_with_threats, I16_LANES_512);
+
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
 pub fn scalar_forward_l2(
@@ -152,9 +360,16 @@ pub fn scalar_forward_l2(
     l2_off: usize,
     out_weights: &[f32],
     out_bias: f32,
+    scratch: &mut [MaybeUninit<f32>],
 ) -> f32 {
-    let mut h2 = vec![0.0f32; l2];
-    h2[..l2].copy_from_slice(&l2_biases[l2_off..l2_off + l2]);
+    debug_assert!(l2 <= scratch.len());
+    for (slot, bias) in scratch[..l2]
+        .iter_mut()
+        .zip(&l2_biases[l2_off..l2_off + l2])
+    {
+        slot.write(*bias);
+    }
+    let h2 = unsafe { assume_init_mut_slice(&mut scratch[..l2]) };
 
     for (i, &l1_value) in l1_out.iter().enumerate() {
         if l1_value == 0.0 {
@@ -209,6 +424,31 @@ fn write_i32_array<const LANES: usize>(out: &mut [MaybeUninit<i32>; LANES], valu
     unsafe {
         ptr::write(out.as_mut_ptr() as *mut [i32; LANES], values);
     }
+}
+
+#[inline(always)]
+fn write_f32_array<const LANES: usize>(out: &mut [MaybeUninit<f32>; LANES], values: [f32; LANES]) {
+    // Safety: the destination is exactly `LANES` contiguous uninitialized f32
+    // slots, and this writes every slot with an initialized value.
+    unsafe {
+        ptr::write(out.as_mut_ptr() as *mut [f32; LANES], values);
+    }
+}
+
+#[inline(always)]
+fn write_u8_array<const LANES: usize>(out: &mut [MaybeUninit<u8>; LANES], values: [u8; LANES]) {
+    // Safety: the destination is exactly `LANES` contiguous uninitialized u8
+    // slots, and this writes every slot with an initialized value.
+    unsafe {
+        ptr::write(out.as_mut_ptr() as *mut [u8; LANES], values);
+    }
+}
+
+#[inline(always)]
+unsafe fn assume_init_mut_slice<T>(values: &mut [MaybeUninit<T>]) -> &mut [T] {
+    // Safety: the caller guarantees every element in `values` has been
+    // initialized before converting the slice.
+    unsafe { std::slice::from_raw_parts_mut(values.as_mut_ptr() as *mut T, values.len()) }
 }
 
 #[inline(always)]
@@ -967,9 +1207,16 @@ pub fn simd128_forward_l2(
     l2_off: usize,
     out_weights: &[f32],
     out_bias: f32,
+    scratch: &mut [MaybeUninit<f32>],
 ) -> f32 {
-    let mut h2 = vec![0.0f32; l2];
-    h2[..l2].copy_from_slice(&l2_biases[l2_off..l2_off + l2]);
+    debug_assert!(l2 <= scratch.len());
+    for (slot, bias) in scratch[..l2]
+        .iter_mut()
+        .zip(&l2_biases[l2_off..l2_off + l2])
+    {
+        slot.write(*bias);
+    }
+    let h2 = unsafe { assume_init_mut_slice(&mut scratch[..l2]) };
 
     for (i, &l1_value) in l1_out.iter().enumerate() {
         if l1_value == 0.0 {
@@ -1029,9 +1276,16 @@ pub fn simd_forward_l2(
     l2_off: usize,
     out_weights: &[f32],
     out_bias: f32,
+    scratch: &mut [MaybeUninit<f32>],
 ) -> f32 {
-    let mut h2 = vec![0.0f32; l2];
-    h2[..l2].copy_from_slice(&l2_biases[l2_off..l2_off + l2]);
+    debug_assert!(l2 <= scratch.len());
+    for (slot, bias) in scratch[..l2]
+        .iter_mut()
+        .zip(&l2_biases[l2_off..l2_off + l2])
+    {
+        slot.write(*bias);
+    }
+    let h2 = unsafe { assume_init_mut_slice(&mut scratch[..l2]) };
 
     for (i, &l1_value) in l1_out.iter().enumerate() {
         if l1_value == 0.0 {
@@ -1091,9 +1345,16 @@ pub fn simd512_forward_l2(
     l2_off: usize,
     out_weights: &[f32],
     out_bias: f32,
+    scratch: &mut [MaybeUninit<f32>],
 ) -> f32 {
-    let mut h2 = vec![0.0f32; l2];
-    h2[..l2].copy_from_slice(&l2_biases[l2_off..l2_off + l2]);
+    debug_assert!(l2 <= scratch.len());
+    for (slot, bias) in scratch[..l2]
+        .iter_mut()
+        .zip(&l2_biases[l2_off..l2_off + l2])
+    {
+        slot.write(*bias);
+    }
+    let h2 = unsafe { assume_init_mut_slice(&mut scratch[..l2]) };
 
     for (i, &l1_value) in l1_out.iter().enumerate() {
         if l1_value == 0.0 {
@@ -1303,6 +1564,7 @@ pub unsafe fn simd_forward_l2_x86_v3(
     l2_off: usize,
     out_weights: &[f32],
     out_bias: f32,
+    scratch: &mut [MaybeUninit<f32>],
 ) -> f32 {
     simd_forward_l2(
         l1_out,
@@ -1313,6 +1575,7 @@ pub unsafe fn simd_forward_l2_x86_v3(
         l2_off,
         out_weights,
         out_bias,
+        scratch,
     )
 }
 
@@ -1392,6 +1655,7 @@ pub unsafe fn simd_forward_l2_x86_avx512(
     l2_off: usize,
     out_weights: &[f32],
     out_bias: f32,
+    scratch: &mut [MaybeUninit<f32>],
 ) -> f32 {
     simd512_forward_l2(
         l1_out,
@@ -1402,6 +1666,7 @@ pub unsafe fn simd_forward_l2_x86_avx512(
         l2_off,
         out_weights,
         out_bias,
+        scratch,
     )
 }
 
@@ -1454,6 +1719,21 @@ mod tests {
 
         simd_sub_row(&mut actual, &row);
         assert_eq!(actual, original);
+    }
+
+    #[test]
+    fn add_and_sub_i8_rows_match_scalar_reference() {
+        let mut actual: Vec<i16> = (0..67).map(|i| (i * 3 - 91) as i16).collect();
+        let mut expected = actual.clone();
+        let row: Vec<i8> = (0..67).map(|i| ((i * 5 % 127) - 63) as i8).collect();
+
+        simd_add_i8_row(&mut actual, &row);
+        scalar_add_i8_row(&mut expected, &row);
+        assert_eq!(actual, expected);
+
+        simd_sub_i8_row(&mut actual, &row);
+        scalar_sub_i8_row(&mut expected, &row);
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -1782,6 +2062,69 @@ mod tests {
     }
 
     #[test]
+    fn simd_screlu_activation_matches_scalar_reference() {
+        let pw_scale = (QA * QA) >> 9;
+        let qa_l1 = 255;
+        let hidden: Vec<i32> = (0..67).map(|i| (i * 173 % 100_000) - 20_000).collect();
+        let mut expected = vec![MaybeUninit::<f32>::uninit(); hidden.len()];
+        scalar_screlu_activation(&hidden, pw_scale, qa_l1, &mut expected);
+        let expected = initialized_values(&expected);
+
+        for activate in [
+            simd128_screlu_activation,
+            simd_screlu_activation,
+            simd512_screlu_activation,
+        ] {
+            let mut actual = vec![MaybeUninit::<f32>::uninit(); hidden.len()];
+            activate(&hidden, pw_scale, qa_l1, &mut actual);
+            assert_eq!(initialized_values(&actual), expected);
+        }
+    }
+
+    #[test]
+    fn simd_pairwise_pack_matches_scalar_reference() {
+        let pw = 67usize;
+        let input: Vec<i16> = (0..2 * pw)
+            .map(|i| ((i * 113 % 700) as i16) - 200)
+            .collect();
+        let mut expected = vec![MaybeUninit::<u8>::uninit(); pw];
+        scalar_pairwise_pack(&input, pw, &mut expected);
+        let expected = initialized_values(&expected);
+
+        for pack in [
+            simd128_pairwise_pack,
+            simd_pairwise_pack,
+            simd512_pairwise_pack,
+        ] {
+            let mut actual = vec![MaybeUninit::<u8>::uninit(); pw];
+            pack(&input, pw, &mut actual);
+            assert_eq!(initialized_values(&actual), expected);
+        }
+    }
+
+    #[test]
+    fn simd_pairwise_pack_with_threats_matches_scalar_reference() {
+        let pw = 67usize;
+        let input: Vec<i16> = (0..2 * pw)
+            .map(|i| ((i * 113 % 700) as i16) - 200)
+            .collect();
+        let threats: Vec<i16> = (0..2 * pw).map(|i| ((i * 71 % 255) as i16) - 127).collect();
+        let mut expected = vec![MaybeUninit::<u8>::uninit(); pw];
+        scalar_pairwise_pack_with_threats(&input, &threats, pw, &mut expected);
+        let expected = initialized_values(&expected);
+
+        for pack in [
+            simd128_pairwise_pack_with_threats,
+            simd_pairwise_pack_with_threats,
+            simd512_pairwise_pack_with_threats,
+        ] {
+            let mut actual = vec![MaybeUninit::<u8>::uninit(); pw];
+            pack(&input, &threats, pw, &mut actual);
+            assert_eq!(initialized_values(&actual), expected);
+        }
+    }
+
+    #[test]
     fn forward_l2_matches_scalar_reference() {
         let l1 = 13usize;
         let l2 = 19usize;
@@ -1806,6 +2149,7 @@ mod tests {
             .map(|i| ((i * 7 % 31) as f32 - 15.0) / 19.0)
             .collect();
         let out_bias = 0.125f32;
+        let mut scratch = vec![MaybeUninit::<f32>::uninit(); l2];
 
         let actual = simd_forward_l2(
             &l1_out,
@@ -1816,6 +2160,7 @@ mod tests {
             l2_off,
             &out_weights,
             out_bias,
+            &mut scratch,
         );
 
         let mut h2 = vec![0.0f32; l2];
