@@ -337,7 +337,7 @@ def run_single_match(cfg, best, params, name, value, engine_cmd, journal_path):
             "new_value": value,
             "verdict": verdict,
             "accepted": accepted,
-            "elo": -elo if elo is not None else None,
+            "elo": elo if elo is not None else None,
             "score_rate": summary.get("score_rate"),
             "pairs": summary.get("pairs", 0),
             "games": summary.get("games", 0),
@@ -456,3 +456,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# python tools/auto_tune/seek.py --time-control 1+0.01

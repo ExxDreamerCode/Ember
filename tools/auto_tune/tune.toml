@@ -2,7 +2,7 @@ results_dir = "results/tune"
 
 [common]
 time_controls = ["8+0.08", "1+0.01"]
-max_pairs = 300
+max_pairs = 1000
 min_pairs = 20
 batch_pairs = 20
 seed = 20260714
