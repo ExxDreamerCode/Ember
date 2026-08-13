@@ -143,6 +143,15 @@ fn maybe_load_nnue(path: &str) -> bool {
 }
 
 fn main() {
+    let main_thread = std::thread::Builder::new()
+        .name("main".into())
+        .stack_size(SEARCH_THREAD_STACK_SIZE)
+        .spawn(run_uci_loop)
+        .expect("failed to spawn main thread");
+    main_thread.join().expect("main thread panicked");
+}
+
+fn run_uci_loop() {
     let mut engine = Engine::new();
     let mut time_manager = TimeManager::default();
     let mut search_task: Option<SearchTask> = None;
