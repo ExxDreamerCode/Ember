@@ -2,6 +2,7 @@
 use crate::board::{move_from, move_to};
 use crate::board::{BoardState, Move, MATE};
 use crate::tt::{TT_ALPHA, TT_BETA, TT_EXACT};
+use crate::tune::{self, TuneParam};
 
 // Singular extensions remain available for controlled search experiments, but
 // are not part of the production search until they pass the strength gates.
@@ -32,9 +33,6 @@ pub(super) enum DrawStatus {
 }
 
 pub(crate) fn root_repetition_tie_scope(st: &BoardState) -> bool {
-    // A broad "avoid any root twofold" policy lost Elo. Keep this as a narrow
-    // high-halfmove conversion guard where another reversible shuffle has real
-    // fifty-move-rule cost and the normal search has no score preference.
     st.halfmove_clock >= ROOT_REPETITION_TIE_MIN_HALFMOVE_CLOCK
         && (0..12).map(|piece| st.bb[piece].count_ones()).sum::<u32>()
             <= ROOT_REPETITION_TIE_MAX_PIECES
@@ -45,7 +43,11 @@ pub(crate) fn prefer_non_repeating_root_on_tie(
     current_best_repeats: bool,
     candidate_repeats: bool,
 ) -> bool {
-    score >= ROOT_REPETITION_TIE_MIN_SCORE && current_best_repeats && !candidate_repeats
+    let min_score = tune::get_int(
+        TuneParam::RootRepetitionTieMinScore,
+        i64::from(ROOT_REPETITION_TIE_MIN_SCORE),
+    ) as i32;
+    score >= min_score && current_best_repeats && !candidate_repeats
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -232,10 +234,12 @@ pub(super) fn probcut_candidate(
     tt_depth: i32,
     tt_flag: Option<u8>,
 ) -> ProbCutEligibility {
-    if !enabled || actual_depth < PROBCUT_MIN_DEPTH {
+    let min_depth = tune::get_int(TuneParam::ProbCutMinDepth, i64::from(PROBCUT_MIN_DEPTH)) as i32;
+    let margin = tune::get_int(TuneParam::ProbCutMarginCp, i64::from(PROBCUT_MARGIN_CP)) as i32;
+    if !enabled || actual_depth < min_depth {
         return ProbCutEligibility::NoCandidate;
     }
-    let probcut_beta = beta + PROBCUT_MARGIN_CP;
+    let probcut_beta = beta + margin;
     if verification_active
         || ply == 0
         || is_pv

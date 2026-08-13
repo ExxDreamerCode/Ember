@@ -9,6 +9,7 @@ use chess_rs_lib::search::{
 };
 use chess_rs_lib::syzygy::SyzygyTables;
 use chess_rs_lib::time_management::TimeManager;
+use chess_rs_lib::tune::{self, TuneParam};
 use chess_rs_lib::zobrist::compute_hash;
 use chess_rs_lib::{book, Engine, EngineBookConfig, OpeningBook};
 use std::io::{self, BufRead};
@@ -258,6 +259,7 @@ fn run_uci_loop() {
                 println!();
                 println!("option name SyzygyPath type string default <empty>");
                 println!("option name UCI_Chess960 type check default false");
+                println!("option name Tune type string default <empty>");
                 #[cfg(feature = "decision-trace")]
                 println!("option name TraceFile type string default <empty>");
                 println!("uciok");
@@ -350,6 +352,28 @@ fn run_uci_loop() {
                             eprintln!("info string Chess960 mode disabled");
                         }
                     }
+                    "tune" => {
+                        if val.is_empty() {
+                            tune::reset();
+                            eprintln!("info string Tune overrides cleared");
+                        } else {
+                            let parsed = parse_tune_value(&val);
+                            match parsed {
+                                Ok(overrides) => {
+                                    for (param, value) in overrides {
+                                        tune::set(param, value);
+                                        eprintln!("info string Tune {} = {}", param.name(), value);
+                                    }
+                                }
+                                Err(message) => {
+                                    eprintln!(
+                                        "info string Ignoring invalid Tune value: {}",
+                                        message
+                                    )
+                                }
+                            }
+                        }
+                    }
                     "move overhead" => {
                         let parsed = val.parse::<f64>();
                         if !parsed.is_ok_and(|value| time_manager.set_move_overhead_ms(value)) {
@@ -362,6 +386,16 @@ fn run_uci_loop() {
                     },
                     _ => {
                         parse_setoption(&mut engine, &name, &val);
+                    }
+                }
+            }
+            "tune" => {
+                let overrides = tune::active_overrides();
+                if overrides.is_empty() {
+                    println!("info string tune: no active overrides");
+                } else {
+                    for (param, value) in overrides {
+                        println!("info string tune {} = {}", param.name(), value);
                     }
                 }
             }
@@ -564,6 +598,55 @@ fn parse_option_name_value(parts: &[&str]) -> Option<(String, String)> {
         .map(|idx| parts.get(idx + 1..).unwrap_or(&[]).join(" "))
         .unwrap_or_default();
     Some((name, value))
+}
+
+fn parse_tune_value(value: &str) -> Result<Vec<(TuneParam, i64)>, &'static str> {
+    let value = value.trim();
+    let value = value
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .or_else(|| {
+            value
+                .strip_prefix('\'')
+                .and_then(|rest| rest.strip_suffix('\''))
+        })
+        .unwrap_or(value)
+        .trim();
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    if value.contains('=') {
+        let mut overrides = Vec::new();
+        for token in value.split(',') {
+            let token = token.trim();
+            if token.is_empty() {
+                continue;
+            }
+            let Some((name, raw)) = token.split_once('=') else {
+                return Err("expected NAME=VALUE tokens separated by commas");
+            };
+            let Some(param) = TuneParam::from_name(name.trim()) else {
+                return Err("unknown tune parameter");
+            };
+            let parsed = raw
+                .trim()
+                .parse::<i64>()
+                .map_err(|_| "invalid tune value")?;
+            overrides.push((param, parsed));
+        }
+        return Ok(overrides);
+    }
+    let mut parts = value.split_whitespace();
+    let name = parts.next().unwrap_or_default();
+    let raw = parts.next().unwrap_or_default();
+    if parts.next().is_some() {
+        return Err("expected NAME value");
+    }
+    let Some(param) = TuneParam::from_name(name) else {
+        return Err("unknown tune parameter");
+    };
+    let parsed = raw.parse::<i64>().map_err(|_| "invalid tune value")?;
+    Ok(vec![(param, parsed)])
 }
 
 fn parse_check_value(value: &str) -> Option<bool> {
@@ -976,6 +1059,25 @@ mod tests {
 
         assert_eq!(name, "nnue backend");
         assert_eq!(value, "scalar");
+    }
+
+    #[test]
+    fn tune_value_parses_csv_and_space_forms() {
+        let csv = parse_tune_value("PROBCUT_MARGIN_CP=400,PROBCUT_MIN_DEPTH=12").unwrap();
+        assert_eq!(csv.len(), 2);
+        assert!(csv.contains(&(TuneParam::ProbCutMarginCp, 400)));
+        assert!(csv.contains(&(TuneParam::ProbCutMinDepth, 12)));
+
+        let spaced = parse_tune_value("ROOT_REPETITION_TIE_MIN_SCORE 320").unwrap();
+        assert_eq!(spaced, vec![(TuneParam::RootRepetitionTieMinScore, 320)]);
+
+        let quoted = parse_tune_value("\"PROBCUT_MIN_DEPTH=10\"").unwrap();
+        assert_eq!(quoted, vec![(TuneParam::ProbCutMinDepth, 10)]);
+
+        assert!(parse_tune_value("UNKNOWN=1").is_err());
+        assert!(parse_tune_value("PROBCUT_MIN_DEPTH=abc").is_err());
+        assert!(parse_tune_value("PROBCUT_MIN_DEPTH").is_err());
+        assert!(parse_tune_value("").unwrap().is_empty());
     }
 
     #[test]

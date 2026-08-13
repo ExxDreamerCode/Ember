@@ -12,6 +12,7 @@ pub mod search;
 #[cfg(feature = "decision-trace")]
 pub mod trace;
 pub mod tt;
+pub mod tune;
 pub mod zobrist;
 
 pub mod nnue;
