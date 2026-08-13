@@ -19,7 +19,7 @@ Russian version: [docs/README.ru.md](docs/README.ru.md).
 - **Rust nightly** to build from source. Use the pinned toolchain in
   `rust-toolchain.toml` (`nightly-2026-07-07`). The oldest nightly empirically
   verified for this revision is `nightly-2026-02-08`.
-- A UCI-compatible chess interface, for example [Arena](http://www.playwitharena.com/), [Cute Chess](https://cutechess.com/), or [Lichess](https://lichess.org/)
+- A UCI-compatible chess interface, for example [Arena](http://www.playwitharena.de/), [Cute Chess](https://cutechess.com/), or [Lichess](https://lichess.org/)
 
 ## 🔧 Installation
 

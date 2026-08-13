@@ -17,7 +17,7 @@
 - **Rust nightly** для сборки из исходников. Используйте закреплённый toolchain
   из `rust-toolchain.toml` (`nightly-2026-07-07`). Самый старый nightly,
   который был проверен на этой ревизии, — `nightly-2026-02-08`.
-- UCI-совместимая оболочка (например, [Arena](http://www.playwitharena.com/), [Cute Chess](https://cutechess.com/), [Lichess](https://lichess.org/))
+- UCI-совместимая оболочка (например, [Arena](http://www.playwitharena.de/), [Cute Chess](https://cutechess.com/), [Lichess](https://lichess.org/))
 
 ## 🔧 Установка
 
