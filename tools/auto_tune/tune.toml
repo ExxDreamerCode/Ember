@@ -1,0 +1,177 @@
+results_dir = "results/tune"
+
+[common]
+time_controls = ["8+0.08", "1+0.01"]
+max_pairs = 300
+min_pairs = 20
+batch_pairs = 20
+seed = 20260714
+opening_source = "polyglot"
+polyglot_book = "src/book.bin"
+book_min_plies = 8
+book_max_plies = 20
+max_moves = 220
+hash_mb = 64
+threads = 1
+cutechess_cmd = "cutechess-cli"
+
+[sprt]
+enabled = true
+elo0 = 0
+elo1 = 5
+alpha = 0.05
+beta = 0.05
+
+[[params]]
+name = "PROBCUT_MIN_DEPTH"
+base = 8
+min = 4
+max = 16
+step = 1
+
+[[params]]
+name = "PROBCUT_MARGIN_CP"
+base = 350
+min = 200
+max = 600
+step = 25
+
+[[params]]
+name = "ROOT_REPETITION_TIE_MIN_SCORE"
+base = 300
+min = 100
+max = 600
+step = 25
+
+[[params]]
+name = "REVERSE_FUTILITY_BASE_CP"
+base = 80
+min = 40
+max = 160
+step = 10
+
+[[params]]
+name = "REVERSE_FUTILITY_PER_DEPTH_CP"
+base = 65
+min = 30
+max = 120
+step = 5
+
+[[params]]
+name = "REVERSE_FUTILITY_MAX_DEPTH"
+base = 8
+min = 4
+max = 12
+step = 1
+
+[[params]]
+name = "FUTILITY_MARGIN_PER_DEPTH_CP"
+base = 150
+min = 80
+max = 250
+step = 10
+
+[[params]]
+name = "FUTILITY_MAX_DEPTH"
+base = 3
+min = 1
+max = 6
+step = 1
+
+[[params]]
+name = "NULL_MOVE_MIN_DEPTH"
+base = 3
+min = 1
+max = 6
+step = 1
+
+[[params]]
+name = "NULL_MOVE_REDUCTION_BASE"
+base = 3
+min = 1
+max = 5
+step = 1
+
+[[params]]
+name = "NULL_MOVE_REDUCTION_DIVISOR"
+base = 4
+min = 2
+max = 8
+step = 1
+
+[[params]]
+name = "NULL_MOVE_MARGIN_DIVISOR"
+base = 200
+min = 100
+max = 400
+step = 25
+
+[[params]]
+name = "NULL_MOVE_MARGIN_CAP"
+base = 3
+min = 1
+max = 5
+step = 1
+
+[[params]]
+name = "NULL_MOVE_KING_PRESSURE_LIMIT"
+base = 3
+min = 1
+max = 6
+step = 1
+
+[[params]]
+name = "NULL_MOVE_NON_PAWN_LIMIT"
+base = 4
+min = 2
+max = 8
+step = 1
+
+[[params]]
+name = "SEE_MARGIN_PER_DEPTH_CP"
+base = 80
+min = 40
+max = 160
+step = 10
+
+[[params]]
+name = "HISTORY_PRUNE_MARGIN_PER_DEPTH"
+base = 1024
+min = 512
+max = 2048
+step = 128
+
+[[params]]
+name = "HISTORY_PRUNE_MAX_DEPTH"
+base = 5
+min = 2
+max = 8
+step = 1
+
+[[params]]
+name = "CHECK_EXTENSION_MAX_DEPTH"
+base = 16
+min = 8
+max = 24
+step = 1
+
+[[params]]
+name = "LMP_MAX_DEPTH"
+base = 8
+min = 4
+max = 12
+step = 1
+
+[[params]]
+name = "IID_MIN_DEPTH"
+base = 4
+min = 2
+max = 8
+step = 1
+
+[[params]]
+name = "LMR_DIVISOR_MILLIS"
+base = 1800
+min = 1200
+max = 2400
+step = 100
