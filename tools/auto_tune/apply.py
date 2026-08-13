@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import tomllib
 from pathlib import Path
-
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_TUNE_TOML = HERE / "tune.toml"
