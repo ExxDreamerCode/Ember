@@ -3,6 +3,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import os
 import re
 import shlex
 import shutil
@@ -234,7 +235,7 @@ def engine_binary(engine_cmd):
         candidate = Path(exe)
         if candidate.is_file():
             path = str(candidate.resolve())
-        else:
+        elif os.name == "nt":
             for suffix in (".exe", ".cmd", ".bat", ".com"):
                 with_suffix = candidate.with_name(candidate.name + suffix)
                 if with_suffix.is_file():
