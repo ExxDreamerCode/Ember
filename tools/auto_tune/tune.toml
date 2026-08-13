@@ -18,8 +18,8 @@ cutechess_cmd = "cutechess-cli"
 [sprt]
 enabled = true
 elo0 = 0
-elo1 = 5
-alpha = 0.05
+elo1 = 3
+alpha = 0.10
 beta = 0.05
 
 [[params]]

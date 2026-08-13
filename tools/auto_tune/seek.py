@@ -154,14 +154,14 @@ def write_toml_config(path, config):
 
 
 def generate_match_config(
-    cfg, common, sprt, candidate_name, candidate_value, best, params, engine_cmd, time_control
+    cfg, common, sprt, candidate_name, candidate_value, best, params, engine_cmd, time_control, workers, worker_multiplier
 ):
     run_cfg = {
         "name": f"tune-{candidate_name.lower()}-{candidate_value}",
         "time_control": time_control,
         "timemargin_ms": 2000,
-        "workers": "auto",
-        "worker_multiplier": common.get("worker_multiplier", 1.0),
+        "workers": workers if workers is not None else "auto",
+        "worker_multiplier": worker_multiplier if worker_multiplier is not None else common.get("worker_multiplier", 1.0),
         "max_pairs": common["max_pairs"],
         "min_pairs": common["min_pairs"],
         "batch_pairs": common["batch_pairs"],
@@ -252,10 +252,10 @@ def write_match_report(results_root, run_id, record, summary):
     write_json(report_dir / "report.json", {"record": record, "summary": summary})
     accepted = record["accepted"]
     verdict_label = {
-        "engine_a_better": "отклонено (incumbent лучше)",
-        "engine_b_better": "принято (candidate лучше)",
-        "inconclusive": "неопределённо",
-        "continue": "продолжается",
+        "engine_a_better": "rejected (incumbent is better)",
+        "engine_b_better": "accepted (candidate is better)",
+        "inconclusive": "inconclusive",
+        "continue": "continuing",
     }.get(record["verdict"], record["verdict"])
     elo = record["elo"]
     elo_text = f"{elo:+.1f}" if elo is not None else "n/a"
@@ -270,17 +270,17 @@ def write_match_report(results_root, run_id, record, summary):
     lines = [
         f"# Tune report: {record['param']} {record['old_value']} -> {record['new_value']}",
         "",
-        f"- **Вердикт**: {verdict_label}",
-        f"- **Принято**: {'Да' if accepted else 'Нет'}",
+        f"- **Verdict**: {verdict_label}",
+        f"- **Accepted**: {'Yes' if accepted else 'No'}",
         f"- **Elo (candidate - incumbent)**: {elo_text}",
         f"- **Score rate**: {score_text}",
-        f"- **Пары / игры**: {pairs} / {games}",
+        f"- **Pairs / games**: {pairs} / {games}",
         f"- **LLR**: {llr_text}",
         f"- **Time control**: {record['time_control']}",
         f"- **SPRT**: elo0={record['sprt_elo0']}, elo1={record['sprt_elo1']}, "
         f"alpha={record['sprt_alpha']}, beta={record['sprt_beta']}",
-        f"- **Бинарник**: sha256 {record['binary_sha256']}",
-        f"- **Время**: {record['timestamp']}",
+        f"- **Binary**: sha256 {record['binary_sha256']}",
+        f"- **Time**: {record['timestamp']}",
         "",
     ]
     (report_dir / "report.md").write_text("\n".join(lines), encoding="utf-8")
@@ -308,14 +308,14 @@ def resolve_time_control(common, journal_path):
     return time_controls[journal_match_count(journal_path) % len(time_controls)]
 
 
-def run_single_match(cfg, best, params, name, value, engine_cmd, journal_path):
+def run_single_match(cfg, best, params, name, value, engine_cmd, journal_path, workers, worker_multiplier):
     common = cfg["common"]
     sprt = cfg["sprt"]
     time_control = resolve_time_control(common, journal_path)
     tmp = tempfile.mkdtemp(prefix="auto-tune-")
     try:
         config = generate_match_config(
-            cfg, common, sprt, name, value, best, params, engine_cmd, time_control
+            cfg, common, sprt, name, value, best, params, engine_cmd, time_control, workers, worker_multiplier
         )
         config_path = Path(tmp) / "match.toml"
         write_toml_config(config_path, config)
@@ -356,7 +356,7 @@ def run_single_match(cfg, best, params, name, value, engine_cmd, journal_path):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def try_candidate(cfg, best, params, name, candidate, engine_cmd, journal_path, best_path, dry_run):
+def try_candidate(cfg, best, params, name, candidate, engine_cmd, journal_path, best_path, dry_run, workers, worker_multiplier):
     if not in_range(next(s for s in params if s["name"] == name), candidate):
         return False
     print(f"[tune] try {name}={candidate}")
@@ -364,7 +364,7 @@ def try_candidate(cfg, best, params, name, candidate, engine_cmd, journal_path, 
         print(f"[tune] dry-run: would match {name}={candidate}")
         return False
     summary, _run_id, record = run_single_match(
-        cfg, best, params, name, candidate, engine_cmd, journal_path
+        cfg, best, params, name, candidate, engine_cmd, journal_path, workers, worker_multiplier
     )
     verdict = summary["verdict"]
     print(f"[tune] verdict for {name}={candidate}: {verdict}")
@@ -375,7 +375,7 @@ def try_candidate(cfg, best, params, name, candidate, engine_cmd, journal_path, 
     return False
 
 
-def tune_parameter(cfg, best, params, spec, engine_cmd, journal_path, best_path, dry_run):
+def tune_parameter(cfg, best, params, spec, engine_cmd, journal_path, best_path, dry_run, workers, worker_multiplier):
     name = spec["name"]
     current = value_for(best, params, name)
     print(f"[tune] parameter {name}: current={current}")
@@ -385,14 +385,14 @@ def tune_parameter(cfg, best, params, spec, engine_cmd, journal_path, best_path,
         improved = False
         for step in [spec["step"], -spec["step"]]:
             candidate = current + step
-            if try_candidate(cfg, best, params, name, candidate, engine_cmd, journal_path, best_path, dry_run):
+            if try_candidate(cfg, best, params, name, candidate, engine_cmd, journal_path, best_path, dry_run, workers, worker_multiplier):
                 current = candidate
                 improved = True
                 break
         if not improved:
             wider = current + 2 * spec["step"]
             if wider != current:
-                if try_candidate(cfg, best, params, name, wider, engine_cmd, journal_path, best_path, dry_run):
+                if try_candidate(cfg, best, params, name, wider, engine_cmd, journal_path, best_path, dry_run, workers, worker_multiplier):
                     current = wider
                     improved = True
     print(f"[tune] parameter {name} settled at {current}")
@@ -423,6 +423,18 @@ def main():
         default=None,
         help="override the time control for all matches",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="number of parallel games per match (default: auto from CPU count)",
+    )
+    parser.add_argument(
+        "--worker-multiplier",
+        type=float,
+        default=None,
+        help="fraction of logical CPUs to use for workers (default: 1.0)",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -445,6 +457,8 @@ def main():
             args.journal,
             args.best,
             args.dry_run,
+            args.workers,
+            args.worker_multiplier,
         )
 
     if args.dry_run:

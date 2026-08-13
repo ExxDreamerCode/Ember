@@ -1,204 +1,220 @@
-# Об автотюнинге констант поиска
+# Auto-tuning search constants
 
-Система автотюнинга позволяет искать более сильные значения констант поиска
-путём последовательных SPRT-матчей против текущего оптимального набора.
-Она не перекомпилирует движок для каждого кандидата: один release-бинарник
-использует единую UCI-опцию `Tune`, чтобы различать «текущий best» и
-«кандидата» на лету.
+The auto-tuning system searches for stronger values of search constants through
+sequential SPRT matches against the current best set. It does not recompile the
+engine for each candidate: a single release binary uses one UCI option `Tune`
+to distinguish the "current best" from the "candidate" on the fly.
 
-## Как это устроено
+## How it works
 
-### Инфраструктура в движке
+### Engine-side infrastructure
 
-Модуль `src/tune.rs` держит глобальные атомарные оверрайды для помеченных
-констант. В обычных играх (когда `Tune` не задана) hot-path чтение делает один
-`load(Relaxed)` и возвращает compile-time дефолт — накладных практически нет.
+The `src/tune.rs` module keeps global atomic overrides for the marked
+constants. In normal games (when `Tune` is not set) the hot-path read does a
+single `load(Relaxed)` and returns the compile-time default — practically no
+overhead.
 
-Константы, доступные для тюнинга, и их дефолты:
+The tunable constants and their defaults:
 
 ### Selectivity (src/search/selectivity.rs)
 
-| Параметр | Дефолт | Смысл |
+| Parameter | Default | Meaning |
 | --- | ---: | --- |
-| `PROBCUT_MIN_DEPTH` | 8 | Минимальная глубина для ProbCut |
-| `PROBCUT_MARGIN_CP` | 350 | Запас ProbCut в сантипешках |
-| `ROOT_REPETITION_TIE_MIN_SCORE` | 300 | Минимальный счёт для выбора не повторяющегося хода в корне |
+| `PROBCUT_MIN_DEPTH` | 8 | Minimum depth for ProbCut |
+| `PROBCUT_MARGIN_CP` | 350 | ProbCut margin in centipawns |
+| `ROOT_REPETITION_TIE_MIN_SCORE` | 300 | Minimum score to prefer a non-repeating root move |
 
 ### Reverse futility / futility pruning (src/search/negamax.rs)
 
-| Параметр | Дефолт | Смысл |
+| Parameter | Default | Meaning |
 | --- | ---: | --- |
-| `REVERSE_FUTILITY_BASE_CP` | 80 | База RFP-margin |
-| `REVERSE_FUTILITY_PER_DEPTH_CP` | 65 | Margin RFP на глубину |
-| `REVERSE_FUTILITY_MAX_DEPTH` | 8 | Максимальная глубина RFP |
-| `FUTILITY_MARGIN_PER_DEPTH_CP` | 150 | Margin futility на глубину |
-| `FUTILITY_MAX_DEPTH` | 3 | Максимальная глубина futility |
+| `REVERSE_FUTILITY_BASE_CP` | 80 | RFP margin base |
+| `REVERSE_FUTILITY_PER_DEPTH_CP` | 65 | RFP margin per depth |
+| `REVERSE_FUTILITY_MAX_DEPTH` | 8 | Maximum RFP depth |
+| `FUTILITY_MARGIN_PER_DEPTH_CP` | 150 | Futility margin per depth |
+| `FUTILITY_MAX_DEPTH` | 3 | Maximum futility depth |
 
 ### Null move
 
-| Параметр | Дефолт | Смысл |
+| Parameter | Default | Meaning |
 | --- | ---: | --- |
-| `NULL_MOVE_MIN_DEPTH` | 3 | Минимальная глубина для null move |
-| `NULL_MOVE_REDUCTION_BASE` | 3 | База редукции |
-| `NULL_MOVE_REDUCTION_DIVISOR` | 4 | Делитель глубины в редукции |
-| `NULL_MOVE_MARGIN_DIVISOR` | 200 | Делитель (eval − beta) в редукции |
-| `NULL_MOVE_MARGIN_CAP` | 3 | Потолок маржинальной части редукции |
-| `NULL_MOVE_KING_PRESSURE_LIMIT` | 3 | Макс. давление на короля для null move |
-| `NULL_MOVE_NON_PAWN_LIMIT` | 4 | Минимум непешечного материала для null move |
+| `NULL_MOVE_MIN_DEPTH` | 3 | Minimum depth for null move |
+| `NULL_MOVE_REDUCTION_BASE` | 3 | Reduction base |
+| `NULL_MOVE_REDUCTION_DIVISOR` | 4 | Depth divisor in reduction |
+| `NULL_MOVE_MARGIN_DIVISOR` | 200 | (eval − beta) divisor in reduction |
+| `NULL_MOVE_MARGIN_CAP` | 3 | Cap on the margin part of the reduction |
+| `NULL_MOVE_KING_PRESSURE_LIMIT` | 3 | Max king pressure allowed for null move |
+| `NULL_MOVE_NON_PAWN_LIMIT` | 4 | Minimum non-pawn material for null move |
 
-### Прюнинг (negamax.rs)
+### Pruning (negamax.rs)
 
-| Параметр | Дефолт | Смысл |
+| Parameter | Default | Meaning |
 | --- | ---: | --- |
-| `SEE_MARGIN_PER_DEPTH_CP` | 80 | Margin SEE-прюнинга на глубину |
-| `HISTORY_PRUNE_MARGIN_PER_DEPTH` | 1024 | Margin history-прюнинга на глубину |
-| `HISTORY_PRUNE_MAX_DEPTH` | 5 | Максимальная глубина history-прюнинга |
+| `SEE_MARGIN_PER_DEPTH_CP` | 80 | SEE pruning margin per depth |
+| `HISTORY_PRUNE_MARGIN_PER_DEPTH` | 1024 | History pruning margin per depth |
+| `HISTORY_PRUNE_MAX_DEPTH` | 5 | Maximum history pruning depth |
 
-### Селективность (negamax.rs)
+### Selectivity (negamax.rs)
 
-| Параметр | Дефолт | Смысл |
+| Parameter | Default | Meaning |
 | --- | ---: | --- |
-| `CHECK_EXTENSION_MAX_DEPTH` | 16 | Максимальная глубина для шахового расширения |
-| `LMP_MAX_DEPTH` | 8 | Максимальная глубина late move pruning |
-| `IID_MIN_DEPTH` | 4 | Минимальная глубина для внутренней итерации |
-| `LMR_DIVISOR_MILLIS` | 1800 | Делитель LMR-редукции (ln(move)·ln(depth)·1000 / divisor) |
+| `CHECK_EXTENSION_MAX_DEPTH` | 16 | Maximum depth for check extension |
+| `LMP_MAX_DEPTH` | 8 | Maximum late move pruning depth |
+| `IID_MIN_DEPTH` | 4 | Minimum depth for internal iterative deepening |
+| `LMR_DIVISOR_MILLIS` | 1800 | LMR reduction divisor (ln(move)·ln(depth)·1000 / divisor) |
 
-### UCI-интерфейс
+### UCI interface
 
 ```text
 option name Tune type string default <empty>
 ```
 
-Применение одного или нескольких оверрайдов:
+Applying one or more overrides:
 
 ```text
 setoption name Tune value "PROBCUT_MARGIN_CP=400,PROBCUT_MIN_DEPTH=12"
 ```
 
-Форматы значения `Tune`:
+`Tune` value formats:
 
-- CSV: `NAME=VALUE,NAME2=VALUE2` — рекомендуемый формат для cutechess,
-  поскольку один `option.Tune=...` не содержит пробелов;
-- пробельный: `NAME VALUE` — один параметр за вызов.
+- CSV: `NAME=VALUE,NAME2=VALUE2` — recommended for cutechess, since a single
+  `option.Tune=...` contains no spaces;
+- whitespace: `NAME VALUE` — one parameter per call.
 
-Просмотр активных оверрайдов:
+Viewing active overrides:
 
 ```text
 tune
 ```
 
-Пример ответа:
+Example response:
 
 ```text
 info string tune PROBCUT_MIN_DEPTH = 12
 info string tune PROBCUT_MARGIN_CP = 400
 ```
 
-Очистка:
+Clearing:
 
 ```text
 setoption name Tune value ""
 ```
 
-Важно: команда `ucinewgame` **не** сбрасывает оверрайды. Это нужно, чтобы
-настройка переживала переход между партиями внутри матча.
+Important: the `ucinewgame` command does **not** reset overrides. This is so the
+setting survives the transition between games inside a match.
 
-## Автотюнер
+## The auto-tuner
 
-Инструменты живут в `tools/auto_tune/`:
+The tools live in `tools/auto_tune/`:
 
-| Файл | Назначение |
+| File | Purpose |
 | --- | --- |
-| `tune.toml` | Описание параметров, диапазонов, SPRT и дебютов |
-| `seek.py` | Координатный спуск: перебирает соседей каждого параметра, гоняет SPRT против текущего best, ведёт журнал |
-| `apply.py` | Показывает значения из `best.json`, отличающиеся от дефолтов, для ручного переноса в код |
-| `best.json` | Текущие оптимальные значения (создаётся автоматически) |
-| `journal.jsonl` | Полный журнал каждого SPRT-матча |
+| `tune.toml` | Parameter descriptions, ranges, SPRT and openings |
+| `seek.py` | Coordinate descent: iterates neighbours of each parameter, runs SPRT against the current best, keeps a journal |
+| `apply.py` | Shows values from `best.json` that differ from the defaults, for manual porting into the code |
+| `best.json` | Current optimal values (created automatically) |
+| `journal.jsonl` | Full journal of every SPRT match |
 
-### Запуск
+### Running
 
-`seek.py` — обычный Python-скрипт, его не обязательно запускать внутри Nix.
-Он запускает матчи через `head_to_head.py`, поэтому для реального тюнинга
-нужны те же зависимости, что и у head-to-head runner'а:
+`seek.py` is a plain Python script; it does not have to run inside Nix. It
+launches matches through `head_to_head.py`, so real tuning needs the same
+dependencies as the head-to-head runner:
 
-- Python 3.11+ со стандартным модулем `tomllib`;
-- пакет `python-chess` (см. `requirements.txt`);
-- `cutechess-cli` в `PATH`;
-- release-бинарник движка (аргумент `--engine`).
+- Python 3.11+ with the standard `tomllib` module;
+- the `python-chess` package (see `requirements.txt`);
+- `cutechess-cli` on `PATH`;
+- a release engine binary (the `--engine` argument).
 
-Всё это даёт dev-shell `nix develop .#elo-runner`, либо можно поставить
-зависимости напрямую (`pip install -r requirements.txt` + `cutechess-cli`):
+All of this is provided by the `nix develop .#elo-runner` dev-shell, or you can
+install the dependencies directly (`pip install -r requirements.txt` +
+`cutechess-cli`):
 
 ```bash
-# Сборка release-бинарника (нужен только один раз)
+# Build the release binary (only needed once)
 cargo build --release --bin ember
 
-# Тюнинг всех параметров с указанным контролем времени
+# Tune all parameters with the given time control
 python tools/auto_tune/seek.py --time-control 8+0.08
 
-# Тюнинг выбранных параметров
+# Tune selected parameters
 python tools/auto_tune/seek.py --params PROBCUT_MIN_DEPTH,PROBCUT_MARGIN_CP
 
-# Просмотр найденных значений
+# Show the found values
 python tools/auto_tune/apply.py
 
-# Репетиция без реальных матчей (не требует cutechess и бинарника)
+# Rehearse without real matches (no cutechess or binary needed)
 python tools/auto_tune/seek.py --dry-run
+
+# Limit parallel games (default auto = all logical CPUs)
+python tools/auto_tune/seek.py --workers 4
+
+# Use half of the logical CPUs
+python tools/auto_tune/seek.py --worker-multiplier 0.5
 ```
 
-Если вы работаете в Linux dev-shell `nix develop .#elo-runner`, то
-`cutechess-cli`, `python-chess` и toolchain уже доступны, и `--engine`
-по умолчанию `target/release/ember` соберётся там же.
+Controlling parallelism inside a match:
 
-### Как принимаются решения
+- `--workers N` — number of parallel games (cutechess `-concurrency`).
+  Default `auto`: `floor(logical_cpus * worker_multiplier / threads)`.
+- `--worker-multiplier X` — fraction of logical CPUs used for workers
+  (default `1.0`). For example `0.5` on an 8-core machine gives 4 workers.
 
-1. Для параметра берётся текущее значение (из `best.json`, либо дефолт из
-   `tune.toml`).
-2. Пробуется сосед `current + step`, затем `current - step`.
-3. Каждый кандидат сравнивается с текущим best через `head_to_head.py run`
-   с включённым pentanomial SPRT (elo0=0, elo1=5, alpha=beta=0.05).
-   `engine_a` — incumbent, `engine_b` — кандидат.
-4. Кандидат принимается только когда SPRT отвергает нулевую гипотезу
-   (`engine_b_better` — «candidate лучше»). Вердикт `engine_a_better`
-   («incumbent лучше») означает отклонение кандидата, а
-   `inconclusive`/`continue` — недостаточно данных. После принятия значение
-   становится новым best и процесс повторяется в том же направлении.
-5. Когда оба соседа отвергнуты, пробуется более широкий шаг `current + 2*step`.
-6. Параметр замирает, когда ни один сосед не проходит — результат помечается
-   «settled».
+Reducing the workers **slows down** the match but frees CPU for other tasks.
 
-Тайм-контроли из `common.time_controls` чередуются между SPRT-матчами по
-кругу (счётчик берётся из числа записей в `journal.jsonl`). Флаг
-`--time-control` переопределяет набор целиком. После каждого принятого
-значения `best.json` перезаписывается сразу, а не только в конце прогона,
-поэтому прерванный тюнинг можно продолжить.
+If you work in the Linux `nix develop .#elo-runner` dev-shell, then
+`cutechess-cli`, `python-chess` and the toolchain are already available, and
+`--engine` defaults to `target/release/ember`, which builds there.
 
-Все матчи записываются в `journal.jsonl`: параметр, старое/новое значение,
-вердикт, принято/нет, Elo, score rate, пары/игры, LLR, SHA-256 бинарника,
-time control, параметры SPRT. Это позволяет воспроизвести любой результат и
-понять, почему значение было принято или отклонено.
+### How decisions are made
 
-### Отчёты о прогонах
+1. The current value of a parameter is taken (from `best.json`, or the default
+   from `tune.toml`).
+2. The neighbour `current + step` is tried, then `current - step`.
+3. Each candidate is compared with the current best via `head_to_head.py run`
+   with pentanomial SPRT enabled (elo0=0, elo1=5, alpha=beta=0.05).
+   `engine_a` is the incumbent, `engine_b` is the candidate.
+4. The candidate is accepted only when SPRT rejects the null hypothesis
+   (`engine_b_better` — "candidate is better"). The `engine_a_better` verdict
+   ("incumbent is better") means the candidate is rejected, and
+   `inconclusive`/`continue` means not enough data. After acceptance the value
+   becomes the new best and the process repeats in the same direction.
+5. When both neighbours are rejected, a wider step `current + 2*step` is tried.
+6. The parameter settles when no neighbour passes — the result is marked
+   "settled".
 
-Для каждого матча в `results/tune/<run_id>/` создаются два файла:
+Time controls from `common.time_controls` rotate between SPRT matches in a
+round-robin fashion (the counter comes from the number of entries in
+`journal.jsonl`). The `--time-control` flag overrides the whole set. After each
+accepted value `best.json` is rewritten immediately, not only at the end of the
+run, so an interrupted tuning can be resumed.
 
-- **`report.md`** — человекочитаемый отчёт: вердикт (принято/отклонено/
-  неопределённо), Elo (candidate − incumbent), score rate, пары/игры, LLR,
-  time control, параметры SPRT, SHA-256 бинарника, время.
-- **`report.json`** — машиночитаемая версия: `record` (все поля журнала) +
-  `summary` (полная статистика из `head_to_head.py`).
+All matches are recorded in `journal.jsonl`: parameter, old/new value, verdict,
+accepted or not, Elo, score rate, pairs/games, LLR, SHA-256 of the binary,
+time control, SPRT parameters. This makes any result reproducible and explains
+why a value was accepted or rejected.
 
-`run_id` имеет вид `tune-<param>-<value>-<timestamp>`, поэтому каждый прогон
-легко найти и сопоставить с записью в `journal.jsonl`.
+### Run reports
 
-### Конфигурация `tune.toml`
+For each match, two files are created in `results/tune/<run_id>/`:
+
+- **`report.md`** — human-readable report: verdict (accepted/rejected/
+  inconclusive), Elo (candidate − incumbent), score rate, pairs/games, LLR,
+  time control, SPRT parameters, SHA-256 of the binary, time.
+- **`report.json`** — machine-readable version: `record` (all journal fields) +
+  `summary` (full statistics from `head_to_head.py`).
+
+`run_id` has the form `tune-<param>-<value>-<timestamp>`, so each run is easy
+to find and match against a `journal.jsonl` entry.
+
+### `tune.toml` configuration
 
 ```toml
 results_dir = "results/tune"
 
 [common]
-time_controls = ["8+0.08", "1+0.01"]   # по какому ТС играть
-max_pairs = 300                        # лимит пар на один SPRT
+time_controls = ["8+0.08", "1+0.01"]   # which time controls to play
+max_pairs = 1000                        # pair limit per SPRT
 min_pairs = 20
 seed = 20260714
 opening_source = "polyglot"
@@ -210,8 +226,8 @@ cutechess_cmd = "cutechess-cli"
 [sprt]
 enabled = true
 elo0 = 0
-elo1 = 5
-alpha = 0.05
+elo1 = 3
+alpha = 0.10
 beta = 0.05
 
 [[params]]
@@ -222,31 +238,29 @@ max = 16
 step = 1
 ```
 
-`seek.py` собирает временный TOML-конфиг head-to-head для каждого матча:
-`engine_a` — incumbent со значениями из `best.json`, `engine_b` — кандидат,
-отличающийся только тюнингуемым параметром. Остальные параметры, уже
-улучшенные ранее, передаются обеим сторонам одинаково, поэтому каждый матч
-измеряет только один параметр.
+`seek.py` builds a temporary head-to-head TOML config for each match:
+`engine_a` is the incumbent with values from `best.json`, `engine_b` is the
+candidate differing only in the tuned parameter. The other parameters already
+improved earlier are passed to both sides identically, so each match measures
+only one parameter.
 
-## Важные ограничения
+## Important limitations
 
-- Автотюнер **не меняет код** — он лишь пишет `best.json` и `journal.jsonl`.
-  Значения из `apply.py` нужно перенести в `src/` вручную и подтвердить своим
-  SPRT перед коммитом.
-- Рекомендуется запускать на незанятой машине и не держать параллельные
-  CPU-насыщенные процессы — тайминги и NPS будут искажены.
-- SPRT с `elo0=0, elo1=5` — строгий тест: небольшие улучшения могут требовать
-  много пар. `max_pairs` ограничивает расход времени на бесперспективных
-  кандидатов.
-- Изменение значения параметра влияет на форму дерева поиска, поэтому после
-  принятия значения всегда стоит прогнать обычные корректностные проверки
-  (`cargo test --all-features`, `cargo clippy`) и сравнить NPS/search shape.
+- The auto-tuner does **not** change code — it only writes `best.json` and
+  `journal.jsonl`. Values from `apply.py` must be ported into `src/` manually
+  and confirmed with your own SPRT before committing.
+- It is recommended to run on an idle machine and not keep parallel
+  CPU-bound processes — timings and NPS will be distorted.
+- SPRT with `elo0=0, elo1=3` is a strict test: small improvements may need many
+  pairs. `max_pairs` limits the time spent on unpromising candidates.
+- Changing a parameter value affects the search tree shape, so after accepting
+  a value you should always run the usual correctness checks
+  (`cargo test --all-features`, `cargo clippy`) and compare NPS/search shape.
 
-## Добавление нового параметра
+## Adding a new parameter
 
-1. Добавьте вариант в `TuneParam` в `src/tune.rs` (имя, индекс, `from_name`).
-2. В месте использования константы замените чтение на
+1. Add a variant to `TuneParam` in `src/tune.rs` (name, index, `from_name`).
+2. At the usage site of the constant, replace the read with
    `tune::get_int(TuneParam::NewParam, DEFAULT)`.
-3. Добавьте `[[params]]` в `tools/auto_tune/tune.toml`.
-4. Прогоните `cargo test --all-features` и убедитесь, что дефолтный путь
-   неизменен.
+3. Add a `[[params]]` entry to `tools/auto_tune/tune.toml`.
+4. Run `cargo test --all-features` and make sure the default path is unchanged.
