@@ -81,7 +81,8 @@ macro_rules! negamax_mode_body {
         }
 
         let is_pv = beta - $alpha > 1;
-        let ext = if in_check && $depth < 16 { 1 } else { 0 };
+        let ext_depth = tune::get_int(TuneParam::CheckExtensionMaxDepth, 16) as i32;
+        let ext = if in_check && $depth < ext_depth { 1 } else { 0 };
         let actual_depth = $depth + ext;
 
         if excluded_move.is_none() && !is_pv && tt_depth >= actual_depth {
@@ -129,9 +130,16 @@ macro_rules! negamax_mode_body {
             );
         }
 
-        if $this.reverse_futility_enabled() && !in_check && !is_pv && actual_depth <= 8 && $ply > 0
+        let rfp_max_depth = tune::get_int(TuneParam::ReverseFutilityMaxDepth, 8) as i32;
+        let rfp_base = tune::get_int(TuneParam::ReverseFutilityBaseCp, 80) as i32;
+        let rfp_per_depth = tune::get_int(TuneParam::ReverseFutilityPerDepthCp, 65) as i32;
+        if $this.reverse_futility_enabled()
+            && !in_check
+            && !is_pv
+            && actual_depth <= rfp_max_depth
+            && $ply > 0
         {
-            let margin = 80 + 65 * actual_depth;
+            let margin = rfp_base + rfp_per_depth * actual_depth;
             if eval_score - margin >= beta {
                 #[cfg(feature = "search-debug")]
                 {
@@ -140,14 +148,16 @@ macro_rules! negamax_mode_body {
                 return eval_score - margin;
             }
         }
+        let futility_max_depth = tune::get_int(TuneParam::FutilityMaxDepth, 3) as i32;
+        let futility_margin = tune::get_int(TuneParam::FutilityMarginPerDepthCp, 150) as i32;
         if $this.futility_enabled()
             && excluded_move.is_none()
             && !in_check
             && !is_pv
-            && actual_depth <= 3
+            && actual_depth <= futility_max_depth
             && $ply > 0
         {
-            let margin = 150 * actual_depth;
+            let margin = futility_margin * actual_depth;
             if eval_score + margin <= $alpha {
                 let q = $this.$qsearch_mode::<CHESS960, NODE_LIMITED, E>(
                     $st,
@@ -169,24 +179,33 @@ macro_rules! negamax_mode_body {
                 }
             }
         }
+        let null_king_pressure = tune::get_int(TuneParam::NullMoveKingPressureLimit, 3) as u32;
+        let null_min_depth = tune::get_int(TuneParam::NullMoveMinDepth, 3) as i32;
+        let null_non_pawn = tune::get_int(TuneParam::NullMoveNonPawnLimit, 4) as u32;
+        let null_base = tune::get_int(TuneParam::NullMoveReductionBase, 3) as i32;
+        let null_divisor = tune::get_int(TuneParam::NullMoveReductionDivisor, 4) as i32;
+        let null_margin_divisor = tune::get_int(TuneParam::NullMoveMarginDivisor, 200) as i32;
+        let null_margin_cap = tune::get_int(TuneParam::NullMoveMarginCap, 3) as i32;
         if $this.null_move_enabled()
             && excluded_move.is_none()
-            && king_pressure < 3
+            && king_pressure < null_king_pressure
             && !in_check
             && $can_null
             && !is_pv
             && $ply > 0
-            && actual_depth >= 3
+            && actual_depth >= null_min_depth
             && has_non_pawn(&$st.bb, $st.w)
             && eval_score >= beta
         {
             let total_non_pawn = (all_occ(&$st.bb) & !($st.bb[WP] | $st.bb[BP])).count_ones();
-            if total_non_pawn > 4 {
+            if total_non_pawn > null_non_pawn {
                 #[cfg(feature = "search-debug")]
                 {
                     $this.debug.stats.null_attempts += 1;
                 }
-                let r = 3 + actual_depth / 4 + ((eval_score - beta) / 200).min(3);
+                let r = null_base
+                    + actual_depth / null_divisor
+                    + ((eval_score - beta) / null_margin_divisor).min(null_margin_cap);
                 let ow = $st.w;
                 let oe = $st.ep;
                 let old_ep_hash = ep_hash_square($st);
@@ -261,10 +280,11 @@ macro_rules! negamax_mode_body {
             };
         }
 
+        let iid_min_depth = tune::get_int(TuneParam::IidMinDepth, 4) as i32;
         let actual_depth = if $this.iid_reduction_enabled()
             && excluded_move.is_none()
             && tt_move.is_none()
-            && actual_depth >= 4
+            && actual_depth >= iid_min_depth
             && is_pv
         {
             #[cfg(feature = "search-debug")]
@@ -782,12 +802,13 @@ macro_rules! negamax_mode_body {
         Self::return_buf(&mut $this.move_bufs, $ply, moves_buf);
         scored.sort_unstable_by_key(|b| std::cmp::Reverse(b.0));
 
+        let lmp_max_depth = tune::get_int(TuneParam::LmpMaxDepth, 8) as i32;
         let lmp_count = if $this.lmp_enabled()
             && excluded_move.is_none()
             && king_pressure < 3
             && !is_pv
             && !in_check
-            && actual_depth <= 8
+            && actual_depth <= lmp_max_depth
         {
             match actual_depth {
                 1 => 4,
@@ -846,8 +867,10 @@ macro_rules! negamax_mode_body {
                 && best_score > -MATE / 2
             {
                 if capture {
+                    let see_margin = tune::get_int(TuneParam::SeeMarginPerDepthCp, 80) as i32;
                     if $this.see_pruning_enabled()
-                        && move_see::<CHESS960>($st, mv, from, to, fpi, tpi) < -80 * actual_depth
+                        && move_see::<CHESS960>($st, mv, from, to, fpi, tpi)
+                            < -see_margin * actual_depth
                     {
                         #[cfg(feature = "search-debug")]
                         {
@@ -857,7 +880,13 @@ macro_rules! negamax_mode_body {
                     }
                 } else if is_quiet && $this.history_pruning_enabled() {
                     let (fk, tk) = from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
-                    if actual_depth <= 5 && $this.history[fk][tk] < -1024 * actual_depth {
+                    let history_max_depth =
+                        tune::get_int(TuneParam::HistoryPruneMaxDepth, 5) as i32;
+                    let history_margin =
+                        tune::get_int(TuneParam::HistoryPruneMarginPerDepth, 1024) as i32;
+                    if actual_depth <= history_max_depth
+                        && $this.history[fk][tk] < -history_margin * actual_depth
+                    {
                         #[cfg(feature = "search-debug")]
                         {
                             $this.debug.stats.history_skips += 1;
@@ -922,6 +951,7 @@ macro_rules! negamax_mode_body {
 
             let new_depth = actual_depth - 1 + move_ext;
 
+            let lmr_divisor = tune::get_int(TuneParam::LmrDivisorMillis, 1800) as f64;
             let lmr_eligible = $this.lmr_enabled()
                 && excluded_move.is_none()
                 && move_index >= 2
@@ -943,8 +973,9 @@ macro_rules! negamax_mode_body {
                 )
             } else if lmr_eligible {
                 let r = {
-                    let base =
-                        (0.5 + (move_index as f64).ln() * (actual_depth as f64).ln() / 1.8) as i32;
+                    let base = (0.5
+                        + (move_index as f64).ln() * (actual_depth as f64).ln() * 1000.0
+                            / lmr_divisor) as i32;
                     let r = base.min(actual_depth - 1).max(1);
                     if !is_pv {
                         (r + 1).min(actual_depth - 1)

@@ -18,6 +18,7 @@ use crate::nnue::{
 use crate::syzygy::SyzygyTables;
 use crate::time_management::{iteration_time_decision, IterationTiming};
 use crate::tt::{SharedTT, TT_ALPHA, TT_BETA, TT_EXACT};
+use crate::tune::{self, TuneParam};
 use crate::types::{BLACK, WHITE};
 use crate::zobrist::{compute_pawn_hash, ep_hash_square, zobrist};
 #[cfg(feature = "search-debug")]
