@@ -22,17 +22,17 @@
 | --- | ---: | --- |
 | `PROBCUT_MIN_DEPTH` | 8 | Минимальная глубина для ProbCut |
 | `PROBCUT_MARGIN_CP` | 350 | Запас ProbCut в сантипешках |
-| `ROOT_REPETITION_TIE_MIN_SCORE` | 300 | Минимальный счёт для выбора нон-репитирующего хода в корне |
+| `ROOT_REPETITION_TIE_MIN_SCORE` | 300 | Минимальный счёт для выбора не повторяющегося хода в корне |
 
 ### Reverse futility / futility pruning (src/search/negamax.rs)
 
 | Параметр | Дефолт | Смысл |
 | --- | ---: | --- |
-| `REVERSE_FUTILITY_BASE_CP` | 80 | База RFP-маржина |
-| `REVERSE_FUTILITY_PER_DEPTH_CP` | 65 | Маржин RFP на глубину |
+| `REVERSE_FUTILITY_BASE_CP` | 80 | База RFP-margin |
+| `REVERSE_FUTILITY_PER_DEPTH_CP` | 65 | Margin RFP на глубину |
 | `REVERSE_FUTILITY_MAX_DEPTH` | 8 | Максимальная глубина RFP |
-| `FUTILITY_MARGIN_PER_DEPTH_CP` | 150 | Маржин футилити на глубину |
-| `FUTILITY_MAX_DEPTH` | 3 | Максимальная глубина футилити |
+| `FUTILITY_MARGIN_PER_DEPTH_CP` | 150 | Margin futility на глубину |
+| `FUTILITY_MAX_DEPTH` | 3 | Максимальная глубина futility |
 
 ### Null move
 
@@ -50,8 +50,8 @@
 
 | Параметр | Дефолт | Смысл |
 | --- | ---: | --- |
-| `SEE_MARGIN_PER_DEPTH_CP` | 80 | Маржин SEE-прюнинга на глубину |
-| `HISTORY_PRUNE_MARGIN_PER_DEPTH` | 1024 | Маржин history-прюнинга на глубину |
+| `SEE_MARGIN_PER_DEPTH_CP` | 80 | Margin SEE-прюнинга на глубину |
+| `HISTORY_PRUNE_MARGIN_PER_DEPTH` | 1024 | Margin history-прюнинга на глубину |
 | `HISTORY_PRUNE_MAX_DEPTH` | 5 | Максимальная глубина history-прюнинга |
 
 ### Селективность (negamax.rs)
@@ -117,6 +117,18 @@ setoption name Tune value ""
 
 ### Запуск
 
+`seek.py` — обычный Python-скрипт, его не обязательно запускать внутри Nix.
+Он запускает матчи через `head_to_head.py`, поэтому для реального тюнинга
+нужны те же зависимости, что и у head-to-head runner'а:
+
+- Python 3.11+ со стандартным модулем `tomllib`;
+- пакет `python-chess` (см. `requirements.txt`);
+- `cutechess-cli` в `PATH`;
+- release-бинарник движка (аргумент `--engine`).
+
+Всё это даёт dev-shell `nix develop .#elo-runner`, либо можно поставить
+зависимости напрямую (`pip install -r requirements.txt` + `cutechess-cli`):
+
 ```bash
 # Сборка release-бинарника (нужен только один раз)
 cargo build --release --bin ember
@@ -130,9 +142,13 @@ python tools/auto_tune/seek.py --params PROBCUT_MIN_DEPTH,PROBCUT_MARGIN_CP
 # Просмотр найденных значений
 python tools/auto_tune/apply.py
 
-# Репетиция без реальных матчей
+# Репетиция без реальных матчей (не требует cutechess и бинарника)
 python tools/auto_tune/seek.py --dry-run
 ```
+
+Если вы работаете в Linux dev-shell `nix develop .#elo-runner`, то
+`cutechess-cli`, `python-chess` и toolchain уже доступны, и `--engine`
+по умолчанию `target/release/ember` соберётся там же.
 
 ### Как принимаются решения
 
@@ -141,11 +157,21 @@ python tools/auto_tune/seek.py --dry-run
 2. Пробуется сосед `current + step`, затем `current - step`.
 3. Каждый кандидат сравнивается с текущим best через `head_to_head.py run`
    с включённым pentanomial SPRT (elo0=0, elo1=5, alpha=beta=0.05).
-4. Если SPRT принимает кандидата (`engine_a_better`/`engine_b_better`), он
+   `engine_a` — incumbent, `engine_b` — кандидат.
+4. Кандидат принимается только когда SPRT отвергает нулевую гипотезу
+   (`engine_b_better` — «candidate лучше»). Вердикт `engine_a_better`
+   («incumbent лучше») означает отклонение кандидата, а
+   `inconclusive`/`continue` — недостаточно данных. После принятия значение
    становится новым best и процесс повторяется в том же направлении.
 5. Когда оба соседа отвергнуты, пробуется более широкий шаг `current + 2*step`.
 6. Параметр замирает, когда ни один сосед не проходит — результат помечается
    «settled».
+
+Тайм-контроли из `common.time_controls` чередуются между SPRT-матчами по
+кругу (счётчик берётся из числа записей в `journal.jsonl`). Флаг
+`--time-control` переопределяет набор целиком. После каждого принятого
+значения `best.json` перезаписывается сразу, а не только в конце прогона,
+поэтому прерванный тюнинг можно продолжить.
 
 Все матчи записываются в `journal.jsonl`: параметр, старое/новое значение,
 вердикт, принято/нет, Elo, score rate, пары/игры, LLR, SHA-256 бинарника,

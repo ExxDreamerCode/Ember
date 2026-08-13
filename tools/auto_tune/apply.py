@@ -34,6 +34,11 @@ def main():
     for name, base, value in changes:
         print(f"  {name}: {base} -> {value}")
 
+    print()
+    tune_value = ",".join(f"{name}={value}" for name, _base, value in changes)
+    print(f'UCI Tune value: "{tune_value}"')
+    print(f"  setoption name Tune value {tune_value}")
+
 
 if __name__ == "__main__":
     main()

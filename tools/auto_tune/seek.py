@@ -3,6 +3,8 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -115,6 +117,12 @@ def engine_block(name, cmd, tune_value, common):
     }
 
 
+def toml_key(key):
+    if isinstance(key, str) and re.fullmatch(r"[A-Za-z0-9_-]+", key):
+        return key
+    return json.dumps(str(key))
+
+
 def toml_value(value):
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -124,6 +132,11 @@ def toml_value(value):
         return json.dumps(value)
     if isinstance(value, (list, tuple)):
         return "[" + ", ".join(toml_value(item) for item in value) + "]"
+    if isinstance(value, dict):
+        inner = ", ".join(
+            f"{toml_key(key)} = {toml_value(item)}" for key, item in value.items()
+        )
+        return "{ " + inner + " }"
     raise TypeError(f"unsupported TOML value: {value!r}")
 
 
@@ -139,10 +152,12 @@ def write_toml_config(path, config):
         f.write("\n".join(lines))
 
 
-def generate_match_config(cfg, common, sprt, candidate_name, candidate_value, best, params, engine_cmd):
+def generate_match_config(
+    cfg, common, sprt, candidate_name, candidate_value, best, params, engine_cmd, time_control
+):
     run_cfg = {
         "name": f"tune-{candidate_name.lower()}-{candidate_value}",
-        "time_control": common.get("time_control") or common["time_controls"][0],
+        "time_control": time_control,
         "timemargin_ms": 2000,
         "workers": "auto",
         "worker_multiplier": common.get("worker_multiplier", 1.0),
@@ -160,6 +175,7 @@ def generate_match_config(cfg, common, sprt, candidate_name, candidate_value, be
         "results_dir": str(Path(cfg["results_dir"]) / "runs"),
         "rating_interval": 20,
         "max_moves": common["max_moves"],
+        "cutechess_cmd": common.get("cutechess_cmd", "cutechess-cli"),
     }
     return {
         "run": run_cfg,
@@ -212,10 +228,18 @@ def read_verdict(config_path, run_id):
 
 
 def engine_binary(engine_cmd):
-    exe = engine_cmd.split()[0]
+    exe = shlex.split(engine_cmd)[0]
     path = shutil.which(exe)
-    if path is None and Path(exe).is_absolute():
-        path = exe
+    if path is None:
+        candidate = Path(exe)
+        if candidate.is_file():
+            path = str(candidate.resolve())
+        else:
+            for suffix in (".exe", ".cmd", ".bat", ".com"):
+                with_suffix = candidate.with_name(candidate.name + suffix)
+                if with_suffix.is_file():
+                    path = str(with_suffix.resolve())
+                    break
     if path is None:
         raise RuntimeError(f"cannot find engine binary: {engine_cmd}")
     return path
@@ -232,7 +256,7 @@ def write_match_report(results_root, run_id, record, summary):
         "inconclusive": "неопределённо",
         "continue": "продолжается",
     }.get(record["verdict"], record["verdict"])
-    elo = summary.get("elo")
+    elo = record["elo"]
     elo_text = f"{elo:+.1f}" if elo is not None else "n/a"
     score_rate = summary.get("score_rate")
     score_text = f"{100.0 * score_rate:.2f}%" if score_rate is not None else "n/a"
@@ -261,23 +285,50 @@ def write_match_report(results_root, run_id, record, summary):
     (report_dir / "report.md").write_text("\n".join(lines), encoding="utf-8")
 
 
+def journal_match_count(journal_path):
+    if not Path(journal_path).exists():
+        return 0
+    count = 0
+    with open(journal_path, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                count += 1
+    return count
+
+
+def resolve_time_control(common, journal_path):
+    if common.get("time_control"):
+        return common["time_control"]
+    time_controls = common.get("time_controls") or []
+    if not time_controls:
+        raise RuntimeError(
+            "tune.toml must define common.time_controls or common.time_control"
+        )
+    return time_controls[journal_match_count(journal_path) % len(time_controls)]
+
+
 def run_single_match(cfg, best, params, name, value, engine_cmd, journal_path):
     common = cfg["common"]
     sprt = cfg["sprt"]
+    time_control = resolve_time_control(common, journal_path)
     tmp = tempfile.mkdtemp(prefix="auto-tune-")
     try:
         config = generate_match_config(
-            cfg, common, sprt, name, value, best, params, engine_cmd
+            cfg, common, sprt, name, value, best, params, engine_cmd, time_control
         )
         config_path = Path(tmp) / "match.toml"
         write_toml_config(config_path, config)
-        run_id = f"tune-{name.lower()}-{value}-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        run_id = (
+            f"tune-{name.lower()}-{value}-"
+            f"{dt.datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
+        )
         run_match(config_path, run_id)
         summary = read_summary(config_path, run_id)
         verdict = summary["verdict"]
         binary = engine_binary(engine_cmd)
         old_value = value_for(best, params, name)
-        accepted = verdict in ("engine_a_better", "engine_b_better")
+        accepted = verdict == "engine_b_better"
+        elo = summary.get("elo")
         record = {
             "timestamp": now_utc(),
             "param": name,
@@ -285,13 +336,13 @@ def run_single_match(cfg, best, params, name, value, engine_cmd, journal_path):
             "new_value": value,
             "verdict": verdict,
             "accepted": accepted,
-            "elo": summary.get("elo"),
+            "elo": -elo if elo is not None else None,
             "score_rate": summary.get("score_rate"),
             "pairs": summary.get("pairs", 0),
             "games": summary.get("games", 0),
             "llr": summary["sprt"].get("llr") if summary.get("sprt") else None,
             "binary_sha256": sha256_file(binary),
-            "time_control": common.get("time_control") or common["time_controls"][0],
+            "time_control": time_control,
             "sprt_elo0": sprt["elo0"],
             "sprt_elo1": sprt["elo1"],
             "sprt_alpha": sprt.get("alpha", 0.05),
@@ -299,30 +350,31 @@ def run_single_match(cfg, best, params, name, value, engine_cmd, journal_path):
         }
         append_journal(journal_path, record)
         write_match_report(cfg["results_dir"], run_id, record, summary)
-        return config_path, run_id
+        return summary, run_id, record
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def try_candidate(cfg, best, params, name, candidate, engine_cmd, journal_path, dry_run):
+def try_candidate(cfg, best, params, name, candidate, engine_cmd, journal_path, best_path, dry_run):
     if not in_range(next(s for s in params if s["name"] == name), candidate):
         return False
     print(f"[tune] try {name}={candidate}")
     if dry_run:
         print(f"[tune] dry-run: would match {name}={candidate}")
         return False
-    config_path, run_id = run_single_match(
+    summary, _run_id, record = run_single_match(
         cfg, best, params, name, candidate, engine_cmd, journal_path
     )
-    verdict = read_verdict(config_path, run_id)
+    verdict = summary["verdict"]
     print(f"[tune] verdict for {name}={candidate}: {verdict}")
-    if verdict in ("engine_a_better", "engine_b_better"):
+    if verdict == "engine_b_better":
         best["values"][name] = candidate
+        write_best(best_path, best)
         return True
     return False
 
 
-def tune_parameter(cfg, best, params, spec, engine_cmd, journal_path, dry_run):
+def tune_parameter(cfg, best, params, spec, engine_cmd, journal_path, best_path, dry_run):
     name = spec["name"]
     current = value_for(best, params, name)
     print(f"[tune] parameter {name}: current={current}")
@@ -332,14 +384,14 @@ def tune_parameter(cfg, best, params, spec, engine_cmd, journal_path, dry_run):
         improved = False
         for step in [spec["step"], -spec["step"]]:
             candidate = current + step
-            if try_candidate(cfg, best, params, name, candidate, engine_cmd, journal_path, dry_run):
+            if try_candidate(cfg, best, params, name, candidate, engine_cmd, journal_path, best_path, dry_run):
                 current = candidate
                 improved = True
                 break
         if not improved:
             wider = current + 2 * spec["step"]
             if wider != current:
-                if try_candidate(cfg, best, params, name, wider, engine_cmd, journal_path, dry_run):
+                if try_candidate(cfg, best, params, name, wider, engine_cmd, journal_path, best_path, dry_run):
                     current = wider
                     improved = True
     print(f"[tune] parameter {name} settled at {current}")
@@ -390,11 +442,15 @@ def main():
             spec,
             args.engine,
             args.journal,
+            args.best,
             args.dry_run,
         )
 
-    write_best(args.best, best)
-    print(f"[tune] best.json updated: {json.dumps(best['values'], sort_keys=True)}")
+    if args.dry_run:
+        print("[tune] dry-run: best.json and journal left untouched")
+    else:
+        write_best(args.best, best)
+        print(f"[tune] best.json updated: {json.dumps(best['values'], sort_keys=True)}")
 
 
 if __name__ == "__main__":
