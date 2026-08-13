@@ -138,31 +138,30 @@ pub fn search_backend_available(backend: SearchBackendKind) -> bool {
     }
 }
 
+#[inline]
+fn portable_simd_available() -> bool {
+    x86_v3_available() || aarch64_simd_available()
+}
+
 pub fn available_nnue_backends() -> Vec<NnueBackendKind> {
-    let mut backends = vec![NnueBackendKind::Scalar];
-
-    if aarch64_simd_available() {
-        backends.push(NnueBackendKind::Simd128);
-    }
-    if x86_v3_available() || aarch64_simd_available() {
-        backends.push(NnueBackendKind::Simd256);
-    }
-    if aarch64_simd_available() {
-        backends.push(NnueBackendKind::Simd512);
-    }
-    if x86_avx512_available() {
-        backends.push(NnueBackendKind::X86Avx512);
-    }
-
-    backends
+    [
+        NnueBackendKind::Scalar,
+        NnueBackendKind::Simd128,
+        NnueBackendKind::Simd256,
+        NnueBackendKind::Simd512,
+        NnueBackendKind::X86Avx512,
+    ]
+    .into_iter()
+    .filter(|&backend| nnue_backend_available(backend))
+    .collect()
 }
 
 pub fn nnue_backend_available(backend: NnueBackendKind) -> bool {
     match backend {
         NnueBackendKind::Scalar => true,
-        NnueBackendKind::Simd128 => aarch64_simd_available(),
-        NnueBackendKind::Simd256 => x86_v3_available() || aarch64_simd_available(),
-        NnueBackendKind::Simd512 => aarch64_simd_available(),
+        NnueBackendKind::Simd128 | NnueBackendKind::Simd256 | NnueBackendKind::Simd512 => {
+            portable_simd_available()
+        }
         NnueBackendKind::X86Avx512 => x86_avx512_available(),
     }
 }

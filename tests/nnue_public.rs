@@ -1,4 +1,7 @@
-use chess_rs_lib::backend::available_nnue_backends;
+use chess_rs_lib::backend::{
+    aarch64_simd_available, available_nnue_backends, nnue_backend_available, x86_v3_available,
+    NnueBackendKind,
+};
 use chess_rs_lib::nnue::{threat_feature_count, NNUEAccumulator, NNUENet, NNUEThreatAccumulator};
 use chess_rs_lib::types::{BLACK, WHITE};
 use chess_rs_lib::Engine;
@@ -260,6 +263,41 @@ fn compact_embedded_nnue_matches_dense_scores() {
             nnue_score(&compact, fen),
             "compact NNUE score mismatch for {fen}"
         );
+    }
+}
+
+#[test]
+fn available_nnue_backends_agree_with_nnue_backend_available() {
+    let backends = available_nnue_backends();
+    assert!(backends.contains(&NnueBackendKind::Scalar));
+    for &backend in &backends {
+        assert!(
+            nnue_backend_available(backend),
+            "available_nnue_backends() listed {backend:?} but nnue_backend_available() rejects it"
+        );
+    }
+    for backend in [
+        NnueBackendKind::Scalar,
+        NnueBackendKind::Simd128,
+        NnueBackendKind::Simd256,
+        NnueBackendKind::Simd512,
+        NnueBackendKind::X86Avx512,
+    ] {
+        assert_eq!(
+            backends.contains(&backend),
+            nnue_backend_available(backend),
+            "available_nnue_backends() and nnue_backend_available() disagree on {backend:?}"
+        );
+    }
+}
+
+#[test]
+fn portable_simd_nnue_backends_available_when_vector_instructions_exist() {
+    if x86_v3_available() || aarch64_simd_available() {
+        let backends = available_nnue_backends();
+        assert!(backends.contains(&NnueBackendKind::Simd128));
+        assert!(backends.contains(&NnueBackendKind::Simd256));
+        assert!(backends.contains(&NnueBackendKind::Simd512));
     }
 }
 
