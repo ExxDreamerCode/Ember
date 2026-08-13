@@ -60,6 +60,7 @@ echo -e "uci\nisready\nquit" | cargo run --release
 | `TraceFile` | string | `<empty>` | — | Path to a `.jsonl` traceback file |
 | `SyzygyPath` | string | `<empty>` | — | Path to a Syzygy tablebase directory with DTZ files |
 | `UCI_Chess960` | check | `false` | — | Enable or disable Chess960 |
+| `Tune` | string | `<empty>` | — | Runtime overrides for tunable search constants (see [docs/auto-tuning.md](docs/auto-tuning.md)) |
 
 ### Syzygy through Nix
 
