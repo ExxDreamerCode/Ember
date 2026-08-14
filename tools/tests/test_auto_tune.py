@@ -61,6 +61,46 @@ class AutoTuneTests(unittest.TestCase):
         self.assertEqual(config["engine_b"]["name"], "Incumbent")
         self.assertNotIn("Tune", config["engine_b"]["options"])
 
+    def test_selected_candidate_keeps_other_best_values_on_both_sides(self):
+        params = [
+            {
+                "name": "PROBCUT_MIN_DEPTH",
+                "base": 8,
+                "min": 4,
+                "max": 16,
+            },
+            {
+                "name": "PROBCUT_MARGIN_CP",
+                "base": 350,
+                "min": 200,
+                "max": 600,
+            },
+        ]
+        best = {"values": {"PROBCUT_MARGIN_CP": 375}}
+
+        config = generate_match_config(
+            self.cfg,
+            self.cfg["common"],
+            self.cfg["sprt"],
+            "PROBCUT_MIN_DEPTH",
+            9,
+            best,
+            params,
+            "target/release/ember",
+            "1+0.01",
+            None,
+            None,
+        )
+
+        self.assertEqual(
+            config["engine_a"]["options"]["Tune"],
+            "PROBCUT_MIN_DEPTH=9,PROBCUT_MARGIN_CP=375",
+        )
+        self.assertEqual(
+            config["engine_b"]["options"]["Tune"],
+            "PROBCUT_MARGIN_CP=375",
+        )
+
     def test_real_sprt_maps_candidate_advantage_to_engine_a_better(self):
         head_to_head_cfg = {
             "run": {"min_pairs": 20},

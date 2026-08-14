@@ -153,6 +153,10 @@ python tools/auto_tune/seek.py --workers 4
 python tools/auto_tune/seek.py --worker-multiplier 0.5
 ```
 
+`--params` limits only which parameters are searched. Values already present in
+`best.json` remain part of both engine configurations, including values for
+parameters outside the selected subset.
+
 Controlling parallelism inside a match:
 
 - `--workers N` — number of parallel games (cutechess `-concurrency`).

@@ -446,18 +446,21 @@ def main():
 
     cfg = read_toml(args.config)
     best = load_best(args.best)
-    params = param_specs(cfg)
+    all_params = param_specs(cfg)
+    params_to_tune = all_params
     if args.params:
         selected = [p.strip() for p in args.params.split(",")]
-        params = [spec for spec in params if spec["name"] in selected]
+        params_to_tune = [
+            spec for spec in all_params if spec["name"] in selected
+        ]
     if args.time_control:
         cfg["common"]["time_control"] = args.time_control
 
-    for spec in params:
+    for spec in params_to_tune:
         tune_parameter(
             cfg,
             best,
-            params,
+            all_params,
             spec,
             args.engine,
             args.journal,
