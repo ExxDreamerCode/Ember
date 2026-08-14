@@ -245,6 +245,7 @@ opening_source = "polyglot"
 polyglot_book = "src/book.bin"
 hash_mb = 64
 threads = 1
+timemargin_ms = 50
 cutechess_cmd = "cutechess-cli"
 
 [sprt]
@@ -261,6 +262,10 @@ min = 4
 max = 16
 step = 1
 ```
+
+`common.timemargin_ms` is cutechess's late-response allowance, not additional
+engine thinking time. Keep it small for fast controls; the repository default
+is 50 ms so `1+0.01` does not silently tolerate multi-second overruns.
 
 `seek.py` builds a temporary head-to-head TOML config for each match:
 `engine_a` is the candidate differing only in the tuned parameter, and

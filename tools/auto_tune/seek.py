@@ -306,7 +306,7 @@ def generate_match_config(
     run_cfg = {
         "name": f"tune-{candidate_name.lower()}-{candidate_value}",
         "time_control": time_control,
-        "timemargin_ms": 2000,
+        "timemargin_ms": common.get("timemargin_ms", 50),
         "workers": workers if workers is not None else "auto",
         "worker_multiplier": worker_multiplier if worker_multiplier is not None else common.get("worker_multiplier", 1.0),
         "max_pairs": common["max_pairs"],

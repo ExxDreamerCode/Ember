@@ -32,6 +32,7 @@ class AutoTuneTests(unittest.TestCase):
                 "max_pairs": 1000,
                 "min_pairs": 20,
                 "batch_pairs": 20,
+                "timemargin_ms": 50,
                 "seed": 1,
                 "opening_source": "polyglot",
                 "polyglot_book": "src/book.bin",
@@ -71,6 +72,26 @@ class AutoTuneTests(unittest.TestCase):
         self.assertEqual(
             config["engine_b"]["options"]["Tune"], "PROBCUT_MIN_DEPTH=8"
         )
+        self.assertEqual(config["run"]["timemargin_ms"], 50)
+
+    def test_match_time_margin_is_configurable(self):
+        common = {**self.cfg["common"], "timemargin_ms": 75}
+
+        config = generate_match_config(
+            self.cfg,
+            common,
+            self.cfg["sprt"],
+            "PROBCUT_MIN_DEPTH",
+            9,
+            self.best,
+            self.params,
+            "target/release/ember",
+            "1+0.01",
+            None,
+            None,
+        )
+
+        self.assertEqual(config["run"]["timemargin_ms"], 75)
 
     def test_selected_candidate_keeps_other_best_values_on_both_sides(self):
         params = [
