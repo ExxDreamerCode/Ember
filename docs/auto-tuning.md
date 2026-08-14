@@ -172,13 +172,16 @@ If you work in the Linux `nix develop .#elo-runner` dev-shell, then
    from `tune.toml`).
 2. The neighbour `current + step` is tried, then `current - step`.
 3. Each candidate is compared with the current best via `head_to_head.py run`
-   with pentanomial SPRT enabled (elo0=0, elo1=5, alpha=beta=0.05).
-   `engine_a` is the incumbent, `engine_b` is the candidate.
-4. The candidate is accepted only when SPRT rejects the null hypothesis
-   (`engine_b_better` — "candidate is better"). The `engine_a_better` verdict
-   ("incumbent is better") means the candidate is rejected, and
-   `inconclusive`/`continue` means not enough data. After acceptance the value
-   becomes the new best and the process repeats in the same direction.
+   with pentanomial SPRT enabled. `engine_a` is the candidate and `engine_b`
+   is the incumbent, so the SPRT Elo is candidate minus incumbent.
+4. The candidate is accepted only when SPRT rejects the null hypothesis in
+   favor of the configured positive Elo alternative (`engine_a_better` —
+   "candidate is better"). The generic runner's `engine_b_better` verdict
+   means the null/equality hypothesis was preferred, so the candidate is
+   rejected without claiming that the incumbent is stronger. The
+   `inconclusive` and `continue` verdicts mean there is not enough data. After
+   acceptance the value becomes the new best and the process repeats in the
+   same direction.
 5. When both neighbours are rejected, a wider step `current + 2*step` is tried.
 6. The parameter settles when no neighbour passes — the result is marked
    "settled".
@@ -239,10 +242,10 @@ step = 1
 ```
 
 `seek.py` builds a temporary head-to-head TOML config for each match:
-`engine_a` is the incumbent with values from `best.json`, `engine_b` is the
-candidate differing only in the tuned parameter. The other parameters already
-improved earlier are passed to both sides identically, so each match measures
-only one parameter.
+`engine_a` is the candidate differing only in the tuned parameter, and
+`engine_b` is the incumbent with values from `best.json`. The other parameters
+already improved earlier are passed to both sides identically, so each match
+measures only one parameter.
 
 ## Important limitations
 

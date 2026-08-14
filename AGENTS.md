@@ -306,6 +306,11 @@ match. Count paired-opening outcomes from 0 through 2 points and inspect the rec
 and bounds. Repeatedly checking an ordinary fixed-sample p-value after each batch does not
 preserve its advertised false-positive rate and must not be presented as an SPRT result.
 
+For a candidate-versus-incumbent SPRT, make the engine-side orientation and Elo sign
+explicit. Regression-test that a candidate is adopted only when the positive candidate
+hypothesis is accepted; accepting the null/equality hypothesis is not evidence that a
+candidate improved.
+
 Leave head-to-head workers on `auto` unless the experiment deliberately reserves or
 oversubscribes CPUs. Automatic concurrency must account for each engine's UCI `Threads`
 setting: only one side normally searches at a time, so the per-game CPU cost is the larger

@@ -187,11 +187,17 @@ def generate_match_config(
             "alpha": sprt.get("alpha", 0.05),
             "beta": sprt.get("beta", 0.05),
         },
+        # The SPRT expresses Elo as engine A minus engine B.  Put the
+        # candidate in A so accepting H1 (elo1 > 0) is positive evidence for
+        # the change, rather than merely a failure to show that it is worse.
         "engine_a": engine_block(
-            "Incumbent", engine_cmd, incumbent_tune_option(best, params), common
+            "Candidate",
+            engine_cmd,
+            candidate_tune_option(best, params, candidate_name, candidate_value),
+            common,
         ),
         "engine_b": engine_block(
-            "Candidate", engine_cmd, candidate_tune_option(best, params, candidate_name, candidate_value), common
+            "Incumbent", engine_cmd, incumbent_tune_option(best, params), common
         ),
     }
 
@@ -252,8 +258,8 @@ def write_match_report(results_root, run_id, record, summary):
     write_json(report_dir / "report.json", {"record": record, "summary": summary})
     accepted = record["accepted"]
     verdict_label = {
-        "engine_a_better": "rejected (incumbent is better)",
-        "engine_b_better": "accepted (candidate is better)",
+        "engine_a_better": "accepted (candidate is better)",
+        "engine_b_better": "rejected (candidate improvement not established)",
         "inconclusive": "inconclusive",
         "continue": "continuing",
     }.get(record["verdict"], record["verdict"])
@@ -328,7 +334,7 @@ def run_single_match(cfg, best, params, name, value, engine_cmd, journal_path, w
         verdict = summary["verdict"]
         binary = engine_binary(engine_cmd)
         old_value = value_for(best, params, name)
-        accepted = verdict == "engine_b_better"
+        accepted = verdict == "engine_a_better"
         elo = summary.get("elo")
         record = {
             "timestamp": now_utc(),
@@ -368,7 +374,7 @@ def try_candidate(cfg, best, params, name, candidate, engine_cmd, journal_path, 
     )
     verdict = summary["verdict"]
     print(f"[tune] verdict for {name}={candidate}: {verdict}")
-    if verdict == "engine_b_better":
+    if verdict == "engine_a_better":
         best["values"][name] = candidate
         write_best(best_path, best)
         return True
