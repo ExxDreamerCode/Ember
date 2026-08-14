@@ -57,6 +57,18 @@ class AutoTuneTests(unittest.TestCase):
                 "alpha": 0.05,
                 "beta": 0.05,
             },
+            "confirmation": {
+                "enabled": True,
+                "time_control": "1+0.01",
+                "max_pairs": 1000,
+                "min_pairs": 20,
+                "batch_pairs": 20,
+                "seed": 2,
+                "elo0": 0,
+                "elo1": 3,
+                "alpha": 0.025,
+                "beta": 0.05,
+            },
         }
         self.params = [
             {
@@ -131,6 +143,16 @@ class AutoTuneTests(unittest.TestCase):
         disabled["sprt"]["enabled"] = False
         with self.assertRaisesRegex(ValueError, "sprt.enabled must be true"):
             validate_tune_config(disabled)
+
+        reused_seed = copy.deepcopy(self.cfg)
+        reused_seed["confirmation"]["seed"] = reused_seed["common"]["seed"]
+        with self.assertRaisesRegex(ValueError, "seed must differ"):
+            validate_tune_config(reused_seed)
+
+        loose_confirmation = copy.deepcopy(self.cfg)
+        loose_confirmation["confirmation"]["alpha"] = self.cfg["sprt"]["alpha"]
+        with self.assertRaisesRegex(ValueError, "below discovery alpha"):
+            validate_tune_config(loose_confirmation)
 
         with self.assertRaisesRegex(ValueError, "unknown --params"):
             select_param_specs(params, "NOT_A_PARAMETER")

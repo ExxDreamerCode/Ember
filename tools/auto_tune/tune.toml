@@ -23,6 +23,18 @@ elo1 = 3
 alpha = 0.10
 beta = 0.05
 
+[confirmation]
+enabled = true
+time_control = "1+0.01"
+max_pairs = 1000
+min_pairs = 20
+batch_pairs = 20
+seed = 20260814
+elo0 = 0
+elo1 = 3
+alpha = 0.05
+beta = 0.05
+
 [[params]]
 name = "PROBCUT_MIN_DEPTH"
 base = 8

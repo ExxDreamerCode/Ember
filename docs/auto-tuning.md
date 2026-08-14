@@ -111,6 +111,7 @@ The tools live in `tools/auto_tune/`:
 | --- | --- |
 | `tune.toml` | Parameter descriptions, ranges, SPRT and openings |
 | `seek.py` | Coordinate descent: iterates neighbours of each parameter, runs SPRT against the current best, keeps a journal |
+| `confirm.py` | Independently confirms the final full vector against the compile-time defaults |
 | `apply.py` | Shows values from `best.json` that differ from the defaults, for manual porting into the code |
 | `best.json` | Current optimal values (created automatically) |
 | `journal.jsonl` | Full journal of every SPRT match |
@@ -143,6 +144,12 @@ python tools/auto_tune/seek.py --params PROBCUT_MIN_DEPTH,PROBCUT_MARGIN_CP
 
 # Show the found values
 python tools/auto_tune/apply.py
+
+# Confirm the complete result with the predeclared fresh-seed SPRT
+python tools/auto_tune/confirm.py
+
+# Validate and show the confirmation plan without starting a match
+python tools/auto_tune/confirm.py --dry-run
 
 # Rehearse without real matches (no cutechess or binary needed)
 python tools/auto_tune/seek.py --dry-run
@@ -225,6 +232,32 @@ binary, time control, and SPRT parameters. This makes any result reproducible
 when combined with its preserved run artifacts, and explains why a value was
 accepted or rejected.
 
+### Independent final confirmation
+
+Coordinate descent is an adaptive discovery process: it repeatedly chooses the
+next value after seeing earlier match outcomes. Treat the resulting `best.json`
+as provisional until `confirm.py` accepts the complete vector in one
+predeclared, independent match against all compile-time defaults.
+
+The confirmation contract lives in `[confirmation]` before discovery begins.
+It uses a different opening seed, the same Elo hypotheses, and a lower alpha
+than the exploratory matches. Both engines receive every Tune parameter so the
+tuned vector and default vector use the same runtime path. Only the
+`engine_a_better` verdict confirms the vector; `engine_b_better` means the
+positive improvement hypothesis was not established, and a capped
+`inconclusive` result is also not confirmation.
+
+The confirmation run ID is derived from the exact match configuration,
+candidate vector, and engine binary SHA-256. Repeating the command with the same
+inputs resumes the existing evidence. A changed vector, binary, time control,
+worker setting, or statistical setting creates a different identity. Do not
+change the confirmation seed or retry with another identity after seeing an
+unfavorable result: that would turn confirmation into another adaptive search.
+
+Raw games, estimates, metadata, and `confirmation.json` are stored in
+`results/tune/confirmations/<run_id>/`. The command exits successfully only
+when the tuned vector accepts H1.
+
 ### Run reports
 
 For each match, two files are created in `results/tune/<run_id>/`:
@@ -264,6 +297,18 @@ elo1 = 3
 alpha = 0.10
 beta = 0.05
 
+[confirmation]
+enabled = true
+time_control = "1+0.01"
+max_pairs = 1000
+min_pairs = 20
+batch_pairs = 20
+seed = 20260814
+elo0 = 0
+elo1 = 3
+alpha = 0.05
+beta = 0.05
+
 [[params]]
 name = "PROBCUT_MIN_DEPTH"
 base = 8
@@ -286,8 +331,8 @@ runtime tuning path during the match.
 
 ## Important limitations
 
-- The auto-tuner does **not** change code. Values from `apply.py` must be ported
-  into `src/` manually and confirmed with your own SPRT before committing.
+- The auto-tuner does **not** change code. Confirm the final vector with
+  `confirm.py`, then use `apply.py` and port the values into `src/` manually.
 - It is recommended to run on an idle machine and not keep parallel
   CPU-bound processes — timings and NPS will be distorted.
 - SPRT with `elo0=0, elo1=3` is a strict test: small improvements may need many

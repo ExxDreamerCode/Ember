@@ -239,6 +239,40 @@ def validate_time_control(value, label):
         raise ValueError(f"{label} must use positive-base BASE+INCREMENT syntax")
 
 
+def validate_confirmation_config(cfg):
+    confirmation = cfg.get("confirmation")
+    if not isinstance(confirmation, dict):
+        raise ValueError("tune config must contain [confirmation]")
+    if confirmation.get("enabled") is not True:
+        raise ValueError("confirmation.enabled must be true")
+    require_int(confirmation.get("seed"), "confirmation.seed")
+    if confirmation["seed"] == cfg["common"]["seed"]:
+        raise ValueError("confirmation.seed must differ from common.seed")
+    validate_time_control(
+        confirmation.get("time_control"),
+        "confirmation.time_control",
+    )
+    for key in ("max_pairs", "min_pairs", "batch_pairs"):
+        require_int(confirmation.get(key), f"confirmation.{key}", 1)
+    if confirmation["min_pairs"] > confirmation["max_pairs"]:
+        raise ValueError("confirmation.min_pairs must not exceed max_pairs")
+    if confirmation["batch_pairs"] > confirmation["max_pairs"]:
+        raise ValueError("confirmation.batch_pairs must not exceed max_pairs")
+    for key in ("elo0", "elo1", "alpha", "beta"):
+        require_number(confirmation.get(key), f"confirmation.{key}")
+    discovery = cfg["sprt"]
+    if (
+        confirmation["elo0"] != discovery["elo0"]
+        or confirmation["elo1"] != discovery["elo1"]
+    ):
+        raise ValueError("confirmation must use the discovery Elo hypotheses")
+    if not 0 < confirmation["alpha"] < discovery["alpha"]:
+        raise ValueError("confirmation.alpha must be below discovery alpha")
+    if not 0 < confirmation["beta"] <= discovery["beta"]:
+        raise ValueError("confirmation.beta must not exceed discovery beta")
+    return confirmation
+
+
 def validate_tune_config(cfg):
     if not isinstance(cfg, dict):
         raise ValueError("tune config must be a TOML table")
@@ -329,6 +363,7 @@ def validate_tune_config(cfg):
             or spec["base"] - spec["step"] >= spec["min"]
         ):
             raise ValueError(f"{name} has no in-range neighbour at its step size")
+    validate_confirmation_config(cfg)
     return list(params)
 
 
@@ -449,8 +484,7 @@ def write_toml_config(path, config):
         for key, value in body.items():
             lines.append(f"{key} = {toml_value(value)}")
         lines.append("")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+    write_text_atomic(path, "\n".join(lines))
 
 
 def generate_match_config(
