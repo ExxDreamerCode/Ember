@@ -1,10 +1,10 @@
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-
-static TUNING_ACTIVE: AtomicBool = AtomicBool::new(false);
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 const PARAM_COUNT: usize = 22;
+const _: () = assert!(PARAM_COUNT <= u64::BITS as usize);
 
 static OVERRIDES: [AtomicI64; PARAM_COUNT] = [const { AtomicI64::new(0) }; PARAM_COUNT];
+static OVERRIDE_MASK: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(clippy::enum_variant_names)]
@@ -153,41 +153,39 @@ impl TuneParam {
 
 #[inline(always)]
 pub fn get_int(param: TuneParam, default: i64) -> i64 {
-    if !TUNING_ACTIVE.load(Ordering::Relaxed) {
+    let bit = 1u64 << param.idx();
+    if OVERRIDE_MASK.load(Ordering::Relaxed) & bit == 0 {
         return default;
     }
-    let value = OVERRIDES[param.idx()].load(Ordering::Relaxed);
-    if value == 0 {
-        default
-    } else {
-        value
-    }
+    OVERRIDES[param.idx()].load(Ordering::Relaxed)
 }
 
 pub fn set(param: TuneParam, value: i64) {
-    TUNING_ACTIVE.store(true, Ordering::Relaxed);
     OVERRIDES[param.idx()].store(value, Ordering::Relaxed);
+    OVERRIDE_MASK.fetch_or(1u64 << param.idx(), Ordering::Relaxed);
 }
 
 pub fn reset() {
-    TUNING_ACTIVE.store(false, Ordering::Relaxed);
-    for slot in &OVERRIDES {
-        slot.store(0, Ordering::Relaxed);
-    }
+    OVERRIDE_MASK.store(0, Ordering::Relaxed);
 }
 
 pub fn is_active() -> bool {
-    TUNING_ACTIVE.load(Ordering::Relaxed)
+    OVERRIDE_MASK.load(Ordering::Relaxed) != 0
 }
 
 pub fn active_overrides() -> Vec<(TuneParam, i64)> {
-    if !TUNING_ACTIVE.load(Ordering::Relaxed) {
+    let mask = OVERRIDE_MASK.load(Ordering::Relaxed);
+    if mask == 0 {
         return Vec::new();
     }
     (0..PARAM_COUNT)
         .filter_map(|idx| {
-            let value = OVERRIDES[idx].load(Ordering::Relaxed);
-            (value != 0).then(|| (TuneParam::from_idx(idx), value))
+            (mask & (1u64 << idx) != 0).then(|| {
+                (
+                    TuneParam::from_idx(idx),
+                    OVERRIDES[idx].load(Ordering::Relaxed),
+                )
+            })
         })
         .collect()
 }
@@ -224,5 +222,25 @@ mod tests {
         assert_eq!(overrides[0], (TuneParam::SeeMarginPerDepthCp, 96));
         reset();
         assert!(active_overrides().is_empty());
+    }
+
+    #[test]
+    fn zero_and_negative_values_are_real_overrides() {
+        reset();
+        set(TuneParam::LmrDivisorMillis, 0);
+        set(TuneParam::RootRepetitionTieMinScore, -25);
+
+        assert_eq!(get_int(TuneParam::LmrDivisorMillis, 1800), 0);
+        assert_eq!(get_int(TuneParam::RootRepetitionTieMinScore, 300), -25);
+        assert_eq!(
+            active_overrides(),
+            vec![
+                (TuneParam::RootRepetitionTieMinScore, -25),
+                (TuneParam::LmrDivisorMillis, 0),
+            ]
+        );
+
+        reset();
+        assert_eq!(get_int(TuneParam::LmrDivisorMillis, 1800), 1800);
     }
 }

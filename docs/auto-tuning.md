@@ -317,6 +317,11 @@ max = 16
 step = 1
 ```
 
+Parameter ranges must stay positive by default. A parameter whose implementation
+deliberately supports zero or signed values must declare
+`allow_nonpositive = true`; zero is preserved as a real override rather than
+being interpreted as "use the compile-time default".
+
 `common.timemargin_ms` is cutechess's late-response allowance, not additional
 engine thinking time. Keep it small for fast controls; the repository default
 is 50 ms so `1+0.01` does not silently tolerate multi-second overruns.

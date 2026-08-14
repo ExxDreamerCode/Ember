@@ -352,7 +352,10 @@ def validate_tune_config(cfg):
         names.add(name)
         for key in ("base", "min", "max", "step"):
             require_int(spec.get(key), f"{label}.{key}")
-        if spec["min"] <= 0:
+        allow_nonpositive = spec.get("allow_nonpositive", False)
+        if not isinstance(allow_nonpositive, bool):
+            raise ValueError(f"{name}.allow_nonpositive must be a boolean")
+        if spec["min"] <= 0 and not allow_nonpositive:
             raise ValueError(f"{name}.min must be positive")
         if not spec["min"] <= spec["base"] <= spec["max"]:
             raise ValueError(f"{name}.base must be within its configured range")

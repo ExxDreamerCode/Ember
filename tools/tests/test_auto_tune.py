@@ -154,6 +154,19 @@ class AutoTuneTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "below discovery alpha"):
             validate_tune_config(loose_confirmation)
 
+        nonpositive = copy.deepcopy(self.cfg)
+        nonpositive["params"][0]["min"] = 0
+        with self.assertRaisesRegex(ValueError, "min must be positive"):
+            validate_tune_config(nonpositive)
+        nonpositive["params"][0]["allow_nonpositive"] = True
+        nonpositive_params = validate_tune_config(nonpositive)
+        validate_best({"values": {"PROBCUT_MIN_DEPTH": 0}}, nonpositive_params)
+
+        invalid_opt_in = copy.deepcopy(self.cfg)
+        invalid_opt_in["params"][0]["allow_nonpositive"] = "yes"
+        with self.assertRaisesRegex(ValueError, "must be a boolean"):
+            validate_tune_config(invalid_opt_in)
+
         with self.assertRaisesRegex(ValueError, "unknown --params"):
             select_param_specs(params, "NOT_A_PARAMETER")
         with self.assertRaisesRegex(ValueError, "unknown parameters"):
