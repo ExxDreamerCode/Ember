@@ -54,6 +54,17 @@ pub use self::lazy_smp::{lazy_smp_search, LazySmpPool, LazySmpSearchLimits, Sear
 
 const LAZY_SMP_VERIFICATION_MARGIN_CP: i32 = 25;
 const LAZY_SMP_VERIFICATION_TT_MB: usize = 4;
+const ASPIRATION_MIN_DEPTH: i64 = 5;
+const ASPIRATION_DELTA_CP: i64 = 25;
+
+pub(crate) fn aspiration_window_delta(depth: i32) -> i32 {
+    let min_depth = tune::get_int(TuneParam::AspirationMinDepth, ASPIRATION_MIN_DEPTH);
+    if i64::from(depth) < min_depth {
+        return INF;
+    }
+    tune::get_int(TuneParam::AspirationDeltaCp, ASPIRATION_DELTA_CP) as i32
+}
+
 mod selectivity;
 use self::selectivity::{
     combine_move_extensions, probcut_candidate, probcut_verdict, singular_candidate,

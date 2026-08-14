@@ -33,6 +33,13 @@ The tunable constants and their defaults:
 | `QSEARCH_CHECK_CAP_DEPTH` | 4 | Maximum checking continuation depth |
 | `QSEARCH_SEE_THRESHOLD_CP` | 0 | Captures below this SEE score are pruned |
 
+### Root search
+
+| Parameter | Default | Meaning |
+| --- | ---: | --- |
+| `ASPIRATION_MIN_DEPTH` | 5 | First depth that uses an aspiration window |
+| `ASPIRATION_DELTA_CP` | 25 | Initial aspiration half-window in centipawns |
+
 ### Reverse futility / futility pruning (src/search/negamax.rs)
 
 | Parameter | Default | Meaning |

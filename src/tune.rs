@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
-const PARAM_COUNT: usize = 32;
+const PARAM_COUNT: usize = 34;
 const _: () = assert!(PARAM_COUNT <= u64::BITS as usize);
 
 static OVERRIDES: [AtomicI64; PARAM_COUNT] = [const { AtomicI64::new(0) }; PARAM_COUNT];
@@ -41,6 +41,8 @@ pub enum TuneParam {
     LmrMinMoveIndex,
     LmrMinDepth,
     LmrNonPvExtra,
+    AspirationMinDepth,
+    AspirationDeltaCp,
 }
 
 impl TuneParam {
@@ -80,6 +82,8 @@ impl TuneParam {
             TuneParam::LmrMinMoveIndex => "LMR_MIN_MOVE_INDEX",
             TuneParam::LmrMinDepth => "LMR_MIN_DEPTH",
             TuneParam::LmrNonPvExtra => "LMR_NON_PV_EXTRA",
+            TuneParam::AspirationMinDepth => "ASPIRATION_MIN_DEPTH",
+            TuneParam::AspirationDeltaCp => "ASPIRATION_DELTA_CP",
         }
     }
 
@@ -155,6 +159,8 @@ impl TuneParam {
             "LMR_MIN_MOVE_INDEX" | "LMR-MIN-MOVE-INDEX" => Some(TuneParam::LmrMinMoveIndex),
             "LMR_MIN_DEPTH" | "LMR-MIN-DEPTH" => Some(TuneParam::LmrMinDepth),
             "LMR_NON_PV_EXTRA" | "LMR-NON-PV-EXTRA" => Some(TuneParam::LmrNonPvExtra),
+            "ASPIRATION_MIN_DEPTH" | "ASPIRATION-MIN-DEPTH" => Some(TuneParam::AspirationMinDepth),
+            "ASPIRATION_DELTA_CP" | "ASPIRATION-DELTA-CP" => Some(TuneParam::AspirationDeltaCp),
             _ => None,
         }
     }
@@ -196,7 +202,9 @@ impl TuneParam {
             28 => TuneParam::LmrBaseMillis,
             29 => TuneParam::LmrMinMoveIndex,
             30 => TuneParam::LmrMinDepth,
-            _ => TuneParam::LmrNonPvExtra,
+            31 => TuneParam::LmrNonPvExtra,
+            32 => TuneParam::AspirationMinDepth,
+            _ => TuneParam::AspirationDeltaCp,
         }
     }
 }

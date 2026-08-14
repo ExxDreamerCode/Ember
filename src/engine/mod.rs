@@ -12,7 +12,7 @@ use crate::book::{
 };
 use crate::movegen::{apply_move, generate_moves};
 use crate::search::{
-    format_pv_line_uci, lazy_smp_search, prefer_non_repeating_root_on_tie,
+    aspiration_window_delta, format_pv_line_uci, lazy_smp_search, prefer_non_repeating_root_on_tie,
     root_repetition_tie_scope, LazySmpPool, LazySmpSearchLimits, Searcher,
 };
 use crate::time_management::{iteration_time_decision, threads_for_time_budget, IterationTiming};
@@ -799,7 +799,7 @@ impl Engine {
             }
 
             let mut nd = 0u64;
-            let init_delta = if depth >= 5 { 25 } else { INF };
+            let init_delta = aspiration_window_delta(depth);
             let mut asp_delta = init_delta;
             let (mut alpha, mut beta) = if asp_delta < INF {
                 (prev_score - asp_delta, prev_score + asp_delta)

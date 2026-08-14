@@ -246,6 +246,19 @@ fn lmr_controls_preserve_default_boundaries_and_reductions() {
 }
 
 #[test]
+fn aspiration_window_controls_preserve_the_default_boundary() {
+    tune::reset();
+    assert_eq!(aspiration_window_delta(4), INF);
+    assert_eq!(aspiration_window_delta(5), 25);
+
+    tune::set(TuneParam::AspirationMinDepth, 3);
+    tune::set(TuneParam::AspirationDeltaCp, 40);
+    assert_eq!(aspiration_window_delta(2), INF);
+    assert_eq!(aspiration_window_delta(3), 40);
+    tune::reset();
+}
+
+#[test]
 fn restricted_search_ignores_unrestricted_tt_cutoffs() {
     let st = state_from_fen("7k/4Q3/5K2/8/8/8/8/8 b - - 0 1");
     let legal_moves = generate_moves(&st, st.w, &st.cr, st.ep);

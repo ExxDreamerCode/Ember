@@ -645,7 +645,7 @@ fn run_lazy_smp_worker(
         }
 
         let mut nd = 0u64;
-        let init_delta = if depth >= 5 { 25 } else { INF };
+        let init_delta = aspiration_window_delta(depth);
         let mut asp_delta = init_delta;
         let (mut alpha, mut beta) = if asp_delta < INF {
             (prev_score - asp_delta, prev_score + asp_delta)

@@ -86,6 +86,20 @@ max = 600
 step = 25
 
 [[params]]
+name = "ASPIRATION_MIN_DEPTH"
+base = 5
+min = 3
+max = 8
+step = 1
+
+[[params]]
+name = "ASPIRATION_DELTA_CP"
+base = 25
+min = 10
+max = 60
+step = 5
+
+[[params]]
 name = "REVERSE_FUTILITY_BASE_CP"
 base = 80
 min = 40
