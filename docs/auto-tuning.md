@@ -158,6 +158,15 @@ python tools/auto_tune/seek.py --worker-multiplier 0.5
 `best.json` remain part of both engine configurations, including values for
 parameters outside the selected subset.
 
+Before writing `state.json` or starting a match, the tuner validates the TOML
+schema and bounds, SPRT hypotheses, worker overrides, every `best.json` value,
+and the complete `--params` selection. A real run also performs a short UCI
+probe against the selected binary and requires it to report every configured
+Tune name and value. Misspelled names, stale state values, zero or unsafe
+ranges, and `sprt.enabled = false` therefore stop the invocation before any
+expensive work. `--dry-run` performs file validation but intentionally skips the
+binary probe.
+
 Controlling parallelism inside a match:
 
 - `--workers N` — number of parallel games (cutechess `-concurrency`).

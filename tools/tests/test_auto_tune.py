@@ -1,4 +1,6 @@
+import copy
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -17,8 +19,13 @@ from seek import (  # noqa: E402
     generate_match_config,
     read_json,
     run_single_match,
+    select_param_specs,
     try_candidate,
     tune_parameter,
+    validate_best,
+    validate_engine_params,
+    validate_runtime_options,
+    validate_tune_config,
     write_json,
 )
 from sprt import pentanomial_sprt  # noqa: E402
@@ -33,6 +40,7 @@ class AutoTuneTests(unittest.TestCase):
                 "min_pairs": 20,
                 "batch_pairs": 20,
                 "timemargin_ms": 50,
+                "time_controls": ["1+0.01"],
                 "seed": 1,
                 "opening_source": "polyglot",
                 "polyglot_book": "src/book.bin",
@@ -42,11 +50,24 @@ class AutoTuneTests(unittest.TestCase):
                 "hash_mb": 64,
                 "threads": 1,
             },
-            "sprt": {"elo0": 0, "elo1": 3, "alpha": 0.05, "beta": 0.05},
+            "sprt": {
+                "enabled": True,
+                "elo0": 0,
+                "elo1": 3,
+                "alpha": 0.05,
+                "beta": 0.05,
+            },
         }
         self.params = [
-            {"name": "PROBCUT_MIN_DEPTH", "base": 8, "min": 4, "max": 16},
+            {
+                "name": "PROBCUT_MIN_DEPTH",
+                "base": 8,
+                "min": 4,
+                "max": 16,
+                "step": 1,
+            },
         ]
+        self.cfg["params"] = self.params
         self.best = {"values": {}}
 
     def test_candidate_is_engine_a_for_positive_sprt_alternative(self):
@@ -92,6 +113,64 @@ class AutoTuneTests(unittest.TestCase):
         )
 
         self.assertEqual(config["run"]["timemargin_ms"], 75)
+
+    def test_preflight_validates_config_best_and_selection(self):
+        params = validate_tune_config(self.cfg)
+        validate_best(self.best, params)
+        self.assertEqual(
+            select_param_specs(params, "PROBCUT_MIN_DEPTH"),
+            self.params,
+        )
+
+        duplicate = copy.deepcopy(self.cfg)
+        duplicate["params"].append(dict(duplicate["params"][0]))
+        with self.assertRaisesRegex(ValueError, "duplicate tune parameter"):
+            validate_tune_config(duplicate)
+
+        disabled = copy.deepcopy(self.cfg)
+        disabled["sprt"]["enabled"] = False
+        with self.assertRaisesRegex(ValueError, "sprt.enabled must be true"):
+            validate_tune_config(disabled)
+
+        with self.assertRaisesRegex(ValueError, "unknown --params"):
+            select_param_specs(params, "NOT_A_PARAMETER")
+        with self.assertRaisesRegex(ValueError, "unknown parameters"):
+            validate_best({"values": {"NOT_A_PARAMETER": 1}}, params)
+        with self.assertRaisesRegex(ValueError, "outside its range"):
+            validate_best({"values": {"PROBCUT_MIN_DEPTH": 100}}, params)
+        stepped = [{**params[0], "step": 2}]
+        with self.assertRaisesRegex(ValueError, "off its step grid"):
+            validate_best({"values": {"PROBCUT_MIN_DEPTH": 9}}, stepped)
+
+    def test_preflight_validates_runtime_overrides(self):
+        validate_runtime_options("1+0.01", 1, 0.5)
+        with self.assertRaisesRegex(ValueError, r"BASE\+INCREMENT"):
+            validate_runtime_options("fast", None, None)
+        with self.assertRaisesRegex(ValueError, "--workers must be positive"):
+            validate_runtime_options(None, 0, None)
+        with self.assertRaisesRegex(ValueError, "--worker-multiplier"):
+            validate_runtime_options(None, None, float("nan"))
+
+    def test_preflight_checks_parameter_names_against_engine(self):
+        output = "info string tune PROBCUT_MIN_DEPTH = 8\n"
+        completed = subprocess.CompletedProcess(
+            ["ember"],
+            0,
+            stdout=output,
+        )
+        with (
+            patch("seek.engine_binary", return_value="/tmp/ember"),
+            patch("seek.subprocess.run", return_value=completed),
+        ):
+            validate_engine_params("ember", self.best, self.params)
+
+        completed.stdout = "info string tune: no active overrides\n"
+        with (
+            patch("seek.engine_binary", return_value="/tmp/ember"),
+            patch("seek.subprocess.run", return_value=completed),
+            self.assertRaisesRegex(ValueError, "did not accept"),
+        ):
+            validate_engine_params("ember", self.best, self.params)
 
     def test_selected_candidate_keeps_other_best_values_on_both_sides(self):
         params = [

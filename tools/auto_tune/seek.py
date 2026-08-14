@@ -3,6 +3,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -20,7 +21,6 @@ DEFAULT_TUNE_TOML = HERE / "tune.toml"
 DEFAULT_BEST_JSON = HERE / "best.json"
 DEFAULT_JOURNAL = HERE / "journal.jsonl"
 DEFAULT_STATE_JSON = HERE / "state.json"
-EMPTY_BEST = {"values": {}}
 STATE_VERSION = 1
 
 
@@ -211,13 +211,166 @@ def resolve_repo_path(path):
 
 
 def load_best(path):
-    data = read_json(path) or EMPTY_BEST
-    data.setdefault("values", {})
+    data = read_json(path)
+    if data is None:
+        data = {"values": {}}
     return data
 
 
-def param_specs(cfg):
-    return list(cfg["params"])
+def require_int(value, label, minimum=None):
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{label} must be an integer")
+    if minimum is not None and value < minimum:
+        raise ValueError(f"{label} must be at least {minimum}")
+
+
+def require_number(value, label):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{label} must be a number")
+    if not math.isfinite(value):
+        raise ValueError(f"{label} must be finite")
+
+
+def validate_time_control(value, label):
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{label} must be a non-empty string")
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\+(\d+(?:\.\d+)?)", value)
+    if match is None or float(match.group(1)) <= 0:
+        raise ValueError(f"{label} must use positive-base BASE+INCREMENT syntax")
+
+
+def validate_tune_config(cfg):
+    if not isinstance(cfg, dict):
+        raise ValueError("tune config must be a TOML table")
+    results_dir = cfg.get("results_dir")
+    if not isinstance(results_dir, str) or not results_dir.strip():
+        raise ValueError("results_dir must be a non-empty string")
+
+    common = cfg.get("common")
+    if not isinstance(common, dict):
+        raise ValueError("tune config must contain [common]")
+    for key in ("max_pairs", "min_pairs", "batch_pairs"):
+        require_int(common.get(key), f"common.{key}", 1)
+    if common["min_pairs"] > common["max_pairs"]:
+        raise ValueError("common.min_pairs must not exceed common.max_pairs")
+    if common["batch_pairs"] > common["max_pairs"]:
+        raise ValueError("common.batch_pairs must not exceed common.max_pairs")
+    require_int(common.get("timemargin_ms", 50), "common.timemargin_ms", 0)
+    require_int(common.get("seed"), "common.seed")
+    require_int(common.get("book_min_plies"), "common.book_min_plies", 0)
+    require_int(common.get("book_max_plies"), "common.book_max_plies", 0)
+    if common["book_min_plies"] > common["book_max_plies"]:
+        raise ValueError("common.book_min_plies must not exceed book_max_plies")
+    require_int(common.get("max_moves"), "common.max_moves", 1)
+    require_int(common.get("hash_mb"), "common.hash_mb", 1)
+    require_int(common.get("threads"), "common.threads", 1)
+    if common.get("opening_source") != "polyglot":
+        raise ValueError("common.opening_source must be 'polyglot'")
+    book = common.get("polyglot_book")
+    if not isinstance(book, str) or not book.strip():
+        raise ValueError("common.polyglot_book must be a non-empty string")
+    if not resolve_repo_path(book).is_file():
+        raise ValueError(f"common.polyglot_book does not exist: {book}")
+    cutechess = common.get("cutechess_cmd", "cutechess-cli")
+    if not isinstance(cutechess, str) or not cutechess.strip():
+        raise ValueError("common.cutechess_cmd must be a non-empty string")
+    if "worker_multiplier" in common:
+        require_number(common["worker_multiplier"], "common.worker_multiplier")
+        if common["worker_multiplier"] <= 0:
+            raise ValueError("common.worker_multiplier must be positive")
+
+    time_control = common.get("time_control")
+    time_controls = common.get("time_controls")
+    if time_control is not None:
+        validate_time_control(time_control, "common.time_control")
+    else:
+        if not isinstance(time_controls, list) or not time_controls:
+            raise ValueError("common.time_controls must be a non-empty list")
+        for index, value in enumerate(time_controls):
+            validate_time_control(value, f"common.time_controls[{index}]")
+
+    sprt = cfg.get("sprt")
+    if not isinstance(sprt, dict):
+        raise ValueError("tune config must contain [sprt]")
+    if sprt.get("enabled") is not True:
+        raise ValueError("sprt.enabled must be true for auto-tuning")
+    for key in ("elo0", "elo1", "alpha", "beta"):
+        require_number(sprt.get(key), f"sprt.{key}")
+    if sprt["elo0"] < 0 or sprt["elo1"] <= sprt["elo0"]:
+        raise ValueError("SPRT must compare a non-negative elo0 with a larger elo1")
+    for key in ("alpha", "beta"):
+        if not 0 < sprt[key] < 1:
+            raise ValueError(f"sprt.{key} must be between 0 and 1")
+
+    params = cfg.get("params")
+    if not isinstance(params, list) or not params:
+        raise ValueError("tune config must contain at least one [[params]] entry")
+    names = set()
+    for index, spec in enumerate(params):
+        label = f"params[{index}]"
+        if not isinstance(spec, dict):
+            raise ValueError(f"{label} must be a table")
+        name = spec.get("name")
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
+            raise ValueError(f"{label}.name must be an uppercase Tune name")
+        if name in names:
+            raise ValueError(f"duplicate tune parameter: {name}")
+        names.add(name)
+        for key in ("base", "min", "max", "step"):
+            require_int(spec.get(key), f"{label}.{key}")
+        if spec["min"] <= 0:
+            raise ValueError(f"{name}.min must be positive")
+        if not spec["min"] <= spec["base"] <= spec["max"]:
+            raise ValueError(f"{name}.base must be within its configured range")
+        if spec["step"] <= 0:
+            raise ValueError(f"{name}.step must be positive")
+        if not (
+            spec["base"] + spec["step"] <= spec["max"]
+            or spec["base"] - spec["step"] >= spec["min"]
+        ):
+            raise ValueError(f"{name} has no in-range neighbour at its step size")
+    return list(params)
+
+
+def validate_best(best, params):
+    if not isinstance(best, dict) or not isinstance(best.get("values"), dict):
+        raise ValueError("best.json must contain an object named 'values'")
+    specs = {spec["name"]: spec for spec in params}
+    unknown = sorted(set(best["values"]) - set(specs))
+    if unknown:
+        raise ValueError(f"best.json contains unknown parameters: {', '.join(unknown)}")
+    for name, value in best["values"].items():
+        require_int(value, f"best.json value for {name}")
+        spec = specs[name]
+        if not in_range(spec, value):
+            raise ValueError(f"best.json value for {name} is outside its range")
+        if (value - spec["base"]) % spec["step"] != 0:
+            raise ValueError(f"best.json value for {name} is off its step grid")
+
+
+def select_param_specs(params, raw_selection):
+    if raw_selection is None:
+        return list(params)
+    selected = [name.strip() for name in raw_selection.split(",")]
+    if any(not name for name in selected):
+        raise ValueError("--params must not contain empty names")
+    if len(selected) != len(set(selected)):
+        raise ValueError("--params must not contain duplicate names")
+    known = {spec["name"] for spec in params}
+    unknown = sorted(set(selected) - known)
+    if unknown:
+        raise ValueError(f"unknown --params names: {', '.join(unknown)}")
+    return [spec for spec in params if spec["name"] in selected]
+
+
+def validate_runtime_options(time_control, workers, worker_multiplier):
+    if time_control is not None:
+        validate_time_control(time_control, "--time-control")
+    if workers is not None and workers < 1:
+        raise ValueError("--workers must be positive")
+    if worker_multiplier is not None:
+        if not math.isfinite(worker_multiplier) or worker_multiplier <= 0:
+            raise ValueError("--worker-multiplier must be positive and finite")
 
 
 def value_for(best, params, name):
@@ -328,7 +481,7 @@ def generate_match_config(
     return {
         "run": run_cfg,
         "sprt": {
-            "enabled": True,
+            "enabled": sprt["enabled"],
             "elo0": sprt["elo0"],
             "elo1": sprt["elo1"],
             "alpha": sprt.get("alpha", 0.05),
@@ -399,6 +552,45 @@ def engine_binary(engine_cmd):
     if path is None:
         raise RuntimeError(f"cannot find engine binary: {engine_cmd}")
     return path
+
+
+def validate_engine_params(engine_cmd, best, params):
+    tune_value = incumbent_tune_option(best, params)
+    command = shlex.split(engine_cmd)
+    if not command:
+        raise ValueError("--engine must not be empty")
+    command[0] = engine_binary(engine_cmd)
+    uci_input = (
+        "uci\n"
+        f"setoption name Tune value {tune_value}\n"
+        "tune\n"
+        "quit\n"
+    )
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=str(ROOT),
+            input=uci_input,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise ValueError("engine Tune preflight timed out") from error
+    if proc.returncode != 0:
+        raise ValueError(f"engine Tune preflight failed with exit {proc.returncode}")
+    output_lines = {line.strip() for line in proc.stdout.splitlines()}
+    missing = []
+    for spec in params:
+        value = value_for(best, params, spec["name"])
+        expected = f"info string tune {spec['name']} = {value}"
+        if expected not in output_lines:
+            missing.append(spec["name"])
+    if missing:
+        raise ValueError(
+            "engine did not accept configured Tune parameters: " + ", ".join(missing)
+        )
 
 
 def write_match_report(results_root, run_id, record, summary):
@@ -741,17 +933,25 @@ def main():
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    cfg = read_toml(args.config)
-    best = load_best(args.best)
-    all_params = param_specs(cfg)
-    params_to_tune = all_params
-    if args.params:
-        selected = [p.strip() for p in args.params.split(",")]
-        params_to_tune = [
-            spec for spec in all_params if spec["name"] in selected
-        ]
-    if args.time_control:
-        cfg["common"]["time_control"] = args.time_control
+    try:
+        validate_runtime_options(
+            args.time_control,
+            args.workers,
+            args.worker_multiplier,
+        )
+        cfg = read_toml(args.config)
+        if args.time_control:
+            if not isinstance(cfg, dict) or not isinstance(cfg.get("common"), dict):
+                raise ValueError("tune config must contain [common]")
+            cfg["common"]["time_control"] = args.time_control
+        all_params = validate_tune_config(cfg)
+        best = load_best(args.best)
+        validate_best(best, all_params)
+        params_to_tune = select_param_specs(all_params, args.params)
+        if not args.dry_run:
+            validate_engine_params(args.engine, best, all_params)
+    except (OSError, ValueError, RuntimeError, KeyError, TypeError) as error:
+        parser.error(str(error))
 
     state = None
     if not args.dry_run:
