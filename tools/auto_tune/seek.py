@@ -380,23 +380,45 @@ def try_candidate(cfg, best, params, name, candidate, engine_cmd, journal_path, 
 def tune_parameter(cfg, best, params, spec, engine_cmd, journal_path, best_path, dry_run, workers, worker_multiplier):
     name = spec["name"]
     current = value_for(best, params, name)
+    step = spec["step"]
+    if step <= 0:
+        raise ValueError(f"step for {name} must be positive")
     print(f"[tune] parameter {name}: current={current}")
 
-    improved = True
-    while improved:
-        improved = False
-        for step in [spec["step"], -spec["step"]]:
-            candidate = current + step
-            if try_candidate(cfg, best, params, name, candidate, engine_cmd, journal_path, best_path, dry_run, workers, worker_multiplier):
-                current = candidate
-                improved = True
-                break
-        if not improved:
-            wider = current + 2 * spec["step"]
-            if wider != current:
-                if try_candidate(cfg, best, params, name, wider, engine_cmd, journal_path, best_path, dry_run, workers, worker_multiplier):
-                    current = wider
-                    improved = True
+    attempted = {current}
+
+    def attempt(candidate):
+        if candidate in attempted:
+            return False
+        attempted.add(candidate)
+        return try_candidate(
+            cfg,
+            best,
+            params,
+            name,
+            candidate,
+            engine_cmd,
+            journal_path,
+            best_path,
+            dry_run,
+            workers,
+            worker_multiplier,
+        )
+
+    direction = None
+    for offset in (step, -step, 2 * step, -2 * step):
+        candidate = current + offset
+        if attempt(candidate):
+            current = candidate
+            direction = 1 if offset > 0 else -1
+            break
+
+    while direction is not None:
+        candidate = current + direction * step
+        if candidate in attempted or not attempt(candidate):
+            break
+        current = candidate
+
     print(f"[tune] parameter {name} settled at {current}")
     return current
 

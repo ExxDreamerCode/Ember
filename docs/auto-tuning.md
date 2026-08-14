@@ -184,11 +184,13 @@ If you work in the Linux `nix develop .#elo-runner` dev-shell, then
    means the null/equality hypothesis was preferred, so the candidate is
    rejected without claiming that the incumbent is stronger. The
    `inconclusive` and `continue` verdicts mean there is not enough data. After
-   acceptance the value becomes the new best and the process repeats in the
-   same direction.
-5. When both neighbours are rejected, a wider step `current + 2*step` is tried.
-6. The parameter settles when no neighbour passes — the result is marked
-   "settled".
+   acceptance the value becomes the new best and the process continues only in
+   the accepted direction.
+5. When both neighbours are rejected, the wider values `current + 2*step` and
+   `current - 2*step` are tried in that order.
+6. A value is never tested twice during one parameter search. The parameter
+   settles when the next value in the accepted direction is rejected, or when
+   none of the initial probes passes.
 
 Time controls from `common.time_controls` rotate between SPRT matches in a
 round-robin fashion (the counter comes from the number of entries in

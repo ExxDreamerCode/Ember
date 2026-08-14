@@ -11,7 +11,7 @@ sys.path.insert(0, str(AUTO_TUNE))
 sys.path.insert(0, str(TOOLS))
 
 from head_to_head import decision  # noqa: E402
-from seek import generate_match_config, try_candidate  # noqa: E402
+from seek import generate_match_config, try_candidate, tune_parameter  # noqa: E402
 from sprt import pentanomial_sprt  # noqa: E402
 
 
@@ -183,3 +183,67 @@ class AutoTuneTests(unittest.TestCase):
 
             self.assertFalse(accepted)
             self.assertEqual(self.best["values"], {})
+
+    def test_parameter_search_continues_only_in_accepted_direction(self):
+        spec = {
+            "name": "PROBCUT_MIN_DEPTH",
+            "base": 8,
+            "min": 4,
+            "max": 16,
+            "step": 1,
+        }
+        attempted = []
+
+        def accept_downward(_cfg, _best, _params, _name, candidate, *_args):
+            attempted.append(candidate)
+            return candidate in {7, 6}
+
+        with patch("seek.try_candidate", side_effect=accept_downward):
+            settled = tune_parameter(
+                self.cfg,
+                self.best,
+                [spec],
+                spec,
+                "target/release/ember",
+                "journal.jsonl",
+                "best.json",
+                False,
+                None,
+                None,
+            )
+
+        self.assertEqual(settled, 6)
+        self.assertEqual(attempted, [9, 7, 6, 5])
+        self.assertEqual(len(attempted), len(set(attempted)))
+
+    def test_parameter_search_checks_both_wider_directions(self):
+        spec = {
+            "name": "PROBCUT_MIN_DEPTH",
+            "base": 8,
+            "min": 4,
+            "max": 16,
+            "step": 1,
+        }
+        attempted = []
+
+        def accept_negative_wider(_cfg, _best, _params, _name, candidate, *_args):
+            attempted.append(candidate)
+            return candidate == 6
+
+        with patch("seek.try_candidate", side_effect=accept_negative_wider):
+            settled = tune_parameter(
+                self.cfg,
+                self.best,
+                [spec],
+                spec,
+                "target/release/ember",
+                "journal.jsonl",
+                "best.json",
+                False,
+                None,
+                None,
+            )
+
+        self.assertEqual(settled, 6)
+        self.assertEqual(attempted, [9, 7, 10, 6, 5])
+        self.assertEqual(len(attempted), len(set(attempted)))
