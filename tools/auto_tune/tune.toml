@@ -172,7 +172,7 @@ step = 1
 name = "LMP_MAX_DEPTH"
 base = 8
 min = 4
-max = 12
+max = 8
 step = 1
 
 [[params]]

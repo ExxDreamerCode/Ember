@@ -18,6 +18,7 @@ from seek import (  # noqa: E402
     TuningState,
     generate_match_config,
     read_json,
+    read_toml,
     run_single_match,
     select_param_specs,
     try_candidate,
@@ -81,6 +82,15 @@ class AutoTuneTests(unittest.TestCase):
         ]
         self.cfg["params"] = self.params
         self.best = {"values": {}}
+
+    def test_lmp_range_stops_at_the_implemented_move_count_table(self):
+        cfg = read_toml(AUTO_TUNE / "tune.toml")
+        lmp = next(
+            spec for spec in cfg["params"] if spec["name"] == "LMP_MAX_DEPTH"
+        )
+
+        self.assertEqual(lmp["base"], 8)
+        self.assertEqual(lmp["max"], 8)
 
     def test_candidate_is_engine_a_for_positive_sprt_alternative(self):
         config = generate_match_config(
