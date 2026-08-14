@@ -243,13 +243,12 @@ pub fn active_overrides() -> Vec<(TuneParam, i64)> {
         return Vec::new();
     }
     (0..PARAM_COUNT)
-        .filter_map(|idx| {
-            (mask & (1u64 << idx) != 0).then(|| {
-                (
-                    TuneParam::from_idx(idx),
-                    OVERRIDES[idx].load(Ordering::Relaxed),
-                )
-            })
+        .filter(|&idx| mask & (1u64 << idx) != 0)
+        .map(|idx| {
+            (
+                TuneParam::from_idx(idx),
+                OVERRIDES[idx].load(Ordering::Relaxed),
+            )
         })
         .collect()
 }
