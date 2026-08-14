@@ -212,6 +212,13 @@ max = 24
 step = 1
 
 [[params]]
+name = "TACTICAL_CHECK_EXTENSION_MAX_DEPTH"
+base = 2
+min = 1
+max = 4
+step = 1
+
+[[params]]
 name = "LMP_MAX_DEPTH"
 base = 8
 min = 4

@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
-const PARAM_COUNT: usize = 34;
+const PARAM_COUNT: usize = 35;
 const _: () = assert!(PARAM_COUNT <= u64::BITS as usize);
 
 static OVERRIDES: [AtomicI64; PARAM_COUNT] = [const { AtomicI64::new(0) }; PARAM_COUNT];
@@ -43,6 +43,7 @@ pub enum TuneParam {
     LmrNonPvExtra,
     AspirationMinDepth,
     AspirationDeltaCp,
+    TacticalCheckExtensionMaxDepth,
 }
 
 impl TuneParam {
@@ -84,6 +85,7 @@ impl TuneParam {
             TuneParam::LmrNonPvExtra => "LMR_NON_PV_EXTRA",
             TuneParam::AspirationMinDepth => "ASPIRATION_MIN_DEPTH",
             TuneParam::AspirationDeltaCp => "ASPIRATION_DELTA_CP",
+            TuneParam::TacticalCheckExtensionMaxDepth => "TACTICAL_CHECK_EXTENSION_MAX_DEPTH",
         }
     }
 
@@ -161,6 +163,9 @@ impl TuneParam {
             "LMR_NON_PV_EXTRA" | "LMR-NON-PV-EXTRA" => Some(TuneParam::LmrNonPvExtra),
             "ASPIRATION_MIN_DEPTH" | "ASPIRATION-MIN-DEPTH" => Some(TuneParam::AspirationMinDepth),
             "ASPIRATION_DELTA_CP" | "ASPIRATION-DELTA-CP" => Some(TuneParam::AspirationDeltaCp),
+            "TACTICAL_CHECK_EXTENSION_MAX_DEPTH" | "TACTICAL-CHECK-EXTENSION-MAX-DEPTH" => {
+                Some(TuneParam::TacticalCheckExtensionMaxDepth)
+            }
             _ => None,
         }
     }
@@ -204,7 +209,8 @@ impl TuneParam {
             30 => TuneParam::LmrMinDepth,
             31 => TuneParam::LmrNonPvExtra,
             32 => TuneParam::AspirationMinDepth,
-            _ => TuneParam::AspirationDeltaCp,
+            33 => TuneParam::AspirationDeltaCp,
+            _ => TuneParam::TacticalCheckExtensionMaxDepth,
         }
     }
 }

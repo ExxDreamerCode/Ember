@@ -75,6 +75,7 @@ The tunable constants and their defaults:
 | Parameter | Default | Meaning |
 | --- | ---: | --- |
 | `CHECK_EXTENSION_MAX_DEPTH` | 16 | Maximum depth for check extension |
+| `TACTICAL_CHECK_EXTENSION_MAX_DEPTH` | 2 | Max depth for the first tactical checking move extension |
 | `LMP_MAX_DEPTH` | 8 | Maximum late move pruning depth |
 | `LMP_MOVE_COUNT_SCALE_PERMILLE` | 1000 | Scale applied to the LMP move-count table |
 | `LMP_KING_PRESSURE_LIMIT` | 3 | Exclusive king-pressure limit for LMP |

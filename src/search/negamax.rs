@@ -7,6 +7,7 @@ const LMR_BASE_MILLIS: i64 = 500;
 const LMR_MIN_MOVE_INDEX: i64 = 2;
 const LMR_MIN_DEPTH: i64 = 3;
 const LMR_NON_PV_EXTRA: i64 = 1;
+const TACTICAL_CHECK_EXTENSION_MAX_DEPTH: i64 = 2;
 
 #[inline(always)]
 pub(super) fn lmp_move_count(depth: i32) -> Option<usize> {
@@ -57,6 +58,23 @@ pub(super) fn lmr_reduction(move_index: usize, actual_depth: i32, is_pv: bool) -
     } else {
         (reduction + non_pv_extra).clamp(1, max_reduction)
     }
+}
+
+#[inline(always)]
+pub(super) fn tactical_check_extension_candidate(
+    actual_depth: i32,
+    in_check: bool,
+    legal_moves_seen: usize,
+    is_quiet: bool,
+) -> bool {
+    if in_check || legal_moves_seen != 0 || is_quiet {
+        return false;
+    }
+    let max_depth = tune::get_int(
+        TuneParam::TacticalCheckExtensionMaxDepth,
+        TACTICAL_CHECK_EXTENSION_MAX_DEPTH,
+    );
+    i64::from(actual_depth) <= max_depth
 }
 
 macro_rules! negamax_mode_body {
@@ -945,11 +963,12 @@ macro_rules! negamax_mode_body {
                 }
             }
 
-            let tactical_move_ext = if !in_check
-                && legal_moves_seen == 0
-                && !is_quiet
-                && actual_depth <= 2
-                && special_move_gives_check_mode::<CHESS960>($st, mv)
+            let tactical_move_ext = if tactical_check_extension_candidate(
+                actual_depth,
+                in_check,
+                legal_moves_seen,
+                is_quiet,
+            ) && special_move_gives_check_mode::<CHESS960>($st, mv)
             {
                 1
             } else {

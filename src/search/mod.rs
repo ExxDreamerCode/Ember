@@ -146,7 +146,10 @@ use self::eval::{ClassicEval, NnueEval, SearchEval, ThreatNnueEval};
 
 mod negamax;
 #[cfg(test)]
-use self::negamax::{lmp_king_pressure_safe, lmp_move_count, lmr_policy_eligible, lmr_reduction};
+use self::negamax::{
+    lmp_king_pressure_safe, lmp_move_count, lmr_policy_eligible, lmr_reduction,
+    tactical_check_extension_candidate,
+};
 mod qsearch;
 #[cfg(test)]
 use self::qsearch::{

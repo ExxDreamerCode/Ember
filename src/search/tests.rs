@@ -259,6 +259,21 @@ fn aspiration_window_controls_preserve_the_default_boundary() {
 }
 
 #[test]
+fn tactical_check_extension_depth_honors_tuning_overrides() {
+    tune::reset();
+    assert!(tactical_check_extension_candidate(2, false, 0, false));
+    assert!(!tactical_check_extension_candidate(3, false, 0, false));
+    assert!(!tactical_check_extension_candidate(2, true, 0, false));
+    assert!(!tactical_check_extension_candidate(2, false, 1, false));
+    assert!(!tactical_check_extension_candidate(2, false, 0, true));
+
+    tune::set(TuneParam::TacticalCheckExtensionMaxDepth, 4);
+    assert!(tactical_check_extension_candidate(4, false, 0, false));
+    assert!(!tactical_check_extension_candidate(5, false, 0, false));
+    tune::reset();
+}
+
+#[test]
 fn restricted_search_ignores_unrestricted_tt_cutoffs() {
     let st = state_from_fen("7k/4Q3/5K2/8/8/8/8/8 b - - 0 1");
     let legal_moves = generate_moves(&st, st.w, &st.cr, st.ep);
