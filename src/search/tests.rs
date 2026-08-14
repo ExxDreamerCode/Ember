@@ -176,6 +176,28 @@ fn qsearch_checkmate_score_uses_the_actual_ply() {
 }
 
 #[test]
+fn qsearch_pruning_thresholds_honor_tuning_overrides() {
+    tune::reset();
+    assert!(!qsearch_delta_prunable(974, 0));
+    assert!(qsearch_delta_prunable(976, 0));
+    assert!(!qsearch_check_cap_reached(-3));
+    assert!(qsearch_check_cap_reached(-4));
+    assert_eq!(qsearch_see_threshold_cp(), 0);
+    assert!(!qsearch_see_prunable(0, qsearch_see_threshold_cp()));
+    assert!(qsearch_see_prunable(-1, qsearch_see_threshold_cp()));
+
+    tune::set(TuneParam::QsearchDeltaMarginCp, 700);
+    tune::set(TuneParam::QsearchCheckCapDepth, 2);
+    tune::set(TuneParam::QsearchSeeThresholdCp, -50);
+    assert!(qsearch_delta_prunable(701, 0));
+    assert!(qsearch_check_cap_reached(-2));
+    assert_eq!(qsearch_see_threshold_cp(), -50);
+    assert!(!qsearch_see_prunable(-50, qsearch_see_threshold_cp()));
+    assert!(qsearch_see_prunable(-51, qsearch_see_threshold_cp()));
+    tune::reset();
+}
+
+#[test]
 fn restricted_search_ignores_unrestricted_tt_cutoffs() {
     let st = state_from_fen("7k/4Q3/5K2/8/8/8/8/8 b - - 0 1");
     let legal_moves = generate_moves(&st, st.w, &st.cr, st.ep);

@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
-const PARAM_COUNT: usize = 23;
+const PARAM_COUNT: usize = 26;
 const _: () = assert!(PARAM_COUNT <= u64::BITS as usize);
 
 static OVERRIDES: [AtomicI64; PARAM_COUNT] = [const { AtomicI64::new(0) }; PARAM_COUNT];
@@ -32,6 +32,9 @@ pub enum TuneParam {
     IidMinDepth,
     LmrDivisorMillis,
     ProbCutReduction,
+    QsearchDeltaMarginCp,
+    QsearchCheckCapDepth,
+    QsearchSeeThresholdCp,
 }
 
 impl TuneParam {
@@ -62,6 +65,9 @@ impl TuneParam {
             TuneParam::IidMinDepth => "IID_MIN_DEPTH",
             TuneParam::LmrDivisorMillis => "LMR_DIVISOR_MILLIS",
             TuneParam::ProbCutReduction => "PROBCUT_REDUCTION",
+            TuneParam::QsearchDeltaMarginCp => "QSEARCH_DELTA_MARGIN_CP",
+            TuneParam::QsearchCheckCapDepth => "QSEARCH_CHECK_CAP_DEPTH",
+            TuneParam::QsearchSeeThresholdCp => "QSEARCH_SEE_THRESHOLD_CP",
         }
     }
 
@@ -118,6 +124,15 @@ impl TuneParam {
             "IID_MIN_DEPTH" | "IID-MIN-DEPTH" => Some(TuneParam::IidMinDepth),
             "LMR_DIVISOR_MILLIS" | "LMR-DIVISOR-MILLIS" => Some(TuneParam::LmrDivisorMillis),
             "PROBCUT_REDUCTION" | "PROBCUT-REDUCTION" => Some(TuneParam::ProbCutReduction),
+            "QSEARCH_DELTA_MARGIN_CP" | "QSEARCH-DELTA-MARGIN-CP" => {
+                Some(TuneParam::QsearchDeltaMarginCp)
+            }
+            "QSEARCH_CHECK_CAP_DEPTH" | "QSEARCH-CHECK-CAP-DEPTH" => {
+                Some(TuneParam::QsearchCheckCapDepth)
+            }
+            "QSEARCH_SEE_THRESHOLD_CP" | "QSEARCH-SEE-THRESHOLD-CP" => {
+                Some(TuneParam::QsearchSeeThresholdCp)
+            }
             _ => None,
         }
     }
@@ -150,7 +165,10 @@ impl TuneParam {
             19 => TuneParam::LmpMaxDepth,
             20 => TuneParam::IidMinDepth,
             21 => TuneParam::LmrDivisorMillis,
-            _ => TuneParam::ProbCutReduction,
+            22 => TuneParam::ProbCutReduction,
+            23 => TuneParam::QsearchDeltaMarginCp,
+            24 => TuneParam::QsearchCheckCapDepth,
+            _ => TuneParam::QsearchSeeThresholdCp,
         }
     }
 }

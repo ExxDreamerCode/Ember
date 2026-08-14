@@ -25,6 +25,14 @@ The tunable constants and their defaults:
 | `PROBCUT_REDUCTION` | 2 | Depth reduction for the full ProbCut verification |
 | `ROOT_REPETITION_TIE_MIN_SCORE` | 300 | Minimum score to prefer a non-repeating root move |
 
+### Quiescence search (src/search/qsearch.rs)
+
+| Parameter | Default | Meaning |
+| --- | ---: | --- |
+| `QSEARCH_DELTA_MARGIN_CP` | 975 | Delta-pruning margin in centipawns |
+| `QSEARCH_CHECK_CAP_DEPTH` | 4 | Maximum checking continuation depth |
+| `QSEARCH_SEE_THRESHOLD_CP` | 0 | Captures below this SEE score are pruned |
+
 ### Reverse futility / futility pruning (src/search/negamax.rs)
 
 | Parameter | Default | Meaning |

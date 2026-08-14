@@ -57,6 +57,28 @@ max = 3
 step = 1
 
 [[params]]
+name = "QSEARCH_DELTA_MARGIN_CP"
+base = 975
+min = 700
+max = 1250
+step = 25
+
+[[params]]
+name = "QSEARCH_CHECK_CAP_DEPTH"
+base = 4
+min = 2
+max = 6
+step = 1
+
+[[params]]
+name = "QSEARCH_SEE_THRESHOLD_CP"
+base = 0
+min = -100
+max = 100
+step = 25
+allow_nonpositive = true
+
+[[params]]
 name = "ROOT_REPETITION_TIE_MIN_SCORE"
 base = 300
 min = 100

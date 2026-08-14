@@ -135,6 +135,11 @@ use self::eval::{ClassicEval, NnueEval, SearchEval, ThreatNnueEval};
 
 mod negamax;
 mod qsearch;
+#[cfg(test)]
+use self::qsearch::{
+    qsearch_check_cap_reached, qsearch_delta_prunable, qsearch_see_prunable,
+    qsearch_see_threshold_cp,
+};
 mod state;
 
 #[cfg(test)]
