@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
-const PARAM_COUNT: usize = 22;
+const PARAM_COUNT: usize = 23;
 const _: () = assert!(PARAM_COUNT <= u64::BITS as usize);
 
 static OVERRIDES: [AtomicI64; PARAM_COUNT] = [const { AtomicI64::new(0) }; PARAM_COUNT];
@@ -31,6 +31,7 @@ pub enum TuneParam {
     LmpMaxDepth,
     IidMinDepth,
     LmrDivisorMillis,
+    ProbCutReduction,
 }
 
 impl TuneParam {
@@ -60,6 +61,7 @@ impl TuneParam {
             TuneParam::LmpMaxDepth => "LMP_MAX_DEPTH",
             TuneParam::IidMinDepth => "IID_MIN_DEPTH",
             TuneParam::LmrDivisorMillis => "LMR_DIVISOR_MILLIS",
+            TuneParam::ProbCutReduction => "PROBCUT_REDUCTION",
         }
     }
 
@@ -115,6 +117,7 @@ impl TuneParam {
             "LMP_MAX_DEPTH" | "LMP-MAX-DEPTH" => Some(TuneParam::LmpMaxDepth),
             "IID_MIN_DEPTH" | "IID-MIN-DEPTH" => Some(TuneParam::IidMinDepth),
             "LMR_DIVISOR_MILLIS" | "LMR-DIVISOR-MILLIS" => Some(TuneParam::LmrDivisorMillis),
+            "PROBCUT_REDUCTION" | "PROBCUT-REDUCTION" => Some(TuneParam::ProbCutReduction),
             _ => None,
         }
     }
@@ -146,7 +149,8 @@ impl TuneParam {
             18 => TuneParam::CheckExtensionMaxDepth,
             19 => TuneParam::LmpMaxDepth,
             20 => TuneParam::IidMinDepth,
-            _ => TuneParam::LmrDivisorMillis,
+            21 => TuneParam::LmrDivisorMillis,
+            _ => TuneParam::ProbCutReduction,
         }
     }
 }

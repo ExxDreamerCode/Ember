@@ -896,6 +896,23 @@ fn probcut_candidate_requires_a_safe_non_pv_node() {
 }
 
 #[test]
+fn probcut_reduction_override_controls_verification_depth() {
+    tune::reset();
+    tune::set(TuneParam::ProbCutReduction, 1);
+    let candidate = qualifying_probcut_candidate();
+    tune::reset();
+
+    assert_eq!(
+        candidate,
+        ProbCutEligibility::Eligible(ProbCutCandidate {
+            beta: PROBCUT_MARGIN_CP,
+            child_depth: PROBCUT_MIN_DEPTH - 1,
+            store_depth: PROBCUT_MIN_DEPTH,
+        })
+    );
+}
+
+#[test]
 fn probcut_respects_tt_evidence_but_not_a_lower_bound() {
     for flag in [TT_EXACT, TT_ALPHA] {
         assert_eq!(

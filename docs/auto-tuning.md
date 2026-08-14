@@ -22,6 +22,7 @@ The tunable constants and their defaults:
 | --- | ---: | --- |
 | `PROBCUT_MIN_DEPTH` | 8 | Minimum depth for ProbCut |
 | `PROBCUT_MARGIN_CP` | 350 | ProbCut margin in centipawns |
+| `PROBCUT_REDUCTION` | 2 | Depth reduction for the full ProbCut verification |
 | `ROOT_REPETITION_TIE_MIN_SCORE` | 300 | Minimum score to prefer a non-repeating root move |
 
 ### Reverse futility / futility pruning (src/search/negamax.rs)

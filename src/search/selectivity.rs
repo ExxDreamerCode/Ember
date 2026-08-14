@@ -236,6 +236,7 @@ pub(super) fn probcut_candidate(
 ) -> ProbCutEligibility {
     let min_depth = tune::get_int(TuneParam::ProbCutMinDepth, i64::from(PROBCUT_MIN_DEPTH)) as i32;
     let margin = tune::get_int(TuneParam::ProbCutMarginCp, i64::from(PROBCUT_MARGIN_CP)) as i32;
+    let reduction = tune::get_int(TuneParam::ProbCutReduction, i64::from(PROBCUT_REDUCTION)) as i32;
     if !enabled || actual_depth < min_depth {
         return ProbCutEligibility::NoCandidate;
     }
@@ -251,7 +252,7 @@ pub(super) fn probcut_candidate(
     {
         return ProbCutEligibility::SafetyRejected;
     }
-    let child_depth = actual_depth - PROBCUT_REDUCTION;
+    let child_depth = actual_depth - reduction;
     let store_depth = child_depth + 1;
     if tt_depth >= store_depth
         && matches!(tt_flag, Some(TT_EXACT) | Some(TT_ALPHA))
