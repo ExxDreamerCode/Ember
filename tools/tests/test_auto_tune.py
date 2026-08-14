@@ -1,3 +1,4 @@
+import json
 import sys
 import tempfile
 import unittest
@@ -11,7 +12,15 @@ sys.path.insert(0, str(AUTO_TUNE))
 sys.path.insert(0, str(TOOLS))
 
 from head_to_head import decision  # noqa: E402
-from seek import generate_match_config, try_candidate, tune_parameter  # noqa: E402
+from seek import (  # noqa: E402
+    TuningState,
+    generate_match_config,
+    read_json,
+    run_single_match,
+    try_candidate,
+    tune_parameter,
+    write_json,
+)
 from sprt import pentanomial_sprt  # noqa: E402
 
 
@@ -141,9 +150,20 @@ class AutoTuneTests(unittest.TestCase):
     def test_only_candidate_positive_sprt_verdict_updates_best(self):
         with tempfile.TemporaryDirectory() as directory:
             best_path = Path(directory) / "best.json"
-            with patch(
-                "seek.run_single_match",
-                return_value=({"verdict": "engine_a_better"}, "run", {}),
+            with (
+                patch(
+                    "seek.run_single_match",
+                    return_value=(
+                        {"verdict": "engine_a_better"},
+                        "run-a",
+                        {
+                            "run_id": "run-a",
+                            "verdict": "engine_a_better",
+                            "accepted": True,
+                        },
+                    ),
+                ),
+                patch("seek.write_match_report"),
             ):
                 accepted = try_candidate(
                     self.cfg,
@@ -163,9 +183,20 @@ class AutoTuneTests(unittest.TestCase):
             self.assertEqual(self.best["values"]["PROBCUT_MIN_DEPTH"], 9)
 
             self.best["values"].clear()
-            with patch(
-                "seek.run_single_match",
-                return_value=({"verdict": "engine_b_better"}, "run", {}),
+            with (
+                patch(
+                    "seek.run_single_match",
+                    return_value=(
+                        {"verdict": "engine_b_better"},
+                        "run-b",
+                        {
+                            "run_id": "run-b",
+                            "verdict": "engine_b_better",
+                            "accepted": False,
+                        },
+                    ),
+                ),
+                patch("seek.write_match_report"),
             ):
                 accepted = try_candidate(
                     self.cfg,
@@ -247,3 +278,181 @@ class AutoTuneTests(unittest.TestCase):
         self.assertEqual(settled, 6)
         self.assertEqual(attempted, [9, 7, 10, 6, 5])
         self.assertEqual(len(attempted), len(set(attempted)))
+
+    def test_json_replacement_keeps_previous_file_on_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "best.json"
+            write_json(path, {"values": {"A": 1}})
+
+            with patch("seek.os.replace", side_effect=OSError("interrupted")):
+                with self.assertRaisesRegex(OSError, "interrupted"):
+                    write_json(path, {"values": {"A": 2}})
+
+            self.assertEqual(read_json(path), {"values": {"A": 1}})
+            self.assertEqual(list(Path(directory).glob("*.tmp")), [])
+
+    def test_parameter_resume_does_not_repeat_completed_probes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "state.json"
+            session = {"test": "parameter-resume"}
+            state = TuningState(state_path, session)
+            spec = {
+                "name": "PROBCUT_MIN_DEPTH",
+                "base": 8,
+                "min": 4,
+                "max": 16,
+                "step": 1,
+            }
+            state.start_parameter(spec["name"], spec["base"])
+            for candidate in (9, 7, 10, 6):
+                state.record_attempt(spec["name"], candidate, False)
+
+            resumed_state = TuningState(state_path, session)
+            with patch("seek.try_candidate") as repeated_match:
+                settled = tune_parameter(
+                    self.cfg,
+                    self.best,
+                    [spec],
+                    spec,
+                    "target/release/ember",
+                    "journal.jsonl",
+                    "best.json",
+                    False,
+                    None,
+                    None,
+                    resumed_state,
+                )
+
+            self.assertEqual(settled, 8)
+            repeated_match.assert_not_called()
+            self.assertIn(spec["name"], resumed_state.data["completed_params"])
+            self.assertIsNone(resumed_state.data["parameter"])
+
+    def test_resume_rejects_a_different_invocation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "state.json"
+            TuningState(state_path, {"binary_sha256": "first"})
+
+            with self.assertRaisesRegex(RuntimeError, "different invocation"):
+                TuningState(state_path, {"binary_sha256": "second"})
+
+    def test_interrupted_match_resumes_and_commits_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = {
+                **self.cfg,
+                "results_dir": str(root / "reports"),
+                "common": {
+                    **self.cfg["common"],
+                    "time_control": "1+0.01",
+                },
+            }
+            spec = {
+                "name": "PROBCUT_MIN_DEPTH",
+                "base": 8,
+                "min": 4,
+                "max": 16,
+                "step": 1,
+            }
+            best = {"values": {}}
+            best_path = root / "best.json"
+            journal_path = root / "journal.jsonl"
+            state_path = root / "state.json"
+            session = {"test": "resume"}
+            state = TuningState(state_path, session)
+            state.start_parameter(spec["name"], spec["base"])
+
+            with patch("seek.run_match", side_effect=KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    run_single_match(
+                        cfg,
+                        best,
+                        [spec],
+                        spec["name"],
+                        9,
+                        sys.executable,
+                        journal_path,
+                        None,
+                        None,
+                        state,
+                    )
+
+            active = dict(state.data["active_match"])
+            config_path = Path(active["config_path"])
+            self.assertTrue(config_path.is_file())
+
+            summary = {
+                "verdict": "engine_a_better",
+                "elo": 4.0,
+                "score_rate": 0.51,
+                "pairs": 20,
+                "games": 40,
+                "sprt": {"llr": 3.0},
+            }
+            with (
+                patch("seek.run_match") as resumed_match,
+                patch("seek.read_summary", return_value=summary),
+            ):
+                _summary, run_id, _record = run_single_match(
+                    cfg,
+                    best,
+                    [spec],
+                    spec["name"],
+                    9,
+                    sys.executable,
+                    journal_path,
+                    None,
+                    None,
+                    state,
+                )
+
+            self.assertEqual(run_id, active["run_id"])
+            resumed_match.assert_called_once_with(config_path, active["run_id"])
+            self.assertEqual(state.data["active_match"]["status"], "completed")
+            write_json(config_path.parent / "estimates" / "summary.json", summary)
+
+            with (
+                patch.object(state, "record_attempt", side_effect=KeyboardInterrupt),
+                self.assertRaises(KeyboardInterrupt),
+            ):
+                try_candidate(
+                    cfg,
+                    best,
+                    [spec],
+                    spec["name"],
+                    9,
+                    sys.executable,
+                    journal_path,
+                    best_path,
+                    False,
+                    None,
+                    None,
+                    state,
+                )
+
+            resumed_state = TuningState(state_path, session)
+            resumed_best = read_json(best_path)
+            with patch("seek.run_match") as duplicate_match:
+                accepted = try_candidate(
+                    cfg,
+                    resumed_best,
+                    [spec],
+                    spec["name"],
+                    9,
+                    sys.executable,
+                    journal_path,
+                    best_path,
+                    False,
+                    None,
+                    None,
+                    resumed_state,
+                )
+
+            self.assertTrue(accepted)
+            duplicate_match.assert_not_called()
+            self.assertEqual(read_json(best_path)["values"][spec["name"]], 9)
+            records = [json.loads(line) for line in journal_path.read_text().splitlines()]
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["run_id"], active["run_id"])
+            self.assertIsNone(resumed_state.data["active_match"])
+            self.assertEqual(resumed_state.data["parameter"]["current"], 9)

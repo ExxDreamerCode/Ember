@@ -62,6 +62,10 @@ the more convenient result.
   alone does not identify a dirty tree.
 - Preserve raw logs, PGNs, JSON summaries, engine traces, and benchmark output needed to
   audit a conclusion.
+- Long-running adaptive tools must persist the exact invocation and active work item before
+  launching it. Keep result application idempotent, replace state files atomically, and test
+  interruption between each durable write so a restart can reconcile rather than repeat or
+  lose completed work.
 - Whenever documentation, reports, plans, fixture comments, tests, or PR prose reference an
   externally hosted game, include its full clickable URL. A bare game ID is not sufficient.
 - Do not run two CPU-bound comparisons concurrently on the same machine. They contaminate

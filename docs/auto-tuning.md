@@ -114,6 +114,7 @@ The tools live in `tools/auto_tune/`:
 | `apply.py` | Shows values from `best.json` that differ from the defaults, for manual porting into the code |
 | `best.json` | Current optimal values (created automatically) |
 | `journal.jsonl` | Full journal of every SPRT match |
+| `state.json` | Durable progress for resuming an interrupted invocation |
 
 ### Running
 
@@ -194,14 +195,26 @@ If you work in the Linux `nix develop .#elo-runner` dev-shell, then
 
 Time controls from `common.time_controls` rotate between SPRT matches in a
 round-robin fashion (the counter comes from the number of entries in
-`journal.jsonl`). The `--time-control` flag overrides the whole set. After each
-accepted value `best.json` is rewritten immediately, not only at the end of the
-run, so an interrupted tuning can be resumed.
+`journal.jsonl`). The `--time-control` flag overrides the whole set.
 
-All matches are recorded in `journal.jsonl`: parameter, old/new value, verdict,
-accepted or not, Elo, score rate, pairs/games, LLR, SHA-256 of the binary,
-time control, SPRT parameters. This makes any result reproducible and explains
-why a value was accepted or rejected.
+Before starting a match, the tuner writes its run ID, binary hash, invocation
+identity, search position, and permanent match configuration to `state.json`
+and `results/tune/runs/<run_id>/match.toml`. Running the same command after an
+interruption resumes that run and skips parameters already settled by the same
+invocation. A changed binary, configuration, path, parameter selection, or
+runtime override is rejected instead of being mixed into an existing session.
+The `--state` option selects a different progress file when needed.
+
+JSON files are replaced atomically. Match completion is idempotent: an accepted
+value, its journal record, and its report are reconciled before the active-match
+state is cleared, so interruption between those writes cannot duplicate or lose
+the result. `state.json` is removed after the complete invocation succeeds.
+
+All matches are recorded in `journal.jsonl`: run ID, parameter, old/new value,
+verdict, accepted or not, Elo, score rate, pairs/games, LLR, SHA-256 of the
+binary, time control, and SPRT parameters. This makes any result reproducible
+when combined with its preserved run artifacts, and explains why a value was
+accepted or rejected.
 
 ### Run reports
 
@@ -214,7 +227,9 @@ For each match, two files are created in `results/tune/<run_id>/`:
   `summary` (full statistics from `head_to_head.py`).
 
 `run_id` has the form `tune-<param>-<value>-<timestamp>`, so each run is easy
-to find and match against a `journal.jsonl` entry.
+to find and match against the exact `journal.jsonl` entry. Raw head-to-head
+artifacts and the preserved match configuration live under
+`results/tune/runs/<run_id>/`.
 
 ### `tune.toml` configuration
 
@@ -257,9 +272,8 @@ runtime tuning path during the match.
 
 ## Important limitations
 
-- The auto-tuner does **not** change code — it only writes `best.json` and
-  `journal.jsonl`. Values from `apply.py` must be ported into `src/` manually
-  and confirmed with your own SPRT before committing.
+- The auto-tuner does **not** change code. Values from `apply.py` must be ported
+  into `src/` manually and confirmed with your own SPRT before committing.
 - It is recommended to run on an idle machine and not keep parallel
   CPU-bound processes — timings and NPS will be distorted.
 - SPRT with `elo0=0, elo1=3` is a strict test: small improvements may need many
