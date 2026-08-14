@@ -79,12 +79,10 @@ def value_for(best, params, name):
 
 
 def incumbent_tune_option(best, params):
-    overrides = []
-    for spec in params:
-        value = value_for(best, params, spec["name"])
-        if value != spec["base"]:
-            overrides.append(f"{spec['name']}={value}")
-    return ",".join(overrides)
+    return ",".join(
+        f"{spec['name']}={value_for(best, params, spec['name'])}"
+        for spec in params
+    )
 
 
 def candidate_tune_option(best, params, candidate_name, candidate_value):
@@ -93,8 +91,7 @@ def candidate_tune_option(best, params, candidate_name, candidate_value):
         value = candidate_value if spec["name"] == candidate_name else value_for(
             best, params, spec["name"]
         )
-        if value != spec["base"]:
-            overrides.append(f"{spec['name']}={value}")
+        overrides.append(f"{spec['name']}={value}")
     return ",".join(overrides)
 
 
@@ -107,9 +104,8 @@ def engine_block(name, cmd, tune_value, common):
         "Hash": str(common["hash_mb"]),
         "Threads": str(common["threads"]),
         "Book": "",
+        "Tune": tune_value,
     }
-    if tune_value:
-        options["Tune"] = tune_value
     return {
         "name": name,
         "cmd": cmd,

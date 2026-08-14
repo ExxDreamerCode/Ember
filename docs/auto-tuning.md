@@ -249,7 +249,9 @@ step = 1
 `engine_a` is the candidate differing only in the tuned parameter, and
 `engine_b` is the incumbent with values from `best.json`. The other parameters
 already improved earlier are passed to both sides identically, so each match
-measures only one parameter.
+measures only one parameter. Both engines receive the complete parameter vector,
+including values equal to the compile-time defaults, so both use the same
+runtime tuning path during the match.
 
 ## Important limitations
 
