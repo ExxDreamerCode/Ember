@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
-const PARAM_COUNT: usize = 26;
+const PARAM_COUNT: usize = 28;
 const _: () = assert!(PARAM_COUNT <= u64::BITS as usize);
 
 static OVERRIDES: [AtomicI64; PARAM_COUNT] = [const { AtomicI64::new(0) }; PARAM_COUNT];
@@ -35,6 +35,8 @@ pub enum TuneParam {
     QsearchDeltaMarginCp,
     QsearchCheckCapDepth,
     QsearchSeeThresholdCp,
+    LmpMoveCountScalePermille,
+    LmpKingPressureLimit,
 }
 
 impl TuneParam {
@@ -68,6 +70,8 @@ impl TuneParam {
             TuneParam::QsearchDeltaMarginCp => "QSEARCH_DELTA_MARGIN_CP",
             TuneParam::QsearchCheckCapDepth => "QSEARCH_CHECK_CAP_DEPTH",
             TuneParam::QsearchSeeThresholdCp => "QSEARCH_SEE_THRESHOLD_CP",
+            TuneParam::LmpMoveCountScalePermille => "LMP_MOVE_COUNT_SCALE_PERMILLE",
+            TuneParam::LmpKingPressureLimit => "LMP_KING_PRESSURE_LIMIT",
         }
     }
 
@@ -133,6 +137,12 @@ impl TuneParam {
             "QSEARCH_SEE_THRESHOLD_CP" | "QSEARCH-SEE-THRESHOLD-CP" => {
                 Some(TuneParam::QsearchSeeThresholdCp)
             }
+            "LMP_MOVE_COUNT_SCALE_PERMILLE" | "LMP-MOVE-COUNT-SCALE-PERMILLE" => {
+                Some(TuneParam::LmpMoveCountScalePermille)
+            }
+            "LMP_KING_PRESSURE_LIMIT" | "LMP-KING-PRESSURE-LIMIT" => {
+                Some(TuneParam::LmpKingPressureLimit)
+            }
             _ => None,
         }
     }
@@ -168,7 +178,9 @@ impl TuneParam {
             22 => TuneParam::ProbCutReduction,
             23 => TuneParam::QsearchDeltaMarginCp,
             24 => TuneParam::QsearchCheckCapDepth,
-            _ => TuneParam::QsearchSeeThresholdCp,
+            25 => TuneParam::QsearchSeeThresholdCp,
+            26 => TuneParam::LmpMoveCountScalePermille,
+            _ => TuneParam::LmpKingPressureLimit,
         }
     }
 }

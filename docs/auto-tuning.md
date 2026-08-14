@@ -69,6 +69,8 @@ The tunable constants and their defaults:
 | --- | ---: | --- |
 | `CHECK_EXTENSION_MAX_DEPTH` | 16 | Maximum depth for check extension |
 | `LMP_MAX_DEPTH` | 8 | Maximum late move pruning depth |
+| `LMP_MOVE_COUNT_SCALE_PERMILLE` | 1000 | Scale applied to the LMP move-count table |
+| `LMP_KING_PRESSURE_LIMIT` | 3 | Exclusive king-pressure limit for LMP |
 | `IID_MIN_DEPTH` | 4 | Minimum depth for internal iterative deepening |
 | `LMR_DIVISOR_MILLIS` | 1800 | LMR reduction divisor (ln(move)·ln(depth)·1000 / divisor) |
 

@@ -205,6 +205,20 @@ max = 8
 step = 1
 
 [[params]]
+name = "LMP_MOVE_COUNT_SCALE_PERMILLE"
+base = 1000
+min = 700
+max = 1300
+step = 50
+
+[[params]]
+name = "LMP_KING_PRESSURE_LIMIT"
+base = 3
+min = 1
+max = 6
+step = 1
+
+[[params]]
 name = "IID_MIN_DEPTH"
 base = 4
 min = 2

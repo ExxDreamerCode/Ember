@@ -1,5 +1,28 @@
 use super::*;
 
+const LMP_MOVE_COUNTS: [usize; 8] = [4, 7, 11, 17, 24, 33, 44, 57];
+const LMP_MOVE_COUNT_SCALE_PERMILLE: i64 = 1000;
+const LMP_KING_PRESSURE_LIMIT: i64 = 3;
+
+#[inline(always)]
+pub(super) fn lmp_move_count(depth: i32) -> Option<usize> {
+    if !(1..=LMP_MOVE_COUNTS.len() as i32).contains(&depth) {
+        return None;
+    }
+    let base = LMP_MOVE_COUNTS[(depth - 1) as usize];
+    let scale = tune::get_int(
+        TuneParam::LmpMoveCountScalePermille,
+        LMP_MOVE_COUNT_SCALE_PERMILLE,
+    );
+    Some(((base as i64 * scale + 500) / 1000).max(1) as usize)
+}
+
+#[inline(always)]
+pub(super) fn lmp_king_pressure_safe(king_pressure: u32) -> bool {
+    let limit = tune::get_int(TuneParam::LmpKingPressureLimit, LMP_KING_PRESSURE_LIMIT) as u32;
+    king_pressure < limit
+}
+
 macro_rules! negamax_mode_body {
     (
         $this:tt,
@@ -805,22 +828,12 @@ macro_rules! negamax_mode_body {
         let lmp_max_depth = tune::get_int(TuneParam::LmpMaxDepth, 8) as i32;
         let lmp_count = if $this.lmp_enabled()
             && excluded_move.is_none()
-            && king_pressure < 3
+            && lmp_king_pressure_safe(king_pressure)
             && !is_pv
             && !in_check
             && actual_depth <= lmp_max_depth
         {
-            match actual_depth {
-                1 => 4,
-                2 => 7,
-                3 => 11,
-                4 => 17,
-                5 => 24,
-                6 => 33,
-                7 => 44,
-                8 => 57,
-                _ => usize::MAX,
-            }
+            lmp_move_count(actual_depth).unwrap_or(usize::MAX)
         } else {
             usize::MAX
         };

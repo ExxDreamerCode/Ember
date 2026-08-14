@@ -198,6 +198,27 @@ fn qsearch_pruning_thresholds_honor_tuning_overrides() {
 }
 
 #[test]
+fn lmp_aggressiveness_controls_preserve_the_default_policy() {
+    tune::reset();
+    let expected = [4, 7, 11, 17, 24, 33, 44, 57];
+    for (depth, move_count) in (1..=8).zip(expected) {
+        assert_eq!(lmp_move_count(depth), Some(move_count));
+    }
+    assert_eq!(lmp_move_count(0), None);
+    assert_eq!(lmp_move_count(9), None);
+    assert!(lmp_king_pressure_safe(2));
+    assert!(!lmp_king_pressure_safe(3));
+
+    tune::set(TuneParam::LmpMoveCountScalePermille, 1200);
+    tune::set(TuneParam::LmpKingPressureLimit, 5);
+    assert_eq!(lmp_move_count(1), Some(5));
+    assert_eq!(lmp_move_count(8), Some(68));
+    assert!(lmp_king_pressure_safe(4));
+    assert!(!lmp_king_pressure_safe(5));
+    tune::reset();
+}
+
+#[test]
 fn restricted_search_ignores_unrestricted_tt_cutoffs() {
     let st = state_from_fen("7k/4Q3/5K2/8/8/8/8/8 b - - 0 1");
     let legal_moves = generate_moves(&st, st.w, &st.cr, st.ep);
