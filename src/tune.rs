@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
-const PARAM_COUNT: usize = 28;
+const PARAM_COUNT: usize = 32;
 const _: () = assert!(PARAM_COUNT <= u64::BITS as usize);
 
 static OVERRIDES: [AtomicI64; PARAM_COUNT] = [const { AtomicI64::new(0) }; PARAM_COUNT];
@@ -37,6 +37,10 @@ pub enum TuneParam {
     QsearchSeeThresholdCp,
     LmpMoveCountScalePermille,
     LmpKingPressureLimit,
+    LmrBaseMillis,
+    LmrMinMoveIndex,
+    LmrMinDepth,
+    LmrNonPvExtra,
 }
 
 impl TuneParam {
@@ -72,6 +76,10 @@ impl TuneParam {
             TuneParam::QsearchSeeThresholdCp => "QSEARCH_SEE_THRESHOLD_CP",
             TuneParam::LmpMoveCountScalePermille => "LMP_MOVE_COUNT_SCALE_PERMILLE",
             TuneParam::LmpKingPressureLimit => "LMP_KING_PRESSURE_LIMIT",
+            TuneParam::LmrBaseMillis => "LMR_BASE_MILLIS",
+            TuneParam::LmrMinMoveIndex => "LMR_MIN_MOVE_INDEX",
+            TuneParam::LmrMinDepth => "LMR_MIN_DEPTH",
+            TuneParam::LmrNonPvExtra => "LMR_NON_PV_EXTRA",
         }
     }
 
@@ -143,6 +151,10 @@ impl TuneParam {
             "LMP_KING_PRESSURE_LIMIT" | "LMP-KING-PRESSURE-LIMIT" => {
                 Some(TuneParam::LmpKingPressureLimit)
             }
+            "LMR_BASE_MILLIS" | "LMR-BASE-MILLIS" => Some(TuneParam::LmrBaseMillis),
+            "LMR_MIN_MOVE_INDEX" | "LMR-MIN-MOVE-INDEX" => Some(TuneParam::LmrMinMoveIndex),
+            "LMR_MIN_DEPTH" | "LMR-MIN-DEPTH" => Some(TuneParam::LmrMinDepth),
+            "LMR_NON_PV_EXTRA" | "LMR-NON-PV-EXTRA" => Some(TuneParam::LmrNonPvExtra),
             _ => None,
         }
     }
@@ -180,7 +192,11 @@ impl TuneParam {
             24 => TuneParam::QsearchCheckCapDepth,
             25 => TuneParam::QsearchSeeThresholdCp,
             26 => TuneParam::LmpMoveCountScalePermille,
-            _ => TuneParam::LmpKingPressureLimit,
+            27 => TuneParam::LmpKingPressureLimit,
+            28 => TuneParam::LmrBaseMillis,
+            29 => TuneParam::LmrMinMoveIndex,
+            30 => TuneParam::LmrMinDepth,
+            _ => TuneParam::LmrNonPvExtra,
         }
     }
 }

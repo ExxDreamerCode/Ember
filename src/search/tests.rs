@@ -219,6 +219,33 @@ fn lmp_aggressiveness_controls_preserve_the_default_policy() {
 }
 
 #[test]
+fn lmr_controls_preserve_default_boundaries_and_reductions() {
+    tune::reset();
+    assert!(!lmr_policy_eligible(1, 3, true, false));
+    assert!(lmr_policy_eligible(2, 3, true, false));
+    assert!(!lmr_policy_eligible(2, 2, true, false));
+    assert!(!lmr_policy_eligible(2, 3, false, false));
+    assert!(!lmr_policy_eligible(2, 3, true, true));
+    assert_eq!(lmr_reduction(10, 4, true), 2);
+    assert_eq!(lmr_reduction(10, 4, false), 3);
+
+    tune::set(TuneParam::LmrDivisorMillis, 1200);
+    assert_eq!(lmr_reduction(10, 4, true), 3);
+    tune::reset();
+
+    tune::set(TuneParam::LmrMinMoveIndex, 4);
+    tune::set(TuneParam::LmrMinDepth, 5);
+    tune::set(TuneParam::LmrBaseMillis, 0);
+    tune::set(TuneParam::LmrNonPvExtra, 0);
+    assert!(!lmr_policy_eligible(3, 5, true, false));
+    assert!(!lmr_policy_eligible(4, 4, true, false));
+    assert!(lmr_policy_eligible(4, 5, true, false));
+    assert_eq!(lmr_reduction(10, 4, true), 1);
+    assert_eq!(lmr_reduction(10, 4, false), 1);
+    tune::reset();
+}
+
+#[test]
 fn restricted_search_ignores_unrestricted_tt_cutoffs() {
     let st = state_from_fen("7k/4Q3/5K2/8/8/8/8/8 b - - 0 1");
     let legal_moves = generate_moves(&st, st.w, &st.cr, st.ep);

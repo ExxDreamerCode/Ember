@@ -73,6 +73,10 @@ The tunable constants and their defaults:
 | `LMP_KING_PRESSURE_LIMIT` | 3 | Exclusive king-pressure limit for LMP |
 | `IID_MIN_DEPTH` | 4 | Minimum depth for internal iterative deepening |
 | `LMR_DIVISOR_MILLIS` | 1800 | LMR reduction divisor (ln(move)·ln(depth)·1000 / divisor) |
+| `LMR_BASE_MILLIS` | 500 | Fixed LMR base in thousandths of a ply |
+| `LMR_MIN_MOVE_INDEX` | 2 | First zero-based move index eligible for LMR |
+| `LMR_MIN_DEPTH` | 3 | Minimum depth eligible for LMR |
+| `LMR_NON_PV_EXTRA` | 1 | Extra reduction at non-PV nodes |
 
 ### UCI interface
 

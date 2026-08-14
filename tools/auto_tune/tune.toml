@@ -231,3 +231,33 @@ base = 1800
 min = 1200
 max = 2400
 step = 100
+
+[[params]]
+name = "LMR_BASE_MILLIS"
+base = 500
+min = 0
+max = 1000
+step = 100
+allow_nonpositive = true
+
+[[params]]
+name = "LMR_MIN_MOVE_INDEX"
+base = 2
+min = 1
+max = 4
+step = 1
+
+[[params]]
+name = "LMR_MIN_DEPTH"
+base = 3
+min = 2
+max = 6
+step = 1
+
+[[params]]
+name = "LMR_NON_PV_EXTRA"
+base = 1
+min = 0
+max = 2
+step = 1
+allow_nonpositive = true
