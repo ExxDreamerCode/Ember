@@ -1370,6 +1370,7 @@ fn lazy_smp_tactical_verifier_does_not_inflate_worker_disagreement() {
         root_context: Arc::new(LazySmpRootContext::from_searcher(&root_searcher)),
         start: Instant::now(),
         global_best_depth: Arc::new(AtomicI32::new(0)),
+        printed_depth: Arc::new(AtomicI32::new(0)),
         global_nodes: Arc::new(AtomicU64::new(0)),
         node_limit_counter: None,
         worker_best_moves: (0..3).map(|_| AtomicU64::new(0)).collect(),
@@ -1407,8 +1408,8 @@ fn final_smp_info_does_not_regress_a_depth_already_published_by_a_helper() {
     // never went backwards.
     assert!(should_print_final_info(23, 22));
     assert!(
-        should_print_final_info(23, 23),
-        "equal depth should still be reported"
+        !should_print_final_info(23, 23),
+        "equal depth was already published by a helper and must not be reprinted"
     );
     assert!(!should_print_final_info(22, 23));
     assert!(!should_print_final_info(0, 0));
