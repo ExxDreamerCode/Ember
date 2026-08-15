@@ -99,7 +99,7 @@ class AutoTuneConfirmationTests(unittest.TestCase):
         self.assertEqual(config["sprt"]["alpha"], 0.025)
         self.assertEqual(
             config["run"]["results_dir"],
-            "results/tune/confirmations",
+            str(Path("results/tune") / "confirmations"),
         )
 
     def test_confirmation_rejects_an_unchanged_vector(self):
