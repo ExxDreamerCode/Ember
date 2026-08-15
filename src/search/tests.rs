@@ -1398,6 +1398,23 @@ fn completed_thread(thread_id: usize, best_move: Move, score: i32, depth: i32) -
     }
 }
 
+#[test]
+fn final_smp_info_does_not_regress_a_depth_already_published_by_a_helper() {
+    // A helper can complete depth N and publish `info depth N` before the
+    // principal worker settles on a shallower result. The final aggregate
+    // report must not then print `info depth N-1`, because a UCI client
+    // would see monotonically decreasing depths although the search itself
+    // never went backwards.
+    assert!(should_print_final_info(23, 22));
+    assert!(
+        should_print_final_info(23, 23),
+        "equal depth should still be reported"
+    );
+    assert!(!should_print_final_info(22, 23));
+    assert!(!should_print_final_info(0, 0));
+    assert!(!should_print_final_info(0, 23));
+}
+
 // The following recorded positions drive synthetic worker ballots. They verify SMP
 // result selection independently of search nondeterminism, which TSV move cases cannot
 // express because they only observe a completed single-thread root search.

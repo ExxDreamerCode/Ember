@@ -306,7 +306,7 @@ impl LazySmpPool {
         let Some(best) = select_lazy_smp_result(&results, st, root_moves) else {
             return (root_moves[0], 0, 0, total_nodes);
         };
-        if best.depth > 0 {
+        if should_print_final_info(best.depth, job.global_best_depth.load(Ordering::Relaxed)) {
             print_lazy_smp_info(
                 &job,
                 best.best_move,
@@ -467,6 +467,10 @@ pub(super) fn lazy_smp_root_moves(
         moves.rotate_left(offset);
     }
     moves
+}
+
+pub(super) fn should_print_final_info(best_depth: i32, global_best_depth: i32) -> bool {
+    best_depth > 0 && best_depth >= global_best_depth
 }
 
 fn print_lazy_smp_info(
