@@ -1,4 +1,4 @@
-use chess_rs_lib::time_management::{threads_for_time_budget, TimeManager};
+use ember_chess::time_management::{threads_for_time_budget, TimeManager};
 
 #[test]
 fn one_second_bullet_has_no_fifty_millisecond_floor() {

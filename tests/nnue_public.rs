@@ -1,10 +1,10 @@
-use chess_rs_lib::backend::{
+use ember_chess::backend::{
     aarch64_simd_available, available_nnue_backends, nnue_backend_available, x86_v3_available,
     NnueBackendKind,
 };
-use chess_rs_lib::nnue::{threat_feature_count, NNUEAccumulator, NNUENet, NNUEThreatAccumulator};
-use chess_rs_lib::types::{BLACK, WHITE};
-use chess_rs_lib::Engine;
+use ember_chess::nnue::{threat_feature_count, NNUEAccumulator, NNUENet, NNUEThreatAccumulator};
+use ember_chess::types::{BLACK, WHITE};
+use ember_chess::Engine;
 
 const DENSE_NET: &[u8] = include_bytes!("../src/net.nnue");
 const COMPACT_NET: &[u8] = include_bytes!("../src/net.compact.nnue");

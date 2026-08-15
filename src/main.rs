@@ -1,17 +1,17 @@
-use chess_rs_lib::backend::{
+use ember_chess::backend::{
     compiled_search_backends, parse_search_backend_name, search_backend_available,
 };
-use chess_rs_lib::board::{piece_on, piece_type, EMPTY_SQ};
-use chess_rs_lib::book::{DEFAULT_BOOK_MIN_MOVE_WEIGHT, DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE};
-use chess_rs_lib::evaluate;
-use chess_rs_lib::search::{
+use ember_chess::board::{piece_on, piece_type, EMPTY_SQ};
+use ember_chess::book::{DEFAULT_BOOK_MIN_MOVE_WEIGHT, DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE};
+use ember_chess::evaluate;
+use ember_chess::search::{
     active_search_backend, set_search_backend_override, SearchLearning, SEARCH_THREAD_STACK_SIZE,
 };
-use chess_rs_lib::syzygy::SyzygyTables;
-use chess_rs_lib::time_management::TimeManager;
-use chess_rs_lib::tune::{self, TuneParam};
-use chess_rs_lib::zobrist::compute_hash;
-use chess_rs_lib::{book, Engine, EngineBookConfig, OpeningBook};
+use ember_chess::syzygy::SyzygyTables;
+use ember_chess::time_management::TimeManager;
+use ember_chess::tune::{self, TuneParam};
+use ember_chess::zobrist::compute_hash;
+use ember_chess::{book, Engine, EngineBookConfig, OpeningBook};
 use std::io::{self, BufRead};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -401,7 +401,7 @@ fn run_uci_loop() {
             }
             "eval" => {
                 let score = evaluate::evaluate_nnue(&engine.st);
-                let classic = chess_rs_lib::evaluate::evaluate(&engine.st);
+                let classic = ember_chess::evaluate::evaluate(&engine.st);
                 println!("info string NNUE eval: {} cp (from stm)", score);
                 let stm_sign = if engine.st.w { 1 } else { -1 };
                 println!(
@@ -456,7 +456,7 @@ fn run_uci_loop() {
                 )
                 .with_random_book_move(engine.random_book_move);
 
-                let mut search_searcher = chess_rs_lib::search::Searcher::new(
+                let mut search_searcher = ember_chess::search::Searcher::new(
                     Arc::clone(&shared_tt),
                     Arc::clone(&stopped),
                 );
@@ -658,7 +658,7 @@ fn parse_check_value(value: &str) -> Option<bool> {
 }
 
 fn set_nnue_backend(value: &str) {
-    let normalized = chess_rs_lib::backend::normalize_backend_name(value);
+    let normalized = ember_chess::backend::normalize_backend_name(value);
     if normalized.is_empty() || normalized == "auto" || normalized == "default" {
         set_search_backend_override(None);
         eprintln!(
@@ -958,7 +958,7 @@ fn parse_go_params(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chess_rs_lib::board::board_to_fen;
+    use ember_chess::board::board_to_fen;
 
     #[test]
     fn position_command_stops_after_illegal_move() {
@@ -1117,7 +1117,7 @@ mod tests {
 
         reset_engine(&mut engine);
 
-        let recomputed = chess_rs_lib::zobrist::compute_hash(&engine.st);
+        let recomputed = ember_chess::zobrist::compute_hash(&engine.st);
         assert!(engine.st.chess960, "reset should preserve Chess960 mode");
         assert_eq!(
             engine.st.hash, recomputed,

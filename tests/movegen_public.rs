@@ -1,10 +1,10 @@
-use chess_rs_lib::board::{
+use ember_chess::board::{
     bit, encode_move, move_ec, move_er, move_from, move_promotion, move_sc, move_sr, move_to,
     move_to_uci, piece_on, piece_type, sq, sq_c, sq_r, BoardState, Move, BR, EMPTY_SQ, WR,
 };
-use chess_rs_lib::movegen::*;
-use chess_rs_lib::zobrist::compute_hash;
-use chess_rs_lib::Engine;
+use ember_chess::movegen::*;
+use ember_chess::zobrist::compute_hash;
+use ember_chess::Engine;
 use std::collections::BTreeSet;
 
 fn state_from_fen(fen: &str) -> BoardState {

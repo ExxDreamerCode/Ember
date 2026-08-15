@@ -2,15 +2,15 @@ use std::collections::BTreeSet;
 use std::mem::size_of;
 use std::time::Instant;
 
-use chess_rs_lib::board::{
+use ember_chess::board::{
     bit, board_to_fen, is_dead_position, move_ec, move_er, move_promotion, move_sc, move_sr,
     move_to_uci, piece_on, sq, BoardState, EMPTY_SQ, INF, MATE, WK, WR,
 };
-use chess_rs_lib::movegen::{apply_move, generate_moves};
-use chess_rs_lib::syzygy::SyzygyTables;
-use chess_rs_lib::tt::TT_EXACT;
-use chess_rs_lib::zobrist::compute_hash;
-use chess_rs_lib::Engine;
+use ember_chess::movegen::{apply_move, generate_moves};
+use ember_chess::syzygy::SyzygyTables;
+use ember_chess::tt::TT_EXACT;
+use ember_chess::zobrist::compute_hash;
+use ember_chess::Engine;
 use shakmaty::{fen::Fen, perft as shakmaty_perft, CastlingMode, Chess, Position};
 
 fn engine_from_fen(fen: &str, chess960: bool) -> Engine {
@@ -70,7 +70,7 @@ fn reference_legal_moves(fen: &str, chess960: bool) -> BTreeSet<String> {
         .collect()
 }
 
-fn ember_perft_state(st: &chess_rs_lib::board::BoardState, depth: u32) -> u64 {
+fn ember_perft_state(st: &ember_chess::board::BoardState, depth: u32) -> u64 {
     if depth == 0 {
         return 1;
     }

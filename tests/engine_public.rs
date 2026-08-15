@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use chess_rs_lib::{book, Engine, OpeningBook};
+use ember_chess::{book, Engine, OpeningBook};
 
 fn play_uci(engine: &mut Engine, uci: &str) {
     let bytes = uci.as_bytes();

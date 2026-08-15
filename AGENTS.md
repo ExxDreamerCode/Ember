@@ -80,7 +80,7 @@ the more convenient result.
 
 Tests embedded under `src/` are reserved for focused unit tests and microbenchmarks of
 private, low-level implementation details that cannot be reached through the crate's public
-surface. A test that uses only exported `chess_rs_lib` modules, types, functions, and methods
+surface. A test that uses only exported `ember_chess` modules, types, functions, and methods
 belongs under `tests/`, even when it exercises behavior implemented by a single source
 module. Public subsystem lifecycle and cross-module behavior are integration tests, not
 inline unit tests.

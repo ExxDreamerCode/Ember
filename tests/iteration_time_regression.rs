@@ -1,4 +1,4 @@
-use chess_rs_lib::time_management::{iteration_time_decision, IterationTiming};
+use ember_chess::time_management::{iteration_time_decision, IterationTiming};
 
 fn timing(
     elapsed_seconds: f64,

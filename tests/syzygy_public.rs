@@ -2,10 +2,10 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use chess_rs_lib::board::move_to_uci;
-use chess_rs_lib::movegen::generate_moves;
-use chess_rs_lib::syzygy::SyzygyTables;
-use chess_rs_lib::Engine;
+use ember_chess::board::move_to_uci;
+use ember_chess::movegen::generate_moves;
+use ember_chess::syzygy::SyzygyTables;
+use ember_chess::Engine;
 use shakmaty_syzygy::{Dtz, Wdl};
 
 fn engine_from_fen(fen: &str) -> Engine {

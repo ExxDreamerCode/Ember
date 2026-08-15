@@ -1,13 +1,13 @@
-use chess_rs_lib::backend::{
+use ember_chess::backend::{
     available_nnue_backends, available_search_backends, default_search_backend, NnueBackendKind,
 };
-use chess_rs_lib::board::{move_ec, move_er, move_promotion, move_sc, move_sr, BoardState};
-use chess_rs_lib::evaluate::{self, EMBEDDED_NNUE};
-use chess_rs_lib::movegen::{apply_move, generate_moves};
-use chess_rs_lib::nnue::{NNUEAccumulator, NNUENet};
-use chess_rs_lib::search::set_search_backend_override;
-use chess_rs_lib::types::{BLACK, WHITE};
-use chess_rs_lib::Engine;
+use ember_chess::board::{move_ec, move_er, move_promotion, move_sc, move_sr, BoardState};
+use ember_chess::evaluate::{self, EMBEDDED_NNUE};
+use ember_chess::movegen::{apply_move, generate_moves};
+use ember_chess::nnue::{NNUEAccumulator, NNUENet};
+use ember_chess::search::set_search_backend_override;
+use ember_chess::types::{BLACK, WHITE};
+use ember_chess::Engine;
 use std::hint::black_box;
 use std::time::Instant;
 
