@@ -284,7 +284,7 @@ step = 1
 
 [[params]]
 name = "LMR_MIN_DEPTH"
-base = 3
+base = 2
 min = 2
 max = 6
 step = 1

@@ -221,9 +221,9 @@ fn lmp_aggressiveness_controls_preserve_the_default_policy() {
 #[test]
 fn lmr_controls_preserve_default_boundaries_and_reductions() {
     tune::reset();
-    assert!(!lmr_policy_eligible(1, 3, true, false));
-    assert!(lmr_policy_eligible(2, 3, true, false));
-    assert!(!lmr_policy_eligible(2, 2, true, false));
+    assert!(!lmr_policy_eligible(1, 2, true, false));
+    assert!(lmr_policy_eligible(2, 2, true, false));
+    assert!(!lmr_policy_eligible(2, 1, true, false));
     assert!(!lmr_policy_eligible(2, 3, false, false));
     assert!(!lmr_policy_eligible(2, 3, true, true));
     assert_eq!(lmr_reduction(10, 4, true), 2);
