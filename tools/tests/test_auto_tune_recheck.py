@@ -1,8 +1,10 @@
 import copy
+import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 TOOLS = Path(__file__).resolve().parents[1]
 AUTO_TUNE = TOOLS / "auto_tune"
@@ -19,7 +21,9 @@ from seek import (  # noqa: E402
 )
 from recheck import (  # noqa: E402
     generate_recheck_config,
+    mark_pending_recheck_started,
     prepare_config,
+    recheck_candidate,
     recheck_status,
     recheck_run_id,
     update_pending_after_recheck,
@@ -248,6 +252,118 @@ class UpdatePendingAfterRecheckTests(unittest.TestCase):
             self.assertEqual(entry["recheck_run_id"], "recheck-abc")
             self.assertEqual(entry["recheck_elo"], 12.5)
             self.assertEqual(entry["recheck_pairs"], 4000)
+
+    def test_started_recheck_records_its_resume_context(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pending.json"
+            config_path = Path(directory) / "match.toml"
+            config_path.write_text("[run]\nname = \"test\"\n", encoding="utf-8")
+            pending_add(str(path), "PROBCUT_MIN_DEPTH", 9, make_record())
+
+            entry = mark_pending_recheck_started(
+                path,
+                "PROBCUT_MIN_DEPTH=9",
+                "recheck-abc",
+                config_path,
+                {"PROBCUT_MARGIN_CP": 375},
+                8,
+            )
+
+            self.assertEqual(entry["recheck_run_id"], "recheck-abc")
+            self.assertEqual(entry["recheck_old_value"], 8)
+            self.assertEqual(
+                entry["recheck_incumbent_values"],
+                {"PROBCUT_MARGIN_CP": 375},
+            )
+
+
+class RecheckPersistenceTests(unittest.TestCase):
+    def test_accepted_value_survives_interruption_before_pending_commit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = make_cfg()
+            cfg["results_dir"] = str(root / "results")
+            params = make_params()
+            best_path = root / "best.json"
+            pending_path = root / "pending.json"
+            journal_path = root / "journal.jsonl"
+            best = {"values": {}}
+            write_json(best_path, best)
+            pending_add(
+                pending_path,
+                "PROBCUT_MIN_DEPTH",
+                9,
+                make_record(),
+            )
+            summary = {
+                "verdict": "engine_a_better",
+                "elo": 12.5,
+                "score_rate": 0.518,
+                "pairs": 1200,
+                "games": 2400,
+                "sprt": {"llr": 3.0},
+            }
+
+            with (
+                patch("recheck.engine_binary", return_value=sys.executable),
+                patch("recheck.run_recheck"),
+                patch("recheck.read_summary", return_value=summary),
+                patch(
+                    "recheck.update_pending_after_recheck",
+                    side_effect=RuntimeError("interrupted"),
+                ),
+                self.assertRaisesRegex(RuntimeError, "interrupted"),
+            ):
+                recheck_candidate(
+                    load_pending(pending_path)["candidates"][
+                        "PROBCUT_MIN_DEPTH=9"
+                    ],
+                    cfg,
+                    best,
+                    best_path,
+                    params,
+                    "engine",
+                    journal_path,
+                    pending_path,
+                )
+
+            self.assertEqual(
+                json.loads(best_path.read_text(encoding="utf-8"))["values"],
+                {"PROBCUT_MIN_DEPTH": 9},
+            )
+            pending_entry = load_pending(pending_path)["candidates"][
+                "PROBCUT_MIN_DEPTH=9"
+            ]
+            self.assertEqual(pending_entry["status"], "pending")
+            self.assertIsNotNone(pending_entry["recheck_run_id"])
+
+            resumed_best = json.loads(best_path.read_text(encoding="utf-8"))
+            with (
+                patch("recheck.engine_binary", return_value=sys.executable),
+                patch("recheck.run_recheck"),
+                patch("recheck.read_summary", return_value=summary),
+            ):
+                recheck_candidate(
+                    pending_entry,
+                    cfg,
+                    resumed_best,
+                    best_path,
+                    params,
+                    "engine",
+                    journal_path,
+                    pending_path,
+                )
+
+            final_entry = load_pending(pending_path)["candidates"][
+                "PROBCUT_MIN_DEPTH=9"
+            ]
+            self.assertEqual(final_entry["status"], "accepted")
+            journal = [
+                json.loads(line)
+                for line in journal_path.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(len(journal), 1)
+            self.assertEqual(journal[0]["old_value"], 8)
 
 
 class RecheckStatusTests(unittest.TestCase):

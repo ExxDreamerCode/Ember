@@ -183,49 +183,116 @@ def update_pending_after_recheck(pending_path, key, status, summary, run_id):
     return entry
 
 
+def mark_pending_recheck_started(
+    pending_path,
+    key,
+    run_id,
+    config_path,
+    incumbent_values,
+    old_value,
+):
+    pending = load_pending(str(pending_path))
+    if key not in pending["candidates"]:
+        raise RuntimeError(f"pending candidate missing: {key}")
+    entry = pending["candidates"][key]
+    if entry.get("status") != "pending":
+        raise RuntimeError(f"pending candidate is not queued: {key}")
+    entry["recheck_run_id"] = run_id
+    entry["recheck_config_path"] = str(Path(config_path).resolve())
+    entry["recheck_config_sha256"] = sha256_file(config_path)
+    entry["recheck_incumbent_values"] = dict(incumbent_values)
+    entry["recheck_old_value"] = old_value
+    write_json(pending_path, pending)
+    return entry
+
+
 def recheck_status(summary):
     if summary.get("verdict") == "engine_a_better":
         return "accepted"
     return "rejected"
 
 
-def recheck_candidate(entry, cfg, best, params, engine_cmd, journal_path, pending_path, time_control=None, workers=None, worker_multiplier=None):
+def recheck_candidate(
+    entry,
+    cfg,
+    best,
+    best_path,
+    params,
+    engine_cmd,
+    journal_path,
+    pending_path,
+    time_control=None,
+    workers=None,
+    worker_multiplier=None,
+):
     name = entry["param"]
     value = entry["value"]
     binary = engine_binary(engine_cmd)
     binary_sha256 = sha256_file(binary)
-    config = generate_recheck_config(
-        cfg,
-        best,
-        params,
-        engine_cmd,
-        name,
-        value,
-        binary_sha256,
-        time_control,
-        workers,
-        worker_multiplier,
-    )
-    run_id = recheck_run_id(config)
     key = f"{name}={value}"
-    if entry.get("recheck_run_id") == run_id and entry.get("status") != "pending":
+    if entry.get("status") != "pending":
         return entry
+    if entry.get("recheck_run_id") is not None:
+        run_id = entry["recheck_run_id"]
+        validate_run_id(run_id)
+        raw_config_path = entry.get("recheck_config_path")
+        if not isinstance(raw_config_path, str):
+            raise RuntimeError(f"pending recheck config is missing: {key}")
+        config_path = Path(raw_config_path)
+        if not config_path.is_file():
+            raise RuntimeError(f"pending recheck config is missing: {config_path}")
+        if entry.get("recheck_config_sha256") != sha256_file(config_path):
+            raise RuntimeError(f"pending recheck config changed: {config_path}")
+        config = read_toml(config_path)
+        if recheck_run_id(config) != run_id:
+            raise RuntimeError(f"pending recheck run ID disagrees with config: {key}")
+        if config.get("recheck_meta", {}).get("binary_sha256") != binary_sha256:
+            raise RuntimeError("engine binary changed while a recheck was active")
+        incumbent_values = entry.get("recheck_incumbent_values")
+        if not isinstance(incumbent_values, dict):
+            raise RuntimeError(f"pending recheck incumbent is missing: {key}")
+        accepted_values = dict(incumbent_values)
+        accepted_values[name] = value
+        if best["values"] not in (incumbent_values, accepted_values):
+            raise RuntimeError("best.json changed while a recheck was active")
+        old_value = entry.get("recheck_old_value")
+    else:
+        old_value = value_for(best, params, name)
+        config = generate_recheck_config(
+            cfg,
+            best,
+            params,
+            engine_cmd,
+            name,
+            value,
+            binary_sha256,
+            time_control,
+            workers,
+            worker_multiplier,
+        )
+        run_id = recheck_run_id(config)
+        config_path, _resumed = prepare_config(config, run_id)
+        entry = mark_pending_recheck_started(
+            pending_path,
+            key,
+            run_id,
+            config_path,
+            best["values"],
+            old_value,
+        )
     print(f"[recheck] {name}={value} run {run_id}")
-    config_path, _resumed = prepare_config(config, run_id)
     run_recheck(config_path, run_id)
     summary = read_summary(config_path, run_id)
     elo = summary.get("elo")
     verdict = summary.get("verdict")
     status = recheck_status(summary)
-    if status == "accepted":
-        best["values"][name] = value
     print(f"[recheck] {name}={value}: elo={elo}, verdict={verdict}, status={status}")
     record = {
         "run_id": run_id,
         "timestamp": now_utc(),
         "phase": "recheck",
         "param": name,
-        "old_value": value_for(best, params, name) if status != "accepted" else value,
+        "old_value": old_value,
         "new_value": value,
         "verdict": verdict,
         "accepted": status == "accepted",
@@ -244,6 +311,9 @@ def recheck_candidate(entry, cfg, best, params, engine_cmd, journal_path, pendin
     if not journal_has_run(journal_path, run_id):
         append_journal(journal_path, record)
     write_recheck_result(config, config_path, run_id, summary, entry, status)
+    if status == "accepted":
+        best["values"][name] = value
+        write_json(best_path, best)
     return update_pending_after_recheck(pending_path, key, status, summary, run_id)
 
 
@@ -315,6 +385,7 @@ def main():
             entry,
             cfg,
             best,
+            args.best,
             params,
             args.engine,
             args.journal,
