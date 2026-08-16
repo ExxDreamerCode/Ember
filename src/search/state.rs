@@ -808,6 +808,27 @@ impl Searcher {
             B::refresh(&mut acc, net, st);
             evaluate_nnue_acc_with_backend::<B>(net, &acc, st)
         };
+        #[cfg(feature = "search-debug")]
+        if self.debug.trace_nnue_parity && ply < self.nnue_stack.len() {
+            let mut refreshed = NNUEAccumulator::new(net.hidden_size);
+            B::refresh(&mut refreshed, net, st);
+            let fresh_score = evaluate_nnue_acc_with_backend::<B>(net, &refreshed, st);
+            let scalar_score =
+                evaluate_nnue_acc_with_backend::<ScalarNnueBackend>(net, &refreshed, st);
+            if score != fresh_score || score != scalar_score {
+                eprintln!(
+                    "info string search-debug nnue-parity \
+                     {{\"hash\":\"{:016x}\",\"fen\":\"{}\",\"ply\":{},\
+                     \"incremental\":{},\"refreshed\":{},\"scalar\":{}}}",
+                    st.hash,
+                    crate::board::board_to_fen(st),
+                    ply,
+                    score,
+                    fresh_score,
+                    scalar_score,
+                );
+            }
+        }
         if st.w {
             score
         } else {
