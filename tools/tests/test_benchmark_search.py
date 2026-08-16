@@ -12,6 +12,10 @@ from benchmark_search import bench_once  # noqa: E402
 
 
 class SearchBenchmarkProtocolTests(unittest.TestCase):
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "creates a POSIX shebang script; only runs in the Nix/Unix CI shell",
+    )
     def test_waits_for_bestmove_before_sending_quit(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             engine = Path(temp_dir) / "async_engine"

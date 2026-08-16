@@ -14,6 +14,10 @@ from measure_elo import smoke  # noqa: E402
 
 
 class EloSmokeProtocolTests(unittest.TestCase):
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "creates a POSIX shebang script; only runs in the Nix/Unix CI shell",
+    )
     def test_waits_for_async_bestmove_before_quit(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
