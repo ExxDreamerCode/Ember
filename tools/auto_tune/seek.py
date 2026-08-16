@@ -660,7 +660,10 @@ def read_verdict(config_path, run_id):
 
 
 def split_command(command):
-    tokens = shlex.split(command, posix=False)
+    windows = os.name == "nt"
+    tokens = shlex.split(command, posix=not windows)
+    if not windows:
+        return tokens
     return [
         token[1:-1]
         if len(token) >= 2 and token[0] == token[-1] == '"'

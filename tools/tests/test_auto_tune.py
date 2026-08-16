@@ -217,14 +217,26 @@ class AutoTuneTests(unittest.TestCase):
             validate_best({"values": {"PROBCUT_MIN_DEPTH": 9}}, stepped)
 
     def test_split_command_keeps_windows_backslashes(self):
-        self.assertEqual(
-            split_command(r"C:\Tools\SomeDir\engine.exe"),
-            [r"C:\Tools\SomeDir\engine.exe"],
-        )
-        self.assertEqual(
-            split_command(r'"C:\Program Files\Engine\engine.exe" -arg'),
-            [r"C:\Program Files\Engine\engine.exe", "-arg"],
-        )
+        with patch("seek.os.name", "nt"):
+            self.assertEqual(
+                split_command(r"C:\Tools\SomeDir\engine.exe"),
+                [r"C:\Tools\SomeDir\engine.exe"],
+            )
+            self.assertEqual(
+                split_command(r'"C:\Program Files\Engine\engine.exe" -arg'),
+                [r"C:\Program Files\Engine\engine.exe", "-arg"],
+            )
+
+    def test_split_command_uses_posix_quoting_on_posix(self):
+        with patch("seek.os.name", "posix"):
+            self.assertEqual(
+                split_command("'/tmp/Engine Build/ember' --flag"),
+                ["/tmp/Engine Build/ember", "--flag"],
+            )
+            self.assertEqual(
+                split_command(r"/tmp/Engine\ Build/ember --flag"),
+                ["/tmp/Engine Build/ember", "--flag"],
+            )
 
     def test_preflight_validates_runtime_overrides(self):
         validate_runtime_options("1+0.01", 1, 0.5)
