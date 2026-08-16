@@ -132,12 +132,14 @@ The tools live in `tools/auto_tune/`:
 
 | File | Purpose |
 | --- | --- |
-| `tune.toml` | Parameter descriptions, ranges, SPRT and openings |
-| `seek.py` | Coordinate descent: iterates neighbours of each parameter, runs SPRT against the current best, keeps a journal |
+| `tune.toml` | Parameter descriptions, ranges, SPRT, recheck and openings |
+| `seek.py` | Coordinate descent: iterates neighbours of each parameter, runs SPRT against the current best, queues candidates, keeps a journal |
+| `recheck.py` | Re-checks every queued candidate on a larger fixed number of games with an independent seed |
 | `confirm.py` | Independently confirms the final full vector against the compile-time defaults |
 | `apply.py` | Shows values from `best.json` that differ from the defaults, for manual porting into the code |
 | `best.json` | Current optimal values (created automatically) |
-| `journal.jsonl` | Full journal of every SPRT match |
+| `pending.json` | Candidates whose discovery match was inconclusive but whose Elo reached the queuing threshold, awaiting `recheck.py` |
+| `journal.jsonl` | Full journal of every SPRT and recheck match |
 | `state.json` | Durable progress for resuming an interrupted invocation |
 
 ### Running
@@ -255,6 +257,60 @@ binary, time control, and SPRT parameters. This makes any result reproducible
 when combined with its preserved run artifacts, and explains why a value was
 accepted or rejected.
 
+### Two-stage decision pipeline: discovery and recheck
+
+Discovery SPRT with a small `elo1` (for example `elo0=0, elo1=3`) is a strict
+test: a real but weak improvement may never reach the upper LLR bound within
+`common.max_pairs`. Instead of discarding such candidates, the tuner queues
+them and re-checks them on a much larger fixed number of games.
+
+At the end of a discovery match in `seek.py`:
+
+- `engine_a_better` — the candidate is accepted immediately and written to
+  `best.json`;
+- `engine_b_better` — the candidate is rejected;
+- `inconclusive` with `elo >= recheck.min_elo` — the candidate is queued to
+  `pending.json` and marked `pending: true` in `journal.jsonl`;
+- `inconclusive` with `elo < recheck.min_elo` — the candidate is rejected.
+
+A recheck candidate is identified by `param` + `value` (key `NAME=VALUE`), so
+the same candidate is never queued twice. The discovery record in
+`pending.json` keeps the discovery Elo, score rate, pairs/games, run ID, time
+control, and timestamp for traceability.
+
+After the whole parameter search completes, `seek.py` automatically launches
+`recheck.py` when `pending.json` contains queued candidates and
+`recheck.enabled = true`. Pass `--no-recheck` to disable the automatic stage.
+`recheck.py` can also be run standalone.
+
+### Recheck stage
+
+`recheck.py` runs one independent match per queued candidate:
+
+- `engine_a` is the candidate, `engine_b` is the incumbent with the values
+  from `best.json`;
+- the match uses `recheck.max_pairs` (a fixed, large pair limit, for example
+  4000 pairs = 8000 games), `recheck.min_pairs`, `recheck.batch_pairs`, and a
+  seed that is required to differ from both `common.seed` and
+  `confirmation.seed`;
+- the decision is made after the full fixed volume: the candidate is accepted
+  into `best.json` when `elo >= recheck.accept_elo_ge` and the verdict is not
+  `engine_b_better`; otherwise it is rejected. The default
+  `accept_elo_ge = 0.0` means "the positive result survived the larger sample".
+
+Each recheck run uses a deterministic run ID derived from the exact match
+configuration and binary SHA-256, so an interrupted invocation resumes the same
+run instead of duplicating games. Results are written to
+`results/tune/rechecks/<run_id>/recheck.json`, and every recheck also appends
+a `phase = "recheck"` record to `journal.jsonl`. `pending.json` entries are
+updated with `status = "accepted"` or `"rejected"` plus the recheck run ID,
+Elo, pairs, and timestamp.
+
+Note: the recheck criterion is a fixed-volume Elo threshold, not an SPRT. It
+does not control the error rate of repeated sequential looks, so it must be
+treated as a screening step on top of the discovery SPRT, and the independent
+`confirm.py` run remains the final gate before accepting the vector.
+
 ### Independent final confirmation
 
 Coordinate descent is an adaptive discovery process: it repeatedly chooses the
@@ -319,6 +375,7 @@ elo0 = 0
 elo1 = 3
 alpha = 0.10
 beta = 0.05
+min_pairs = 20
 
 [confirmation]
 enabled = true
@@ -331,6 +388,16 @@ elo0 = 0
 elo1 = 3
 alpha = 0.05
 beta = 0.05
+
+[recheck]
+enabled = true
+time_control = "1+0.01"
+max_pairs = 4000            # large fixed pair limit for the recheck matches
+min_pairs = 20
+batch_pairs = 20
+seed = 20260914             # must differ from common.seed and confirmation.seed
+min_elo = 5                 # queue candidates with discovery elo >= this value
+accept_elo_ge = 0.0         # accept when the large-sample elo is still >= this value
 
 [[params]]
 name = "PROBCUT_MIN_DEPTH"
