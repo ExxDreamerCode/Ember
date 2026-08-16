@@ -21,7 +21,10 @@ DEFAULT_TUNE_TOML = HERE / "tune.toml"
 DEFAULT_BEST_JSON = HERE / "best.json"
 DEFAULT_JOURNAL = HERE / "journal.jsonl"
 DEFAULT_STATE_JSON = HERE / "state.json"
+DEFAULT_PENDING_JSON = HERE / "pending.json"
+RECHECK = HERE / "recheck.py"
 STATE_VERSION = 1
+PENDING_VERSION = 1
 
 
 def now_utc():
@@ -107,10 +110,22 @@ class TuningState:
         if data.get("version") != STATE_VERSION:
             raise RuntimeError(f"unsupported tuning state version in {self.path}")
         if data.get("session") != session:
-            raise RuntimeError(
-                f"tuning state {self.path} belongs to a different invocation; "
-                "resume with the original arguments or remove the state file"
+            print(
+                f"[tune] state {self.path} belongs to a different invocation; "
+                "discarding it and starting fresh"
             )
+            self.path.unlink(missing_ok=True)
+            data = None
+        if data is None:
+            self.data = {
+                "version": STATE_VERSION,
+                "session": session,
+                "completed_params": [],
+                "parameter": None,
+                "active_match": None,
+            }
+            self.save()
+            return
         data.setdefault("completed_params", [])
         data.setdefault("parameter", None)
         data.setdefault("active_match", None)
@@ -217,6 +232,54 @@ def load_best(path):
     return data
 
 
+def load_pending(path):
+    data = read_json(path)
+    if data is None:
+        data = {"version": PENDING_VERSION, "candidates": {}}
+    return data
+
+
+def pending_add(pending_path, name, value, record):
+    pending = load_pending(str(pending_path))
+    key = f"{name}={value}"
+    candidates = pending["candidates"]
+    if key in candidates:
+        return candidates[key]
+    candidates[key] = {
+        "param": name,
+        "value": value,
+        "discovery_elo": record.get("elo"),
+        "discovery_score_rate": record.get("score_rate"),
+        "discovery_pairs": record.get("pairs", 0),
+        "discovery_games": record.get("games", 0),
+        "discovery_run_id": record.get("run_id"),
+        "time_control": record.get("time_control"),
+        "timestamp": record.get("timestamp"),
+        "status": "pending",
+        "recheck_run_id": None,
+        "recheck_elo": None,
+        "recheck_pairs": None,
+        "recheck_timestamp": None,
+    }
+    write_json(pending_path, pending)
+    return candidates[key]
+
+
+def should_pend(record, min_elo):
+    if record.get("verdict") != "inconclusive":
+        return False
+    elo = record.get("elo")
+    return elo is not None and elo >= min_elo
+
+
+def pending_entries(pending):
+    return sorted(
+        (entry for entry in pending["candidates"].values()
+         if entry.get("status") == "pending"),
+        key=lambda entry: (entry["param"], entry["value"]),
+    )
+
+
 def require_int(value, label, minimum=None):
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"{label} must be an integer")
@@ -237,6 +300,34 @@ def validate_time_control(value, label):
     match = re.fullmatch(r"(\d+(?:\.\d+)?)\+(\d+(?:\.\d+)?)", value)
     if match is None or float(match.group(1)) <= 0:
         raise ValueError(f"{label} must use positive-base BASE+INCREMENT syntax")
+
+
+def validate_recheck_config(cfg):
+    recheck = cfg.get("recheck")
+    if not isinstance(recheck, dict):
+        raise ValueError("tune config must contain [recheck]")
+    if recheck.get("enabled") is not True:
+        raise ValueError("recheck.enabled must be true")
+    require_number(recheck.get("min_elo"), "recheck.min_elo")
+    if recheck["min_elo"] <= 0:
+        raise ValueError("recheck.min_elo must be positive")
+    require_number(recheck.get("accept_elo_ge"), "recheck.accept_elo_ge")
+    require_int(recheck.get("seed"), "recheck.seed")
+    if recheck["seed"] == cfg["common"]["seed"]:
+        raise ValueError("recheck.seed must differ from common.seed")
+    if "confirmation" in cfg and recheck["seed"] == cfg["confirmation"].get("seed"):
+        raise ValueError("recheck.seed must differ from confirmation.seed")
+    validate_time_control(
+        recheck.get("time_control"),
+        "recheck.time_control",
+    )
+    for key in ("max_pairs", "min_pairs", "batch_pairs"):
+        require_int(recheck.get(key), f"recheck.{key}", 1)
+    if recheck["min_pairs"] > recheck["max_pairs"]:
+        raise ValueError("recheck.min_pairs must not exceed max_pairs")
+    if recheck["batch_pairs"] > recheck["max_pairs"]:
+        raise ValueError("recheck.batch_pairs must not exceed max_pairs")
+    return recheck
 
 
 def validate_confirmation_config(cfg):
@@ -367,6 +458,7 @@ def validate_tune_config(cfg):
         ):
             raise ValueError(f"{name} has no in-range neighbour at its step size")
     validate_confirmation_config(cfg)
+    validate_recheck_config(cfg)
     return list(params)
 
 
@@ -799,6 +891,7 @@ def try_candidate(
     workers,
     worker_multiplier,
     state=None,
+    pending_path=None,
 ):
     if not in_range(next(s for s in params if s["name"] == name), candidate):
         if state is not None:
@@ -828,6 +921,13 @@ def try_candidate(
     if accepted:
         best["values"][name] = candidate
         write_best(best_path, best)
+    record["pending"] = False
+    if not accepted and pending_path is not None:
+        min_elo = cfg.get("recheck", {}).get("min_elo", 5)
+        if should_pend(record, min_elo):
+            pending_add(pending_path, name, candidate, record)
+            record["pending"] = True
+            print(f"[tune] queued {name}={candidate} for recheck (discovery elo {record['elo']:+.1f})")
     if not journal_has_run(journal_path, record["run_id"]):
         append_journal(journal_path, record)
     write_match_report(cfg["results_dir"], record["run_id"], record, summary)
@@ -848,6 +948,7 @@ def tune_parameter(
     workers,
     worker_multiplier,
     state=None,
+    pending_path=None,
 ):
     name = spec["name"]
     initial = value_for(best, params, name)
@@ -882,6 +983,7 @@ def tune_parameter(
             workers,
             worker_multiplier,
             state,
+            pending_path,
         )
 
     if direction is None:
@@ -940,6 +1042,7 @@ def main():
     parser.add_argument("--best", default=str(DEFAULT_BEST_JSON))
     parser.add_argument("--journal", default=str(DEFAULT_JOURNAL))
     parser.add_argument("--state", default=str(DEFAULT_STATE_JSON))
+    parser.add_argument("--pending", default=str(DEFAULT_PENDING_JSON))
     parser.add_argument(
         "--engine",
         default="target/release/ember",
@@ -968,6 +1071,11 @@ def main():
         help="fraction of logical CPUs to use for workers (default: 1.0)",
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--no-recheck",
+        action="store_true",
+        help="do not automatically launch the recheck stage after seek finishes",
+    )
     args = parser.parse_args()
 
     try:
@@ -1020,6 +1128,7 @@ def main():
             args.workers,
             args.worker_multiplier,
             state,
+            args.pending or str(DEFAULT_PENDING_JSON),
         )
 
     if args.dry_run:
@@ -1028,6 +1137,38 @@ def main():
         write_best(args.best, best)
         state.finish()
         print(f"[tune] best.json updated: {json.dumps(best['values'], sort_keys=True)}")
+        if not args.no_recheck and cfg.get("recheck", {}).get("enabled", False):
+            pending = load_pending(args.pending or str(DEFAULT_PENDING_JSON))
+            entries = pending_entries(pending)
+            if entries:
+                print(
+                    f"[tune] auto-launching recheck for {len(entries)} queued candidate(s)"
+                )
+                recheck_cmd = [
+                    sys.executable,
+                    str(RECHECK),
+                    "--config",
+                    args.config,
+                    "--best",
+                    args.best,
+                    "--journal",
+                    args.journal,
+                    "--pending",
+                    args.pending or str(DEFAULT_PENDING_JSON),
+                    "--engine",
+                    args.engine,
+                ]
+                if args.time_control:
+                    recheck_cmd.extend(["--time-control", args.time_control])
+                if args.workers is not None:
+                    recheck_cmd.extend(["--workers", str(args.workers)])
+                if args.worker_multiplier is not None:
+                    recheck_cmd.extend(
+                        ["--worker-multiplier", str(args.worker_multiplier)]
+                    )
+                subprocess.run(recheck_cmd, cwd=str(ROOT), check=True)
+            else:
+                print("[tune] no queued candidates; skipping recheck")
 
 
 if __name__ == "__main__":
