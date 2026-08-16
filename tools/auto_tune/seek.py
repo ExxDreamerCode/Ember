@@ -224,6 +224,10 @@ def load_pending(path):
     data = read_json(path)
     if data is None:
         data = {"version": PENDING_VERSION, "candidates": {}}
+    if not isinstance(data, dict) or data.get("version") != PENDING_VERSION:
+        raise RuntimeError(f"unsupported pending state version in {path}")
+    if not isinstance(data.get("candidates"), dict):
+        raise RuntimeError(f"pending state {path} has invalid candidates")
     return data
 
 
@@ -231,7 +235,10 @@ def pending_add(pending_path, name, value, record):
     pending = load_pending(str(pending_path))
     key = f"{name}={value}"
     candidates = pending["candidates"]
-    if key in candidates:
+    if (
+        key in candidates
+        and candidates[key].get("discovery_run_id") == record.get("run_id")
+    ):
         return candidates[key]
     candidates[key] = {
         "param": name,

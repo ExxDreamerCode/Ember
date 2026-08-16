@@ -15,6 +15,7 @@ from seek import (  # noqa: E402
     pending_entries,
     should_pend,
     read_toml,
+    write_json,
 )
 from recheck import (  # noqa: E402
     generate_recheck_config,
@@ -134,6 +135,27 @@ class PendingAddTests(unittest.TestCase):
             self.assertEqual(second["status"], "pending")
             self.assertEqual(second["discovery_elo"], 6.0)
             self.assertEqual(second["discovery_run_id"], record["run_id"])
+
+    def test_new_discovery_requeues_a_completed_candidate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pending.json"
+            first_record = make_record()
+            pending_add(str(path), "PROBCUT_MIN_DEPTH", 9, first_record)
+            pending = load_pending(str(path))
+            pending["candidates"]["PROBCUT_MIN_DEPTH=9"]["status"] = "rejected"
+            write_json(path, pending)
+
+            second_record = make_record(elo=8.0)
+            second_record["run_id"] = (
+                "tune-probcut_min_depth-9-20260817-000000-000000"
+            )
+            entry = pending_add(
+                str(path), "PROBCUT_MIN_DEPTH", 9, second_record
+            )
+
+            self.assertEqual(entry["status"], "pending")
+            self.assertEqual(entry["discovery_elo"], 8.0)
+            self.assertEqual(entry["discovery_run_id"], second_record["run_id"])
 
     def test_pending_entries_only_returns_pending(self):
         with tempfile.TemporaryDirectory() as directory:
