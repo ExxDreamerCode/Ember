@@ -134,7 +134,8 @@ The tools live in `tools/auto_tune/`:
 | --- | --- |
 | `tune.toml` | Parameter descriptions, ranges, SPRT, recheck and openings |
 | `seek.py` | Coordinate descent: iterates neighbours of each parameter, runs SPRT against the current best, queues candidates, keeps a journal |
-| `recheck.py` | Re-checks every queued candidate on a larger fixed number of games with an independent seed |
+| `recheck.py` | Re-checks every queued candidate with a larger independent SPRT |
+| `campaign.py` | Runs bounded fresh-seed discovery/recheck passes until convergence or a pass limit |
 | `confirm.py` | Independently confirms the final full vector against the compile-time defaults |
 | `apply.py` | Shows values from `best.json` that differ from the defaults, for manual porting into the code |
 | `best.json` | Current optimal values (created automatically) |
@@ -161,7 +162,10 @@ install the dependencies directly (`pip install -r requirements.txt` +
 # Build the release binary (only needed once)
 cargo build --release --bin ember
 
-# Tune all parameters with the given time control
+# Run up to three 1+0.01 passes and stop early when a pass changes nothing
+python tools/auto_tune/campaign.py --time-control 1+0.01 --max-passes 3
+
+# Run one discovery/recheck pass directly
 python tools/auto_tune/seek.py --time-control 8+0.08
 
 # Tune selected parameters
@@ -189,6 +193,14 @@ python tools/auto_tune/seek.py --worker-multiplier 0.5
 `--params` limits only which parameters are searched. Values already present in
 `best.json` remain part of both engine configurations, including values for
 parameters outside the selected subset.
+
+`campaign.py` is the preferred unattended entry point. Each pass has isolated
+seek and pending state, and derives fresh discovery and recheck seeds from the
+predeclared base seeds. A pass that changes `best.json` starts another complete
+coordinate sweep because later accepted values can move an earlier parameter's
+optimum. The campaign stops after a full unchanged pass or `--max-passes`; it
+never loops indefinitely. Its result JSON records every pass and the exact
+binary/configuration identity. Run `confirm.py` separately after the campaign.
 
 Before writing `state.json` or starting a match, the tuner validates the TOML
 schema and bounds, SPRT hypotheses, worker overrides, every `best.json` value,
