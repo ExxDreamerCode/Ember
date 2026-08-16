@@ -27,7 +27,7 @@ min_pairs = 20
 [confirmation]
 enabled = true
 time_control = "1+0.01"
-max_pairs = 1000
+max_pairs = 5000
 min_pairs = 20
 batch_pairs = 20
 seed = 20260814
@@ -39,12 +39,15 @@ beta = 0.05
 [recheck]
 enabled = true
 time_control = "1+0.01"
-max_pairs = 4000
+max_pairs = 5000
 min_pairs = 20
 batch_pairs = 20
 seed = 20260914
 min_elo = 5
-accept_elo_ge = 0.0
+elo0 = 0
+elo1 = 3
+alpha = 0.05
+beta = 0.05
 
 [[params]]
 name = "PROBCUT_MIN_DEPTH"

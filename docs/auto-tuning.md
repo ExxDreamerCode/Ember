@@ -285,18 +285,18 @@ After the whole parameter search completes, `seek.py` automatically launches
 
 ### Recheck stage
 
-`recheck.py` runs one independent match per queued candidate:
+`recheck.py` runs one independent SPRT match per queued candidate:
 
 - `engine_a` is the candidate, `engine_b` is the incumbent with the values
   from `best.json`;
-- the match uses `recheck.max_pairs` (a fixed, large pair limit, for example
-  4000 pairs = 8000 games), `recheck.min_pairs`, `recheck.batch_pairs`, and a
+- the match uses `recheck.max_pairs` (a large pair cap, for example 5000 pairs
+  = 10000 games), `recheck.min_pairs`, `recheck.batch_pairs`, and a
   seed that is required to differ from both `common.seed` and
   `confirmation.seed`;
-- the decision is made after the full fixed volume: the candidate is accepted
-  into `best.json` when `elo >= recheck.accept_elo_ge` and the verdict is not
-  `engine_b_better`; otherwise it is rejected. The default
-  `accept_elo_ge = 0.0` means "the positive result survived the larger sample".
+- the recheck uses its own predeclared Elo hypotheses, alpha, and beta. It may
+  stop early at either SPRT bound and accepts the candidate only when H1 is
+  reached. A capped `inconclusive` result is not accepted, even when its point
+  Elo estimate is positive.
 
 Each recheck run uses a deterministic run ID derived from the exact match
 configuration and binary SHA-256, so an interrupted invocation resumes the same
@@ -306,10 +306,9 @@ a `phase = "recheck"` record to `journal.jsonl`. `pending.json` entries are
 updated with `status = "accepted"` or `"rejected"` plus the recheck run ID,
 Elo, pairs, and timestamp.
 
-Note: the recheck criterion is a fixed-volume Elo threshold, not an SPRT. It
-does not control the error rate of repeated sequential looks, so it must be
-treated as a screening step on top of the discovery SPRT, and the independent
-`confirm.py` run remains the final gate before accepting the vector.
+The discovery Elo threshold is only a screening rule. Statistical acceptance
+comes from the independent recheck SPRT, and the independent `confirm.py` run
+remains the final gate for the complete vector.
 
 ### Independent final confirmation
 
@@ -392,12 +391,15 @@ beta = 0.05
 [recheck]
 enabled = true
 time_control = "1+0.01"
-max_pairs = 4000            # large fixed pair limit for the recheck matches
+max_pairs = 5000            # large pair cap for the recheck SPRT
 min_pairs = 20
 batch_pairs = 20
 seed = 20260914             # must differ from common.seed and confirmation.seed
 min_elo = 5                 # queue candidates with discovery elo >= this value
-accept_elo_ge = 0.0         # accept when the large-sample elo is still >= this value
+elo0 = 0
+elo1 = 3
+alpha = 0.05
+beta = 0.05
 
 [[params]]
 name = "PROBCUT_MIN_DEPTH"

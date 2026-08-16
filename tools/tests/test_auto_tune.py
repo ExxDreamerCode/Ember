@@ -74,12 +74,15 @@ class AutoTuneTests(unittest.TestCase):
             "recheck": {
                 "enabled": True,
                 "time_control": "1+0.01",
-                "max_pairs": 4000,
+                "max_pairs": 5000,
                 "min_pairs": 20,
                 "batch_pairs": 20,
                 "seed": 3,
                 "min_elo": 5,
-                "accept_elo_ge": 0.0,
+                "elo0": 0,
+                "elo1": 3,
+                "alpha": 0.05,
+                "beta": 0.05,
             },
         }
         self.params = [

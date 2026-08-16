@@ -311,7 +311,6 @@ def validate_recheck_config(cfg):
     require_number(recheck.get("min_elo"), "recheck.min_elo")
     if recheck["min_elo"] <= 0:
         raise ValueError("recheck.min_elo must be positive")
-    require_number(recheck.get("accept_elo_ge"), "recheck.accept_elo_ge")
     require_int(recheck.get("seed"), "recheck.seed")
     if recheck["seed"] == cfg["common"]["seed"]:
         raise ValueError("recheck.seed must differ from common.seed")
@@ -327,6 +326,15 @@ def validate_recheck_config(cfg):
         raise ValueError("recheck.min_pairs must not exceed max_pairs")
     if recheck["batch_pairs"] > recheck["max_pairs"]:
         raise ValueError("recheck.batch_pairs must not exceed max_pairs")
+    for key in ("elo0", "elo1", "alpha", "beta"):
+        require_number(recheck.get(key), f"recheck.{key}")
+    if recheck["elo0"] < 0 or recheck["elo1"] <= recheck["elo0"]:
+        raise ValueError(
+            "recheck SPRT must compare a non-negative elo0 with a larger elo1"
+        )
+    for key in ("alpha", "beta"):
+        if not 0 < recheck[key] < 1:
+            raise ValueError(f"recheck.{key} must be between 0 and 1")
     return recheck
 
 

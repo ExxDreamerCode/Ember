@@ -54,7 +54,7 @@ def generate_recheck_config(cfg, best, params, engine_cmd, name, value, binary_s
         "max_pairs": recheck["max_pairs"],
         "min_pairs": recheck["min_pairs"],
         "batch_pairs": recheck["batch_pairs"],
-        "alpha": 0.05,
+        "alpha": recheck["alpha"],
         "alternative": "greater",
         "opening_source": common["opening_source"],
         "polyglot_book": common["polyglot_book"],
@@ -73,6 +73,14 @@ def generate_recheck_config(cfg, best, params, engine_cmd, name, value, binary_s
     )
     return {
         "run": run_cfg,
+        "sprt": {
+            "enabled": True,
+            "elo0": recheck["elo0"],
+            "elo1": recheck["elo1"],
+            "alpha": recheck["alpha"],
+            "beta": recheck["beta"],
+            "min_pairs": recheck["min_pairs"],
+        },
         "engine_a": engine_block(
             "RecheckCandidate", engine_cmd, candidate_option, common
         ),
@@ -175,6 +183,12 @@ def update_pending_after_recheck(pending_path, key, status, summary, run_id):
     return entry
 
 
+def recheck_status(summary):
+    if summary.get("verdict") == "engine_a_better":
+        return "accepted"
+    return "rejected"
+
+
 def recheck_candidate(entry, cfg, best, params, engine_cmd, journal_path, pending_path, time_control=None, workers=None, worker_multiplier=None):
     name = entry["param"]
     value = entry["value"]
@@ -201,13 +215,10 @@ def recheck_candidate(entry, cfg, best, params, engine_cmd, journal_path, pendin
     run_recheck(config_path, run_id)
     summary = read_summary(config_path, run_id)
     elo = summary.get("elo")
-    accept_elo_ge = cfg["recheck"]["accept_elo_ge"]
     verdict = summary.get("verdict")
-    if elo is not None and elo > accept_elo_ge and verdict != "engine_b_better":
+    status = recheck_status(summary)
+    if status == "accepted":
         best["values"][name] = value
-        status = "accepted"
-    else:
-        status = "rejected"
     print(f"[recheck] {name}={value}: elo={elo}, verdict={verdict}, status={status}")
     record = {
         "run_id": run_id,
@@ -224,7 +235,11 @@ def recheck_candidate(entry, cfg, best, params, engine_cmd, journal_path, pendin
         "games": summary.get("games", 0),
         "binary_sha256": binary_sha256,
         "time_control": config["run"]["time_control"],
-        "accept_elo_ge": accept_elo_ge,
+        "llr": summary.get("sprt", {}).get("llr"),
+        "sprt_elo0": cfg["recheck"]["elo0"],
+        "sprt_elo1": cfg["recheck"]["elo1"],
+        "sprt_alpha": cfg["recheck"]["alpha"],
+        "sprt_beta": cfg["recheck"]["beta"],
     }
     if not journal_has_run(journal_path, run_id):
         append_journal(journal_path, record)

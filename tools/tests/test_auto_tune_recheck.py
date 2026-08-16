@@ -19,6 +19,7 @@ from seek import (  # noqa: E402
 from recheck import (  # noqa: E402
     generate_recheck_config,
     prepare_config,
+    recheck_status,
     recheck_run_id,
     update_pending_after_recheck,
 )
@@ -60,12 +61,15 @@ def make_cfg():
         "recheck": {
             "enabled": True,
             "time_control": "1+0.01",
-            "max_pairs": 4000,
+            "max_pairs": 5000,
             "min_pairs": 20,
             "batch_pairs": 20,
             "seed": 3,
             "min_elo": 5,
-            "accept_elo_ge": 0.0,
+            "elo0": 0,
+            "elo1": 3,
+            "alpha": 0.05,
+            "beta": 0.05,
         },
     }
 
@@ -167,7 +171,18 @@ class RecheckConfigTests(unittest.TestCase):
             "PROBCUT_MIN_DEPTH=8,PROBCUT_MARGIN_CP=350",
         )
         self.assertEqual(self.config["run"]["seed"], 3)
-        self.assertEqual(self.config["run"]["max_pairs"], 4000)
+        self.assertEqual(self.config["run"]["max_pairs"], 5000)
+        self.assertEqual(
+            self.config["sprt"],
+            {
+                "enabled": True,
+                "elo0": 0,
+                "elo1": 3,
+                "alpha": 0.05,
+                "beta": 0.05,
+                "min_pairs": 20,
+            },
+        )
         self.assertEqual(
             self.config["run"]["results_dir"],
             str(Path("results/tune") / "rechecks"),
@@ -211,6 +226,22 @@ class UpdatePendingAfterRecheckTests(unittest.TestCase):
             self.assertEqual(entry["recheck_run_id"], "recheck-abc")
             self.assertEqual(entry["recheck_elo"], 12.5)
             self.assertEqual(entry["recheck_pairs"], 4000)
+
+
+class RecheckStatusTests(unittest.TestCase):
+    def test_accepts_only_positive_sprt_verdict(self):
+        self.assertEqual(
+            recheck_status({"verdict": "engine_a_better", "elo": 0.1}),
+            "accepted",
+        )
+        self.assertEqual(
+            recheck_status({"verdict": "inconclusive", "elo": 50.0}),
+            "rejected",
+        )
+        self.assertEqual(
+            recheck_status({"verdict": "engine_b_better", "elo": -0.1}),
+            "rejected",
+        )
 
 
 if __name__ == "__main__":
