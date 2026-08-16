@@ -512,16 +512,13 @@ class AutoTuneTests(unittest.TestCase):
             self.assertIn(spec["name"], resumed_state.data["completed_params"])
             self.assertIsNone(resumed_state.data["parameter"])
 
-    def test_different_invocation_discards_the_stale_state(self):
+    def test_resume_rejects_a_different_invocation(self):
         with tempfile.TemporaryDirectory() as directory:
             state_path = Path(directory) / "state.json"
             TuningState(state_path, {"binary_sha256": "first"})
 
-            state = TuningState(state_path, {"binary_sha256": "second"})
-            self.assertEqual(state.data["session"], {"binary_sha256": "second"})
-            self.assertEqual(state.data["completed_params"], [])
-            self.assertIsNone(state.data["parameter"])
-            self.assertIsNone(state.data["active_match"])
+            with self.assertRaisesRegex(RuntimeError, "different invocation"):
+                TuningState(state_path, {"binary_sha256": "second"})
 
     def test_interrupted_match_resumes_and_commits_once(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -110,22 +110,10 @@ class TuningState:
         if data.get("version") != STATE_VERSION:
             raise RuntimeError(f"unsupported tuning state version in {self.path}")
         if data.get("session") != session:
-            print(
+            raise RuntimeError(
                 f"[tune] state {self.path} belongs to a different invocation; "
-                "discarding it and starting fresh"
+                "resume with the original arguments or use a different state path"
             )
-            self.path.unlink(missing_ok=True)
-            data = None
-        if data is None:
-            self.data = {
-                "version": STATE_VERSION,
-                "session": session,
-                "completed_params": [],
-                "parameter": None,
-                "active_match": None,
-            }
-            self.save()
-            return
         data.setdefault("completed_params", [])
         data.setdefault("parameter", None)
         data.setdefault("active_match", None)
