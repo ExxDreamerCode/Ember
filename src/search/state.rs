@@ -405,6 +405,20 @@ impl Searcher {
     }
 
     #[cfg(feature = "search-debug")]
+    pub(super) fn record_debug_dag_tt_store(
+        &mut self,
+        hash: u64,
+        depth: i32,
+        score: i32,
+        flag: u8,
+        probcut: bool,
+    ) {
+        self.debug
+            .dag
+            .record_tt_store(hash, depth, score, flag, probcut);
+    }
+
+    #[cfg(feature = "search-debug")]
     pub(super) fn record_debug_dag_draw(&mut self, hash: u64, status: DrawStatus) {
         self.debug.dag.record_draw(hash, status);
     }

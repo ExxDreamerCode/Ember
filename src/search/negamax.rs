@@ -440,6 +440,14 @@ macro_rules! negamax_mode_body {
                             $this.debug.stats.probcut_cutoffs += 1;
                         }
                         if !$this.restricted_verification_active() {
+                            #[cfg(feature = "search-debug")]
+                            $this.record_debug_dag_tt_store(
+                                h,
+                                candidate.store_depth,
+                                candidate.beta,
+                                TT_BETA,
+                                true,
+                            );
                             $this.shared_tt.store(
                                 h,
                                 candidate.store_depth,
@@ -1145,6 +1153,8 @@ macro_rules! negamax_mode_body {
             TT_EXACT
         };
         if excluded_move.is_none() && !$this.restricted_verification_active() {
+            #[cfg(feature = "search-debug")]
+            $this.record_debug_dag_tt_store(h, actual_depth, best_score, flag, false);
             $this.shared_tt.store_with_pv(
                 h,
                 actual_depth,

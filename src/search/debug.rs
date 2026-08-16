@@ -50,6 +50,15 @@ struct SearchDagNode {
     tt_alpha: u64,
     tt_beta: u64,
     tt_exact: u64,
+    tt_store_visits: u64,
+    min_tt_store_depth: i32,
+    max_tt_store_depth: i32,
+    min_tt_store_score: i32,
+    max_tt_store_score: i32,
+    tt_store_alpha: u64,
+    tt_store_beta: u64,
+    tt_store_exact: u64,
+    tt_probcut_stores: u64,
     q_delta_cutoffs: u64,
     min_q_delta_gap: i32,
     max_q_delta_gap: i32,
@@ -84,6 +93,15 @@ impl SearchDagNode {
             tt_alpha: 0,
             tt_beta: 0,
             tt_exact: 0,
+            tt_store_visits: 0,
+            min_tt_store_depth: i32::MAX,
+            max_tt_store_depth: i32::MIN,
+            min_tt_store_score: i32::MAX,
+            max_tt_store_score: i32::MIN,
+            tt_store_alpha: 0,
+            tt_store_beta: 0,
+            tt_store_exact: 0,
+            tt_probcut_stores: 0,
             q_delta_cutoffs: 0,
             min_q_delta_gap: i32::MAX,
             max_q_delta_gap: i32::MIN,
@@ -125,6 +143,21 @@ impl SearchDagNode {
             TT_ALPHA => self.tt_alpha += 1,
             TT_BETA => self.tt_beta += 1,
             TT_EXACT => self.tt_exact += 1,
+            _ => {}
+        }
+    }
+
+    pub(super) fn record_tt_store(&mut self, depth: i32, score: i32, flag: u8, probcut: bool) {
+        self.tt_store_visits += 1;
+        self.min_tt_store_depth = self.min_tt_store_depth.min(depth);
+        self.max_tt_store_depth = self.max_tt_store_depth.max(depth);
+        self.min_tt_store_score = self.min_tt_store_score.min(score);
+        self.max_tt_store_score = self.max_tt_store_score.max(score);
+        self.tt_probcut_stores += u64::from(probcut);
+        match flag {
+            TT_ALPHA => self.tt_store_alpha += 1,
+            TT_BETA => self.tt_store_beta += 1,
+            TT_EXACT => self.tt_store_exact += 1,
             _ => {}
         }
     }
@@ -249,6 +282,19 @@ impl SearchDagTrace {
         }
     }
 
+    pub(super) fn record_tt_store(
+        &mut self,
+        hash: u64,
+        depth: i32,
+        score: i32,
+        flag: u8,
+        probcut: bool,
+    ) {
+        if let Some(node) = self.nodes.get_mut(&hash) {
+            node.record_tt_store(depth, score, flag, probcut);
+        }
+    }
+
     pub(super) fn record_q_delta(&mut self, hash: u64, alpha: i32, stand: i32) {
         if let Some(node) = self.nodes.get_mut(&hash) {
             node.record_q_delta(alpha, stand);
@@ -310,6 +356,17 @@ impl SearchDagTrace {
             } else {
                 (node.min_q_delta_gap, node.max_q_delta_gap)
             };
+            let (min_tt_store_depth, max_tt_store_depth, min_tt_store_score, max_tt_store_score) =
+                if node.tt_store_visits == 0 {
+                    (0, 0, 0, 0)
+                } else {
+                    (
+                        node.min_tt_store_depth,
+                        node.max_tt_store_depth,
+                        node.min_tt_store_score,
+                        node.max_tt_store_score,
+                    )
+                };
             let _ = writeln!(
                 file,
                 "{{\"type\":\"node\",\"sequence\":{sequence},\"hash\":\"{hash:016x}\",\
@@ -320,7 +377,14 @@ impl SearchDagTrace {
                  \"tt_visits\":{},\"min_tt_depth\":{min_tt_depth},\
                  \"max_tt_depth\":{max_tt_depth},\"min_tt_score\":{min_tt_score},\
                  \"max_tt_score\":{max_tt_score},\"tt_alpha\":{},\"tt_beta\":{},\
-                 \"tt_exact\":{},\"q_delta_cutoffs\":{},\
+                 \"tt_exact\":{},\"tt_store_visits\":{},\
+                 \"min_tt_store_depth\":{min_tt_store_depth},\
+                 \"max_tt_store_depth\":{max_tt_store_depth},\
+                 \"min_tt_store_score\":{min_tt_store_score},\
+                 \"max_tt_store_score\":{max_tt_store_score},\
+                 \"tt_store_alpha\":{},\"tt_store_beta\":{},\
+                 \"tt_store_exact\":{},\"tt_probcut_stores\":{},\
+                 \"q_delta_cutoffs\":{},\
                  \"min_q_delta_gap\":{min_q_delta_gap},\
                  \"max_q_delta_gap\":{max_q_delta_gap},\
                  \"search_cycle_returns\":{},\"claimable_draw_returns\":{},\
@@ -341,6 +405,11 @@ impl SearchDagTrace {
                 node.tt_alpha,
                 node.tt_beta,
                 node.tt_exact,
+                node.tt_store_visits,
+                node.tt_store_alpha,
+                node.tt_store_beta,
+                node.tt_store_exact,
+                node.tt_probcut_stores,
                 node.q_delta_cutoffs,
                 node.search_cycle_returns,
                 node.claimable_draw_returns,
