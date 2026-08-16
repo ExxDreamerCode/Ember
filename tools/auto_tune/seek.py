@@ -1033,6 +1033,7 @@ def session_descriptor(
     engine_cmd,
     params_to_tune,
     time_control,
+    seed,
     workers,
     worker_multiplier,
 ):
@@ -1047,6 +1048,7 @@ def session_descriptor(
         "binary_sha256": sha256_file(binary),
         "params": [spec["name"] for spec in params_to_tune],
         "time_control": time_control,
+        "seed": seed,
         "workers": workers,
         "worker_multiplier": worker_multiplier,
     }
@@ -1073,6 +1075,12 @@ def main():
         "--time-control",
         default=None,
         help="override the time control for all matches",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="override common.seed for this discovery pass",
     )
     parser.add_argument(
         "--workers",
@@ -1105,6 +1113,10 @@ def main():
             if not isinstance(cfg, dict) or not isinstance(cfg.get("common"), dict):
                 raise ValueError("tune config must contain [common]")
             cfg["common"]["time_control"] = args.time_control
+        if args.seed is not None:
+            if not isinstance(cfg, dict) or not isinstance(cfg.get("common"), dict):
+                raise ValueError("tune config must contain [common]")
+            cfg["common"]["seed"] = args.seed
         all_params = validate_tune_config(cfg)
         best = load_best(args.best)
         validate_best(best, all_params)
@@ -1123,6 +1135,7 @@ def main():
             args.engine,
             params_to_tune,
             cfg["common"].get("time_control"),
+            cfg["common"]["seed"],
             args.workers,
             args.worker_multiplier,
         )

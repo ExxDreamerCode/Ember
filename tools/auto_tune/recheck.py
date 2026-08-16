@@ -334,6 +334,12 @@ def main():
         help="override recheck.time_control",
     )
     parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="override recheck.seed for this pass",
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=None,
@@ -355,6 +361,10 @@ def main():
             args.worker_multiplier,
         )
         cfg = read_toml(args.config)
+        if args.seed is not None:
+            if not isinstance(cfg, dict) or not isinstance(cfg.get("recheck"), dict):
+                raise ValueError("tune config must contain [recheck]")
+            cfg["recheck"]["seed"] = args.seed
         params = validate_tune_config(cfg)
         recheck = validate_recheck_config(cfg)
         best = load_best(args.best)
