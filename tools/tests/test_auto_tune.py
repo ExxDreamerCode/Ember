@@ -70,6 +70,16 @@ class AutoTuneTests(unittest.TestCase):
                 "alpha": 0.025,
                 "beta": 0.05,
             },
+            "recheck": {
+                "enabled": True,
+                "time_control": "1+0.01",
+                "max_pairs": 4000,
+                "min_pairs": 20,
+                "batch_pairs": 20,
+                "seed": 3,
+                "min_elo": 5,
+                "accept_elo_ge": 0.0,
+            },
         }
         self.params = [
             {
@@ -158,6 +168,21 @@ class AutoTuneTests(unittest.TestCase):
         reused_seed["confirmation"]["seed"] = reused_seed["common"]["seed"]
         with self.assertRaisesRegex(ValueError, "seed must differ"):
             validate_tune_config(reused_seed)
+
+        no_recheck = copy.deepcopy(self.cfg)
+        del no_recheck["recheck"]
+        with self.assertRaisesRegex(ValueError, "must contain \[recheck\]"):
+            validate_tune_config(no_recheck)
+
+        reused_recheck_seed = copy.deepcopy(self.cfg)
+        reused_recheck_seed["recheck"]["seed"] = reused_recheck_seed["common"]["seed"]
+        with self.assertRaisesRegex(ValueError, "recheck.seed must differ"):
+            validate_tune_config(reused_recheck_seed)
+
+        bad_min_elo = copy.deepcopy(self.cfg)
+        bad_min_elo["recheck"]["min_elo"] = 0
+        with self.assertRaisesRegex(ValueError, "recheck.min_elo must be positive"):
+            validate_tune_config(bad_min_elo)
 
         loose_confirmation = copy.deepcopy(self.cfg)
         loose_confirmation["confirmation"]["alpha"] = self.cfg["sprt"]["alpha"]
@@ -473,13 +498,16 @@ class AutoTuneTests(unittest.TestCase):
             self.assertIn(spec["name"], resumed_state.data["completed_params"])
             self.assertIsNone(resumed_state.data["parameter"])
 
-    def test_resume_rejects_a_different_invocation(self):
+    def test_different_invocation_discards_the_stale_state(self):
         with tempfile.TemporaryDirectory() as directory:
             state_path = Path(directory) / "state.json"
             TuningState(state_path, {"binary_sha256": "first"})
 
-            with self.assertRaisesRegex(RuntimeError, "different invocation"):
-                TuningState(state_path, {"binary_sha256": "second"})
+            state = TuningState(state_path, {"binary_sha256": "second"})
+            self.assertEqual(state.data["session"], {"binary_sha256": "second"})
+            self.assertEqual(state.data["completed_params"], [])
+            self.assertIsNone(state.data["parameter"])
+            self.assertIsNone(state.data["active_match"])
 
     def test_interrupted_match_resumes_and_commits_once(self):
         with tempfile.TemporaryDirectory() as directory:
