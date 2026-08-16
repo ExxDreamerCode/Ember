@@ -21,6 +21,7 @@ from seek import (  # noqa: E402
     read_toml,
     run_single_match,
     select_param_specs,
+    split_command,
     try_candidate,
     tune_parameter,
     validate_best,
@@ -171,7 +172,7 @@ class AutoTuneTests(unittest.TestCase):
 
         no_recheck = copy.deepcopy(self.cfg)
         del no_recheck["recheck"]
-        with self.assertRaisesRegex(ValueError, "must contain \[recheck\]"):
+        with self.assertRaisesRegex(ValueError, r"must contain \[recheck\]"):
             validate_tune_config(no_recheck)
 
         reused_recheck_seed = copy.deepcopy(self.cfg)
@@ -211,6 +212,16 @@ class AutoTuneTests(unittest.TestCase):
         stepped = [{**params[0], "step": 2}]
         with self.assertRaisesRegex(ValueError, "off its step grid"):
             validate_best({"values": {"PROBCUT_MIN_DEPTH": 9}}, stepped)
+
+    def test_split_command_keeps_windows_backslashes(self):
+        self.assertEqual(
+            split_command(r"C:\Tools\SomeDir\engine.exe"),
+            [r"C:\Tools\SomeDir\engine.exe"],
+        )
+        self.assertEqual(
+            split_command(r'"C:\Program Files\Engine\engine.exe" -arg'),
+            [r"C:\Program Files\Engine\engine.exe", "-arg"],
+        )
 
     def test_preflight_validates_runtime_overrides(self):
         validate_runtime_options("1+0.01", 1, 0.5)

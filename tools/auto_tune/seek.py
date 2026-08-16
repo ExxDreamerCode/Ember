@@ -663,8 +663,18 @@ def read_verdict(config_path, run_id):
     return read_summary(config_path, run_id)["verdict"]
 
 
+def split_command(command):
+    tokens = shlex.split(command, posix=False)
+    return [
+        token[1:-1]
+        if len(token) >= 2 and token[0] == token[-1] == '"'
+        else token
+        for token in tokens
+    ]
+
+
 def engine_binary(engine_cmd):
-    exe = shlex.split(engine_cmd)[0]
+    exe = split_command(engine_cmd)[0]
     path = shutil.which(exe)
     if path is None:
         candidate = Path(exe)
@@ -685,7 +695,7 @@ def engine_binary(engine_cmd):
 
 def validate_engine_params(engine_cmd, best, params):
     tune_value = incumbent_tune_option(best, params)
-    command = shlex.split(engine_cmd)
+    command = split_command(engine_cmd)
     if not command:
         raise ValueError("--engine must not be empty")
     command[0] = engine_binary(engine_cmd)
