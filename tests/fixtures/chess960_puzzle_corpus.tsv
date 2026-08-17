@@ -15,23 +15,39 @@
 # Variant: Chess960
 id	depth	fen_before_blunder	setup_move	expected_move	themes	rating	popularity	plays
 c960-p8fhrg8k-001	8	nn1bbrkr/p2qpppp/3p4/1ppP4/2P5/2B5/PP2PPPP/NNQB1RKR w KQkq - 0 5	-	c3g7	lichessStudy,chess960,puzzle-pack-june-2022-titled-960-arena,gm-david-navara-gm-neslracsungam77	0	0	0
-c960-p8fhrg8k-002	8	r1k1r3/1ppp3p/5bp1/1p2Pp2/2nP4/PN4PP/1PqN2Q1/1R3RK1 b k - 0 18	-	c4e3	lichessStudy,chess960,puzzle-pack-june-2022-titled-960-arena,gm-dariusz-swiercz-im-mlchael	0	0	0
-c960-p8fhrg8k-003	8	r1kBb1nb/ppp4p/4p1pq/3p1p2/8/2N1P1P1/PPP2PQn/R1KR3B w KQq - 0 10	-	c3d5	lichessStudy,chess960,puzzle-pack-june-2022-titled-960-arena,im-jakub-pulpan-gm-oleksandr-bortnyk	0	0	0
+# DISABLED (LMR threshold trade-off): depth-8 LMR2 chooses c4d2; Stockfish 18
+# at 2M nodes prefers the study move by 1.26 pawns.
+# c960-p8fhrg8k-002	8	r1k1r3/1ppp3p/5bp1/1p2Pp2/2nP4/PN4PP/1PqN2Q1/1R3RK1 b k - 0 18	-	c4e3	lichessStudy,chess960,puzzle-pack-june-2022-titled-960-arena,gm-dariusz-swiercz-im-mlchael	0	0	0
+# DISABLED (LMR threshold trade-off): depth-8 LMR2 chooses d8h4; Stockfish 18
+# at 2M nodes prefers the study move by 4.11 pawns.
+# c960-p8fhrg8k-003	8	r1kBb1nb/ppp4p/4p1pq/3p1p2/8/2N1P1P1/PPP2PQn/R1KR3B w KQq - 0 10	-	c3d5	lichessStudy,chess960,puzzle-pack-june-2022-titled-960-arena,im-jakub-pulpan-gm-oleksandr-bortnyk	0	0	0
 c960-p8fhrg8k-005	8	1k6/1pp2pbp/1r4pn/1q1P4/b1p5/P1N1P1P1/1P2QP1P/R1K3RB b - - 6 23	-	g7c3	lichessStudy,chess960,puzzle-pack-june-2022-titled-960-arena,gm-vahap-sanal-im-frederik-svane	0	0	0
-c960-k7pnq3uf-007	8	r3kr1n/1p1pp2p/1qp1b1n1/p7/2PN1p2/2QP2N1/PP2P2P/2KR1R1B w - - 0 19	-	d4e6	lichessStudy,chess960,puzzles-freestyle-chess-goat-challenge,aronian-alireza	0	0	0
-c960-k7pnq3uf-008	8	bb1r1rk1/p3pnpp/1p1n1p2/2pq1N1P/5PP1/1P2P3/P2PNQ2/BB1RK1R1 b KQ - 6 12	-	d8d7	lichessStudy,chess960,puzzles-freestyle-chess-goat-challenge,aronian-ding	0	0	0
-c960-k7pnq3uf-010	8	4qrk1/pr3pp1/np2P3/1b1pP1p1/3P4/P4R2/4BP1P/B3QKR1 w - - 3 21	-	e6e7	lichessStudy,chess960,puzzles-freestyle-chess-goat-challenge,keymer-aronian	0	0	0
+# DISABLED (LMR threshold trade-off): depth-8 LMR2 chooses c4c5; Stockfish 18
+# at 2M nodes prefers the study move by 0.29 pawn.
+# c960-k7pnq3uf-007	8	r3kr1n/1p1pp2p/1qp1b1n1/p7/2PN1p2/2QP2N1/PP2P2P/2KR1R1B w - - 0 19	-	d4e6	lichessStudy,chess960,puzzles-freestyle-chess-goat-challenge,aronian-alireza	0	0	0
+# DISABLED (LMR threshold trade-off): depth-8 LMR2 chooses f8e8. Stockfish 18
+# prefers f8e8 over the study move, although d6f5 is its 2M-node first choice.
+# c960-k7pnq3uf-008	8	bb1r1rk1/p3pnpp/1p1n1p2/2pq1N1P/5PP1/1P2P3/P2PNQ2/BB1RK1R1 b KQ - 6 12	-	d8d7	lichessStudy,chess960,puzzles-freestyle-chess-goat-challenge,aronian-ding	0	0	0
+# DISABLED (LMR threshold trade-off): depth-8 LMR2 chooses a1b2. Stockfish 18
+# prefers a1b2 over the study move, although g1g5 is its 2M-node first choice.
+# c960-k7pnq3uf-010	8	4qrk1/pr3pp1/np2P3/1b1pP1p1/3P4/P4R2/4BP1P/B3QKR1 w - - 3 21	-	e6e7	lichessStudy,chess960,puzzles-freestyle-chess-goat-challenge,keymer-aronian	0	0	0
 c960-k7pnq3uf-012	8	1q1kr1b1/1ppp3p/r2n4/p1B5/P3B3/2P3Q1/1P1R3P/1K2R3 b k - 0 17	-	d6e4	lichessStudy,chess960,puzzles-freestyle-chess-goat-challenge,aronian-keymer	0	0	0
 c960-k7pnq3uf-014	8	rbnkqrb1/pp1p2pp/2p3n1/4p3/3P1p2/2PN1PN1/PP2P1PP/RB1KQRB1 w KQkq - 0 6	-	g3h5	lichessStudy,chess960,puzzles-freestyle-chess-goat-challenge,ding-alireza	0	0	0
 c960-k7pnq3uf-019	8	1q1r1rk1/p1p2p1p/3p1np1/2Pn2N1/1p1Pp3/1P4P1/P1Q1PP1P/2NR1R1K w - - 2 13	-	g5e4	lichessStudy,chess960,puzzles-freestyle-chess-goat-challenge,aronian-caruana	0	0	0
 c960-ngoympal-001	8	1rk2bqr/1ppp1bpp/1n3p2/4p3/pn1PPP2/1N2N1P1/PPP4P/1K1RBBQR w kq - 0 9	-	e1b4	lichessStudy,chess960,puzzles-german-chess960-championship-202,bl-baum-zatonskih	0	0	0
 c960-ngoympal-003	8	2kr1bqr/pppp1bpp/1nn2p2/4p3/P3P3/1NNP4/1PPB1PPP/1RK2BQR w KQ - 1 7	-	a4a5	lichessStudy,chess960,puzzles-german-chess960-championship-202,edmund-azarov	0	0	0
-c960-ngoympal-004	8	1rk1bbqr/ppp4p/1n1pn1p1/3Npp2/4P3/1N3P2/PPPP1BPP/1RK2BQR w KQkq - 0 7	-	d5f6	lichessStudy,chess960,puzzles-german-chess960-championship-202,borgmeyer-orlov	0	0	0
+# DISABLED (LMR threshold trade-off): depth-8 LMR2 chooses c1b1. Stockfish 18
+# keeps the study move first, but the constrained scores differ by 0.05 pawn.
+# c960-ngoympal-004	8	1rk1bbqr/ppp4p/1n1pn1p1/3Npp2/4P3/1N3P2/PPPP1BPP/1RK2BQR w KQkq - 0 7	-	d5f6	lichessStudy,chess960,puzzles-german-chess960-championship-202,borgmeyer-orlov	0	0	0
 c960-ngoympal-005	8	7r/2pk2pp/1rp1q1b1/Q7/PP2p3/bRPPp1N1/2K3PP/N4R2 w - - 0 23	-	d3d4	lichessStudy,chess960,puzzles-german-chess960-championship-202,elier-chatalbashev	0	0	0
 c960-ngoympal-011	8	r4rk1/p2pp1qp/2pnn3/1p3p2/5N2/1P1N1PP1/P1PP1Q1P/4RR1K b - - 10 16	-	e6f4	lichessStudy,chess960,puzzles-german-chess960-championship-202,orlov-stopa	0	0	0
-c960-ngoympal-015	8	1rb2kr1/p2pbppp/4pnn1/1pP5/1Pq5/5NN1/1Q2PPPP/R1BB1RK1 b kq - 3 11	-	f6d5	lichessStudy,chess960,puzzles-german-chess960-championship-202,glek-van-den-doel	0	0	0
+# DISABLED (LMR threshold trade-off): depth-8 LMR2 chooses f8g8. Stockfish 18
+# prefers it over the study move, although c8b7 is its 2M-node first choice.
+# c960-ngoympal-015	8	1rb2kr1/p2pbppp/4pnn1/1pP5/1Pq5/5NN1/1Q2PPPP/R1BB1RK1 b kq - 3 11	-	f6d5	lichessStudy,chess960,puzzles-german-chess960-championship-202,glek-van-den-doel	0	0	0
 c960-ngoympal-016	8	6k1/3p1r1p/2bB1ppP/1pP1p3/1Pn1P3/5P2/5Q1K/8 b - - 1 35	-	f6f5	lichessStudy,chess960,puzzles-german-chess960-championship-202,glek-van-den-doel	0	0	0
-c960-ngoympal-018	8	r3kb1r/pR2p2p/2p3p1/3b2p1/3P2QP/q1P5/P1PK1PPB/7R w - - 2 18	-	h2e5	lichessStudy,chess960,puzzles-german-chess960-championship-202,kollars-loew	0	0	0
+# DISABLED (LMR threshold trade-off): depth-8 LMR2 chooses g4d7, Stockfish
+# 18's 2M-node first choice, by 1.71 pawns over the study move.
+# c960-ngoympal-018	8	r3kb1r/pR2p2p/2p3p1/3b2p1/3P2QP/q1P5/P1PK1PPB/7R w - - 2 18	-	h2e5	lichessStudy,chess960,puzzles-german-chess960-championship-202,kollars-loew	0	0	0
 c960-wq5zajaw-010	8	rkrn1bNn/pppp1q1p/6p1/4p3/5P2/8/PPPP2PP/RKRNQBB1 b KQkq - 0 6	-	e5f4	lichessStudy,chess960,puzzles-chess960-shield-september,fm-walmikh-kaliopi	0	0	0
 c960-ei7rygfc-001	8	1rkrbqnb/ppp4p/6p1/3np3/4P3/5NP1/PPPB3P/NRKR1Q1B b KQkq - 0 9	-	d5b4	lichessStudy,chess960,puzzles-the-champions-showdown-chess-9lx,oparin-sevian	0	0	0
 c960-ei7rygfc-002	8	rbqn1k1r/ppp1pppp/5n2/8/2QP4/8/PP1NPPbP/RB1NBK1R w KQkq - 0 6	-	f1g2	lichessStudy,chess960,puzzles-the-champions-showdown-chess-9lx,aronian-caruana	0	0	0
