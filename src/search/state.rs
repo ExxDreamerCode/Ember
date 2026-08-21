@@ -253,6 +253,8 @@ impl Searcher {
         mover_piece: u8,
         singular_extension: i32,
     ) -> ChildPathState {
+        #[cfg(not(feature = "search-debug"))]
+        let _ = singular_extension;
         let previous_move = self.prev_moves[ply].replace(mv);
         let previous_piece = std::mem::replace(&mut self.prev_pieces[ply], mover_piece);
         #[cfg(feature = "search-debug")]
