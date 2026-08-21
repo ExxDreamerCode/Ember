@@ -16,7 +16,7 @@ pub(super) fn piece_val(pt: u8) -> i32 {
     }
 }
 
-pub(super) fn piece_to_idx(pt: u8) -> usize {
+pub(crate) fn piece_to_idx(pt: u8) -> usize {
     match pt {
         0 => 1,
         1 => 2,

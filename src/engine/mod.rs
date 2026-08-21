@@ -828,7 +828,14 @@ impl Engine {
                         break;
                     }
                     let old = self.st;
-                    self.searcher.enter_root_path(mv);
+                    let mover_piece = if old.mailbox[move_from(mv)] != EMPTY_SQ {
+                        crate::search::piece_to_idx(crate::board::piece_type(
+                            old.mailbox[move_from(mv)],
+                        )) as u8
+                    } else {
+                        0
+                    };
+                    self.searcher.enter_root_path(mv, mover_piece);
                     apply_move(
                         &mut self.st,
                         move_sr(mv),

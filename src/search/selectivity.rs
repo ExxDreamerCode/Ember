@@ -103,18 +103,19 @@ pub(super) struct SingularEvidence {
     pub(super) tt_move_is_legal: bool,
 }
 
-#[cfg(feature = "search-debug")]
 #[derive(Clone, Copy)]
 pub(super) struct ChildPathState {
     pub(super) ply: usize,
     pub(super) previous_move: Option<Move>,
+    pub(super) previous_piece: u8,
+    pub(super) is_null: bool,
+    #[cfg(feature = "search-debug")]
+    pub(super) previous_debug_move: Option<Move>,
+    #[cfg(feature = "search-debug")]
     pub(super) child_ply: Option<usize>,
+    #[cfg(feature = "search-debug")]
     pub(super) previous_extensions: u8,
 }
-
-#[cfg(not(feature = "search-debug"))]
-#[derive(Clone, Copy)]
-pub(super) struct ChildPathState;
 
 #[cfg(any(feature = "search-debug", test))]
 pub(super) fn next_singular_extension_count(current: u8, extension: i32) -> u8 {

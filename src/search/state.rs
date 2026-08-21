@@ -12,6 +12,9 @@ impl Searcher {
             rep_stack_len: 0,
             rep_root_len: 0,
             excluded_moves: [None; MAX_PLY],
+            prev_moves: [None; MAX_PLY],
+            prev_pieces: [0; MAX_PLY],
+            continuation_history: vec![0i32; CONTINUATION_HIST_SIZE].into_boxed_slice(),
             #[cfg(feature = "search-debug")]
             path_moves: [None; MAX_PLY],
             #[cfg(feature = "search-debug")]
@@ -208,6 +211,7 @@ impl Searcher {
             history: self.history,
             counter_move: self.counter_move,
             corr_hist: self.corr_hist,
+            continuation_history: self.continuation_history.clone(),
         }
     }
 
@@ -215,11 +219,14 @@ impl Searcher {
         self.history = learning.history;
         self.counter_move = learning.counter_move;
         self.corr_hist = learning.corr_hist;
+        self.continuation_history = learning.continuation_history.clone();
     }
 
     pub fn prepare_for_search(&mut self) {
         self.rep_root_len = self.rep_stack_len;
         self.excluded_moves.fill(None);
+        self.prev_moves.fill(None);
+        self.prev_pieces.fill(0);
         #[cfg(feature = "search-debug")]
         {
             self.path_moves.fill(None);
@@ -236,17 +243,23 @@ impl Searcher {
                 *value = *value * 13 / 16;
             }
         }
+        self.decay_continuation_history();
     }
 
-    #[cfg(feature = "search-debug")]
-    pub(super) fn enter_path(
+    pub(super) fn enter_child_path(
         &mut self,
         ply: usize,
-        mv: Option<Move>,
+        mv: Move,
+        mover_piece: u8,
         singular_extension: i32,
     ) -> ChildPathState {
-        let previous_move = std::mem::replace(&mut self.path_moves[ply], mv);
+        let previous_move = self.prev_moves[ply].replace(mv);
+        let previous_piece = std::mem::replace(&mut self.prev_pieces[ply], mover_piece);
+        #[cfg(feature = "search-debug")]
+        let previous_debug_move = self.path_moves[ply].replace(mv);
+        #[cfg(feature = "search-debug")]
         let child_ply = (ply + 1 < MAX_PLY).then_some(ply + 1);
+        #[cfg(feature = "search-debug")]
         let previous_extensions = child_ply
             .map(|child| {
                 let previous = self.singular_extensions_used[child];
@@ -260,75 +273,79 @@ impl Searcher {
         ChildPathState {
             ply,
             previous_move,
+            previous_piece,
+            is_null: false,
+            #[cfg(feature = "search-debug")]
+            previous_debug_move,
+            #[cfg(feature = "search-debug")]
             child_ply,
+            #[cfg(feature = "search-debug")]
             previous_extensions,
         }
     }
 
-    #[cfg(feature = "search-debug")]
-    pub(super) fn enter_child_path(
-        &mut self,
-        ply: usize,
-        mv: Move,
-        singular_extension: i32,
-    ) -> ChildPathState {
-        self.enter_path(ply, Some(mv), singular_extension)
-    }
-
-    #[cfg(not(feature = "search-debug"))]
-    #[inline(always)]
-    pub(super) fn enter_child_path(
-        &mut self,
-        _ply: usize,
-        _mv: Move,
-        _singular_extension: i32,
-    ) -> ChildPathState {
-        ChildPathState
-    }
-
-    #[cfg(feature = "search-debug")]
     pub(super) fn enter_null_path(&mut self, ply: usize) -> ChildPathState {
-        self.enter_path(ply, None, 0)
-    }
-
-    #[cfg(not(feature = "search-debug"))]
-    #[inline(always)]
-    pub(super) fn enter_null_path(&mut self, _ply: usize) -> ChildPathState {
-        ChildPathState
-    }
-
-    #[cfg(feature = "search-debug")]
-    pub(super) fn leave_child_path(&mut self, state: ChildPathState) {
-        self.path_moves[state.ply] = state.previous_move;
-        if let Some(child) = state.child_ply {
-            self.singular_extensions_used[child] = state.previous_extensions;
+        #[cfg(feature = "search-debug")]
+        let previous_debug_move = self.path_moves[ply].take();
+        #[cfg(feature = "search-debug")]
+        let child_ply = (ply + 1 < MAX_PLY).then_some(ply + 1);
+        #[cfg(feature = "search-debug")]
+        let previous_extensions = child_ply
+            .map(|child| {
+                let previous = self.singular_extensions_used[child];
+                self.singular_extensions_used[child] =
+                    next_singular_extension_count(self.singular_extensions_used[ply], 0);
+                previous
+            })
+            .unwrap_or(0);
+        ChildPathState {
+            ply,
+            previous_move: None,
+            previous_piece: 0,
+            is_null: true,
+            #[cfg(feature = "search-debug")]
+            previous_debug_move,
+            #[cfg(feature = "search-debug")]
+            child_ply,
+            #[cfg(feature = "search-debug")]
+            previous_extensions,
         }
     }
 
-    #[cfg(not(feature = "search-debug"))]
-    #[inline(always)]
-    pub(super) fn leave_child_path(&mut self, _state: ChildPathState) {}
-
-    #[cfg(feature = "search-debug")]
-    pub(crate) fn enter_root_path(&mut self, mv: Move) {
-        self.path_moves[0] = Some(mv);
-        self.singular_extensions_used[0] = 0;
-        self.singular_extensions_used[1] = 0;
+    pub(super) fn leave_child_path(&mut self, state: ChildPathState) {
+        if !state.is_null {
+            self.prev_moves[state.ply] = state.previous_move;
+            self.prev_pieces[state.ply] = state.previous_piece;
+        }
+        #[cfg(feature = "search-debug")]
+        {
+            self.path_moves[state.ply] = state.previous_debug_move;
+            if let Some(child) = state.child_ply {
+                self.singular_extensions_used[child] = state.previous_extensions;
+            }
+        }
     }
 
-    #[cfg(not(feature = "search-debug"))]
-    #[inline(always)]
-    pub(crate) fn enter_root_path(&mut self, _mv: Move) {}
+    pub(crate) fn enter_root_path(&mut self, mv: Move, mover_piece: u8) {
+        self.prev_moves[0] = Some(mv);
+        self.prev_pieces[0] = mover_piece;
+        #[cfg(feature = "search-debug")]
+        {
+            self.path_moves[0] = Some(mv);
+            self.singular_extensions_used[0] = 0;
+            self.singular_extensions_used[1] = 0;
+        }
+    }
 
-    #[cfg(feature = "search-debug")]
     pub(crate) fn leave_root_path(&mut self) {
-        self.path_moves[0] = None;
-        self.singular_extensions_used[1] = 0;
+        self.prev_moves[0] = None;
+        self.prev_pieces[0] = 0;
+        #[cfg(feature = "search-debug")]
+        {
+            self.path_moves[0] = None;
+            self.singular_extensions_used[1] = 0;
+        }
     }
-
-    #[cfg(not(feature = "search-debug"))]
-    #[inline(always)]
-    pub(crate) fn leave_root_path(&mut self) {}
 
     #[cfg(feature = "search-debug")]
     pub(super) fn singular_shuffling(&self, ply: usize, halfmove_clock: u8) -> bool {
@@ -357,6 +374,77 @@ impl Searcher {
         self.history = [[0; 64]; 64];
         self.counter_move = [[None; 64]; 13];
         self.corr_hist = [0; CORR_HIST_SIZE * 2];
+        self.continuation_history = vec![0i32; CONTINUATION_HIST_SIZE].into_boxed_slice();
+    }
+
+    #[inline(always)]
+    pub(super) fn continuation_score(&self, ply: usize, piece_idx: usize, to: usize) -> i32 {
+        debug_assert!(piece_idx < 7 && to < 64);
+        let mut s = 0i32;
+        if ply >= 1 {
+            if let (Some(prev), Some(prev_p)) = (
+                self.prev_moves.get(ply - 1).copied().flatten(),
+                self.prev_pieces.get(ply - 1).copied().filter(|&p| p != 0),
+            ) {
+                s += self.continuation_history
+                    [continuation_idx(0, prev_p as usize, move_to(prev), piece_idx, to)];
+            }
+        }
+        if ply >= 2 {
+            if let (Some(prev), Some(prev_p)) = (
+                self.prev_moves.get(ply - 2).copied().flatten(),
+                self.prev_pieces.get(ply - 2).copied().filter(|&p| p != 0),
+            ) {
+                s += self.continuation_history
+                    [continuation_idx(1, prev_p as usize, move_to(prev), piece_idx, to)];
+            }
+        }
+        s.clamp(-32768, 32768)
+    }
+
+    #[inline(always)]
+    pub(super) fn update_continuation_history(
+        &mut self,
+        ply: usize,
+        mover_piece: u8,
+        mv: Move,
+        delta: i32,
+    ) {
+        let m_to = move_to(mv);
+        let mut halved = false;
+        for (offset, prev_ply) in [ply.wrapping_sub(1), ply.wrapping_sub(2)]
+            .into_iter()
+            .enumerate()
+        {
+            if prev_ply >= MAX_PLY {
+                continue;
+            }
+            let (Some(prev), Some(prev_p)) = (
+                self.prev_moves.get(prev_ply).copied().flatten(),
+                self.prev_pieces.get(prev_ply).copied().filter(|&p| p != 0),
+            ) else {
+                continue;
+            };
+            let cell = &mut self.continuation_history[continuation_idx(
+                offset,
+                prev_p as usize,
+                move_to(prev),
+                mover_piece as usize,
+                m_to,
+            )];
+            *cell += delta;
+            if !halved && (*cell > 16384 || *cell < -16384) {
+                for value in self.continuation_history.iter_mut() {
+                    *value /= 2;
+                }
+                halved = true;
+            }
+        }
+    }
+    pub(super) fn decay_continuation_history(&mut self) {
+        for value in self.continuation_history.iter_mut() {
+            *value = *value * 13 / 16;
+        }
     }
 
     #[cfg(feature = "search-debug")]

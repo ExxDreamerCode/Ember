@@ -5,6 +5,7 @@ pub struct SearchLearning {
     pub(super) history: [[i32; 64]; 64],
     pub(super) counter_move: [[Option<Move>; 64]; 13],
     pub(super) corr_hist: [i32; CORR_HIST_SIZE * 2],
+    pub(super) continuation_history: Box<[i32]>,
 }
 
 pub(super) struct ThreadResult {
@@ -683,7 +684,12 @@ fn run_lazy_smp_worker(
                     break;
                 }
                 let mut s = st;
-                searcher.enter_root_path(mv);
+                let mover_piece = if st.mailbox[move_from(mv)] != EMPTY_SQ {
+                    piece_to_idx(piece_type(st.mailbox[move_from(mv)])) as u8
+                } else {
+                    0
+                };
+                searcher.enter_root_path(mv, mover_piece);
                 apply_move(
                     &mut s,
                     move_sr(mv),

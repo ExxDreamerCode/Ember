@@ -470,7 +470,12 @@ macro_rules! negamax_mode_body {
                     );
                     $this.rep_stack.push($st.hash);
                     $this.rep_stack_len += 1;
-                    let path_state = $this.enter_child_path($ply, mv, 0);
+                    let mover_piece = if fpi != EMPTY_SQ {
+                        piece_to_idx(piece_type(fpi)) as u8
+                    } else {
+                        0
+                    };
+                    let path_state = $this.enter_child_path($ply, mv, mover_piece, 0);
 
                     let qsearch_score = -$this.$qsearch_mode::<CHESS960, NODE_LIMITED, E>(
                         $st,
@@ -880,6 +885,7 @@ macro_rules! negamax_mode_body {
                     }
                     let (fk, tk) = from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
                     s += $this.history[fk][tk].clamp(-32768, 32768);
+                    s += $this.continuation_score($ply, p_idx, to);
                 }
             }
             scored.push((s, mv));
@@ -959,8 +965,14 @@ macro_rules! negamax_mode_body {
                         tune::get_int(TuneParam::HistoryPruneMaxDepth, 5) as i32;
                     let history_margin =
                         tune::get_int(TuneParam::HistoryPruneMarginPerDepth, 1024) as i32;
+                    let p_idx = if fpi != EMPTY_SQ {
+                        piece_to_idx(piece_type(fpi))
+                    } else {
+                        0
+                    };
+                    let cont = $this.continuation_score($ply, p_idx, to);
                     if actual_depth <= history_max_depth
-                        && $this.history[fk][tk] < -history_margin * actual_depth
+                        && $this.history[fk][tk] + cont < -history_margin * actual_depth
                     {
                         #[cfg(feature = "search-debug")]
                         {
@@ -1023,7 +1035,12 @@ macro_rules! negamax_mode_body {
             let h_after = $st.hash;
             $this.rep_stack.push(h_after);
             $this.rep_stack_len += 1;
-            let path_state = $this.enter_child_path($ply, mv, singular_extension);
+            let mover_piece = if fpi != EMPTY_SQ {
+                piece_to_idx(piece_type(fpi)) as u8
+            } else {
+                0
+            };
+            let path_state = $this.enter_child_path($ply, mv, mover_piece, singular_extension);
 
             let new_depth = actual_depth - 1 + move_ext;
 
@@ -1208,6 +1225,19 @@ macro_rules! negamax_mode_body {
                                 0
                             };
                             $this.counter_move[p_idx][to] = Some(mv);
+                            $this.update_continuation_history($ply, p_idx as u8, mv, bonus);
+                            for &qmv in &quiets_tried {
+                                if qmv == mv {
+                                    continue;
+                                }
+                                let q_p_idx = if st_before.mailbox[move_from(qmv)] != EMPTY_SQ {
+                                    piece_to_idx(piece_type(st_before.mailbox[move_from(qmv)]))
+                                        as u8
+                                } else {
+                                    0
+                                };
+                                $this.update_continuation_history($ply, q_p_idx, qmv, -bonus);
+                            }
                         }
                         break;
                     }

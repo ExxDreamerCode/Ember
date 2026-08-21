@@ -1668,3 +1668,122 @@ fn draw_status_terminates_cycles_only_after_the_search_root() {
         "a second occurrence entirely inside the tree terminates the cycle"
     );
 }
+
+#[test]
+fn continuation_score_reads_one_ply_and_two_ply_contexts() {
+    let stopped = Arc::new(AtomicBool::new(false));
+    let shared_tt = Arc::new(SharedTT::new(1));
+    let mut searcher = Searcher::new(shared_tt, stopped);
+
+    let prev1 = encode_move(6, 4, 4, 4, 0);
+    let prev1_piece = piece_to_idx(piece_type(0)) as u8;
+    let prev2 = encode_move(1, 4, 3, 4, 0);
+    let prev2_piece = piece_to_idx(piece_type(0)) as u8;
+    let f3 = 5 * 8 + 5;
+    let knight_idx = piece_to_idx(piece_type(1));
+
+    searcher.enter_child_path(0, prev1, prev1_piece, 0);
+    searcher.enter_child_path(1, prev2, prev2_piece, 0);
+
+    searcher.continuation_history[continuation_idx(0, prev1_piece as usize, 36, knight_idx, f3)] =
+        100;
+    searcher.continuation_history[continuation_idx(1, prev1_piece as usize, 36, knight_idx, f3)] =
+        100;
+    searcher.continuation_history[continuation_idx(0, prev2_piece as usize, 28, knight_idx, f3)] =
+        50;
+
+    assert_eq!(
+        searcher.continuation_score(2, knight_idx, f3),
+        150,
+        "both 1-ply and 2-ply contexts contribute at ply >= 2"
+    );
+    assert_eq!(
+        searcher.continuation_score(1, knight_idx, f3),
+        100,
+        "only the 1-ply context applies at ply == 1"
+    );
+    assert_eq!(
+        searcher.continuation_score(0, knight_idx, f3),
+        0,
+        "no previous moves exist at ply 0"
+    );
+}
+
+#[test]
+fn continuation_path_restores_previous_context_on_leave() {
+    let stopped = Arc::new(AtomicBool::new(false));
+    let shared_tt = Arc::new(SharedTT::new(1));
+    let mut searcher = Searcher::new(shared_tt, stopped);
+
+    let first = encode_move(6, 4, 4, 4, 0);
+    let second = encode_move(7, 6, 5, 5, 0);
+
+    searcher.enter_child_path(0, first, 1, 0);
+    assert_eq!(searcher.prev_moves[0], Some(first));
+    assert_eq!(searcher.prev_pieces[0], 1);
+
+    let state = searcher.enter_child_path(1, second, 2, 0);
+    assert_eq!(searcher.prev_moves[1], Some(second));
+    assert_eq!(searcher.prev_pieces[1], 2);
+    searcher.leave_child_path(state);
+    assert_eq!(searcher.prev_moves[1], None);
+    assert_eq!(searcher.prev_pieces[1], 0);
+
+    assert_eq!(searcher.prev_moves[0], Some(first));
+    assert_eq!(searcher.prev_pieces[0], 1);
+}
+
+#[test]
+fn update_continuation_history_writes_bonus_to_both_c_contexts() {
+    let stopped = Arc::new(AtomicBool::new(false));
+    let shared_tt = Arc::new(SharedTT::new(1));
+    let mut searcher = Searcher::new(shared_tt, stopped);
+
+    let prev1 = encode_move(6, 4, 4, 4, 0);
+    let prev1_piece = piece_to_idx(piece_type(0)) as u8;
+    let prev2 = encode_move(1, 4, 3, 4, 0);
+    let prev2_piece = piece_to_idx(piece_type(0)) as u8;
+
+    searcher.enter_child_path(0, prev1, prev1_piece, 0);
+    searcher.enter_child_path(1, prev2, prev2_piece, 0);
+
+    let mv = encode_move(7, 6, 5, 5, 0);
+    let mover_piece = piece_to_idx(piece_type(1)) as u8;
+    let to = move_to(mv);
+    searcher.update_continuation_history(2, mover_piece, mv, 100);
+
+    assert_eq!(
+        searcher.continuation_history
+            [continuation_idx(0, prev2_piece as usize, 28, mover_piece as usize, to,)],
+        100
+    );
+    assert_eq!(
+        searcher.continuation_history
+            [continuation_idx(1, prev1_piece as usize, 36, mover_piece as usize, to,)],
+        100
+    );
+}
+
+#[test]
+fn update_continuation_history_halves_on_overflow() {
+    let stopped = Arc::new(AtomicBool::new(false));
+    let shared_tt = Arc::new(SharedTT::new(1));
+    let mut searcher = Searcher::new(shared_tt, stopped);
+
+    let prev1 = encode_move(6, 4, 4, 4, 0);
+    searcher.enter_child_path(0, prev1, 1, 0);
+    let mv = encode_move(7, 6, 5, 5, 0);
+    let mover_piece = piece_to_idx(piece_type(1)) as u8;
+    let to = move_to(mv);
+
+    for _ in 0..40 {
+        searcher.update_continuation_history(1, mover_piece, mv, 1_000);
+    }
+
+    let value = searcher.continuation_history[continuation_idx(0, 1, 36, mover_piece as usize, to)];
+    assert!(
+        (-16384..=16384).contains(&value),
+        "continuation history should stay within the halving bound, got {value}"
+    );
+    assert!(value > 0);
+}

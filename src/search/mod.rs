@@ -84,10 +84,23 @@ use self::selectivity::{
 };
 
 mod move_helpers;
+pub(crate) use self::move_helpers::piece_to_idx;
 use self::move_helpers::*;
 
 const CORR_HIST_SIZE: usize = 16384;
+pub const CONTINUATION_HIST_SIZE: usize = 2 * 7 * 64 * 7 * 64;
 pub const SEARCH_THREAD_STACK_SIZE: usize = 16 * 1024 * 1024;
+#[inline(always)]
+pub(super) fn continuation_idx(
+    offset: usize,
+    prev_piece: usize,
+    prev_to: usize,
+    piece_idx: usize,
+    to: usize,
+) -> usize {
+    debug_assert!(offset < 2 && prev_piece < 7 && prev_to < 64 && piece_idx < 7 && to < 64);
+    (((offset * 7 + prev_piece) * 64 + prev_to) * 7 + piece_idx) * 64 + to
+}
 fn corr_idx(h: u64, side: bool) -> usize {
     let k = h
         .wrapping_mul(0x9E3779B97F4A7C15)
@@ -116,6 +129,9 @@ pub struct Searcher {
     pub rep_stack_len: usize,
     rep_root_len: usize,
     excluded_moves: [Option<Move>; MAX_PLY],
+    prev_moves: [Option<Move>; MAX_PLY],
+    prev_pieces: [u8; MAX_PLY],
+    continuation_history: Box<[i32]>,
     #[cfg(feature = "search-debug")]
     path_moves: [Option<Move>; MAX_PLY],
     #[cfg(feature = "search-debug")]
