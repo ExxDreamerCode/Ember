@@ -61,10 +61,17 @@ fn assert_incremental_line_matches_refresh(net: &NNUENet, fen: &str, moves: &[&s
 
             let stm = if engine.st.w { WHITE } else { BLACK };
             let piece_count: u32 = engine.st.bb.iter().map(|bb| bb.count_ones()).sum();
+            let incremental_score = net.forward_with_kind(backend, &incremental, stm, piece_count);
+            let refreshed_score = net.forward_with_kind(backend, &refreshed, stm, piece_count);
+            let scalar_score =
+                net.forward_with_kind(NnueBackendKind::Scalar, &refreshed, stm, piece_count);
             assert_eq!(
-                net.forward_with_kind(backend, &incremental, stm, piece_count),
-                net.forward_with_kind(backend, &refreshed, stm, piece_count),
+                incremental_score, refreshed_score,
                 "NNUE score drift after {uci} with {backend:?}"
+            );
+            assert_eq!(
+                refreshed_score, scalar_score,
+                "NNUE backend score differs from scalar after {uci} with {backend:?}"
             );
         }
     }
@@ -318,5 +325,10 @@ fn critical_game_lines_keep_nnue_incremental_state_exact() {
         &net,
         "r3n1k1/1pp1Prb1/3p3p/p1n5/2P5/2N1P2P/PPKBBqp1/R2Q2R1 w - - 3 25",
         &["e2h5", "g7c3", "b2c3", "f2f5", "c2b2", "f5f2"],
+    );
+    assert_incremental_line_matches_refresh(
+        &net,
+        "5k2/1b1r2b1/p4p1N/q3p2Q/2p5/7P/2B2P2/3R2K1 w - - 4 39",
+        &["h6f5", "d7d1", "h5d1", "a5d5", "d1d5"],
     );
 }

@@ -181,6 +181,11 @@ dedicated CI job.
 7. Compare the same position on known-good and candidate revisions with identical binaries,
    settings, and hardware. Use a targeted history search or bisect when the first bad
    revision is unknown.
+   When several root moves collapse to the same fail-hard bound, use
+   `tools/compare_mistake_trace.py` with a strong reference line to preserve the root DAG and
+   locate the first unvisited witness position. Treat a bisected move-choice change as a
+   search-shape boundary, not proof that the original predicate is still the active cause
+   after later refactors.
 8. Classify the failure before editing:
 
    - **Book:** Was the position actually in the book? Was the selected move legal, within
