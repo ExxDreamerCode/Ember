@@ -88,7 +88,7 @@ pub(crate) use self::move_helpers::piece_to_idx;
 use self::move_helpers::*;
 
 const CORR_HIST_SIZE: usize = 16384;
-pub const CONTINUATION_HIST_SIZE: usize = 2 * 7 * 64 * 7 * 64;
+const CONTINUATION_HIST_SIZE: usize = 2 * 7 * 64 * 7 * 64;
 pub const SEARCH_THREAD_STACK_SIZE: usize = 16 * 1024 * 1024;
 #[inline(always)]
 pub(super) fn continuation_idx(
