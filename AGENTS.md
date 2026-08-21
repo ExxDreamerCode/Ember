@@ -229,6 +229,11 @@ Run checks in increasing cost order and stop on a real failure:
 Use the Nix `ci` shell where CI does. Match `.github/workflows/ci.yml` rather than inventing
 a subtly different command.
 
+When changing feature-gated code, also run `cargo check` or `cargo clippy` with the default
+features and each affected feature combination. An all-features build does not compile
+`cfg(not(feature = "..."))` branches, so it cannot establish that production-only paths are
+warning-free.
+
 Every bug fix should have a regression at the narrowest useful layer. A regression proves
 the causal invariant, not just that the final game happens to end differently.
 
