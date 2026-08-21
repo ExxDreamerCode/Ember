@@ -1,8 +1,8 @@
-use chess_rs_lib::board::{move_ec, move_er, move_promotion, move_sc, move_sr};
-use chess_rs_lib::evaluate::evaluate_nnue_acc;
-use chess_rs_lib::movegen::{apply_move, generate_moves};
-use chess_rs_lib::nnue::{NNUEAccumulator, NNUENet};
-use chess_rs_lib::Engine;
+use ember_chess::board::{move_ec, move_er, move_promotion, move_sc, move_sr};
+use ember_chess::evaluate::evaluate_nnue_acc;
+use ember_chess::movegen::{apply_move, generate_moves};
+use ember_chess::nnue::{NNUEAccumulator, NNUENet};
+use ember_chess::Engine;
 use std::hint::black_box;
 use std::time::Instant;
 
@@ -30,7 +30,7 @@ fn parse_arg(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
-fn states() -> Vec<chess_rs_lib::board::BoardState> {
+fn states() -> Vec<ember_chess::board::BoardState> {
     FENS.iter()
         .map(|fen| {
             let mut engine = Engine::new();
@@ -41,7 +41,7 @@ fn states() -> Vec<chess_rs_lib::board::BoardState> {
         .collect()
 }
 
-fn bench_refresh(net: &NNUENet, states: &[chess_rs_lib::board::BoardState], loops: usize) -> i64 {
+fn bench_refresh(net: &NNUENet, states: &[ember_chess::board::BoardState], loops: usize) -> i64 {
     let mut checksum = 0i64;
     let mut acc = NNUEAccumulator::new(net.hidden_size);
     for _ in 0..loops {
@@ -55,7 +55,7 @@ fn bench_refresh(net: &NNUENet, states: &[chess_rs_lib::board::BoardState], loop
 
 fn bench_incremental(
     net: &NNUENet,
-    states: &[chess_rs_lib::board::BoardState],
+    states: &[ember_chess::board::BoardState],
     loops: usize,
 ) -> (i64, usize) {
     let mut checksum = 0i64;

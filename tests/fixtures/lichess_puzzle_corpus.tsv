@@ -143,7 +143,9 @@ id	depth	fen_before_blunder	setup_move	expected_move	themes	rating	popularity	pl
 00AcQ	2	8/1bpp2k1/1p5r/1P2P3/3P1P2/2P1n1K1/2Q3P1/8 w - - 0 30	c2a2	h6g6	crushing,endgame,short	1735	91	813
 00AdI	2	3r4/4kp1p/1PQ1p1p1/p3b3/1p2P2P/1P6/6PK/8 w - - 1 36	h2h3	d8d3	crushing,discoveredAttack,discoveredCheck,endgame,long,master	1241	97	8700
 00Af3	3	8/8/2B2p1p/P4Pp1/3p1kP1/1b1Pb2P/8/4K3 b - - 0 50	f4g3	a5a6	advancedPawn,bishopEndgame,crushing,endgame,short	1144	95	5702
-00AhO	4	r1b2rk1/2q2p1p/1p2pbp1/pP6/2P1Q3/P2B1N2/5PPP/3R1RK1 w - - 0 20	e4a8	c8b7	advantage,clearance,long,master,middlegame,trappedPiece	1233	92	2542
+# DISABLED (LMR threshold trade-off): depth-4 LMR2 chooses f6e7; Stockfish
+# 18 at 2M nodes prefers c8b7 by 6.86 pawns.
+# 00AhO	4	r1b2rk1/2q2p1p/1p2pbp1/pP6/2P1Q3/P2B1N2/5PPP/3R1RK1 w - - 0 20	e4a8	c8b7	advantage,clearance,long,master,middlegame,trappedPiece	1233	92	2542
 00Ahb	2	1k4nr/pp1r1ppp/4p3/1Nb2q2/2Pp4/6P1/PP3P1P/R1BQR1K1 b - - 2 14	g8h6	c1f4	crushing,middlegame,short	1123	83	239
 00Al5	2	2r3k1/p2q1pbp/1p2pnp1/nB1p4/3P4/1Pr1P2P/P1QB1PP1/2R2RK1 w - - 0 19	b5d7	c3c2	advantage,middlegame,short	1696	95	11557
 00AoZ	2	8/1R6/p1pk4/6bp/1QP5/P7/KP6/3r2q1 b - - 2 44	g1c5	b7d7	advantage,deflection,endgame,short	1090	93	3458
@@ -337,7 +339,9 @@ id	depth	fen_before_blunder	setup_move	expected_move	themes	rating	popularity	pl
 00QHM	2	6k1/pp3rpp/4Nb2/4p3/1B1r4/6PK/PP5P/2R5 b - - 0 28	d4b4	c1c8	endgame,long,mate,mateIn3	904	95	230
 00QOa	2	6rk/1pp1R1p1/6Bp/2b4P/8/pP3PK1/P1P5/8 w - - 5 32	e7c7	c5d6	crushing,endgame,fork,short	837	95	540
 00QVZ	2	8/7p/4K3/6p1/2k3P1/8/5P2/8 b - - 0 43	c4d4	e6f5	crushing,endgame,long,master,pawnEndgame	1468	81	530
-00QW1	3	8/3r1ppp/4p3/k3P3/pR2R2P/2P5/2Kr1PP1/8 w - - 4 31	c2c1	d2d1	endgame,exposedKing,long,mate,mateIn3,rookEndgame	1002	96	290
+# DISABLED (LMR threshold trade-off): depth-3 LMR2 chooses a4a3 and misses
+# the forced mate found by Stockfish 18 at 2M nodes.
+# 00QW1	3	8/3r1ppp/4p3/k3P3/pR2R2P/2P5/2Kr1PP1/8 w - - 4 31	c2c1	d2d1	endgame,exposedKing,long,mate,mateIn3,rookEndgame	1002	96	290
 00QZ3	2	r1bq3r/ppppnkpp/2n5/b5N1/4P3/B1P5/P4PPP/RN1QK2R b KQ - 1 9	f7f8	d1f3	mate,mateIn2,opening,short	1189	92	1663
 00Qlc	2	8/5R2/P7/2p1r3/2Pp2k1/3K4/5p2/8 b - - 1 54	e5f5	f7f5	crushing,endgame,long,rookEndgame	1706	93	1347
 00QnO	2	1k1r1r2/pp4p1/6q1/2Qp4/5bP1/2P4p/PPN3NP/R4R1K w - - 0 30	g2f4	g6e4	crushing,fork,intermezzo,middlegame,short	1470	92	3216
@@ -358,7 +362,9 @@ id	depth	fen_before_blunder	setup_move	expected_move	themes	rating	popularity	pl
 00SIE	2	2k3nr/ppp2ppp/2n5/8/8/1Q2P3/q2r1PPP/1R2KB1R b K - 1 15	d2f2	b3b7	crushing,fork,middlegame,short	1188	89	272
 00SIq	2	r3r1k1/1Q3ppp/8/pP6/2q5/7P/3R2P1/5R1K w - - 0 30	f1f7	c4f7	crushing,endgame,short	1903	83	247
 00SLR	2	rnbqk1nr/ppppbppp/4p3/8/5P2/5N2/PPPPP1PP/RNBQKB1R w KQkq - 2 3	g2g4	e7h4	mate,mateIn2,opening,short	694	87	589
-00SU7	4	2rqr1k1/B2b1ppp/5n2/8/3Q4/3B4/P1P2PPP/R3R1K1 w - - 3 22	d4h4	e8e1	advantage,fork,long,middlegame	1617	94	6475
+# DISABLED (LMR threshold trade-off): depth-4 LMR2 chooses d7e6; Stockfish
+# 18 at 2M nodes prefers e8e1 by 7.12 pawns.
+# 00SU7	4	2rqr1k1/B2b1ppp/5n2/8/3Q4/3B4/P1P2PPP/R3R1K1 w - - 3 22	d4h4	e8e1	advantage,fork,long,middlegame	1617	94	6475
 00Se9	2	5rk1/pp1n2r1/3p2N1/2pQ4/2P5/4P1P1/qP2KPP1/7R b - - 1 24	g7f7	g6e7	mate,mateIn2,middlegame,pin,short	1946	95	4974
 00SgB	2	b3rrk1/qn2R3/1p3ppp/1P1p4/1Q1PnB2/P3P3/4BPPP/5RK1 b - - 0 28	e8e7	b4e7	advantage,exposedKing,kingsideAttack,long,middlegame	1212	94	1530
 00SiY	2	8/8/3p2N1/3Pp1n1/4Pp1p/3k1P1P/6K1/8 w - - 8 57	g6h4	d3e2	crushing,endgame,knightEndgame,master,short,zugzwang	2111	91	2580
@@ -432,7 +438,9 @@ id	depth	fen_before_blunder	setup_move	expected_move	themes	rating	popularity	pl
 00Wp4	2	3r1k2/p4p2/1p4p1/1Pn4p/4BP1P/6P1/P2p3K/3R4 b - - 1 44	c5d3	d1d2	advantage,endgame,master,short	1180	91	448
 00WqT	2	r4r2/1ppb1p2/p2p2pk/5P2/4P3/2PBB1R1/PKP2P1q/8 b - - 4 26	h6h5	d3e2	mate,mateIn2,middlegame,short	1568	97	22050
 00WtH	2	8/2R2pk1/4p1pp/3p4/3Pq2P/1r2P1P1/5P1K/5Q2 w - - 2 45	f1c1	b3b1	crushing,endgame,short	1402	94	639
-00WzB	4	8/8/8/P1K1p3/5k1p/5b1B/5P2/8 w - - 3 46	h3f1	f3a8	advancedPawn,bishopEndgame,crushing,endgame,promotion,quietMove,veryLong	2711	90	2366
+# DISABLED (LMR threshold trade-off): depth-4 LMR2 chooses f3b7; Stockfish
+# 18 at 2M nodes prefers f3a8 by 2.31 pawns.
+# 00WzB	4	8/8/8/P1K1p3/5k1p/5b1B/5P2/8 w - - 3 46	h3f1	f3a8	advancedPawn,bishopEndgame,crushing,endgame,promotion,quietMove,veryLong	2711	90	2366
 00WzS	2	r2qk2r/2pn1p1n/pp1p2bp/3Pp1bB/PPP1P3/2N1B3/3N2PP/R2Q1RK1 w kq - 3 17	h5g6	g5e3	advantage,hangingPiece,intermezzo,middlegame,short	1463	89	490
 00X0Q	4	6R1/8/8/8/1KP5/3r4/PP3kp1/8 w - - 3 52	c4c5	d3g3	advancedPawn,crushing,endgame,long,promotion,rookEndgame	1425	91	1550
 00X2j	3	8/5KP1/R1k5/8/2pp4/8/8/6r1 b - - 1 50	c6c5	a6g6	advancedPawn,crushing,endgame,long,promotion,rookEndgame	1408	95	13388
@@ -617,7 +625,9 @@ id	depth	fen_before_blunder	setup_move	expected_move	themes	rating	popularity	pl
 00kZF	2	r3r3/1p1n2pk/2p1pq1p/2P5/1p2R3/P2Q1N1P/5PP1/R5K1 b - - 1 24	f6a1	e4e1	crushing,discoveredAttack,discoveredCheck,middlegame,short	1307	91	2517
 00km1	2	1R3rk1/p2q1ppp/3bpn2/3p4/Q2P4/2N3P1/P3PP1P/2B2RK1 b - - 0 17	d7a4	b8f8	crushing,intermezzo,middlegame,short	1397	78	603
 00l1z	3	8/8/2p5/7R/2B4P/KP2knp1/P1P5/8 w - - 0 45	h5g5	f3g5	advancedPawn,advantage,endgame,master,short	1278	75	489
-00l68	3	3k2Q1/q7/3pB1p1/2pP1p2/2P2P2/rp2PK1P/8/8 b - - 2 37	d8c7	g8c8	endgame,long,mate,mateIn3	1373	96	15494
+# DISABLED (LMR threshold trade-off): depth-3 LMR2 chooses g8e8 and misses
+# the forced mate found by Stockfish 18 at 2M nodes.
+# 00l68	3	3k2Q1/q7/3pB1p1/2pP1p2/2P2P2/rp2PK1P/8/8 b - - 2 37	d8c7	g8c8	endgame,long,mate,mateIn3	1373	96	15494
 00l7Y	2	r1b2q2/p3p1bk/2p3p1/3pn2p/8/2NB3P/PPPBQ1P1/5RK1 b - - 1 17	f8d8	e2h5	advantage,deflection,long,middlegame,pin	1496	95	9132
 00lA1	3	r3k2r/ppp3Np/3p2pB/2b1p3/2B1P3/2NP3q/PPP2P2/R2R2K1 b - - 3 17	e8d8	h6g5	advantage,fork,long,middlegame	1699	96	6086
 00lHu	2	8/p7/6P1/4p3/R4pK1/1r2k2P/8/8 b - - 0 47	f4f3	g6g7	advancedPawn,crushing,endgame,rookEndgame,short	1816	94	7960
@@ -675,7 +685,9 @@ id	depth	fen_before_blunder	setup_move	expected_move	themes	rating	popularity	pl
 00pEZ	2	2kr2r1/ppq1bbBQ/2p1p3/2npP3/8/2P2N2/PPB2PPP/R4RK1 w - - 3 21	g7f6	e7f6	advantage,master,middlegame,short	1619	93	6422
 00pVS	2	r1b1kbnN/ppp3pp/3p4/8/8/2NP4/PPP4P/R2QKBq1 b Qq - 3 15	c8h3	d1h5	advantage,fork,middlegame,short	1279	93	1919
 00pWF	2	8/8/p3k3/1p1pP3/5P2/1P6/6K1/8 w - - 0 53	g2f3	a6a5	advancedPawn,crushing,endgame,pawnEndgame,quietMove,veryLong	2164	94	1509
-00pdW	3	4Q3/6pk/p7/4Pq1p/2r2P2/P5P1/1P5P/5RK1 w - - 2 36	e5e6	f5c5	crushing,endgame,long	2259	93	1526
+# DISABLED (LMR threshold trade-off): depth-3 LMR2 chooses c4c2; Stockfish
+# 18 at 2M nodes prefers f5c5 by 6.56 pawns.
+# 00pdW	3	4Q3/6pk/p7/4Pq1p/2r2P2/P5P1/1P5P/5RK1 w - - 2 36	e5e6	f5c5	crushing,endgame,long	2259	93	1526
 00piA	2	r3r1k1/pp3pp1/2p2q1p/3pP3/P3bP2/2P1N1P1/1P1Q1K1P/R3R3 b - - 0 23	e8e5	e3g4	advantage,fork,middlegame,short	1126	100	373
 00puq	2	4r3/1k3pbp/1pp1q3/p3Npp1/P2P2n1/2PQ4/1P3PPP/2N1R1K1 w - - 6 33	e5f3	e6e1	crushing,fork,long,middlegame	955	96	616
 00q6t	2	q2r2k1/5pbp/p5p1/1p6/2pP1P2/P1N1P1Pb/1P1B1R1P/1Q4K1 b - - 4 21	d8d4	e3d4	crushing,long,middlegame	2008	88	204
@@ -750,7 +762,9 @@ id	depth	fen_before_blunder	setup_move	expected_move	themes	rating	popularity	pl
 00vjg	4	2r3k1/5ppp/p3nb2/2Bq4/1Q6/P6P/2R2PP1/2R3K1 w - - 3 30	c5e3	c8c2	advantage,attraction,fork,long,middlegame	1060	91	276
 00vl5	3	5r2/p1k2qpp/2n5/2N1p3/2b5/2P1B3/PP1Q2PP/4R1K1 w - - 5 24	b2b3	f7f1	mate,mateIn2,middlegame,operaMate,sacrifice,short	1066	93	594
 00voi	2	1r6/2r2p1R/7R/4pPk1/2B2n2/1P3P1P/P4K2/8 b - - 0 43	c7c4	h3h4	endgame,mate,mateIn2,short	1496	95	29158
-00vuv	3	r3r3/2q1b1pk/p3P1Np/5Qp1/8/3p4/PPp2P2/2R1R1K1 b - - 1 30	d3d2	g6f8	discoveredCheck,doubleCheck,long,mate,mateIn3,middlegame,sacrifice	2062	94	4338
+# DISABLED (LMR threshold trade-off): depth-3 LMR2 chooses e1f1 and misses
+# the forced mate found by Stockfish 18 at 2M nodes.
+# 00vuv	3	r3r3/2q1b1pk/p3P1Np/5Qp1/8/3p4/PPp2P2/2R1R1K1 b - - 1 30	d3d2	g6f8	discoveredCheck,doubleCheck,long,mate,mateIn3,middlegame,sacrifice	2062	94	4338
 00w6f	2	rnb1r1k1/pp1p1ppp/1q2pn2/1N6/4P3/B1P2P2/P1P3PP/R2QKB1R w KQ - 5 10	b5d6	b6e3	advantage,opening,short	1085	87	152
 00wCl	2	1rb1k2r/8/p1Bp1p1p/P1p1p1p1/4P3/1P5P/2P2PP1/R2R2K1 b k - 1 20	c8d7	d1d6	advantage,endgame,short	1394	87	453
 00wL8	2	R4rk1/2PR1ppp/8/8/7P/8/P3pqPK/8 b - - 0 33	f8a8	d7d8	advancedPawn,backRankMate,endgame,mate,mateIn2,promotion,queenRookEndgame,short	856	94	288
@@ -855,9 +869,13 @@ id	depth	fen_before_blunder	setup_move	expected_move	themes	rating	popularity	pl
 013zx	2	1r1q1rk1/1b2bppp/p7/1p1ppP2/3pP1Q1/P2P2P1/BPP4P/R1B2RK1 b - - 1 16	d5e4	c1h6	crushing,middlegame,pin,sacrifice,veryLong	1817	93	3682
 0147O	2	2N3k1/1p5p/BP4p1/3n1p2/4p3/2n3P1/5P1P/6K1 b - - 5 37	c3a4	a6c4	advantage,endgame,pin,short	1510	91	503
 014It	2	1k1r4/p1p3pp/Pp3r2/3pR3/Q2N4/8/1PPq1PPP/4R1K1 w - - 3 25	e5e8	d2f2	backRankMate,long,mate,mateIn3,middlegame,sacrifice	1295	89	390
-014K4	4	8/7p/5kpP/p4p2/8/2bR4/P2p1PP1/6K1 w - - 4 44	d3d6	f6e5	crushing,defensiveMove,endgame,short	1905	92	502
+# DISABLED (LMR threshold trade-off): depth-4 LMR2 chooses f6g5; Stockfish
+# 18 at 2M nodes prefers f6e5 by 7.95 pawns.
+# 014K4	4	8/7p/5kpP/p4p2/8/2bR4/P2p1PP1/6K1 w - - 4 44	d3d6	f6e5	crushing,defensiveMove,endgame,short	1905	92	502
 014KA	2	r4rk1/5ppp/p3b3/1p2P3/3n1PP1/N6P/PP6/R1B1R1K1 w - - 0 19	c1e3	d4f3	advantage,fork,middlegame,short	885	89	557
-014M7	3	7r/6kP/6P1/p5K1/8/8/1p6/6R1 b - - 1 52	a5a4	g1d1	crushing,endgame,quietMove,rookEndgame,short	2570	79	220
+# DISABLED (LMR threshold trade-off): depth-3 LMR2 chooses g5f5; Stockfish
+# 18 at 2M nodes prefers g1d1 by 17.62 pawns.
+# 014M7	3	7r/6kP/6P1/p5K1/8/8/1p6/6R1 b - - 1 52	a5a4	g1d1	crushing,endgame,quietMove,rookEndgame,short	2570	79	220
 014OS	2	8/p7/1b6/1Kp5/2P2pk1/1P6/5P1B/8 w - - 0 37	f2f3	g4f3	bishopEndgame,crushing,endgame,short	1131	87	472
 014eN	2	r5k1/1pp3pp/2np3q/p3p3/6n1/1P2PNN1/PBP2PBr/R2Q2K1 w - - 4 19	f3h2	h6h2	advantage,kingsideAttack,long,middlegame	2027	91	1472
 014p4	2	3rn2r/pp1q1pkp/2n1b1p1/1Np1p3/8/4N1P1/PP1QPPBP/R2R2K1 w - - 0 18	g2c6	d7d2	crushing,master,middlegame,short	1304	95	9508
@@ -887,7 +905,9 @@ id	depth	fen_before_blunder	setup_move	expected_move	themes	rating	popularity	pl
 00aBq	2	r2r2k1/pp3ppp/1qn2b2/3R4/4QB2/1P3N2/P4PPP/4R1K1 b - - 0 18	d8d5	e4e8	backRankMate,mate,mateIn2,middlegame,sacrifice,short	894	88	329
 00aDl	2	r5k1/1p3p2/2p1ppp1/3p4/2nP4/1QB2B1P/rPP2PP1/qNKR3R w - - 3 22	f3e2	a1b1	attraction,mate,mateIn2,middlegame,queensideAttack,sacrifice,short	1354	95	34436
 00awK	2	r5k1/2p2Qpp/p7/4b3/8/8/1PP1KR2/2q5 b - - 0 24	g8h8	f7f8	backRankMate,endgame,mate,mateIn2,sacrifice,short	576	100	399
-00byq	4	2r3k1/2r1bppp/3ppn2/qp6/3BP3/1Q4P1/PP3PBP/1RR3K1 w - - 5 21	d4e3	c7c1	advantage,fork,middlegame,pin,veryLong	1144	93	588
+# DISABLED (LMR threshold trade-off): depth-4 LMR2 chooses f6g4; Stockfish
+# 18 at 2M nodes prefers c7c1 by 4.01 pawns.
+# 00byq	4	2r3k1/2r1bppp/3ppn2/qp6/3BP3/1Q4P1/PP3PBP/1RR3K1 w - - 5 21	d4e3	c7c1	advantage,fork,middlegame,pin,veryLong	1144	93	588
 00ouE	2	2r5/2r3k1/1p2pp1p/p2pQ1p1/3P4/4P1P1/PPq2P1R/KR6 w - - 0 30	e5e6	c2b1	attraction,endgame,mate,mateIn2,sacrifice,short	1448	97	6543
 00pER	2	r2q1rk1/4N1bp/p2p2p1/2p3N1/Pp4P1/1Q5P/1P1n1P2/5RK1 b - - 0 21	g8h8	b3g8	kingsideAttack,mate,mateIn2,middlegame,sacrifice,short,smotheredMate	1571	87	8590
 00rNc	2	1q5r/p3kpp1/2Q1p2p/3pP2P/2n3P1/2N2P2/PrP5/K3R1NR w - - 0 26	g1e2	b2a2	clearance,mate,mateIn2,middlegame,sacrifice,short	1512	96	27812

@@ -1,5 +1,40 @@
 use super::*;
 
+const QSEARCH_DELTA_MARGIN_CP: i32 = 975;
+const QSEARCH_CHECK_CAP_DEPTH: i32 = 4;
+const QSEARCH_SEE_THRESHOLD_CP: i32 = 0;
+
+#[inline(always)]
+pub(super) fn qsearch_delta_prunable(alpha: i32, stand: i32) -> bool {
+    let margin = tune::get_int(
+        TuneParam::QsearchDeltaMarginCp,
+        i64::from(QSEARCH_DELTA_MARGIN_CP),
+    ) as i32;
+    alpha - margin > stand
+}
+
+#[inline(always)]
+pub(super) fn qsearch_check_cap_reached(depth: i32) -> bool {
+    let max_depth = tune::get_int(
+        TuneParam::QsearchCheckCapDepth,
+        i64::from(QSEARCH_CHECK_CAP_DEPTH),
+    ) as i32;
+    depth <= -max_depth
+}
+
+#[inline(always)]
+pub(super) fn qsearch_see_threshold_cp() -> i32 {
+    tune::get_int(
+        TuneParam::QsearchSeeThresholdCp,
+        i64::from(QSEARCH_SEE_THRESHOLD_CP),
+    ) as i32
+}
+
+#[inline(always)]
+pub(super) fn qsearch_see_prunable(see_score: i32, threshold: i32) -> bool {
+    see_score < threshold
+}
+
 macro_rules! qsearch_mode_body {
     (
         $this:tt,
@@ -51,7 +86,7 @@ macro_rules! qsearch_mode_body {
             if $this.qsearch_delta_enabled()
                 && excluded_move.is_none()
                 && $depth <= 0
-                && $alpha - 975 > stand
+                && qsearch_delta_prunable($alpha, stand)
             {
                 #[cfg(feature = "search-debug")]
                 {
@@ -60,7 +95,10 @@ macro_rules! qsearch_mode_body {
                 }
                 return $alpha;
             }
-        } else if $this.qsearch_check_cap_enabled() && excluded_move.is_none() && $depth <= -4 {
+        } else if $this.qsearch_check_cap_enabled()
+            && excluded_move.is_none()
+            && qsearch_check_cap_reached($depth)
+        {
             #[cfg(feature = "search-debug")]
             {
                 $this.debug.stats.q_checked_depth_exits += 1;
@@ -87,6 +125,12 @@ macro_rules! qsearch_mode_body {
                 $alpha
             };
         }
+        let qsearch_see_threshold =
+            if !in_check && excluded_move.is_none() && $this.qsearch_see_enabled() {
+                Some(qsearch_see_threshold_cp())
+            } else {
+                None
+            };
         $eval.ensure_child_stack($this, $ply);
 
         caps.sort_by_key(|mv| {
@@ -119,8 +163,12 @@ macro_rules! qsearch_mode_body {
             let tpi = $st.mailbox[to];
             if !in_check
                 && excluded_move.is_none()
-                && $this.qsearch_see_enabled()
-                && move_see::<CHESS960>($st, mv, from, to, fpi, tpi) < 0
+                && qsearch_see_threshold.is_some_and(|threshold| {
+                    qsearch_see_prunable(
+                        move_see::<CHESS960>($st, mv, from, to, fpi, tpi),
+                        threshold,
+                    )
+                })
             {
                 #[cfg(feature = "search-debug")]
                 {

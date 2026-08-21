@@ -96,6 +96,7 @@ pub(super) struct LazySmpSearchJob {
     pub(super) root_context: Arc<LazySmpRootContext>,
     pub(super) start: Instant,
     pub(super) global_best_depth: Arc<AtomicI32>,
+    pub(super) printed_depth: Arc<AtomicI32>,
     pub(super) global_nodes: Arc<AtomicU64>,
     pub(super) node_limit_counter: Option<Arc<AtomicU64>>,
     pub(super) worker_best_moves: Vec<AtomicU64>,
@@ -267,6 +268,7 @@ impl LazySmpPool {
             root_context: Arc::new(LazySmpRootContext::from_searcher(root_searcher)),
             start: limits.start,
             global_best_depth: Arc::new(AtomicI32::new(0)),
+            printed_depth: Arc::new(AtomicI32::new(0)),
             global_nodes: Arc::new(AtomicU64::new(0)),
             node_limit_counter: limits.node_limit.map(|_| Arc::new(AtomicU64::new(0))),
             worker_best_moves: (0..num_threads).map(|_| AtomicU64::new(0)).collect(),
@@ -306,7 +308,7 @@ impl LazySmpPool {
         let Some(best) = select_lazy_smp_result(&results, st, root_moves) else {
             return (root_moves[0], 0, 0, total_nodes);
         };
-        if best.depth > 0 {
+        if should_print_final_info(best.depth, job.printed_depth.load(Ordering::SeqCst)) {
             print_lazy_smp_info(
                 &job,
                 best.best_move,
@@ -467,6 +469,10 @@ pub(super) fn lazy_smp_root_moves(
         moves.rotate_left(offset);
     }
     moves
+}
+
+pub(super) fn should_print_final_info(best_depth: i32, printed_depth: i32) -> bool {
+    best_depth > 0 && best_depth > printed_depth
 }
 
 fn print_lazy_smp_info(
@@ -645,7 +651,7 @@ fn run_lazy_smp_worker(
         }
 
         let mut nd = 0u64;
-        let init_delta = if depth >= 5 { 25 } else { INF };
+        let init_delta = aspiration_window_delta(depth);
         let mut asp_delta = init_delta;
         let (mut alpha, mut beta) = if asp_delta < INF {
             (prev_score - asp_delta, prev_score + asp_delta)
@@ -824,8 +830,9 @@ fn run_lazy_smp_worker(
                 job.root_moves.len(),
                 timing,
             );
-            let prev = job.global_best_depth.fetch_max(depth, Ordering::SeqCst);
-            if prev < depth {
+            job.global_best_depth.fetch_max(depth, Ordering::SeqCst);
+            let prev_printed = job.printed_depth.fetch_max(depth, Ordering::SeqCst);
+            if prev_printed < depth {
                 let global_nodes = job.global_nodes.load(Ordering::Relaxed);
                 print_lazy_smp_info(job, asp_best, asp_score, depth, global_nodes, elapsed);
             }

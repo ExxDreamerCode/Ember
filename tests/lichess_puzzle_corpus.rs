@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, Once};
 use std::thread;
 
-use chess_rs_lib::{book, evaluate, Engine, OpeningBook};
+use ember_chess::{book, evaluate, Engine, OpeningBook};
 
 const DEFAULT_CORPUS_WORKERS: usize = 4;
 const EXPECTED_HEADER: &str =

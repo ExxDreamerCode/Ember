@@ -62,6 +62,13 @@ the more convenient result.
   alone does not identify a dirty tree.
 - Preserve raw logs, PGNs, JSON summaries, engine traces, and benchmark output needed to
   audit a conclusion.
+- Long-running adaptive tools must persist the exact invocation and active work item before
+  launching it. Keep result application idempotent, replace state files atomically, and test
+  interruption between each durable write so a restart can reconcile rather than repeat or
+  lose completed work.
+- Validate complete configuration, persisted inputs, and selected names before creating
+  durable state or starting expensive work. When configuration names an external interface,
+  probe that interface during preflight instead of trusting a duplicated local name list.
 - Whenever documentation, reports, plans, fixture comments, tests, or PR prose reference an
   externally hosted game, include its full clickable URL. A bare game ID is not sufficient.
 - Do not run two CPU-bound comparisons concurrently on the same machine. They contaminate
@@ -73,7 +80,7 @@ the more convenient result.
 
 Tests embedded under `src/` are reserved for focused unit tests and microbenchmarks of
 private, low-level implementation details that cannot be reached through the crate's public
-surface. A test that uses only exported `chess_rs_lib` modules, types, functions, and methods
+surface. A test that uses only exported `ember_chess` modules, types, functions, and methods
 belongs under `tests/`, even when it exercises behavior implemented by a single source
 module. Public subsystem lifecycle and cross-module behavior are integration tests, not
 inline unit tests.
@@ -305,6 +312,17 @@ indifference interval, alpha, beta, minimum pair count, and maximum pair count b
 match. Count paired-opening outcomes from 0 through 2 points and inspect the recorded LLR
 and bounds. Repeatedly checking an ordinary fixed-sample p-value after each batch does not
 preserve its advertised false-positive rate and must not be presented as an SPRT result.
+
+For a candidate-versus-incumbent SPRT, make the engine-side orientation and Elo sign
+explicit. Regression-test that a candidate is adopted only when the positive candidate
+hypothesis is accepted; accepting the null/equality hypothesis is not evidence that a
+candidate improved.
+
+Treat output from an adaptive optimizer as discovery rather than final evidence. Before
+starting discovery, predeclare one independent full-candidate confirmation with fresh data
+and a stricter false-positive rate. Derive its run identity from the candidate, binary, and
+complete test configuration so an interrupted or repeated invocation resumes the same
+evidence instead of rerolling the statistical test.
 
 Leave head-to-head workers on `auto` unless the experiment deliberately reserves or
 oversubscribes CPUs. Automatic concurrency must account for each engine's UCI `Threads`

@@ -25,7 +25,7 @@ Before any strength testing, confirm that every user-visible version-bearing
 place names the candidate release:
 
 - `Cargo.toml` `[package].version`
-- `Cargo.lock` entry for `chess-rs-lib`
+- `Cargo.lock` entry for `ember-chess`
 - UCI `id name Ember <version>`
 - release archive metadata
 - portable bundle metadata, when producing a portable bundle

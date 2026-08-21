@@ -1,5 +1,5 @@
 [package]
-name = "chess-rs-lib"
+name = "ember-chess"
 version = "1.2.0"
 edition = "2021"
 default-run = "ember"
@@ -9,7 +9,7 @@ name = "ember"
 path = "src/main.rs"
 
 [lib]
-name = "chess_rs_lib"
+name = "ember_chess"
 path = "src/lib.rs"
  
 [dependencies]

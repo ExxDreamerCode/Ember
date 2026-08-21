@@ -2,19 +2,19 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chess_rs_lib::board::{
+use ember_chess::board::{
     encode_move, move_ec, move_er, move_promotion, move_sc, move_sr, move_to_uci, BoardState, Move,
     INF,
 };
-use chess_rs_lib::movegen::{apply_move, generate_moves};
-use chess_rs_lib::search::{
+use ember_chess::movegen::{apply_move, generate_moves};
+use ember_chess::search::{
     extract_pv_line, format_pv_line_uci, lazy_smp_search, LazySmpPool, LazySmpSearchLimits,
     Searcher,
 };
-use chess_rs_lib::syzygy::SyzygyTables;
-use chess_rs_lib::tt::{SharedTT, TT_EXACT};
-use chess_rs_lib::zobrist::compute_hash;
-use chess_rs_lib::Engine;
+use ember_chess::syzygy::SyzygyTables;
+use ember_chess::tt::{SharedTT, TT_EXACT};
+use ember_chess::zobrist::compute_hash;
+use ember_chess::Engine;
 
 fn state_from_fen(fen: &str) -> BoardState {
     let mut engine = Engine::new();

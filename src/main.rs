@@ -1,16 +1,17 @@
-use chess_rs_lib::backend::{
+use ember_chess::backend::{
     compiled_search_backends, parse_search_backend_name, search_backend_available,
 };
-use chess_rs_lib::board::{piece_on, piece_type, EMPTY_SQ};
-use chess_rs_lib::book::{DEFAULT_BOOK_MIN_MOVE_WEIGHT, DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE};
-use chess_rs_lib::evaluate;
-use chess_rs_lib::search::{
+use ember_chess::board::{piece_on, piece_type, EMPTY_SQ};
+use ember_chess::book::{DEFAULT_BOOK_MIN_MOVE_WEIGHT, DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE};
+use ember_chess::evaluate;
+use ember_chess::search::{
     active_search_backend, set_search_backend_override, SearchLearning, SEARCH_THREAD_STACK_SIZE,
 };
-use chess_rs_lib::syzygy::SyzygyTables;
-use chess_rs_lib::time_management::TimeManager;
-use chess_rs_lib::zobrist::compute_hash;
-use chess_rs_lib::{book, Engine, EngineBookConfig, OpeningBook};
+use ember_chess::syzygy::SyzygyTables;
+use ember_chess::time_management::TimeManager;
+use ember_chess::tune::{self, TuneParam};
+use ember_chess::zobrist::compute_hash;
+use ember_chess::{book, Engine, EngineBookConfig, OpeningBook};
 use std::io::{self, BufRead};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -258,6 +259,7 @@ fn run_uci_loop() {
                 println!();
                 println!("option name SyzygyPath type string default <empty>");
                 println!("option name UCI_Chess960 type check default false");
+                println!("option name Tune type string default <empty>");
                 #[cfg(feature = "decision-trace")]
                 println!("option name TraceFile type string default <empty>");
                 println!("uciok");
@@ -350,6 +352,28 @@ fn run_uci_loop() {
                             eprintln!("info string Chess960 mode disabled");
                         }
                     }
+                    "tune" => {
+                        if val.is_empty() {
+                            tune::reset();
+                            eprintln!("info string Tune overrides cleared");
+                        } else {
+                            let parsed = parse_tune_value(&val);
+                            match parsed {
+                                Ok(overrides) => {
+                                    for (param, value) in overrides {
+                                        tune::set(param, value);
+                                        eprintln!("info string Tune {} = {}", param.name(), value);
+                                    }
+                                }
+                                Err(message) => {
+                                    eprintln!(
+                                        "info string Ignoring invalid Tune value: {}",
+                                        message
+                                    )
+                                }
+                            }
+                        }
+                    }
                     "move overhead" => {
                         let parsed = val.parse::<f64>();
                         if !parsed.is_ok_and(|value| time_manager.set_move_overhead_ms(value)) {
@@ -365,9 +389,19 @@ fn run_uci_loop() {
                     }
                 }
             }
+            "tune" => {
+                let overrides = tune::active_overrides();
+                if overrides.is_empty() {
+                    println!("info string tune: no active overrides");
+                } else {
+                    for (param, value) in overrides {
+                        println!("info string tune {} = {}", param.name(), value);
+                    }
+                }
+            }
             "eval" => {
                 let score = evaluate::evaluate_nnue(&engine.st);
-                let classic = chess_rs_lib::evaluate::evaluate(&engine.st);
+                let classic = ember_chess::evaluate::evaluate(&engine.st);
                 println!("info string NNUE eval: {} cp (from stm)", score);
                 let stm_sign = if engine.st.w { 1 } else { -1 };
                 println!(
@@ -422,7 +456,7 @@ fn run_uci_loop() {
                 )
                 .with_random_book_move(engine.random_book_move);
 
-                let mut search_searcher = chess_rs_lib::search::Searcher::new(
+                let mut search_searcher = ember_chess::search::Searcher::new(
                     Arc::clone(&shared_tt),
                     Arc::clone(&stopped),
                 );
@@ -566,6 +600,55 @@ fn parse_option_name_value(parts: &[&str]) -> Option<(String, String)> {
     Some((name, value))
 }
 
+fn parse_tune_value(value: &str) -> Result<Vec<(TuneParam, i64)>, &'static str> {
+    let value = value.trim();
+    let value = value
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .or_else(|| {
+            value
+                .strip_prefix('\'')
+                .and_then(|rest| rest.strip_suffix('\''))
+        })
+        .unwrap_or(value)
+        .trim();
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    if value.contains('=') {
+        let mut overrides = Vec::new();
+        for token in value.split(',') {
+            let token = token.trim();
+            if token.is_empty() {
+                continue;
+            }
+            let Some((name, raw)) = token.split_once('=') else {
+                return Err("expected NAME=VALUE tokens separated by commas");
+            };
+            let Some(param) = TuneParam::from_name(name.trim()) else {
+                return Err("unknown tune parameter");
+            };
+            let parsed = raw
+                .trim()
+                .parse::<i64>()
+                .map_err(|_| "invalid tune value")?;
+            overrides.push((param, parsed));
+        }
+        return Ok(overrides);
+    }
+    let mut parts = value.split_whitespace();
+    let name = parts.next().unwrap_or_default();
+    let raw = parts.next().unwrap_or_default();
+    if parts.next().is_some() {
+        return Err("expected NAME value");
+    }
+    let Some(param) = TuneParam::from_name(name) else {
+        return Err("unknown tune parameter");
+    };
+    let parsed = raw.parse::<i64>().map_err(|_| "invalid tune value")?;
+    Ok(vec![(param, parsed)])
+}
+
 fn parse_check_value(value: &str) -> Option<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "true" => Some(true),
@@ -575,7 +658,7 @@ fn parse_check_value(value: &str) -> Option<bool> {
 }
 
 fn set_nnue_backend(value: &str) {
-    let normalized = chess_rs_lib::backend::normalize_backend_name(value);
+    let normalized = ember_chess::backend::normalize_backend_name(value);
     if normalized.is_empty() || normalized == "auto" || normalized == "default" {
         set_search_backend_override(None);
         eprintln!(
@@ -875,7 +958,7 @@ fn parse_go_params(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chess_rs_lib::board::board_to_fen;
+    use ember_chess::board::board_to_fen;
 
     #[test]
     fn position_command_stops_after_illegal_move() {
@@ -979,6 +1062,25 @@ mod tests {
     }
 
     #[test]
+    fn tune_value_parses_csv_and_space_forms() {
+        let csv = parse_tune_value("PROBCUT_MARGIN_CP=400,PROBCUT_MIN_DEPTH=12").unwrap();
+        assert_eq!(csv.len(), 2);
+        assert!(csv.contains(&(TuneParam::ProbCutMarginCp, 400)));
+        assert!(csv.contains(&(TuneParam::ProbCutMinDepth, 12)));
+
+        let spaced = parse_tune_value("ROOT_REPETITION_TIE_MIN_SCORE 320").unwrap();
+        assert_eq!(spaced, vec![(TuneParam::RootRepetitionTieMinScore, 320)]);
+
+        let quoted = parse_tune_value("\"PROBCUT_MIN_DEPTH=10\"").unwrap();
+        assert_eq!(quoted, vec![(TuneParam::ProbCutMinDepth, 10)]);
+
+        assert!(parse_tune_value("UNKNOWN=1").is_err());
+        assert!(parse_tune_value("PROBCUT_MIN_DEPTH=abc").is_err());
+        assert!(parse_tune_value("PROBCUT_MIN_DEPTH").is_err());
+        assert!(parse_tune_value("").unwrap().is_empty());
+    }
+
+    #[test]
     fn uci_move_parser_rejects_malformed_input() {
         assert_eq!(parse_uci_move("e2e4"), Some((6, 4, 4, 4, 0)));
         assert_eq!(parse_uci_move("e7e8q"), Some((1, 4, 0, 4, b'Q')));
@@ -1015,7 +1117,7 @@ mod tests {
 
         reset_engine(&mut engine);
 
-        let recomputed = chess_rs_lib::zobrist::compute_hash(&engine.st);
+        let recomputed = ember_chess::zobrist::compute_hash(&engine.st);
         assert!(engine.st.chess960, "reset should preserve Chess960 mode");
         assert_eq!(
             engine.st.hash, recomputed,

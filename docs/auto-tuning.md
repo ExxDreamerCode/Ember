@@ -1,0 +1,459 @@
+# Auto-tuning search constants
+
+The auto-tuning system searches for stronger values of search constants through
+sequential SPRT matches against the current best set. It does not recompile the
+engine for each candidate: a single release binary uses one UCI option `Tune`
+to distinguish the "current best" from the "candidate" on the fly.
+
+## How it works
+
+### Engine-side infrastructure
+
+The `src/tune.rs` module keeps global atomic overrides for the marked
+constants. In normal games (when `Tune` is not set) the hot-path read does a
+single `load(Relaxed)` and returns the compile-time default — practically no
+overhead.
+
+The tunable constants and their defaults:
+
+### Selectivity (src/search/selectivity.rs)
+
+| Parameter | Default | Meaning |
+| --- | ---: | --- |
+| `PROBCUT_MIN_DEPTH` | 8 | Minimum depth for ProbCut |
+| `PROBCUT_MARGIN_CP` | 350 | ProbCut margin in centipawns |
+| `PROBCUT_REDUCTION` | 2 | Depth reduction for the full ProbCut verification |
+| `ROOT_REPETITION_TIE_MIN_SCORE` | 300 | Minimum score to prefer a non-repeating root move |
+
+### Quiescence search (src/search/qsearch.rs)
+
+| Parameter | Default | Meaning |
+| --- | ---: | --- |
+| `QSEARCH_DELTA_MARGIN_CP` | 975 | Delta-pruning margin in centipawns |
+| `QSEARCH_CHECK_CAP_DEPTH` | 4 | Maximum checking continuation depth |
+| `QSEARCH_SEE_THRESHOLD_CP` | 0 | Captures below this SEE score are pruned |
+
+### Root search
+
+| Parameter | Default | Meaning |
+| --- | ---: | --- |
+| `ASPIRATION_MIN_DEPTH` | 5 | First depth that uses an aspiration window |
+| `ASPIRATION_DELTA_CP` | 25 | Initial aspiration half-window in centipawns |
+
+### Reverse futility / futility pruning (src/search/negamax.rs)
+
+| Parameter | Default | Meaning |
+| --- | ---: | --- |
+| `REVERSE_FUTILITY_BASE_CP` | 80 | RFP margin base |
+| `REVERSE_FUTILITY_PER_DEPTH_CP` | 65 | RFP margin per depth |
+| `REVERSE_FUTILITY_MAX_DEPTH` | 8 | Maximum RFP depth |
+| `FUTILITY_MARGIN_PER_DEPTH_CP` | 150 | Futility margin per depth |
+| `FUTILITY_MAX_DEPTH` | 3 | Maximum futility depth |
+
+### Null move
+
+| Parameter | Default | Meaning |
+| --- | ---: | --- |
+| `NULL_MOVE_MIN_DEPTH` | 3 | Minimum depth for null move |
+| `NULL_MOVE_REDUCTION_BASE` | 3 | Reduction base |
+| `NULL_MOVE_REDUCTION_DIVISOR` | 4 | Depth divisor in reduction |
+| `NULL_MOVE_MARGIN_DIVISOR` | 200 | (eval − beta) divisor in reduction |
+| `NULL_MOVE_MARGIN_CAP` | 3 | Cap on the margin part of the reduction |
+| `NULL_MOVE_KING_PRESSURE_LIMIT` | 3 | Max king pressure allowed for null move |
+| `NULL_MOVE_NON_PAWN_LIMIT` | 4 | Minimum non-pawn material for null move |
+
+### Pruning (negamax.rs)
+
+| Parameter | Default | Meaning |
+| --- | ---: | --- |
+| `SEE_MARGIN_PER_DEPTH_CP` | 80 | SEE pruning margin per depth |
+| `HISTORY_PRUNE_MARGIN_PER_DEPTH` | 1024 | History pruning margin per depth |
+| `HISTORY_PRUNE_MAX_DEPTH` | 5 | Maximum history pruning depth |
+
+### Selectivity (negamax.rs)
+
+| Parameter | Default | Meaning |
+| --- | ---: | --- |
+| `CHECK_EXTENSION_MAX_DEPTH` | 16 | Maximum depth for check extension |
+| `TACTICAL_CHECK_EXTENSION_MAX_DEPTH` | 2 | Max depth for the first tactical checking move extension |
+| `LMP_MAX_DEPTH` | 8 | Maximum late move pruning depth |
+| `LMP_MOVE_COUNT_SCALE_PERMILLE` | 1000 | Scale applied to the LMP move-count table |
+| `LMP_KING_PRESSURE_LIMIT` | 3 | Exclusive king-pressure limit for LMP |
+| `IID_MIN_DEPTH` | 4 | Minimum depth for internal iterative deepening |
+| `LMR_DIVISOR_MILLIS` | 1800 | LMR reduction divisor (ln(move)·ln(depth)·1000 / divisor) |
+| `LMR_BASE_MILLIS` | 500 | Fixed LMR base in thousandths of a ply |
+| `LMR_MIN_MOVE_INDEX` | 2 | First zero-based move index eligible for LMR |
+| `LMR_MIN_DEPTH` | 2 | Minimum depth eligible for LMR |
+| `LMR_NON_PV_EXTRA` | 1 | Extra reduction at non-PV nodes |
+
+### UCI interface
+
+```text
+option name Tune type string default <empty>
+```
+
+Applying one or more overrides:
+
+```text
+setoption name Tune value "PROBCUT_MARGIN_CP=400,PROBCUT_MIN_DEPTH=12"
+```
+
+`Tune` value formats:
+
+- CSV: `NAME=VALUE,NAME2=VALUE2` — recommended for cutechess, since a single
+  `option.Tune=...` contains no spaces;
+- whitespace: `NAME VALUE` — one parameter per call.
+
+Viewing active overrides:
+
+```text
+tune
+```
+
+Example response:
+
+```text
+info string tune PROBCUT_MIN_DEPTH = 12
+info string tune PROBCUT_MARGIN_CP = 400
+```
+
+Clearing:
+
+```text
+setoption name Tune value ""
+```
+
+Important: the `ucinewgame` command does **not** reset overrides. This is so the
+setting survives the transition between games inside a match.
+
+## The auto-tuner
+
+The tools live in `tools/auto_tune/`:
+
+| File | Purpose |
+| --- | --- |
+| `tune.toml` | Parameter descriptions, ranges, SPRT, recheck and openings |
+| `seek.py` | Coordinate descent: iterates neighbours of each parameter, runs SPRT against the current best, queues candidates, keeps a journal |
+| `recheck.py` | Re-checks every queued candidate with a larger independent SPRT |
+| `campaign.py` | Runs bounded fresh-seed discovery/recheck passes until convergence or a pass limit |
+| `confirm.py` | Independently confirms the final full vector against the compile-time defaults |
+| `apply.py` | Shows values from `best.json` that differ from the defaults, for manual porting into the code |
+| `best.json` | Current optimal values (created automatically) |
+| `pending.json` | Candidates whose discovery match was inconclusive but whose Elo reached the queuing threshold, awaiting `recheck.py` |
+| `journal.jsonl` | Full journal of every SPRT and recheck match |
+| `state.json` | Durable progress for resuming an interrupted invocation |
+
+### Running
+
+`seek.py` is a plain Python script; it does not have to run inside Nix. It
+launches matches through `head_to_head.py`, so real tuning needs the same
+dependencies as the head-to-head runner:
+
+- Python 3.11+ with the standard `tomllib` module;
+- the `python-chess` package (see `requirements.txt`);
+- `cutechess-cli` on `PATH`;
+- a release engine binary (the `--engine` argument).
+
+All of this is provided by the `nix develop .#elo-runner` dev-shell, or you can
+install the dependencies directly (`pip install -r requirements.txt` +
+`cutechess-cli`):
+
+```bash
+# Build the release binary (only needed once)
+cargo build --release --bin ember
+
+# Run up to three 1+0.01 passes and stop early when a pass changes nothing
+python tools/auto_tune/campaign.py --time-control 1+0.01 --max-passes 3
+
+# Run one discovery/recheck pass directly
+python tools/auto_tune/seek.py --time-control 8+0.08
+
+# Tune selected parameters
+python tools/auto_tune/seek.py --params PROBCUT_MIN_DEPTH,PROBCUT_MARGIN_CP
+
+# Show the found values
+python tools/auto_tune/apply.py
+
+# Confirm the complete result with the predeclared fresh-seed SPRT
+python tools/auto_tune/confirm.py
+
+# Validate and show the confirmation plan without starting a match
+python tools/auto_tune/confirm.py --dry-run
+
+# Rehearse without real matches (no cutechess or binary needed)
+python tools/auto_tune/seek.py --dry-run
+
+# Limit parallel games (default auto = all logical CPUs)
+python tools/auto_tune/seek.py --workers 4
+
+# Use half of the logical CPUs
+python tools/auto_tune/seek.py --worker-multiplier 0.5
+```
+
+`--params` limits only which parameters are searched. Values already present in
+`best.json` remain part of both engine configurations, including values for
+parameters outside the selected subset.
+
+`campaign.py` is the preferred unattended entry point. Each pass has isolated
+seek and pending state, and derives fresh discovery and recheck seeds from the
+predeclared base seeds. A pass that changes `best.json` starts another complete
+coordinate sweep because later accepted values can move an earlier parameter's
+optimum. The campaign stops after a full unchanged pass or `--max-passes`; it
+never loops indefinitely. Its result JSON records every pass and the exact
+binary/configuration identity. Run `confirm.py` separately after the campaign.
+
+Before writing `state.json` or starting a match, the tuner validates the TOML
+schema and bounds, SPRT hypotheses, worker overrides, every `best.json` value,
+and the complete `--params` selection. A real run also performs a short UCI
+probe against the selected binary and requires it to report every configured
+Tune name and value. Misspelled names, stale state values, zero or unsafe
+ranges, and `sprt.enabled = false` therefore stop the invocation before any
+expensive work. `--dry-run` performs file validation but intentionally skips the
+binary probe.
+
+Controlling parallelism inside a match:
+
+- `--workers N` — number of parallel games (cutechess `-concurrency`).
+  Default `auto`: `floor(logical_cpus * worker_multiplier / threads)`.
+- `--worker-multiplier X` — fraction of logical CPUs used for workers
+  (default `1.0`). For example `0.5` on an 8-core machine gives 4 workers.
+
+Reducing the workers **slows down** the match but frees CPU for other tasks.
+
+If you work in the Linux `nix develop .#elo-runner` dev-shell, then
+`cutechess-cli`, `python-chess` and the toolchain are already available, and
+`--engine` defaults to `target/release/ember`, which builds there.
+
+### How decisions are made
+
+1. The current value of a parameter is taken (from `best.json`, or the default
+   from `tune.toml`).
+2. The neighbour `current + step` is tried, then `current - step`.
+3. Each candidate is compared with the current best via `head_to_head.py run`
+   with pentanomial SPRT enabled. `engine_a` is the candidate and `engine_b`
+   is the incumbent, so the SPRT Elo is candidate minus incumbent.
+4. The candidate is accepted only when SPRT rejects the null hypothesis in
+   favor of the configured positive Elo alternative (`engine_a_better` —
+   "candidate is better"). The generic runner's `engine_b_better` verdict
+   means the null/equality hypothesis was preferred, so the candidate is
+   rejected without claiming that the incumbent is stronger. The
+   `inconclusive` and `continue` verdicts mean there is not enough data. After
+   acceptance the value becomes the new best and the process continues only in
+   the accepted direction.
+5. When both neighbours are rejected, the wider values `current + 2*step` and
+   `current - 2*step` are tried in that order.
+6. A value is never tested twice during one parameter search. The parameter
+   settles when the next value in the accepted direction is rejected, or when
+   none of the initial probes passes.
+
+Time controls from `common.time_controls` rotate between SPRT matches in a
+round-robin fashion (the counter comes from the number of entries in
+`journal.jsonl`). The `--time-control` flag overrides the whole set.
+
+Before starting a match, the tuner writes its run ID, binary hash, invocation
+identity, search position, and permanent match configuration to `state.json`
+and `results/tune/runs/<run_id>/match.toml`. Running the same command after an
+interruption resumes that run and skips parameters already settled by the same
+invocation. A changed binary, configuration, path, parameter selection, or
+runtime override is rejected instead of being mixed into an existing session.
+The `--state` option selects a different progress file when needed.
+
+JSON files are replaced atomically. Match completion is idempotent: an accepted
+value, its journal record, and its report are reconciled before the active-match
+state is cleared, so interruption between those writes cannot duplicate or lose
+the result. `state.json` is removed after the complete invocation succeeds.
+
+All matches are recorded in `journal.jsonl`: run ID, parameter, old/new value,
+verdict, accepted or not, Elo, score rate, pairs/games, LLR, SHA-256 of the
+binary, time control, and SPRT parameters. This makes any result reproducible
+when combined with its preserved run artifacts, and explains why a value was
+accepted or rejected.
+
+### Two-stage decision pipeline: discovery and recheck
+
+Discovery SPRT with a small `elo1` (for example `elo0=0, elo1=3`) is a strict
+test: a real but weak improvement may never reach the upper LLR bound within
+`common.max_pairs`. Instead of discarding such candidates, the tuner queues
+them and re-checks them on a much larger fixed number of games.
+
+At the end of a discovery match in `seek.py`:
+
+- `engine_a_better` — the candidate is accepted immediately and written to
+  `best.json`;
+- `engine_b_better` — the candidate is rejected;
+- `inconclusive` with `elo >= recheck.min_elo` — the candidate is queued to
+  `pending.json` and marked `pending: true` in `journal.jsonl`;
+- `inconclusive` with `elo < recheck.min_elo` — the candidate is rejected.
+
+A recheck candidate is identified by `param` + `value` (key `NAME=VALUE`), so
+the same candidate is never queued twice. The discovery record in
+`pending.json` keeps the discovery Elo, score rate, pairs/games, run ID, time
+control, and timestamp for traceability.
+
+After the whole parameter search completes, `seek.py` automatically launches
+`recheck.py` when `pending.json` contains queued candidates and
+`recheck.enabled = true`. Pass `--no-recheck` to disable the automatic stage.
+`recheck.py` can also be run standalone.
+
+### Recheck stage
+
+`recheck.py` runs one independent SPRT match per queued candidate:
+
+- `engine_a` is the candidate, `engine_b` is the incumbent with the values
+  from `best.json`;
+- the match uses `recheck.max_pairs` (a large pair cap, for example 5000 pairs
+  = 10000 games), `recheck.min_pairs`, `recheck.batch_pairs`, and a
+  seed that is required to differ from both `common.seed` and
+  `confirmation.seed`;
+- the recheck uses its own predeclared Elo hypotheses, alpha, and beta. It may
+  stop early at either SPRT bound and accepts the candidate only when H1 is
+  reached. A capped `inconclusive` result is not accepted, even when its point
+  Elo estimate is positive.
+
+Each recheck run uses a deterministic run ID derived from the exact match
+configuration and binary SHA-256, so an interrupted invocation resumes the same
+run instead of duplicating games. Results are written to
+`results/tune/rechecks/<run_id>/recheck.json`, and every recheck also appends
+a `phase = "recheck"` record to `journal.jsonl`. `pending.json` entries are
+updated with `status = "accepted"` or `"rejected"` plus the recheck run ID,
+Elo, pairs, and timestamp.
+
+The discovery Elo threshold is only a screening rule. Statistical acceptance
+comes from the independent recheck SPRT, and the independent `confirm.py` run
+remains the final gate for the complete vector.
+
+### Independent final confirmation
+
+Coordinate descent is an adaptive discovery process: it repeatedly chooses the
+next value after seeing earlier match outcomes. Treat the resulting `best.json`
+as provisional until `confirm.py` accepts the complete vector in one
+predeclared, independent match against all compile-time defaults.
+
+The confirmation contract lives in `[confirmation]` before discovery begins.
+It uses a different opening seed, the same Elo hypotheses, and a lower alpha
+than the exploratory matches. Both engines receive every Tune parameter so the
+tuned vector and default vector use the same runtime path. Only the
+`engine_a_better` verdict confirms the vector; `engine_b_better` means the
+positive improvement hypothesis was not established, and a capped
+`inconclusive` result is also not confirmation.
+
+The confirmation run ID is derived from the exact match configuration,
+candidate vector, and engine binary SHA-256. Repeating the command with the same
+inputs resumes the existing evidence. A changed vector, binary, time control,
+worker setting, or statistical setting creates a different identity. Do not
+change the confirmation seed or retry with another identity after seeing an
+unfavorable result: that would turn confirmation into another adaptive search.
+
+Raw games, estimates, metadata, and `confirmation.json` are stored in
+`results/tune/confirmations/<run_id>/`. The command exits successfully only
+when the tuned vector accepts H1.
+
+### Run reports
+
+For each match, two files are created in `results/tune/<run_id>/`:
+
+- **`report.md`** — human-readable report: verdict (accepted/rejected/
+  inconclusive), Elo (candidate − incumbent), score rate, pairs/games, LLR,
+  time control, SPRT parameters, SHA-256 of the binary, time.
+- **`report.json`** — machine-readable version: `record` (all journal fields) +
+  `summary` (full statistics from `head_to_head.py`).
+
+`run_id` has the form `tune-<param>-<value>-<timestamp>`, so each run is easy
+to find and match against the exact `journal.jsonl` entry. Raw head-to-head
+artifacts and the preserved match configuration live under
+`results/tune/runs/<run_id>/`.
+
+### `tune.toml` configuration
+
+```toml
+results_dir = "results/tune"
+
+[common]
+time_controls = ["8+0.08", "1+0.01"]   # which time controls to play
+max_pairs = 1000                        # pair limit per SPRT
+min_pairs = 20
+seed = 20260714
+opening_source = "polyglot"
+polyglot_book = "src/book.bin"
+hash_mb = 64
+threads = 1
+timemargin_ms = 50
+cutechess_cmd = "cutechess-cli"
+
+[sprt]
+enabled = true
+elo0 = 0
+elo1 = 3
+alpha = 0.10
+beta = 0.05
+min_pairs = 20
+
+[confirmation]
+enabled = true
+time_control = "1+0.01"
+max_pairs = 1000
+min_pairs = 20
+batch_pairs = 20
+seed = 20260814
+elo0 = 0
+elo1 = 3
+alpha = 0.05
+beta = 0.05
+
+[recheck]
+enabled = true
+time_control = "1+0.01"
+max_pairs = 5000            # large pair cap for the recheck SPRT
+min_pairs = 20
+batch_pairs = 20
+seed = 20260914             # must differ from common.seed and confirmation.seed
+min_elo = 5                 # queue candidates with discovery elo >= this value
+elo0 = 0
+elo1 = 3
+alpha = 0.05
+beta = 0.05
+
+[[params]]
+name = "PROBCUT_MIN_DEPTH"
+base = 8
+min = 4
+max = 16
+step = 1
+```
+
+Parameter ranges must stay positive by default. A parameter whose implementation
+deliberately supports zero or signed values must declare
+`allow_nonpositive = true`; zero is preserved as a real override rather than
+being interpreted as "use the compile-time default".
+
+`common.timemargin_ms` is cutechess's late-response allowance, not additional
+engine thinking time. Keep it small for fast controls; the repository default
+is 50 ms so `1+0.01` does not silently tolerate multi-second overruns.
+
+`seek.py` builds a temporary head-to-head TOML config for each match:
+`engine_a` is the candidate differing only in the tuned parameter, and
+`engine_b` is the incumbent with values from `best.json`. The other parameters
+already improved earlier are passed to both sides identically, so each match
+measures only one parameter. Both engines receive the complete parameter vector,
+including values equal to the compile-time defaults, so both use the same
+runtime tuning path during the match.
+
+## Important limitations
+
+- The auto-tuner does **not** change code. Confirm the final vector with
+  `confirm.py`, then use `apply.py` and port the values into `src/` manually.
+- It is recommended to run on an idle machine and not keep parallel
+  CPU-bound processes — timings and NPS will be distorted.
+- SPRT with `elo0=0, elo1=3` is a strict test: small improvements may need many
+  pairs. `max_pairs` limits the time spent on unpromising candidates.
+- Changing a parameter value affects the search tree shape, so after accepting
+  a value you should always run the usual correctness checks
+  (`cargo test --all-features`, `cargo clippy`) and compare NPS/search shape.
+
+## Adding a new parameter
+
+1. Add a variant to `TuneParam` in `src/tune.rs` (name, index, `from_name`).
+2. At the usage site of the constant, replace the read with
+   `tune::get_int(TuneParam::NewParam, DEFAULT)`.
+3. Add a `[[params]]` entry to `tools/auto_tune/tune.toml`.
+4. Run `cargo test --all-features` and make sure the default path is unchanged.

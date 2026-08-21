@@ -59,6 +59,7 @@ echo -e "uci\nisready\nquit" | cargo run --release
 | `TraceFile` | string | `<empty>`    | —        | Путь к TraceBack файлу .jsonl     |
 | `SyzygyPath` | string | `<empty>` | — | Путь к папке с Syzygy таблицами (DTZ) |
 | `UCI_Chess960` | check | `false`    | —        | Включение/отключение Chess 960     |
+| `Tune` | string | `<empty>` | — | Оверрайды тюнингуемых констант поиска на лету (см. [docs/auto-tuning.md](auto-tuning.md)) |
 
 ### Syzygy через Nix
 

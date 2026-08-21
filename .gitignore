@@ -39,6 +39,11 @@ engine.log
 test_output/
 benchmark_results/
 results/
+tools/auto_tune/best.json
+tools/auto_tune/journal.jsonl
+tools/auto_tune/state.json
+tools/auto_tune/pending.json
+tools/auto_tune/campaign*.json
 /result
 /ember-lichess-windows.zip
 /ember-lichess-windows.zip.sha256

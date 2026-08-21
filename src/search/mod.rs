@@ -18,6 +18,7 @@ use crate::nnue::{
 use crate::syzygy::SyzygyTables;
 use crate::time_management::{iteration_time_decision, IterationTiming};
 use crate::tt::{SharedTT, TT_ALPHA, TT_BETA, TT_EXACT};
+use crate::tune::{self, TuneParam};
 use crate::types::{BLACK, WHITE};
 use crate::zobrist::{compute_pawn_hash, ep_hash_square, zobrist};
 #[cfg(feature = "search-debug")]
@@ -46,13 +47,24 @@ pub use self::debug::{SearchDebug, SearchDebugStats};
 #[cfg(test)]
 use self::lazy_smp::{
     lazy_smp_root_moves, lazy_smp_worker_can_coordinate_stop, lazy_smp_worker_disagreement,
-    lazy_smp_worker_root_moves, select_lazy_smp_result, LazySmpAgreement, LazySmpRootContext,
-    LazySmpSearchJob, ThreadResult,
+    lazy_smp_worker_root_moves, select_lazy_smp_result, should_print_final_info, LazySmpAgreement,
+    LazySmpRootContext, LazySmpSearchJob, ThreadResult,
 };
 pub use self::lazy_smp::{lazy_smp_search, LazySmpPool, LazySmpSearchLimits, SearchLearning};
 
 const LAZY_SMP_VERIFICATION_MARGIN_CP: i32 = 25;
 const LAZY_SMP_VERIFICATION_TT_MB: usize = 4;
+const ASPIRATION_MIN_DEPTH: i64 = 5;
+const ASPIRATION_DELTA_CP: i64 = 25;
+
+pub(crate) fn aspiration_window_delta(depth: i32) -> i32 {
+    let min_depth = tune::get_int(TuneParam::AspirationMinDepth, ASPIRATION_MIN_DEPTH);
+    if i64::from(depth) < min_depth {
+        return INF;
+    }
+    tune::get_int(TuneParam::AspirationDeltaCp, ASPIRATION_DELTA_CP) as i32
+}
+
 mod selectivity;
 use self::selectivity::{
     combine_move_extensions, probcut_candidate, probcut_verdict, singular_candidate,
@@ -133,7 +145,17 @@ mod eval;
 use self::eval::{ClassicEval, NnueEval, SearchEval, ThreatNnueEval};
 
 mod negamax;
+#[cfg(test)]
+use self::negamax::{
+    lmp_king_pressure_safe, lmp_move_count, lmr_policy_eligible, lmr_reduction,
+    tactical_check_extension_candidate,
+};
 mod qsearch;
+#[cfg(test)]
+use self::qsearch::{
+    qsearch_check_cap_reached, qsearch_delta_prunable, qsearch_see_prunable,
+    qsearch_see_threshold_cp,
+};
 mod state;
 
 #[cfg(test)]

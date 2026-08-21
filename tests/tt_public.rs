@@ -1,4 +1,4 @@
-use chess_rs_lib::tt::{SharedTT, TT_ALPHA, TT_BETA, TT_EXACT};
+use ember_chess::tt::{SharedTT, TT_ALPHA, TT_BETA, TT_EXACT};
 
 #[test]
 fn tt_store_get_roundtrip() {

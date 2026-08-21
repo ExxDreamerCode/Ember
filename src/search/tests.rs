@@ -176,6 +176,104 @@ fn qsearch_checkmate_score_uses_the_actual_ply() {
 }
 
 #[test]
+fn qsearch_pruning_thresholds_honor_tuning_overrides() {
+    tune::reset();
+    assert!(!qsearch_delta_prunable(974, 0));
+    assert!(qsearch_delta_prunable(976, 0));
+    assert!(!qsearch_check_cap_reached(-3));
+    assert!(qsearch_check_cap_reached(-4));
+    assert_eq!(qsearch_see_threshold_cp(), 0);
+    assert!(!qsearch_see_prunable(0, qsearch_see_threshold_cp()));
+    assert!(qsearch_see_prunable(-1, qsearch_see_threshold_cp()));
+
+    tune::set(TuneParam::QsearchDeltaMarginCp, 700);
+    tune::set(TuneParam::QsearchCheckCapDepth, 2);
+    tune::set(TuneParam::QsearchSeeThresholdCp, -50);
+    assert!(qsearch_delta_prunable(701, 0));
+    assert!(qsearch_check_cap_reached(-2));
+    assert_eq!(qsearch_see_threshold_cp(), -50);
+    assert!(!qsearch_see_prunable(-50, qsearch_see_threshold_cp()));
+    assert!(qsearch_see_prunable(-51, qsearch_see_threshold_cp()));
+    tune::reset();
+}
+
+#[test]
+fn lmp_aggressiveness_controls_preserve_the_default_policy() {
+    tune::reset();
+    let expected = [4, 7, 11, 17, 24, 33, 44, 57];
+    for (depth, move_count) in (1..=8).zip(expected) {
+        assert_eq!(lmp_move_count(depth), Some(move_count));
+    }
+    assert_eq!(lmp_move_count(0), None);
+    assert_eq!(lmp_move_count(9), None);
+    assert!(lmp_king_pressure_safe(2));
+    assert!(!lmp_king_pressure_safe(3));
+
+    tune::set(TuneParam::LmpMoveCountScalePermille, 1200);
+    tune::set(TuneParam::LmpKingPressureLimit, 5);
+    assert_eq!(lmp_move_count(1), Some(5));
+    assert_eq!(lmp_move_count(8), Some(68));
+    assert!(lmp_king_pressure_safe(4));
+    assert!(!lmp_king_pressure_safe(5));
+    tune::reset();
+}
+
+#[test]
+fn lmr_controls_preserve_default_boundaries_and_reductions() {
+    tune::reset();
+    assert!(!lmr_policy_eligible(1, 2, true, false));
+    assert!(lmr_policy_eligible(2, 2, true, false));
+    assert!(!lmr_policy_eligible(2, 1, true, false));
+    assert!(!lmr_policy_eligible(2, 3, false, false));
+    assert!(!lmr_policy_eligible(2, 3, true, true));
+    assert_eq!(lmr_reduction(10, 4, true), 2);
+    assert_eq!(lmr_reduction(10, 4, false), 3);
+
+    tune::set(TuneParam::LmrDivisorMillis, 1200);
+    assert_eq!(lmr_reduction(10, 4, true), 3);
+    tune::reset();
+
+    tune::set(TuneParam::LmrMinMoveIndex, 4);
+    tune::set(TuneParam::LmrMinDepth, 5);
+    tune::set(TuneParam::LmrBaseMillis, 0);
+    tune::set(TuneParam::LmrNonPvExtra, 0);
+    assert!(!lmr_policy_eligible(3, 5, true, false));
+    assert!(!lmr_policy_eligible(4, 4, true, false));
+    assert!(lmr_policy_eligible(4, 5, true, false));
+    assert_eq!(lmr_reduction(10, 4, true), 1);
+    assert_eq!(lmr_reduction(10, 4, false), 1);
+    tune::reset();
+}
+
+#[test]
+fn aspiration_window_controls_preserve_the_default_boundary() {
+    tune::reset();
+    assert_eq!(aspiration_window_delta(4), INF);
+    assert_eq!(aspiration_window_delta(5), 25);
+
+    tune::set(TuneParam::AspirationMinDepth, 3);
+    tune::set(TuneParam::AspirationDeltaCp, 40);
+    assert_eq!(aspiration_window_delta(2), INF);
+    assert_eq!(aspiration_window_delta(3), 40);
+    tune::reset();
+}
+
+#[test]
+fn tactical_check_extension_depth_honors_tuning_overrides() {
+    tune::reset();
+    assert!(tactical_check_extension_candidate(2, false, 0, false));
+    assert!(!tactical_check_extension_candidate(3, false, 0, false));
+    assert!(!tactical_check_extension_candidate(2, true, 0, false));
+    assert!(!tactical_check_extension_candidate(2, false, 1, false));
+    assert!(!tactical_check_extension_candidate(2, false, 0, true));
+
+    tune::set(TuneParam::TacticalCheckExtensionMaxDepth, 4);
+    assert!(tactical_check_extension_candidate(4, false, 0, false));
+    assert!(!tactical_check_extension_candidate(5, false, 0, false));
+    tune::reset();
+}
+
+#[test]
 fn restricted_search_ignores_unrestricted_tt_cutoffs() {
     let st = state_from_fen("7k/4Q3/5K2/8/8/8/8/8 b - - 0 1");
     let legal_moves = generate_moves(&st, st.w, &st.cr, st.ep);
@@ -896,6 +994,23 @@ fn probcut_candidate_requires_a_safe_non_pv_node() {
 }
 
 #[test]
+fn probcut_reduction_override_controls_verification_depth() {
+    tune::reset();
+    tune::set(TuneParam::ProbCutReduction, 1);
+    let candidate = qualifying_probcut_candidate();
+    tune::reset();
+
+    assert_eq!(
+        candidate,
+        ProbCutEligibility::Eligible(ProbCutCandidate {
+            beta: PROBCUT_MARGIN_CP,
+            child_depth: PROBCUT_MIN_DEPTH - 1,
+            store_depth: PROBCUT_MIN_DEPTH,
+        })
+    );
+}
+
+#[test]
 fn probcut_respects_tt_evidence_but_not_a_lower_bound() {
     for flag in [TT_EXACT, TT_ALPHA] {
         assert_eq!(
@@ -1255,6 +1370,7 @@ fn lazy_smp_tactical_verifier_does_not_inflate_worker_disagreement() {
         root_context: Arc::new(LazySmpRootContext::from_searcher(&root_searcher)),
         start: Instant::now(),
         global_best_depth: Arc::new(AtomicI32::new(0)),
+        printed_depth: Arc::new(AtomicI32::new(0)),
         global_nodes: Arc::new(AtomicU64::new(0)),
         node_limit_counter: None,
         worker_best_moves: (0..3).map(|_| AtomicU64::new(0)).collect(),
@@ -1281,6 +1397,23 @@ fn completed_thread(thread_id: usize, best_move: Move, score: i32, depth: i32) -
         nodes: 1,
         learning: None,
     }
+}
+
+#[test]
+fn final_smp_info_does_not_regress_a_depth_already_published_by_a_helper() {
+    // A helper can complete depth N and publish `info depth N` before the
+    // principal worker settles on a shallower result. The final aggregate
+    // report must not then print `info depth N-1`, because a UCI client
+    // would see monotonically decreasing depths although the search itself
+    // never went backwards.
+    assert!(should_print_final_info(23, 22));
+    assert!(
+        !should_print_final_info(23, 23),
+        "equal depth was already published by a helper and must not be reprinted"
+    );
+    assert!(!should_print_final_info(22, 23));
+    assert!(!should_print_final_info(0, 0));
+    assert!(!should_print_final_info(0, 23));
 }
 
 // The following recorded positions drive synthetic worker ballots. They verify SMP
