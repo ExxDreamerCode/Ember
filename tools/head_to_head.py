@@ -34,6 +34,17 @@ def now_utc():
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
 
 
+def exe_suffix():
+    return ".exe" if os.name == "nt" else ""
+
+
+def platform_binary(name):
+    p = Path(name)
+    if p.suffix.lower() == ".exe":
+        p = p.with_suffix("")
+    return p.with_name(p.name + exe_suffix())
+
+
 def read_toml(path):
     with open(path, "rb") as f:
         return tomllib.load(f)
@@ -131,7 +142,7 @@ def materialize_revision_commands(cfg, rd):
     for engine_id in ["engine_a", "engine_b"]:
         if "revision" in cfg[engine_id]:
             cfg[engine_id]["cmd"] = str(
-                (rd / "builds" / engine_id / "bin" / "ember").resolve()
+                (rd / "builds" / engine_id / "bin" / platform_binary("ember")).resolve()
             )
 
 
@@ -141,7 +152,7 @@ def build_revision(cfg, rd, engine_id):
     repo = Path(build_cfg.get("repo", ".")).resolve()
     revision = git_output(repo, "rev-parse", f"{engine['revision']}^{{commit}}")
     root = rd / "builds" / engine_id
-    installed = root / "bin" / "ember"
+    installed = root / "bin" / platform_binary("ember")
     metadata_path = root / "metadata.json"
     if installed.is_file() and metadata_path.is_file():
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -178,12 +189,13 @@ def build_revision(cfg, rd, engine_id):
         )
     )
     run_cmd(command, log_path=root / "build.log", cwd=source)
-    built = source / build_cfg.get("binary", "target/release/ember")
+    built = source / platform_binary(build_cfg.get("binary", "target/release/ember"))
     if not built.is_file():
         raise RuntimeError(f"build did not produce {built}")
     installed.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(built, installed)
-    installed.chmod(0o755)
+    if os.name != "nt":
+        installed.chmod(0o755)
     metadata = {
         "engine": engine_id,
         "configured_revision": engine["revision"],
