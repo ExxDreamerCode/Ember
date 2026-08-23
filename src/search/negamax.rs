@@ -2,7 +2,7 @@ use super::*;
 
 const LMP_MOVE_COUNTS: [usize; 8] = [4, 7, 11, 17, 24, 33, 44, 57];
 const LMP_MOVE_COUNT_SCALE_PERMILLE: i64 = 1000;
-const LMP_KING_PRESSURE_LIMIT: i64 = 3;
+const LMP_KING_PRESSURE_LIMIT: i64 = 1;
 const LMR_BASE_MILLIS: i64 = 500;
 const LMR_MIN_MOVE_INDEX: i64 = 2;
 const LMR_MIN_DEPTH: i64 = 2;

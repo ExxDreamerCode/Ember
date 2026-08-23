@@ -1,6 +1,6 @@
 use super::*;
 
-const QSEARCH_DELTA_MARGIN_CP: i32 = 975;
+const QSEARCH_DELTA_MARGIN_CP: i32 = 1125;
 const QSEARCH_CHECK_CAP_DEPTH: i32 = 4;
 const QSEARCH_SEE_THRESHOLD_CP: i32 = 0;
 

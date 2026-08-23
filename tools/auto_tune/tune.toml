@@ -72,7 +72,7 @@ step = 1
 
 [[params]]
 name = "QSEARCH_DELTA_MARGIN_CP"
-base = 975
+base = 1125
 min = 700
 max = 1250
 step = 25
@@ -248,7 +248,7 @@ step = 50
 
 [[params]]
 name = "LMP_KING_PRESSURE_LIMIT"
-base = 3
+base = 1
 min = 1
 max = 6
 step = 1

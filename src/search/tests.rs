@@ -178,8 +178,8 @@ fn qsearch_checkmate_score_uses_the_actual_ply() {
 #[test]
 fn qsearch_pruning_thresholds_honor_tuning_overrides() {
     tune::reset();
-    assert!(!qsearch_delta_prunable(974, 0));
-    assert!(qsearch_delta_prunable(976, 0));
+    assert!(!qsearch_delta_prunable(1124, 0));
+    assert!(qsearch_delta_prunable(1126, 0));
     assert!(!qsearch_check_cap_reached(-3));
     assert!(qsearch_check_cap_reached(-4));
     assert_eq!(qsearch_see_threshold_cp(), 0);
@@ -206,8 +206,8 @@ fn lmp_aggressiveness_controls_preserve_the_default_policy() {
     }
     assert_eq!(lmp_move_count(0), None);
     assert_eq!(lmp_move_count(9), None);
-    assert!(lmp_king_pressure_safe(2));
-    assert!(!lmp_king_pressure_safe(3));
+    assert!(lmp_king_pressure_safe(0));
+    assert!(!lmp_king_pressure_safe(1));
 
     tune::set(TuneParam::LmpMoveCountScalePermille, 1200);
     tune::set(TuneParam::LmpKingPressureLimit, 5);
