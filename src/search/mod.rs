@@ -3,7 +3,9 @@ use crate::board::{
     move_promotion, move_sc, move_sr, move_to, piece_type, see, BoardState, Move, BP, EMPTY_SQ,
     INF, KING_ATTACKS, MATE, MAX_HALF_MOVE_CLOCK, MAX_PLY, NO_MOVE, QS_DEPTH, WP,
 };
-use crate::evaluate::{current_nnue_net, evaluate, evaluate_nnue_acc_with_backend};
+use crate::evaluate::{
+    current_nnue_net, current_other_net, evaluate, evaluate_nnue_acc_with_backend,
+};
 use crate::movegen::{
     apply_move, apply_move_mode, generate_moves, generate_moves_into_mode,
     generate_pseudo_captures_promotions_into_mode, generate_pseudo_moves_into_mode,
@@ -12,8 +14,9 @@ use crate::movegen::{
 #[cfg(target_arch = "x86_64")]
 use crate::nnue::Avx512NnueBackend;
 use crate::nnue::{
-    NNUEAccumulator, NNUENet, NNUEThreatAccumulator, NnueBackend, ScalarNnueBackend,
-    Simd128NnueBackend, Simd512NnueBackend, SimdNnueBackend,
+    evaluate_other_net, evaluate_other_net_acc, NNUEAccumulator, NNUENet, NNUEThreatAccumulator,
+    NnueBackend, OtherAccumulator, OtherNetData, ScalarNnueBackend, Simd128NnueBackend,
+    Simd512NnueBackend, SimdNnueBackend,
 };
 use crate::syzygy::SyzygyTables;
 use crate::time_management::{iteration_time_decision, IterationTiming};
@@ -130,7 +133,9 @@ pub struct Searcher {
     shared_node_counter: Option<Arc<AtomicU64>>,
     pub nnue_stack: Vec<NNUEAccumulator>,
     pub threat_stack: Vec<NNUEThreatAccumulator>,
+    pub(crate) other_stack: Vec<OtherAccumulator>,
     pub nnue_net: Option<Arc<NNUENet>>,
+    pub(crate) other_net: Option<Arc<OtherNetData>>,
     pub search_backend: SearchBackendKind,
     pub syzygy: SyzygyTables,
     move_bufs: Vec<Vec<Move>>,
@@ -142,7 +147,7 @@ pub struct Searcher {
 }
 
 mod eval;
-use self::eval::{ClassicEval, NnueEval, SearchEval, ThreatNnueEval};
+use self::eval::{ClassicEval, NnueEval, OtherNnueEval, SearchEval, ThreatNnueEval};
 
 mod negamax;
 #[cfg(test)]
