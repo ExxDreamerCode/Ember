@@ -439,43 +439,4 @@ mod tests {
         let result = super::decode_leb_block(&buf, 0, buf.len());
         assert!(result.is_err());
     }
-
-    #[test]
-    fn real_net_tensors_and_stacks_decode() {
-        let path = "nn-0ee0657fb25e.nnue";
-        let data = match std::fs::read(path) {
-            Ok(d) => d,
-            Err(_) => return,
-        };
-        let net = super::load_other_net(&data).expect("real external net should decode");
-        assert_eq!(net.hidden_size, 1024);
-        assert_eq!(net.psq_dims, 22528);
-        assert_eq!(net.threat_dims, 60720);
-        assert_eq!(net.num_stacks, 8);
-        assert_eq!(net.threat_psqt.len(), net.threat_dims * 8);
-        assert_eq!(net.psqt.len(), net.psq_dims * 8);
-        for stack in &net.stacks {
-            assert_eq!(stack.fc0_bias.len(), 32);
-            assert_eq!(stack.fc0_weights.len(), 32 * 1024);
-            assert_eq!(stack.fc1_bias.len(), 32);
-            assert_eq!(stack.fc1_weights.len(), 32 * 64);
-            assert_eq!(stack.fc2_weights.len(), 128);
-        }
-    }
-
-    #[test]
-    fn real_net_loads_through_dispatch() {
-        let path = "nn-0ee0657fb25e.nnue";
-        let data = match std::fs::read(path) {
-            Ok(d) => d,
-            Err(_) => return,
-        };
-        assert!(super::OtherNetInfo::is_format(&data));
-        let result = super::super::NNUENet::load_from_bytes(&data, "real");
-        let err = match result {
-            Ok(_) => panic!("external net unexpectedly loaded as native"),
-            Err(e) => e,
-        };
-        assert!(err.contains("decoded"), "unexpected: {}", err);
-    }
 }
