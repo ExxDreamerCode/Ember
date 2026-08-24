@@ -8,6 +8,11 @@ const STACK_BYTES: usize = 35208;
 const STACK_HASH: u32 = 0x6333_7116;
 const PSQT_BUCKETS: usize = 8;
 const FT_HEADER_HASH: u32 = 0x6165_ddc9;
+const ARCH_HASH: u32 = 0x0256_acdf;
+const HIDDEN_SIZE: usize = 1024;
+const PSQ_DIMS: usize = 22_528;
+const THREAT_DIMS: usize = 60_720;
+const NUM_STACKS: usize = 8;
 
 #[derive(Clone, Copy)]
 pub struct TensorDesc {
@@ -40,10 +45,10 @@ pub struct OtherNetData {
     pub psq_dims: usize,
     pub threat_dims: usize,
     pub num_stacks: usize,
-    pub ft_bias: Vec<i32>,
+    pub ft_bias: Vec<i16>,
     pub threat_weights: Vec<i8>,
     pub threat_psqt: Vec<i32>,
-    pub psq_weights: Vec<i32>,
+    pub psq_weights: Vec<i16>,
     pub psqt: Vec<i32>,
     pub stacks: Vec<OtherStack>,
     pub overview: String,
@@ -151,6 +156,12 @@ impl OtherNetInfo {
     }
 
     pub fn decode(&self, data: &[u8]) -> Result<OtherNetData, String> {
+        if self.hash != ARCH_HASH {
+            return Err(format!(
+                "unsupported external-net architecture hash {:#x} (expected {:#x})",
+                self.hash, ARCH_HASH
+            ));
+        }
         let body = self.body_start;
         if body + LEB128_MAGIC_LEN + 4 > data.len() {
             return Err("net body too short".into());
@@ -163,12 +174,24 @@ impl OtherNetInfo {
         let (ft_bias, next) = decode_leb_values(data, pos)?;
         pos = next;
         let hidden_size = ft_bias.len();
+        if hidden_size != HIDDEN_SIZE {
+            return Err(format!(
+                "unsupported external hidden size {} (expected {})",
+                hidden_size, HIDDEN_SIZE
+            ));
+        }
         let bin = find_magic_from(data, pos).ok_or("net has no further magic")?;
         let threat_r = bin - pos;
         if !threat_r.is_multiple_of(hidden_size) {
             return Err("threat weights length invalid".into());
         }
         let threat_dims = threat_r / hidden_size;
+        if threat_dims != THREAT_DIMS {
+            return Err(format!(
+                "unsupported external threat dimensions {} (expected {})",
+                threat_dims, THREAT_DIMS
+            ));
+        }
         let threat_weights: Vec<i8> = data[pos..bin].iter().map(|&b| b as i8).collect();
         pos = bin;
         let (threat_psqt, after) = decode_leb_values(data, pos)?;
@@ -176,12 +199,21 @@ impl OtherNetInfo {
         if threat_psqt.len() % PSQT_BUCKETS != 0 {
             return Err("threat psqt length invalid".into());
         }
+        if threat_psqt.len() != threat_dims * PSQT_BUCKETS {
+            return Err("threat psqt dimensions do not match threat weights".into());
+        }
         let (psq_weights, after) = decode_leb_values(data, pos)?;
         pos = after;
         if hidden_size == 0 || psq_weights.len() % hidden_size != 0 {
             return Err("psq weights length invalid".into());
         }
         let psq_dims = psq_weights.len() / hidden_size;
+        if psq_dims != PSQ_DIMS {
+            return Err(format!(
+                "unsupported external PSQ dimensions {} (expected {})",
+                psq_dims, PSQ_DIMS
+            ));
+        }
         let (psqt, after) = decode_leb_values(data, pos)?;
         pos = after;
         if psq_dims == 0 || psqt.len() != psq_dims * PSQT_BUCKETS {
@@ -192,6 +224,12 @@ impl OtherNetInfo {
             return Err("tail length not a multiple of stack bytes".into());
         }
         let num_stacks = tail.len() / STACK_BYTES;
+        if num_stacks != NUM_STACKS {
+            return Err(format!(
+                "unsupported external stack count {} (expected {})",
+                num_stacks, NUM_STACKS
+            ));
+        }
         let mut stacks = Vec::with_capacity(num_stacks);
         for si in 0..num_stacks {
             let seg = &tail[si * STACK_BYTES..(si + 1) * STACK_BYTES];
@@ -209,6 +247,8 @@ impl OtherNetInfo {
             psqt.len() / psq_dims,
             num_stacks,
         );
+        let ft_bias = checked_i16_values(ft_bias, "feature-transformer biases")?;
+        let psq_weights = checked_i16_values(psq_weights, "PSQ weights")?;
         Ok(OtherNetData {
             hidden_size,
             psq_dims,
@@ -223,6 +263,16 @@ impl OtherNetInfo {
             overview,
         })
     }
+}
+
+fn checked_i16_values(values: Vec<i32>, name: &str) -> Result<Vec<i16>, String> {
+    values
+        .into_iter()
+        .map(|value| {
+            i16::try_from(value)
+                .map_err(|_| format!("{} value {} is outside the i16 range", name, value))
+        })
+        .collect()
 }
 
 fn parse_stack(seg: &[u8]) -> Result<OtherStack, String> {
@@ -413,6 +463,17 @@ mod tests {
     fn truncated_description_is_rejected() {
         let bytes = build(0, "x", &[]);
         assert!(OtherNetInfo::try_parse(&bytes[..8]).is_err());
+    }
+
+    #[test]
+    fn decode_rejects_an_unknown_architecture_before_tensor_loading() {
+        let bytes = build(0x1234_5678, "unknown", &[]);
+        let info = OtherNetInfo::try_parse(&bytes).expect("container header should parse");
+        let error = match info.decode(&bytes) {
+            Ok(_) => panic!("an unknown feature architecture must not be guessed"),
+            Err(error) => error,
+        };
+        assert!(error.contains("unsupported external-net architecture hash"));
     }
 
     #[test]

@@ -139,7 +139,7 @@ impl NNUENet {
         if OtherNetInfo::is_format(data) {
             let other = load_other_net(data)?;
             return Err(format!(
-                "external-format net detected and decoded ({}) but native evaluation is not wired for it ({}). Init via nnue::other_nets::load_other_net.",
+                "external-format net detected and decoded ({}) but cannot be returned as a native NNUENet ({}); load it through evaluate::init_nnue or the UCI NNUE option",
                 other.overview, name
             ));
         }

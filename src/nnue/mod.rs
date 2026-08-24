@@ -41,7 +41,7 @@ pub use self::features::{
     compute_king_buckets, threat_feature_count, KbLayout, NNUEThreatAccumulator,
 };
 use self::features::{halfka_idx, output_bucket};
-pub(crate) use self::other_infer::evaluate_other_net;
+pub(crate) use self::other_infer::{evaluate_other_net, evaluate_other_net_acc, OtherAccumulator};
 pub(crate) use self::other_nets::{OtherNetData, OtherNetInfo};
 
 const COMPACT_ZERO_ROW: u16 = u16::MAX;
