@@ -132,10 +132,7 @@ fn try_load_book(engine: &mut Engine, path: &std::path::Path) -> bool {
 
 fn maybe_load_nnue(path: &str) -> bool {
     match evaluate::init_nnue(path) {
-        Ok(()) => {
-            eprintln!("info string NNUE loaded: {}", path);
-            true
-        }
+        Ok(()) => true,
         Err(e) => {
             eprintln!("info string Failed to load NNUE ({}): {}", path, e);
             false
@@ -318,7 +315,7 @@ fn run_uci_loop() {
                             || val.to_lowercase() == "<default>"
                         {
                             match evaluate::init_embedded_nnue() {
-                                Ok(()) => eprintln!("info string NNUE switched to embedded"),
+                                Ok(()) => {}
                                 Err(e) => {
                                     eprintln!("info string Failed to load embedded NNUE: {}", e)
                                 }

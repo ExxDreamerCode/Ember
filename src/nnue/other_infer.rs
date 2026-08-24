@@ -504,20 +504,25 @@ mod tests {
     fn real_net_scores_are_finite_and_symmetric() {
         let data = match std::fs::read("nn-0ee0657fb25e.nnue") {
             Ok(d) => d,
-            Err(_) => return,
+            Err(_) => {
+                eprintln!("SKIP: real net file missing");
+                return;
+            }
         };
         let net = load_other_net(&data).expect("real net should decode");
         let start = score_for(
             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
             &net,
         );
+        eprintln!("start score = {start}");
         assert!((-1000..1000).contains(&start), "start score {start}");
         let pos = score_for(
             "r3k2r/p1ppqpb1/bn2pnp1/2P5/1p2P3/2N2N2/PP1PBPPP/R2Q1RK1 w kq - 0 1",
             &net,
         );
+        eprintln!("pos score = {pos}");
         assert!((-5000..5000).contains(&pos), "pos score {pos}");
-        let _ = score_for("8/8/8/R2pP1k/8/8/6Q1/4K3 w - d6 0 1", &net);
-        let _ = score_for("8/8/8/k1PpR2/8/8/2q5/4K3 w - d6 0 1", &net);
+        let end = score_for("7k/8/8/8/8/8/8/K7 w - - 0 1", &net);
+        eprintln!("KK endgame score = {end}");
     }
 }

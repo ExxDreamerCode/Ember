@@ -397,15 +397,15 @@ mod tests {
         assert_eq!(info.hash, 0x1234_5678);
         assert_eq!(info.description.len(), 7);
         assert_eq!(info.tensors.len(), 5);
-        assert_eq!(info.tensors[0].leb, true);
+        assert!(info.tensors[0].leb);
         assert_eq!(info.tensors[0].byte_count, 10);
-        assert_eq!(info.tensors[1].leb, false);
+        assert!(!info.tensors[1].leb);
         assert_eq!(info.tensors[1].byte_count, 100);
-        assert_eq!(info.tensors[2].leb, true);
+        assert!(info.tensors[2].leb);
         assert_eq!(info.tensors[2].byte_count, 20);
-        assert_eq!(info.tensors[3].leb, true);
+        assert!(info.tensors[3].leb);
         assert_eq!(info.tensors[3].byte_count, 30);
-        assert_eq!(info.tensors[4].leb, false);
+        assert!(!info.tensors[4].leb);
         assert_eq!(info.tensors[4].byte_count, 50);
     }
 

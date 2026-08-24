@@ -42,7 +42,7 @@ pub use self::features::{
 };
 use self::features::{halfka_idx, output_bucket};
 pub(crate) use self::other_infer::evaluate_other_net;
-pub(crate) use self::other_nets::{load_other_net, OtherNetData, OtherNetInfo};
+pub(crate) use self::other_nets::{OtherNetData, OtherNetInfo};
 
 const COMPACT_ZERO_ROW: u16 = u16::MAX;
 

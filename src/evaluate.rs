@@ -4,8 +4,8 @@ use crate::board::{
 };
 use crate::magic::{bishop_attacks, rook_attacks};
 use crate::nnue::{
-    evaluate_other_net, load_other_net, NNUEAccumulator, NNUENet, NNUEThreatAccumulator,
-    NnueBackend, OtherNetData, OtherNetInfo, ScalarNnueBackend,
+    evaluate_other_net, NNUEAccumulator, NNUENet, NNUEThreatAccumulator, NnueBackend, OtherNetData,
+    OtherNetInfo, ScalarNnueBackend,
 };
 use crate::types::{BLACK, WHITE};
 use std::sync::{Arc, RwLock};
@@ -341,7 +341,13 @@ pub const EMBEDDED_NNUE: &[u8] = include_bytes!("net.compact.nnue");
 pub fn init_nnue(path: &str) -> Result<(), String> {
     let data = std::fs::read(path).map_err(|e| format!("read {}: {}", path, e))?;
     if OtherNetInfo::is_format(&data) {
-        let other = load_other_net(&data)?;
+        let info = OtherNetInfo::try_parse(&data)?;
+        let desc = String::from_utf8_lossy(&info.description);
+        let other = info.decode(&data)?;
+        println!(
+            "info string Loaded external net {} (arch hash={:#x}, desc=\"{}\", {})",
+            path, info.hash, desc, other.overview
+        );
         let mut other_lock = OTHER_NNET.write().map_err(|e| e.to_string())?;
         *other_lock = Some(Arc::new(other));
         let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
@@ -368,6 +374,8 @@ pub fn init_embedded_nnue() -> Result<(), String> {
     let net = NNUENet::load_compact_from_bytes(EMBEDDED_NNUE, "<embedded>")?;
     let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
     *lock = Some(Arc::new(net));
+    let mut other_lock = OTHER_NNET.write().map_err(|e| e.to_string())?;
+    *other_lock = None;
     Ok(())
 }
 
