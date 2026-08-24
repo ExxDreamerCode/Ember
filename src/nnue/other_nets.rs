@@ -115,8 +115,22 @@ impl OtherNetInfo {
     }
 }
 
-#[cfg(not(test))]
 #[allow(dead_code)]
+pub(crate) fn decode_leb_block(data: &[u8], pos: usize, byte_count: usize) -> Result<Vec<i64>, String> {
+    let end = pos + byte_count;
+    let mut out = Vec::new();
+    let mut p = pos;
+    while p < end {
+        let (v, next) = decode_signed_leb(data, p)?;
+        out.push(v);
+        p = next;
+    }
+    if p != end {
+        return Err(format!("LEB block does not end at boundary ({} vs {})", p, end));
+    }
+    Ok(out)
+}
+
 #[allow(dead_code)]
 pub(crate) fn decode_signed_leb(data: &[u8], mut pos: usize) -> Result<(i64, usize), String> {
     let mut result = 0i64;
@@ -219,5 +233,39 @@ mod tests {
         let t = TensorDesc { leb: true, offset: 1, byte_count: 2 };
         let c = t;
         assert_eq!(c.offset, 1);
+    }
+
+    #[test]
+    fn decodes_leb_block_until_boundary() {
+        let buf = vec![0xACu8, 0x02, 0x7F, 0x7B];
+        let vals = super::decode_leb_block(&buf, 0, buf.len()).expect("decode should succeed");
+        assert_eq!(vals, vec![300, -1, -5]);
+    }
+
+    #[test]
+    fn decode_leb_block_rejects_truncation() {
+        let buf = vec![0xACu8, 0x02, 0x7F, 0x7B, 0x80];
+        let result = super::decode_leb_block(&buf, 0, buf.len());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn real_net_dimensions_are_consistent() {
+        let path = "nn-0ee0657fb25e.nnue";
+        if let Ok(data) = std::fs::read(path) {
+            let info = OtherNetInfo::try_parse(&data).expect("real net should parse");
+            assert_eq!(info.tensors.len(), 7);
+            let biases = super::decode_leb_block(&data, info.tensors[1].offset, info.tensors[1].byte_count)
+                .expect("biases should decode");
+            assert_eq!(biases.len(), 1024);
+            assert_eq!(info.tensors[2].byte_count, 60720 * 1024);
+            let threat_psqt = super::decode_leb_block(&data, info.tensors[3].offset, info.tensors[3].byte_count)
+                .expect("threat psqt should decode");
+            assert_eq!(threat_psqt.len(), 60720 * 8);
+            let psq_w_len = info.tensors[4].byte_count;
+            let psqt_len = info.tensors[5].byte_count;
+            assert!(psq_w_len > 22_000_000, "psqW block too small: {}", psq_w_len);
+            assert!(psqt_len > 100_000, "psqt block too small: {}", psqt_len);
+        }
     }
 }
