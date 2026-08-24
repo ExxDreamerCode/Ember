@@ -15,6 +15,32 @@ fn legal_move(st: &BoardState, uci: &str) -> Move {
         .unwrap_or_else(|| panic!("expected legal move {uci}"))
 }
 
+#[test]
+fn external_nnue_is_selected_over_classic_eval() {
+    // This observes the private evaluator-selection and accumulator contracts;
+    // a TSV move fixture cannot detect a silent fallback to classic evaluation.
+    let Ok(data) = std::fs::read("nn-0ee0657fb25e.nnue") else {
+        return;
+    };
+    let info = crate::nnue::OtherNetInfo::try_parse(&data)
+        .expect("the Stockfish NNUE test file should have a supported container");
+    let net = Arc::new(
+        info.decode(&data)
+            .expect("the Stockfish NNUE test file should decode"),
+    );
+    let st = state_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    let stopped = Arc::new(AtomicBool::new(false));
+    let shared_tt = Arc::new(SharedTT::new(1));
+    let mut searcher = Searcher::new(shared_tt, stopped);
+    searcher.nnue_net = None;
+    searcher.other_net = Some(net.clone());
+    searcher.init_nnue_stack(&st);
+
+    assert_eq!(searcher.static_eval_other_nnue::<false>(&st, 0, &net), 10);
+    assert_eq!(searcher.corrected_eval(&st), 10);
+    assert_ne!(searcher.corrected_eval_classic::<false>(&st), 10);
+}
+
 fn qualifying_singular_evidence(mv: Move) -> SingularEvidence {
     SingularEvidence {
         enabled: true,
