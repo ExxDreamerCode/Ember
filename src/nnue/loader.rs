@@ -2,8 +2,8 @@ use super::{
     compute_king_buckets, threat_feature_count, KbLayout, NNUENet, COMPACT_ZERO_ROW,
     MAX_HIDDEN_SIZE, NNUE_OUTPUT_BUCKETS, PSQ_INPUTS_PER_BUCKET, QA, QB,
 };
-use std::fs::File;
-use std::io::{BufReader, Read as IoRead};
+use super::other_nets::OtherNetInfo;
+use std::io::{Read as IoRead};
 
 const NNUE_MAGIC: u32 = 0x4E4E5545;
 const COMPACT_NNUE_MAGIC: u32 = 0x314E4345;
@@ -131,15 +131,18 @@ impl NNUENet {
     }
 
     pub fn load(path: &str) -> Result<Self, String> {
-        let len = std::fs::metadata(path)
-            .map_err(|e| format!("stat: {}", e))?
-            .len();
-        let f = File::open(path).map_err(|e| format!("open: {}", e))?;
-        let mut r = BufReader::new(f);
-        Self::load_reader(&mut r, len, path)
+        let data = std::fs::read(path).map_err(|e| format!("read {}: {}", path, e))?;
+        Self::load_from_bytes(&data, path)
     }
 
     pub fn load_from_bytes(data: &[u8], name: &str) -> Result<Self, String> {
+        if OtherNetInfo::is_format(data) {
+            let info = OtherNetInfo::try_parse(data)?;
+            return Err(format!(
+                "external-format net detected ({}) but decoder is not wired up yet",
+                info.summary(),
+            ));
+        }
         let len = data.len() as u64;
         let mut r = std::io::Cursor::new(data);
         Self::load_reader(&mut r, len, name)

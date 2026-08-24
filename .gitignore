@@ -52,3 +52,4 @@ ratings/ccrl/
 __pycache__/
 *.py[cod]
 1.sh
+/nn-*.nnue

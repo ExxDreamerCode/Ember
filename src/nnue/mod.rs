@@ -30,6 +30,7 @@ unsafe fn assume_init_slice<T>(values: &[MaybeUninit<T>]) -> &[T] {
 mod backend;
 mod features;
 mod loader;
+mod other_nets;
 #[cfg(target_arch = "x86_64")]
 pub(crate) use self::backend::Avx512NnueBackend;
 pub(crate) use self::backend::{
