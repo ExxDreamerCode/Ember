@@ -232,6 +232,12 @@ a subtly different command.
 Every bug fix should have a regression at the narrowest useful layer. A regression proves
 the causal invariant, not just that the final game happens to end differently.
 
+When adding a foreign NNUE architecture, first require exact integer-score parity with the
+compatible reference engine on varied positions. Separately test that static evaluation,
+the main search, and SMP workers select that network instead of silently falling back to a
+native network or classic evaluation. Benchmark the incremental feature update path; a
+correct full-refresh evaluator is an oracle, not a production search implementation.
+
 When adding a special search ordering or extension, test both the intended motif and nearby
 counterexamples that must not qualify. Prefer predicates that describe the candidate move
 itself over a position-wide trigger such as "some rook check exists"; a broad trigger can
