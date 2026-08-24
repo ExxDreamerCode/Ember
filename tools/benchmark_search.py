@@ -131,6 +131,20 @@ def parse_binary_arg(value):
     return label, path
 
 
+def parse_option_arg(value):
+    if ":" not in value or "=" not in value:
+        raise argparse.ArgumentTypeError("expected LABEL:NAME=VALUE")
+    label, assignment = value.split(":", 1)
+    name, option_value = assignment.split("=", 1)
+    label = label.strip()
+    name = name.strip()
+    if not label:
+        raise argparse.ArgumentTypeError("option label cannot be empty")
+    if not name:
+        raise argparse.ArgumentTypeError("option name cannot be empty")
+    return label, name, option_value
+
+
 def load_positions(path):
     if path is None:
         return DEFAULT_POSITIONS
@@ -150,16 +164,18 @@ def load_positions(path):
     return positions
 
 
-def uci_input(position_command, depth, hash_mb, threads, disable_book):
+def uci_input(position_command, depth, hash_mb, threads, disable_book, options=None):
     commands = [
         "uci",
-        "isready",
         f"setoption name Hash value {hash_mb}",
         f"setoption name Threads value {threads}",
     ]
     if disable_book:
         commands.append("setoption name Book value")
+    for name, value in options or []:
+        commands.append(f"setoption name {name} value {value}")
     commands.extend([
+        "isready",
         "ucinewgame",
         f"position {position_command}",
         f"go depth {depth}",
@@ -169,11 +185,11 @@ def uci_input(position_command, depth, hash_mb, threads, disable_book):
     return "\n".join(commands)
 
 
-def bench_once(binary, position, depth, hash_mb, threads, timeout, disable_book):
+def bench_once(binary, position, depth, hash_mb, threads, timeout, disable_book, options=None):
     label, command = position
     proc, wall = run_engine(
         binary,
-        uci_input(command, depth, hash_mb, threads, disable_book),
+        uci_input(command, depth, hash_mb, threads, disable_book, options),
         timeout,
     )
     parsed = parse_last_info(proc.stdout)
@@ -286,6 +302,14 @@ def main():
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--positions", default=None, help="Optional JSON file with [{label, position}] entries.")
+    parser.add_argument(
+        "--option",
+        action="append",
+        type=parse_option_arg,
+        default=[],
+        metavar="LABEL:NAME=VALUE",
+        help="Set a UCI option for one binary label. May be repeated.",
+    )
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--out-dir", default="results/search-bench")
     parser.add_argument("--keep-book", action="store_true", help="Do not send an empty Book option before searching.")
@@ -304,6 +328,12 @@ def main():
     if args.threads < 1:
         raise SystemExit("--threads must be >= 1")
 
+    options = {label: [] for label in labels}
+    for label, name, value in args.option:
+        if label not in options:
+            raise SystemExit(f"option label {label!r} is not one of: {', '.join(labels)}")
+        options[label].append((name, value))
+
     positions = load_positions(args.positions)
     run_id = args.run_id or now_id()
     out_dir = Path(args.out_dir) / run_id
@@ -316,6 +346,10 @@ def main():
         "hash_mb": args.hash_mb,
         "threads": args.threads,
         "disable_book": not args.keep_book,
+        "options": {
+            label: [{"name": name, "value": value} for name, value in values]
+            for label, values in options.items()
+        },
         "baseline": baseline,
         "positions": [{"label": label, "position": command} for label, command in positions],
         "binaries": [],
@@ -342,6 +376,7 @@ def main():
                     args.threads,
                     args.timeout,
                     not args.keep_book,
+                    options[label],
                 )
                 sample["label"] = label
                 sample["repeat"] = repeat

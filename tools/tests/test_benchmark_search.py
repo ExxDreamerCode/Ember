@@ -8,10 +8,29 @@ from pathlib import Path
 TOOLS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS_DIR))
 
-from benchmark_search import bench_once  # noqa: E402
+from benchmark_search import bench_once, parse_option_arg, uci_input  # noqa: E402
 
 
 class SearchBenchmarkProtocolTests(unittest.TestCase):
+    def test_parses_and_sends_labelled_uci_options(self):
+        self.assertEqual(
+            parse_option_arg("stockfish-net:NNUE=/tmp/example.nnue"),
+            ("stockfish-net", "NNUE", "/tmp/example.nnue"),
+        )
+        commands = uci_input(
+            "startpos",
+            depth=7,
+            hash_mb=64,
+            threads=1,
+            disable_book=True,
+            options=[("NNUE", "/tmp/example.nnue")],
+        )
+        self.assertIn("setoption name NNUE value /tmp/example.nnue\n", commands)
+        self.assertLess(
+            commands.index("setoption name NNUE value /tmp/example.nnue"),
+            commands.index("isready"),
+        )
+
     @unittest.skipIf(
         sys.platform == "win32",
         "creates a POSIX shebang script; only runs in the Nix/Unix CI shell",

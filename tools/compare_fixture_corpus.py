@@ -155,6 +155,16 @@ def move_matches(actual, expected):
     return actual in expected.split("|")
 
 
+def parse_uci_option(value):
+    if "=" not in value:
+        raise argparse.ArgumentTypeError("expected NAME=VALUE")
+    name, option_value = value.split("=", 1)
+    name = name.strip()
+    if not name:
+        raise argparse.ArgumentTypeError("option name cannot be empty")
+    return name, option_value
+
+
 def _read_until(lines, prefix, deadline, output):
     while True:
         remaining = deadline - time.monotonic()
@@ -171,8 +181,8 @@ def _read_until(lines, prefix, deadline, output):
             return line
 
 
-def uci_setup_commands(hash_mb, use_embedded_book=False, chess960=False):
-    return (
+def uci_setup_commands(hash_mb, use_embedded_book=False, chess960=False, options=()):
+    commands = [
         "uci",
         "setoption name Threads value 1",
         f"setoption name Hash value {hash_mb}",
@@ -180,11 +190,13 @@ def uci_setup_commands(hash_mb, use_embedded_book=False, chess960=False):
         "setoption name Book value <embedded>"
         if use_embedded_book
         else "setoption name Book value",
-        "isready",
-    )
+    ]
+    commands.extend(f"setoption name {name} value {value}" for name, value in options)
+    commands.append("isready")
+    return tuple(commands)
 
 
-def run_check(binary, check, timeout, hash_mb):
+def run_check(binary, check, timeout, hash_mb, options=()):
     started = time.monotonic()
     deadline = started + timeout
     process = subprocess.Popen(
@@ -217,7 +229,7 @@ def run_check(binary, check, timeout, hash_mb):
 
     try:
         setup_commands = uci_setup_commands(
-            hash_mb, check.depth == 0, check.variant == "chess960"
+            hash_mb, check.depth == 0, check.variant == "chess960", options
         )
         send(setup_commands[0])
         _read_until(lines, "uciok", deadline, output)
@@ -256,13 +268,13 @@ def run_check(binary, check, timeout, hash_mb):
         }
 
 
-def run_binary(label, binary, checks, workers, timeout, hash_mb):
+def run_binary(label, binary, checks, workers, timeout, hash_mb, options=()):
     results = {}
     completed = 0
     started = time.monotonic()
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
-            executor.submit(run_check, binary, check, timeout, hash_mb): check
+            executor.submit(run_check, binary, check, timeout, hash_mb, options): check
             for check in checks
         }
         for future in concurrent.futures.as_completed(futures):
@@ -422,6 +434,20 @@ def main():
     parser.add_argument("--candidate", required=True)
     parser.add_argument("--baseline-label", default="baseline")
     parser.add_argument("--candidate-label", default="candidate")
+    parser.add_argument(
+        "--baseline-option",
+        action="append",
+        type=parse_uci_option,
+        default=[],
+        metavar="NAME=VALUE",
+    )
+    parser.add_argument(
+        "--candidate-option",
+        action="append",
+        type=parse_uci_option,
+        default=[],
+        metavar="NAME=VALUE",
+    )
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument(
         "--hash-mb",
@@ -452,6 +478,7 @@ def main():
         args.workers,
         args.timeout,
         args.hash_mb,
+        args.baseline_option,
     )
     candidate, candidate_seconds = run_binary(
         args.candidate_label,
@@ -460,6 +487,7 @@ def main():
         args.workers,
         args.timeout,
         args.hash_mb,
+        args.candidate_option,
     )
 
     rows = []
@@ -482,9 +510,11 @@ def main():
             "baseline_label": args.baseline_label,
             "baseline_binary": str(Path(args.baseline).resolve()),
             "baseline_sha256": sha256(args.baseline),
+            "baseline_options": args.baseline_option,
             "candidate_label": args.candidate_label,
             "candidate_binary": str(Path(args.candidate).resolve()),
             "candidate_sha256": sha256(args.candidate),
+            "candidate_options": args.candidate_option,
             "fixture_sha256": {
                 path.name: sha256(path)
                 for path in sorted(Path(args.fixtures).glob("*.tsv"))
