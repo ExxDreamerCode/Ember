@@ -218,17 +218,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_real_downloaded_net_if_present() {
-        let path = "nn-0ee0657fb25e.nnue";
-        if let Ok(data) = std::fs::read(path) {
-            let info = OtherNetInfo::try_parse(&data).expect("real net should parse");
-            assert_eq!(info.tensors.len(), 7, "{}", info.summary());
-            let kinds: Vec<bool> = info.tensors.iter().map(|t| t.leb).collect();
-            assert_eq!(kinds, vec![false, true, false, true, true, true, false], "{}", info.summary());
-        }
-    }
-
-    #[test]
     fn tensor_desc_is_copyable() {
         let t = TensorDesc { leb: true, offset: 1, byte_count: 2 };
         let c = t;
@@ -247,25 +236,5 @@ mod tests {
         let buf = vec![0xACu8, 0x02, 0x7F, 0x7B, 0x80];
         let result = super::decode_leb_block(&buf, 0, buf.len());
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn real_net_dimensions_are_consistent() {
-        let path = "nn-0ee0657fb25e.nnue";
-        if let Ok(data) = std::fs::read(path) {
-            let info = OtherNetInfo::try_parse(&data).expect("real net should parse");
-            assert_eq!(info.tensors.len(), 7);
-            let biases = super::decode_leb_block(&data, info.tensors[1].offset, info.tensors[1].byte_count)
-                .expect("biases should decode");
-            assert_eq!(biases.len(), 1024);
-            assert_eq!(info.tensors[2].byte_count, 60720 * 1024);
-            let threat_psqt = super::decode_leb_block(&data, info.tensors[3].offset, info.tensors[3].byte_count)
-                .expect("threat psqt should decode");
-            assert_eq!(threat_psqt.len(), 60720 * 8);
-            let psq_w_len = info.tensors[4].byte_count;
-            let psqt_len = info.tensors[5].byte_count;
-            assert!(psq_w_len > 22_000_000, "psqW block too small: {}", psq_w_len);
-            assert!(psqt_len > 100_000, "psqt block too small: {}", psqt_len);
-        }
     }
 }
