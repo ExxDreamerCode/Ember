@@ -2,10 +2,12 @@ pub(crate) const OTHER_NNUE_VERSION: u32 = 0x6A448AFA;
 
 pub(crate) const LEB128_MAGIC_LEN: usize = 17;
 
-const LEB128_MAGIC: [u8; 17] = [
-    b'C', b'O', b'M', b'P', b'R', b'E', b'S', b'S', b'E', b'D', b'_', b'L', b'E', b'B',
-    b'1', b'2', b'8',
-];
+const LEB128_MAGIC: [u8; 17] = *b"COMPRESSED_LEB128";
+
+const STACK_BYTES: usize = 35208;
+const STACK_HASH: u32 = 0x6333_7116;
+const PSQT_BUCKETS: usize = 8;
+const FT_HEADER_HASH: u32 = 0x6165_ddc9;
 
 #[derive(Clone, Copy)]
 pub struct TensorDesc {
@@ -20,6 +22,31 @@ pub struct OtherNetInfo {
     pub description: Vec<u8>,
     pub body_start: usize,
     pub tensors: Vec<TensorDesc>,
+}
+
+#[allow(dead_code)]
+pub struct OtherStack {
+    pub fc0_bias: Vec<i32>,
+    pub fc0_weights: Vec<i8>,
+    pub fc1_bias: Vec<i32>,
+    pub fc1_weights: Vec<i8>,
+    pub fc2_bias: i32,
+    pub fc2_weights: Vec<i8>,
+}
+
+#[allow(dead_code)]
+pub struct OtherNetData {
+    pub hidden_size: usize,
+    pub psq_dims: usize,
+    pub threat_dims: usize,
+    pub num_stacks: usize,
+    pub ft_bias: Vec<i32>,
+    pub threat_weights: Vec<i8>,
+    pub threat_psqt: Vec<i32>,
+    pub psq_weights: Vec<i32>,
+    pub psqt: Vec<i32>,
+    pub stacks: Vec<OtherStack>,
+    pub overview: String,
 }
 
 fn le_u32_at(data: &[u8], at: usize) -> u32 {
@@ -52,12 +79,20 @@ fn scan_tensors(data: &[u8], start: usize) -> Vec<TensorDesc> {
             if data_pos + bc > data.len() {
                 break;
             }
-            out.push(TensorDesc { leb: true, offset: data_pos, byte_count: bc });
+            out.push(TensorDesc {
+                leb: true,
+                offset: data_pos,
+                byte_count: bc,
+            });
             pos = data_pos + bc;
         } else {
             let next = find_magic_at_or_after(data, pos);
             let end = next.unwrap_or(data.len());
-            out.push(TensorDesc { leb: false, offset: pos, byte_count: end - pos });
+            out.push(TensorDesc {
+                leb: false,
+                offset: pos,
+                byte_count: end - pos,
+            });
             pos = end;
         }
     }
@@ -98,6 +133,7 @@ impl OtherNetInfo {
         })
     }
 
+    #[allow(dead_code)]
     pub fn summary(&self) -> String {
         let mut s = format!(
             "ext v{:#x} arch {:#x} desc {} body {} tensors {}",
@@ -113,10 +149,163 @@ impl OtherNetInfo {
         }
         s
     }
+
+    pub fn decode(&self, data: &[u8]) -> Result<OtherNetData, String> {
+        let body = self.body_start;
+        if body + LEB128_MAGIC_LEN + 4 > data.len() {
+            return Err("net body too short".into());
+        }
+        let ft_hash = le_u32_at(data, body);
+        if ft_hash != FT_HEADER_HASH {
+            return Err(format!("unexpected ft header {:#x}", ft_hash));
+        }
+        let mut pos = body + 4;
+        let (ft_bias, next) = decode_leb_values(data, pos)?;
+        pos = next;
+        let hidden_size = ft_bias.len();
+        let bin = find_magic_from(data, pos).ok_or("net has no further magic")?;
+        let threat_r = bin - pos;
+        if !threat_r.is_multiple_of(hidden_size) {
+            return Err("threat weights length invalid".into());
+        }
+        let threat_dims = threat_r / hidden_size;
+        let threat_weights: Vec<i8> = data[pos..bin].iter().map(|&b| b as i8).collect();
+        pos = bin;
+        let (threat_psqt, after) = decode_leb_values(data, pos)?;
+        pos = after;
+        if threat_psqt.len() % PSQT_BUCKETS != 0 {
+            return Err("threat psqt length invalid".into());
+        }
+        let (psq_weights, after) = decode_leb_values(data, pos)?;
+        pos = after;
+        if hidden_size == 0 || psq_weights.len() % hidden_size != 0 {
+            return Err("psq weights length invalid".into());
+        }
+        let psq_dims = psq_weights.len() / hidden_size;
+        let (psqt, after) = decode_leb_values(data, pos)?;
+        pos = after;
+        if psq_dims == 0 || psqt.len() != psq_dims * PSQT_BUCKETS {
+            return Err("psqt length invalid".into());
+        }
+        let tail = &data[pos..];
+        if !tail.len().is_multiple_of(STACK_BYTES) {
+            return Err("tail length not a multiple of stack bytes".into());
+        }
+        let num_stacks = tail.len() / STACK_BYTES;
+        let mut stacks = Vec::with_capacity(num_stacks);
+        for si in 0..num_stacks {
+            let seg = &tail[si * STACK_BYTES..(si + 1) * STACK_BYTES];
+            let h = u32::from_le_bytes([seg[0], seg[1], seg[2], seg[3]]);
+            if h != STACK_HASH {
+                return Err(format!("stack {} unexpected header {:#x}", si, h));
+            }
+            stacks.push(parse_stack(seg)?);
+        }
+        let overview = format!(
+            "hidden {} psq {} threat {} psqt {} stacks {}",
+            hidden_size,
+            psq_dims,
+            threat_dims,
+            psqt.len() / psq_dims,
+            num_stacks,
+        );
+        Ok(OtherNetData {
+            hidden_size,
+            psq_dims,
+            threat_dims,
+            num_stacks,
+            ft_bias,
+            threat_weights,
+            threat_psqt,
+            psq_weights,
+            psqt,
+            stacks,
+            overview,
+        })
+    }
+}
+
+fn parse_stack(seg: &[u8]) -> Result<OtherStack, String> {
+    let mut cur = 4;
+    let read_i32s = |cur: &mut usize, n: usize| -> Result<Vec<i32>, String> {
+        let mut out = Vec::with_capacity(n);
+        for _ in 0..n {
+            if *cur + 4 > seg.len() {
+                return Err("stack i32 out of range".into());
+            }
+            let b = &seg[*cur..*cur + 4];
+            out.push(i32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+            *cur += 4;
+        }
+        Ok(out)
+    };
+    let read_i8s = |cur: &mut usize, n: usize| -> Result<Vec<i8>, String> {
+        let end = (*cur).checked_add(n).ok_or("stack len overflow")?;
+        if end > seg.len() {
+            return Err("stack i8 out of range".into());
+        }
+        let out: Vec<i8> = seg[*cur..end].iter().map(|&b| b as i8).collect();
+        *cur = end;
+        Ok(out)
+    };
+    let fc0_bias = read_i32s(&mut cur, 32)?;
+    let fc0_weights = read_i8s(&mut cur, 32 * 1024)?;
+    let fc1_bias = read_i32s(&mut cur, 32)?;
+    let fc1_weights = read_i8s(&mut cur, 32 * 64)?;
+    let fc2_bias = read_i32s(&mut cur, 1)?;
+    let fc2_weights = read_i8s(&mut cur, 128)?;
+    Ok(OtherStack {
+        fc0_bias,
+        fc0_weights,
+        fc1_bias,
+        fc1_weights,
+        fc2_bias: fc2_bias[0],
+        fc2_weights,
+    })
+}
+
+fn find_magic_from(data: &[u8], start: usize) -> Option<usize> {
+    let mut at = start;
+    while at + LEB128_MAGIC_LEN <= data.len() {
+        if magic_matches_at(data, at) {
+            return Some(at);
+        }
+        at += 1;
+    }
+    None
+}
+
+fn decode_leb_values(data: &[u8], start: usize) -> Result<(Vec<i32>, usize), String> {
+    if !magic_matches_at(data, start) {
+        return Err("expected magic".into());
+    }
+    let cf = start + LEB128_MAGIC_LEN;
+    if cf + 4 > data.len() {
+        return Err("count outside".into());
+    }
+    let bc = le_u32_at(data, cf) as usize;
+    let dp = cf + 4;
+    if dp + bc > data.len() {
+        return Err("leb block outside".into());
+    }
+    let vals = decode_leb_block(data, dp, bc)?
+        .into_iter()
+        .map(|v| v as i32)
+        .collect();
+    Ok((vals, dp + bc))
+}
+
+pub(crate) fn load_other_net(data: &[u8]) -> Result<OtherNetData, String> {
+    let info = OtherNetInfo::try_parse(data)?;
+    info.decode(data)
 }
 
 #[allow(dead_code)]
-pub(crate) fn decode_leb_block(data: &[u8], pos: usize, byte_count: usize) -> Result<Vec<i64>, String> {
+pub(crate) fn decode_leb_block(
+    data: &[u8],
+    pos: usize,
+    byte_count: usize,
+) -> Result<Vec<i64>, String> {
     let end = pos + byte_count;
     let mut out = Vec::new();
     let mut p = pos;
@@ -126,7 +315,10 @@ pub(crate) fn decode_leb_block(data: &[u8], pos: usize, byte_count: usize) -> Re
         p = next;
     }
     if p != end {
-        return Err(format!("LEB block does not end at boundary ({} vs {})", p, end));
+        return Err(format!(
+            "LEB block does not end at boundary ({} vs {})",
+            p, end
+        ));
     }
     Ok(out)
 }
@@ -156,7 +348,7 @@ pub(crate) fn decode_signed_leb(data: &[u8], mut pos: usize) -> Result<(i64, usi
 
 #[cfg(test)]
 mod tests {
-    use super::{LEB128_MAGIC, OtherNetInfo, TensorDesc};
+    use super::{OtherNetInfo, TensorDesc, LEB128_MAGIC};
 
     fn push_u32(out: &mut Vec<u8>, value: u32) {
         out.extend_from_slice(&value.to_le_bytes());
@@ -192,7 +384,13 @@ mod tests {
         let bytes = build(
             0x1234_5678,
             "trained",
-            &[(true, 10), (false, 100), (true, 20), (true, 30), (false, 50)],
+            &[
+                (true, 10),
+                (false, 100),
+                (true, 20),
+                (true, 30),
+                (false, 50),
+            ],
         );
         let info = OtherNetInfo::try_parse(&bytes).unwrap();
         assert_eq!(info.version, 0x6a448afa);
@@ -219,7 +417,11 @@ mod tests {
 
     #[test]
     fn tensor_desc_is_copyable() {
-        let t = TensorDesc { leb: true, offset: 1, byte_count: 2 };
+        let t = TensorDesc {
+            leb: true,
+            offset: 1,
+            byte_count: 2,
+        };
         let c = t;
         assert_eq!(c.offset, 1);
     }
@@ -236,5 +438,44 @@ mod tests {
         let buf = vec![0xACu8, 0x02, 0x7F, 0x7B, 0x80];
         let result = super::decode_leb_block(&buf, 0, buf.len());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn real_net_tensors_and_stacks_decode() {
+        let path = "nn-0ee0657fb25e.nnue";
+        let data = match std::fs::read(path) {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let net = super::load_other_net(&data).expect("real external net should decode");
+        assert_eq!(net.hidden_size, 1024);
+        assert_eq!(net.psq_dims, 22528);
+        assert_eq!(net.threat_dims, 60720);
+        assert_eq!(net.num_stacks, 8);
+        assert_eq!(net.threat_psqt.len(), net.threat_dims * 8);
+        assert_eq!(net.psqt.len(), net.psq_dims * 8);
+        for stack in &net.stacks {
+            assert_eq!(stack.fc0_bias.len(), 32);
+            assert_eq!(stack.fc0_weights.len(), 32 * 1024);
+            assert_eq!(stack.fc1_bias.len(), 32);
+            assert_eq!(stack.fc1_weights.len(), 32 * 64);
+            assert_eq!(stack.fc2_weights.len(), 128);
+        }
+    }
+
+    #[test]
+    fn real_net_loads_through_dispatch() {
+        let path = "nn-0ee0657fb25e.nnue";
+        let data = match std::fs::read(path) {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        assert!(super::OtherNetInfo::is_format(&data));
+        let result = super::super::NNUENet::load_from_bytes(&data, "real");
+        let err = match result {
+            Ok(_) => panic!("external net unexpectedly loaded as native"),
+            Err(e) => e,
+        };
+        assert!(err.contains("decoded"), "unexpected: {}", err);
     }
 }

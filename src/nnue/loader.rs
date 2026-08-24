@@ -1,9 +1,9 @@
+use super::other_nets::{load_other_net, OtherNetInfo};
 use super::{
     compute_king_buckets, threat_feature_count, KbLayout, NNUENet, COMPACT_ZERO_ROW,
     MAX_HIDDEN_SIZE, NNUE_OUTPUT_BUCKETS, PSQ_INPUTS_PER_BUCKET, QA, QB,
 };
-use super::other_nets::OtherNetInfo;
-use std::io::{Read as IoRead};
+use std::io::Read as IoRead;
 
 const NNUE_MAGIC: u32 = 0x4E4E5545;
 const COMPACT_NNUE_MAGIC: u32 = 0x314E4345;
@@ -137,10 +137,10 @@ impl NNUENet {
 
     pub fn load_from_bytes(data: &[u8], name: &str) -> Result<Self, String> {
         if OtherNetInfo::is_format(data) {
-            let info = OtherNetInfo::try_parse(data)?;
+            let other = load_other_net(data)?;
             return Err(format!(
-                "external-format net detected ({}) but decoder is not wired up yet",
-                info.summary(),
+                "external-format net detected and decoded ({}) but native evaluation is not wired for it ({}). Init via nnue::other_nets::load_other_net.",
+                other.overview, name
             ));
         }
         let len = data.len() as u64;

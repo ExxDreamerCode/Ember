@@ -53,3 +53,5 @@ __pycache__/
 *.py[cod]
 1.sh
 /nn-*.nnue
+.scratch/
+NOTES_EXTERNAL_NETS.md
