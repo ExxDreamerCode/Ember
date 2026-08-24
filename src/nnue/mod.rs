@@ -30,6 +30,7 @@ unsafe fn assume_init_slice<T>(values: &[MaybeUninit<T>]) -> &[T] {
 mod backend;
 mod features;
 mod loader;
+mod other_infer;
 mod other_nets;
 #[cfg(target_arch = "x86_64")]
 pub(crate) use self::backend::Avx512NnueBackend;
@@ -40,6 +41,8 @@ pub use self::features::{
     compute_king_buckets, threat_feature_count, KbLayout, NNUEThreatAccumulator,
 };
 use self::features::{halfka_idx, output_bucket};
+pub(crate) use self::other_infer::evaluate_other_net;
+pub(crate) use self::other_nets::{load_other_net, OtherNetData, OtherNetInfo};
 
 const COMPACT_ZERO_ROW: u16 = u16::MAX;
 

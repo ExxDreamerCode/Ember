@@ -4,7 +4,8 @@ use crate::board::{
 };
 use crate::magic::{bishop_attacks, rook_attacks};
 use crate::nnue::{
-    NNUEAccumulator, NNUENet, NNUEThreatAccumulator, NnueBackend, ScalarNnueBackend,
+    evaluate_other_net, load_other_net, NNUEAccumulator, NNUENet, NNUEThreatAccumulator,
+    NnueBackend, OtherNetData, OtherNetInfo, ScalarNnueBackend,
 };
 use crate::types::{BLACK, WHITE};
 use std::sync::{Arc, RwLock};
@@ -333,19 +334,33 @@ fn king_safety(bb: &[u64; 12], white: bool, phase: i32) -> i32 {
 }
 
 static NNUE_NET: RwLock<Option<Arc<NNUENet>>> = RwLock::new(None);
+static OTHER_NNET: RwLock<Option<Arc<OtherNetData>>> = RwLock::new(None);
 
 pub const EMBEDDED_NNUE: &[u8] = include_bytes!("net.compact.nnue");
 
 pub fn init_nnue(path: &str) -> Result<(), String> {
-    let net = NNUENet::load(path)?;
+    let data = std::fs::read(path).map_err(|e| format!("read {}: {}", path, e))?;
+    if OtherNetInfo::is_format(&data) {
+        let other = load_other_net(&data)?;
+        let mut other_lock = OTHER_NNET.write().map_err(|e| e.to_string())?;
+        *other_lock = Some(Arc::new(other));
+        let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
+        *lock = None;
+        return Ok(());
+    }
+    let net = NNUENet::load_from_bytes(&data, path)?;
     let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
     *lock = Some(Arc::new(net));
+    let mut other_lock = OTHER_NNET.write().map_err(|e| e.to_string())?;
+    *other_lock = None;
     Ok(())
 }
 
 pub fn reset_nnue() -> Result<(), String> {
     let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
     *lock = None;
+    let mut other_lock = OTHER_NNET.write().map_err(|e| e.to_string())?;
+    *other_lock = None;
     Ok(())
 }
 
@@ -358,6 +373,10 @@ pub fn init_embedded_nnue() -> Result<(), String> {
 
 pub fn current_nnue_net() -> Option<Arc<NNUENet>> {
     NNUE_NET.read().ok()?.clone()
+}
+
+pub fn current_other_net() -> Option<Arc<OtherNetData>> {
+    OTHER_NNET.read().ok()?.clone()
 }
 
 pub fn with_nnue_net<F, R>(f: F) -> Option<R>
@@ -387,6 +406,9 @@ pub(crate) fn evaluate_nnue_acc_with_backend<B: NnueBackend>(
 }
 
 pub fn evaluate_nnue(st: &BoardState) -> i32 {
+    if let Some(other) = current_other_net() {
+        return evaluate_other_net(&other, st);
+    }
     with_nnue_net(|net| {
         let mut acc = NNUEAccumulator::new(net.hidden_size);
         if net.has_threat_features() {
