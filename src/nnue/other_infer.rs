@@ -5,8 +5,9 @@ use std::sync::OnceLock;
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
     __m256i, _mm256_add_epi32, _mm256_castsi256_si128, _mm256_cvtepi8_epi16, _mm256_cvtepu8_epi16,
-    _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_madd_epi16, _mm256_mullo_epi16,
-    _mm256_set1_epi16, _mm256_setzero_si256, _mm256_storeu_si256,
+    _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_madd_epi16, _mm256_max_epi16,
+    _mm256_min_epi16, _mm256_mullo_epi16, _mm256_packus_epi16, _mm256_permute2x128_si256,
+    _mm256_set1_epi16, _mm256_setzero_si256, _mm256_srli_epi16, _mm256_storeu_si256,
 };
 
 const PSQ_DIMS: usize = 22_528;
@@ -561,6 +562,68 @@ fn transformed_feature(accumulator: &[i16; HIDDEN_SIZE], index: usize) -> u8 {
     (a * b / 512) as u8
 }
 
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2")]
+unsafe fn transformed_features_avx2(accumulator: &[i16; HIDDEN_SIZE], output: &mut [u8]) {
+    debug_assert_eq!(output.len(), HIDDEN_SIZE / 2);
+    let zero = _mm256_setzero_si256();
+    let max255 = _mm256_set1_epi16(FT_MAX_VAL as i16);
+
+    for offset in (0..HIDDEN_SIZE / 2).step_by(32) {
+        let a_lo =
+            unsafe { _mm256_loadu_si256(accumulator.as_ptr().add(offset).cast::<__m256i>()) };
+        let a_hi =
+            unsafe { _mm256_loadu_si256(accumulator.as_ptr().add(offset + 16).cast::<__m256i>()) };
+        let b_lo = unsafe {
+            _mm256_loadu_si256(
+                accumulator
+                    .as_ptr()
+                    .add(HIDDEN_SIZE / 2 + offset)
+                    .cast::<__m256i>(),
+            )
+        };
+        let b_hi = unsafe {
+            _mm256_loadu_si256(
+                accumulator
+                    .as_ptr()
+                    .add(HIDDEN_SIZE / 2 + offset + 16)
+                    .cast::<__m256i>(),
+            )
+        };
+
+        let a_lo = _mm256_min_epi16(_mm256_max_epi16(a_lo, zero), max255);
+        let a_hi = _mm256_min_epi16(_mm256_max_epi16(a_hi, zero), max255);
+        let b_lo = _mm256_min_epi16(_mm256_max_epi16(b_lo, zero), max255);
+        let b_hi = _mm256_min_epi16(_mm256_max_epi16(b_hi, zero), max255);
+
+        let shifted_lo = _mm256_srli_epi16(_mm256_mullo_epi16(a_lo, b_lo), 9);
+        let shifted_hi = _mm256_srli_epi16(_mm256_mullo_epi16(a_hi, b_hi), 9);
+
+        let x = _mm256_permute2x128_si256(shifted_lo, shifted_hi, 0x20);
+        let y = _mm256_permute2x128_si256(shifted_lo, shifted_hi, 0x31);
+        let packed = _mm256_packus_epi16(x, y);
+        unsafe {
+            _mm256_storeu_si256(output.as_mut_ptr().add(offset).cast::<__m256i>(), packed);
+        }
+    }
+}
+
+fn transformed_features(accumulator: &[i16; HIDDEN_SIZE], output: &mut [u8]) {
+    debug_assert_eq!(output.len(), HIDDEN_SIZE / 2);
+    #[cfg(target_arch = "x86_64")]
+    {
+        static AVX2_FEATURES: OnceLock<bool> = OnceLock::new();
+        if *AVX2_FEATURES.get_or_init(|| std::is_x86_feature_detected!("avx2")) {
+            // SAFETY: runtime feature detection above guarantees AVX2 support,
+            // and output is exactly HIDDEN_SIZE/2 bytes, a multiple of 32.
+            return unsafe { transformed_features_avx2(accumulator, output) };
+        }
+    }
+    for (index, slot) in output.iter_mut().enumerate() {
+        *slot = transformed_feature(accumulator, index);
+    }
+}
+
 fn saturating_i16(value: i32) -> i16 {
     value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
 }
@@ -672,10 +735,11 @@ fn evaluate_other_net_acc_components(
     let perspectives = [side_to_move, opponent];
     let mut transformed = [0u8; HIDDEN_SIZE];
     for (output_side, &perspective) in perspectives.iter().enumerate() {
-        for index in 0..HIDDEN_SIZE / 2 {
-            transformed[output_side * HIDDEN_SIZE / 2 + index] =
-                transformed_feature(&accumulator.accumulation[perspective], index);
-        }
+        let base = output_side * HIDDEN_SIZE / 2;
+        transformed_features(
+            &accumulator.accumulation[perspective],
+            &mut transformed[base..base + HIDDEN_SIZE / 2],
+        );
     }
 
     let psqt_value = (accumulator.psqt[side_to_move][bucket] - accumulator.psqt[opponent][bucket])
@@ -808,6 +872,36 @@ mod tests {
         ];
         for (fen, expected) in additional_cases {
             assert_eq!(score_for(fen, net), expected, "oracle mismatch for {fen}");
+        }
+    }
+
+    #[test]
+    fn transformed_features_simd_matches_scalar() {
+        let mut acc = [0i16; super::HIDDEN_SIZE];
+        for (i, v) in acc.iter_mut().enumerate() {
+            let x = i as i32;
+            *v = ((x * 7919) % 97 - 48) as i16;
+        }
+        acc[0] = 0;
+        acc[1] = 255;
+        acc[2] = 256;
+        acc[3] = -1;
+        acc[4] = i16::MIN;
+        acc[5] = i16::MAX;
+        acc[super::HIDDEN_SIZE / 2] = 127;
+        acc[super::HIDDEN_SIZE / 2 + 1] = -32768;
+
+        let mut expected = [0u8; super::HIDDEN_SIZE / 2];
+        for (index, slot) in expected.iter_mut().enumerate() {
+            *slot = super::transformed_feature(&acc, index);
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        if std::is_x86_feature_detected!("avx2") {
+            // SAFETY: gated on runtime AVX2 detection above.
+            let mut actual = [0u8; super::HIDDEN_SIZE / 2];
+            unsafe { super::transformed_features_avx2(&acc, &mut actual) };
+            assert_eq!(actual, expected);
         }
     }
 
