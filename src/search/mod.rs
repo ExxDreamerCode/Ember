@@ -162,6 +162,7 @@ use self::qsearch::{
     qsearch_see_threshold_cp,
 };
 mod state;
+pub(crate) use state::add_endgame_mopup_white;
 
 #[cfg(test)]
 mod tests;

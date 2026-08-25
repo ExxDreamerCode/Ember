@@ -1,5 +1,91 @@
 use super::*;
 
+fn endgame_mopup_white(st: &BoardState) -> i32 {
+    let wpc: u32 = (0..6).map(|i| st.bb[i].count_ones()).sum();
+    let bpc: u32 = (6..12).map(|i| st.bb[i].count_ones()).sum();
+    let winner = if bpc == 1 && wpc > 1 {
+        0
+    } else if wpc == 1 && bpc > 1 {
+        1
+    } else {
+        return 0;
+    };
+
+    let (q, r, bi, kn, cw_pop) = if winner == 0 {
+        (
+            st.bb[crate::types::WQ].count_ones(),
+            st.bb[crate::types::WR].count_ones(),
+            st.bb[crate::types::WB].count_ones(),
+            st.bb[crate::types::WN].count_ones(),
+            wpc,
+        )
+    } else {
+        (
+            st.bb[crate::types::BQ].count_ones(),
+            st.bb[crate::types::BR].count_ones(),
+            st.bb[crate::types::BB].count_ones(),
+            st.bb[crate::types::BN].count_ones(),
+            bpc,
+        )
+    };
+
+    if !(q > 0 || r > 0 || bi >= 2 || (bi >= 1 && kn >= 1)) {
+        return 0;
+    }
+
+    let loser_white = winner == 1;
+    let lk = crate::nnue::convert(st.king_sq(loser_white) as u8) as usize;
+    let wk = crate::nnue::convert(st.king_sq(!loser_white) as u8) as usize;
+    let (lf, lr) = (lk % 8, lk / 8);
+    let (wf, wr) = (wk % 8, wk / 8);
+    let (p_edge, p_prox, p_corner) = (70i32, 15i32, 80i32);
+    let cmd = (if lf < 4 { 3 - lf } else { lf - 4 }) + (if lr < 4 { 3 - lr } else { lr - 4 });
+    let md = (lf as i32 - wf as i32).abs() + (lr as i32 - wr as i32).abs();
+    let mut term = p_edge * cmd as i32 + p_prox * (14 - md);
+
+    // KBN: only the two squares of the bishop's colour are mating corners.
+    if cw_pop == 3 && bi == 1 && kn == 1 {
+        let bsq = (if winner == 0 {
+            st.bb[crate::types::WB].trailing_zeros()
+        } else {
+            st.bb[crate::types::BB].trailing_zeros()
+        }) as usize;
+        let bsq_phys = crate::nnue::convert(bsq as u8);
+        let light = ((bsq_phys % 8) + (bsq_phys / 8)) & 1 == 1;
+        let corners: [(i32, i32); 2] = if light {
+            [(0, 7), (7, 0)]
+        } else {
+            [(0, 0), (7, 7)]
+        };
+        let dmin = corners
+            .iter()
+            .map(|&(cf, cr)| (lf as i32 - cf).abs() + (lr as i32 - cr).abs())
+            .min()
+            .unwrap();
+        term += p_corner * (7 - dmin);
+    }
+    if winner == 0 {
+        term
+    } else {
+        -term
+    }
+}
+
+#[inline(always)]
+fn with_endgame_mopup(st: &BoardState, score_stm: i32) -> i32 {
+    let mu = endgame_mopup_white(st);
+    if st.w {
+        score_stm + mu
+    } else {
+        score_stm - mu
+    }
+}
+
+#[inline(always)]
+pub(crate) fn add_endgame_mopup_white(st: &BoardState, score_white: i32) -> i32 {
+    score_white + endgame_mopup_white(st)
+}
+
 impl Searcher {
     pub fn new(shared_tt: Arc<SharedTT>, stopped: Arc<AtomicBool>) -> Self {
         Searcher {
@@ -851,11 +937,8 @@ impl Searcher {
                 );
             }
         }
-        if st.w {
-            score
-        } else {
-            -score
-        }
+        let stm_score = if st.w { score } else { -score };
+        with_endgame_mopup(st, stm_score)
     }
 
     #[inline(always)]
@@ -870,7 +953,7 @@ impl Searcher {
         }
         let stm = if st.w { WHITE } else { BLACK };
         let pc: u32 = (0..12).map(|i| st.bb[i].count_ones()).sum();
-        if ply < self.nnue_stack.len() && ply < self.threat_stack.len() {
+        let base = if ply < self.nnue_stack.len() && ply < self.threat_stack.len() {
             net.forward_with_threats::<B>(&self.nnue_stack[ply], &self.threat_stack[ply], stm, pc)
         } else {
             let mut acc = NNUEAccumulator::new(net.hidden_size);
@@ -878,7 +961,8 @@ impl Searcher {
             let mut threats = NNUEThreatAccumulator::new(net.hidden_size);
             threats.refresh(net, st);
             net.forward_with_threats::<B>(&acc, &threats, stm, pc)
-        }
+        };
+        with_endgame_mopup(st, base)
     }
 
     #[inline(always)]
@@ -891,11 +975,12 @@ impl Searcher {
         if CHESS960 && st.mc <= 3 {
             return self.static_eval_classic::<CHESS960>(st);
         }
-        if let Some(accumulator) = self.other_stack.get(ply) {
+        let base = if let Some(accumulator) = self.other_stack.get(ply) {
             evaluate_other_net_acc(net, accumulator, st)
         } else {
             evaluate_other_net(net, st)
-        }
+        };
+        with_endgame_mopup(st, base)
     }
 
     pub(super) fn corrected_eval_other_nnue<const CHESS960: bool>(
@@ -906,7 +991,7 @@ impl Searcher {
         if CHESS960 && st.mc <= 3 {
             return self.corrected_eval_classic::<CHESS960>(st);
         }
-        evaluate_other_net(net, st)
+        with_endgame_mopup(st, evaluate_other_net(net, st))
     }
 
     pub fn corrected_eval(&self, st: &BoardState) -> i32 {
@@ -984,11 +1069,8 @@ impl Searcher {
         let mut acc = NNUEAccumulator::new(net.hidden_size);
         B::refresh(&mut acc, net, st);
         let score = evaluate_nnue_acc_with_backend::<B>(net, &acc, st);
-        if st.w {
-            score
-        } else {
-            -score
-        }
+        let stm_score = if st.w { score } else { -score };
+        with_endgame_mopup(st, stm_score)
     }
 
     #[inline(always)]
@@ -1006,7 +1088,8 @@ impl Searcher {
         threats.refresh(net, st);
         let stm = if st.w { WHITE } else { BLACK };
         let pc: u32 = (0..12).map(|i| st.bb[i].count_ones()).sum();
-        net.forward_with_threats::<B>(&acc, &threats, stm, pc)
+        let base = net.forward_with_threats::<B>(&acc, &threats, stm, pc);
+        with_endgame_mopup(st, base)
     }
 
     pub fn update_correction_history(&mut self, st: &BoardState, score: i32, depth: i32) {
