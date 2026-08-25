@@ -154,11 +154,11 @@ fn stockfish_pseudo_attacks(piece: u32, from: u32) -> u64 {
 }
 
 fn piece_at(state: &BoardState, square: u32) -> u32 {
-    state
-        .bb
-        .iter()
-        .position(|bb| bb & (1u64 << square) != 0)
-        .expect("threat target must be occupied") as u32
+    debug_assert_ne!(
+        state.mailbox[square as usize], EMPTY_SQ,
+        "threat target must be occupied"
+    );
+    state.mailbox[square as usize] as u32
 }
 
 struct ThreatLut {
