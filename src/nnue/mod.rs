@@ -28,6 +28,7 @@ unsafe fn assume_init_slice<T>(values: &[MaybeUninit<T>]) -> &[T] {
 }
 
 mod backend;
+mod classic;
 mod features;
 mod loader;
 mod other_infer;
@@ -37,6 +38,9 @@ pub(crate) use self::backend::Avx512NnueBackend;
 pub(crate) use self::backend::{
     NnueBackend, ScalarNnueBackend, Simd128NnueBackend, Simd512NnueBackend, SimdNnueBackend,
 };
+#[cfg(test)]
+pub(crate) use self::classic::synthetic_test_net_bytes;
+pub(crate) use self::classic::ClassicHalfKpNet;
 pub use self::features::{
     compute_king_buckets, threat_feature_count, KbLayout, NNUEThreatAccumulator,
 };

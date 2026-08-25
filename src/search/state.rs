@@ -115,6 +115,7 @@ impl Searcher {
             other_stack: Vec::new(),
             nnue_net: current_nnue_net(),
             other_net: current_other_net(),
+            classic_net: current_classic_net(),
             search_backend: active_search_backend(),
             syzygy: SyzygyTables::new(),
             move_bufs: Vec::new(),
@@ -134,6 +135,7 @@ impl Searcher {
     pub fn refresh_nnue_net(&mut self) {
         self.nnue_net = current_nnue_net();
         self.other_net = current_other_net();
+        self.classic_net = current_classic_net();
     }
 
     pub fn refresh_search_backend(&mut self) {
@@ -306,6 +308,7 @@ impl Searcher {
         dst.import_learning(&self.export_learning());
         dst.nnue_net = self.nnue_net.clone();
         dst.other_net = self.other_net.clone();
+        dst.classic_net = self.classic_net.clone();
         dst.search_backend = self.search_backend;
         dst.syzygy = self.syzygy.clone();
         dst.pondering = Arc::clone(&self.pondering);
@@ -983,6 +986,29 @@ impl Searcher {
         with_endgame_mopup(st, base)
     }
 
+    #[inline(always)]
+    pub(super) fn static_eval_classic_halfkp<const CHESS960: bool>(
+        &self,
+        st: &BoardState,
+        net: &ClassicHalfKpNet,
+    ) -> i32 {
+        if CHESS960 && st.mc <= 3 {
+            return self.static_eval_classic::<CHESS960>(st);
+        }
+        with_endgame_mopup(st, net.evaluate_stm(st))
+    }
+
+    pub(super) fn corrected_eval_classic_halfkp<const CHESS960: bool>(
+        &self,
+        st: &BoardState,
+        net: &ClassicHalfKpNet,
+    ) -> i32 {
+        if CHESS960 && st.mc <= 3 {
+            return self.corrected_eval_classic::<CHESS960>(st);
+        }
+        with_endgame_mopup(st, net.evaluate_stm(st))
+    }
+
     pub(super) fn corrected_eval_other_nnue<const CHESS960: bool>(
         &self,
         st: &BoardState,
@@ -995,6 +1021,13 @@ impl Searcher {
     }
 
     pub fn corrected_eval(&self, st: &BoardState) -> i32 {
+        if let Some(net) = self.classic_net.as_deref() {
+            return if st.chess960 {
+                ClassicHalfKpEval { net }.corrected_eval::<true>(self, st)
+            } else {
+                ClassicHalfKpEval { net }.corrected_eval::<false>(self, st)
+            };
+        }
         if let Some(net) = self.other_net.as_deref() {
             return if st.chess960 {
                 OtherNnueEval { net }.corrected_eval::<true>(self, st)

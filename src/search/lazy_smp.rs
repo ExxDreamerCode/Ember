@@ -31,6 +31,7 @@ pub(super) struct LazySmpRootContext {
     pub(super) rep_stack_len: usize,
     pub(super) nnue_net: Option<Arc<NNUENet>>,
     pub(super) other_net: Option<Arc<OtherNetData>>,
+    pub(super) classic_net: Option<Arc<ClassicHalfKpNet>>,
     pub(super) search_backend: SearchBackendKind,
     pub(super) syzygy: SyzygyTables,
     pub(super) tt_mb: usize,
@@ -45,6 +46,7 @@ impl LazySmpRootContext {
             rep_stack_len: searcher.rep_stack_len,
             nnue_net: searcher.nnue_net.clone(),
             other_net: searcher.other_net.clone(),
+            classic_net: searcher.classic_net.clone(),
             search_backend: searcher.search_backend,
             syzygy: searcher.syzygy.clone(),
             tt_mb: searcher.tt_mb,
@@ -82,6 +84,7 @@ impl LazySmpRootContext {
         }
         searcher.nnue_net = self.nnue_net.clone();
         searcher.other_net = self.other_net.clone();
+        searcher.classic_net = self.classic_net.clone();
         searcher.init_nnue_stack(st);
     }
 }

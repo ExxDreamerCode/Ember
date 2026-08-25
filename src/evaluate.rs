@@ -4,8 +4,8 @@ use crate::board::{
 };
 use crate::magic::{bishop_attacks, rook_attacks};
 use crate::nnue::{
-    evaluate_other_net, NNUEAccumulator, NNUENet, NNUEThreatAccumulator, NnueBackend, OtherNetData,
-    OtherNetInfo, ScalarNnueBackend,
+    evaluate_other_net, ClassicHalfKpNet, NNUEAccumulator, NNUENet, NNUEThreatAccumulator,
+    NnueBackend, OtherNetData, OtherNetInfo, ScalarNnueBackend,
 };
 use crate::types::{BLACK, WHITE};
 use std::sync::{Arc, RwLock};
@@ -335,11 +335,25 @@ fn king_safety(bb: &[u64; 12], white: bool, phase: i32) -> i32 {
 
 static NNUE_NET: RwLock<Option<Arc<NNUENet>>> = RwLock::new(None);
 static OTHER_NNET: RwLock<Option<Arc<OtherNetData>>> = RwLock::new(None);
+static CLASSIC_NNET: RwLock<Option<Arc<ClassicHalfKpNet>>> = RwLock::new(None);
 
 pub const EMBEDDED_NNUE: &[u8] = include_bytes!("net.compact.nnue");
 
 pub fn init_nnue(path: &str) -> Result<(), String> {
     let data = std::fs::read(path).map_err(|e| format!("read {}: {}", path, e))?;
+    if ClassicHalfKpNet::is_format(&data) {
+        let net = ClassicHalfKpNet::parse(&data)?;
+        println!(
+            "info string Loaded legacy HalfKP net {} ({})",
+            path,
+            net.overview()
+        );
+        let mut lock = CLASSIC_NNET.write().map_err(|e| e.to_string())?;
+        *lock = Some(Arc::new(net));
+        *NNUE_NET.write().map_err(|e| e.to_string())? = None;
+        *OTHER_NNET.write().map_err(|e| e.to_string())? = None;
+        return Ok(());
+    }
     if OtherNetInfo::is_format(&data) {
         let info = OtherNetInfo::try_parse(&data)?;
         let desc = String::from_utf8_lossy(&info.description);
@@ -367,6 +381,8 @@ pub fn reset_nnue() -> Result<(), String> {
     *lock = None;
     let mut other_lock = OTHER_NNET.write().map_err(|e| e.to_string())?;
     *other_lock = None;
+    let mut classic_lock = CLASSIC_NNET.write().map_err(|e| e.to_string())?;
+    *classic_lock = None;
     Ok(())
 }
 
@@ -376,6 +392,8 @@ pub fn init_embedded_nnue() -> Result<(), String> {
     *lock = Some(Arc::new(net));
     let mut other_lock = OTHER_NNET.write().map_err(|e| e.to_string())?;
     *other_lock = None;
+    let mut classic_lock = CLASSIC_NNET.write().map_err(|e| e.to_string())?;
+    *classic_lock = None;
     Ok(())
 }
 
@@ -385,6 +403,10 @@ pub fn current_nnue_net() -> Option<Arc<NNUENet>> {
 
 pub fn current_other_net() -> Option<Arc<OtherNetData>> {
     OTHER_NNET.read().ok()?.clone()
+}
+
+pub fn current_classic_net() -> Option<Arc<ClassicHalfKpNet>> {
+    CLASSIC_NNET.read().ok()?.clone()
 }
 
 pub fn with_nnue_net<F, R>(f: F) -> Option<R>
@@ -414,6 +436,11 @@ pub(crate) fn evaluate_nnue_acc_with_backend<B: NnueBackend>(
 }
 
 pub fn evaluate_nnue(st: &BoardState) -> i32 {
+    if let Some(classic) = current_classic_net() {
+        let stm_score = classic.evaluate_stm(st);
+        let white_base = if st.w { stm_score } else { -stm_score };
+        return crate::search::add_endgame_mopup_white(st, white_base);
+    }
     if let Some(other) = current_other_net() {
         let base = evaluate_other_net(&other, st);
         let white_base = if st.w { base } else { -base };
