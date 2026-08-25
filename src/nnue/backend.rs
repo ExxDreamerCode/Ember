@@ -49,6 +49,7 @@ pub(crate) trait NnueBackend: Copy {
         l2_off: usize,
         out_weights: &[f32],
         out_bias: f32,
+        crelu: bool,
         scratch: &mut [MaybeUninit<f32>],
     ) -> f32;
 }
@@ -158,6 +159,7 @@ impl NnueBackend for ScalarNnueBackend {
         l2_off: usize,
         out_weights: &[f32],
         out_bias: f32,
+        crelu: bool,
         scratch: &mut [MaybeUninit<f32>],
     ) -> f32 {
         simd::scalar_forward_l2(
@@ -169,6 +171,7 @@ impl NnueBackend for ScalarNnueBackend {
             l2_off,
             out_weights,
             out_bias,
+            crelu,
             scratch,
         )
     }
@@ -263,6 +266,7 @@ impl NnueBackend for Simd128NnueBackend {
         l2_off: usize,
         out_weights: &[f32],
         out_bias: f32,
+        crelu: bool,
         scratch: &mut [MaybeUninit<f32>],
     ) -> f32 {
         simd::simd128_forward_l2(
@@ -274,6 +278,7 @@ impl NnueBackend for Simd128NnueBackend {
             l2_off,
             out_weights,
             out_bias,
+            crelu,
             scratch,
         )
     }
@@ -454,6 +459,7 @@ impl NnueBackend for SimdNnueBackend {
         l2_off: usize,
         out_weights: &[f32],
         out_bias: f32,
+        crelu: bool,
         scratch: &mut [MaybeUninit<f32>],
     ) -> f32 {
         #[cfg(target_arch = "x86_64")]
@@ -467,6 +473,7 @@ impl NnueBackend for SimdNnueBackend {
                 l2_off,
                 out_weights,
                 out_bias,
+                crelu,
                 scratch,
             )
         }
@@ -480,6 +487,7 @@ impl NnueBackend for SimdNnueBackend {
             l2_off,
             out_weights,
             out_bias,
+            crelu,
             scratch,
         )
     }
@@ -574,6 +582,7 @@ impl NnueBackend for Simd512NnueBackend {
         l2_off: usize,
         out_weights: &[f32],
         out_bias: f32,
+        crelu: bool,
         scratch: &mut [MaybeUninit<f32>],
     ) -> f32 {
         simd::simd512_forward_l2(
@@ -585,6 +594,7 @@ impl NnueBackend for Simd512NnueBackend {
             l2_off,
             out_weights,
             out_bias,
+            crelu,
             scratch,
         )
     }
@@ -700,6 +710,7 @@ impl NnueBackend for Avx512NnueBackend {
         l2_off: usize,
         out_weights: &[f32],
         out_bias: f32,
+        crelu: bool,
         scratch: &mut [MaybeUninit<f32>],
     ) -> f32 {
         unsafe {
@@ -712,6 +723,7 @@ impl NnueBackend for Avx512NnueBackend {
                 l2_off,
                 out_weights,
                 out_bias,
+                crelu,
                 scratch,
             )
         }

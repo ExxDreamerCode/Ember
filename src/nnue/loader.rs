@@ -75,6 +75,7 @@ struct VersionFlags {
     l1sc: i32,
     bucketed: bool,
     dual: bool,
+    hl_crelu: bool,
     nkb: usize,
     layout: KbLayout,
     ft: usize,
@@ -295,6 +296,7 @@ impl NNUENet {
             out_weights_f: ow_f,
             out_bias_f: ob_f,
             dual_l1: flags.dual,
+            crelu_hidden: flags.hl_crelu,
             num_king_buckets: flags.nkb,
             kb_layout: flags.layout,
             king_bucket: kbt,
@@ -462,6 +464,7 @@ impl NNUENet {
             l1sc: QA,
             bucketed: false,
             dual: false,
+            hl_crelu: false,
             nkb: 16,
             layout: KbLayout::Uniform,
             ft: 0,
@@ -492,6 +495,7 @@ impl NNUENet {
                 flags.dual = f & 16 != 0;
                 let ext = f & 128 != 0;
                 let cons_inline = if !ext { f & 32 != 0 } else { false };
+                flags.hl_crelu = ext && (f & 32 != 0);
                 flags.has_threats = f & 64 != 0;
 
                 flags.ft = read_u16(r)? as usize;

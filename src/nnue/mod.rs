@@ -76,6 +76,7 @@ pub struct NNUENet {
     pub out_weights_f: Vec<f32>,
     pub out_bias_f: Vec<f32>,
     pub dual_l1: bool,
+    pub crelu_hidden: bool,
     pub num_king_buckets: usize,
     pub kb_layout: KbLayout,
     pub king_bucket: [usize; 64],
@@ -339,8 +340,26 @@ impl NNUENet {
         let hidden32 = unsafe { assume_init_slice(&hidden32[..l1]) };
 
         let mut l1_out = uninit_array::<f32, MAX_HIDDEN_SIZE>();
-        Self::screlu_activation::<B>(hidden32, pw_scale, qa_l1, &mut l1_out[..l1]);
-        let l1_out = unsafe { assume_init_slice(&l1_out[..l1]) };
+        let l1_count = if self.dual_l1 { l1 * 2 } else { l1 };
+        {
+            let qa_f = qa_l1 as f32;
+            let qsq = qa_f * qa_f;
+            if self.dual_l1 {
+                for i in 0..l1 {
+                    let v = (hidden32[i] / pw_scale).clamp(0, qa_l1) as f32;
+                    l1_out[i].write(v / qa_f); // CReLU half
+                    l1_out[l1 + i].write((v * v) / qsq); // SCReLU half
+                }
+            } else if self.crelu_hidden {
+                for i in 0..l1 {
+                    let v = (hidden32[i] / pw_scale).clamp(0, qa_l1) as f32;
+                    l1_out[i].write(v / qa_f);
+                }
+            } else {
+                Self::screlu_activation::<B>(hidden32, pw_scale, qa_l1, &mut l1_out[..l1]);
+            }
+        }
+        let l1_out = unsafe { assume_init_slice(&l1_out[..l1_count]) };
 
         if self.l2_per_bucket > 0 {
             self.forward_l2::<B>(l1_out, bucket, l1)
@@ -412,6 +431,7 @@ impl NNUENet {
             l2_off,
             ow,
             self.out_bias_f[bucket],
+            self.crelu_hidden,
             &mut scratch[..l2],
         );
         (of * EVAL_SCALE as f32) as i32

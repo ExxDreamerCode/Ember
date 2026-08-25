@@ -360,6 +360,7 @@ pub fn scalar_forward_l2(
     l2_off: usize,
     out_weights: &[f32],
     out_bias: f32,
+    crelu: bool,
     scratch: &mut [MaybeUninit<f32>],
 ) -> f32 {
     debug_assert!(l2 <= scratch.len());
@@ -385,7 +386,7 @@ pub fn scalar_forward_l2(
     let mut result = out_bias;
     for (h_value, w_value) in h2.iter().zip(out_weights) {
         let v = h_value.clamp(0.0, 1.0);
-        result += v * v * *w_value;
+        result += (if crelu { v } else { v * v }) * *w_value;
     }
     result
 }
@@ -1207,6 +1208,7 @@ pub fn simd128_forward_l2(
     l2_off: usize,
     out_weights: &[f32],
     out_bias: f32,
+    crelu: bool,
     scratch: &mut [MaybeUninit<f32>],
 ) -> f32 {
     debug_assert!(l2 <= scratch.len());
@@ -1242,11 +1244,15 @@ pub fn simd128_forward_l2(
     let (h_chunks, h_tail) = h2.as_chunks_mut::<F32_LANES_128>();
     for h_chunk in h_chunks {
         let h = F32x128::from_array(*h_chunk).simd_clamp(zero, one);
-        *h_chunk = (h * h).to_array();
+        *h_chunk = if crelu {
+            h.to_array()
+        } else {
+            (h * h).to_array()
+        };
     }
     for h_value in h_tail {
-        *h_value = h_value.clamp(0.0, 1.0);
-        *h_value *= *h_value;
+        let v = h_value.clamp(0.0, 1.0);
+        *h_value = if crelu { v } else { v * v };
     }
 
     let mut of = F32x128::splat(0.0);
@@ -1276,6 +1282,7 @@ pub fn simd_forward_l2(
     l2_off: usize,
     out_weights: &[f32],
     out_bias: f32,
+    crelu: bool,
     scratch: &mut [MaybeUninit<f32>],
 ) -> f32 {
     debug_assert!(l2 <= scratch.len());
@@ -1311,11 +1318,15 @@ pub fn simd_forward_l2(
     let (h_chunks, h_tail) = h2.as_chunks_mut::<F32_LANES>();
     for h_chunk in h_chunks {
         let h = F32x::from_array(*h_chunk).simd_clamp(zero, one);
-        *h_chunk = (h * h).to_array();
+        *h_chunk = if crelu {
+            h.to_array()
+        } else {
+            (h * h).to_array()
+        };
     }
     for h_value in h_tail {
-        *h_value = h_value.clamp(0.0, 1.0);
-        *h_value *= *h_value;
+        let v = h_value.clamp(0.0, 1.0);
+        *h_value = if crelu { v } else { v * v };
     }
 
     let mut of = F32x::splat(0.0);
@@ -1345,6 +1356,7 @@ pub fn simd512_forward_l2(
     l2_off: usize,
     out_weights: &[f32],
     out_bias: f32,
+    crelu: bool,
     scratch: &mut [MaybeUninit<f32>],
 ) -> f32 {
     debug_assert!(l2 <= scratch.len());
@@ -1380,11 +1392,15 @@ pub fn simd512_forward_l2(
     let (h_chunks, h_tail) = h2.as_chunks_mut::<F32_LANES_512>();
     for h_chunk in h_chunks {
         let h = F32x512::from_array(*h_chunk).simd_clamp(zero, one);
-        *h_chunk = (h * h).to_array();
+        *h_chunk = if crelu {
+            h.to_array()
+        } else {
+            (h * h).to_array()
+        };
     }
     for h_value in h_tail {
-        *h_value = h_value.clamp(0.0, 1.0);
-        *h_value *= *h_value;
+        let v = h_value.clamp(0.0, 1.0);
+        *h_value = if crelu { v } else { v * v };
     }
 
     let mut of = F32x512::splat(0.0);
@@ -1564,6 +1580,7 @@ pub unsafe fn simd_forward_l2_x86_v3(
     l2_off: usize,
     out_weights: &[f32],
     out_bias: f32,
+    crelu: bool,
     scratch: &mut [MaybeUninit<f32>],
 ) -> f32 {
     simd_forward_l2(
@@ -1575,6 +1592,7 @@ pub unsafe fn simd_forward_l2_x86_v3(
         l2_off,
         out_weights,
         out_bias,
+        crelu,
         scratch,
     )
 }
@@ -1655,6 +1673,7 @@ pub unsafe fn simd_forward_l2_x86_avx512(
     l2_off: usize,
     out_weights: &[f32],
     out_bias: f32,
+    crelu: bool,
     scratch: &mut [MaybeUninit<f32>],
 ) -> f32 {
     simd512_forward_l2(
@@ -1666,6 +1685,7 @@ pub unsafe fn simd_forward_l2_x86_avx512(
         l2_off,
         out_weights,
         out_bias,
+        crelu,
         scratch,
     )
 }
@@ -2149,35 +2169,96 @@ mod tests {
             .map(|i| ((i * 7 % 31) as f32 - 15.0) / 19.0)
             .collect();
         let out_bias = 0.125f32;
-        let mut scratch = vec![MaybeUninit::<f32>::uninit(); l2];
 
-        let actual = simd_forward_l2(
-            &l1_out,
-            &l2_weights,
-            &l2_biases,
-            l2,
-            l2_total,
-            l2_off,
-            &out_weights,
-            out_bias,
-            &mut scratch,
-        );
-
-        let mut h2 = vec![0.0f32; l2];
-        h2[..l2].copy_from_slice(&l2_biases[l2_off..l2_off + l2]);
-        for (i, &l1_value) in l1_out.iter().enumerate() {
-            let w_base = i * l2_total + l2_off;
-            for k in 0..l2 {
-                h2[k] += l1_value * l2_weights[w_base + k];
+        for crelu in [false, true] {
+            let mut h2 = vec![0.0f32; l2];
+            h2[..l2].copy_from_slice(&l2_biases[l2_off..l2_off + l2]);
+            for (i, &l1_value) in l1_out.iter().enumerate() {
+                let w_base = i * l2_total + l2_off;
+                for k in 0..l2 {
+                    h2[k] += l1_value * l2_weights[w_base + k];
+                }
             }
-        }
-        let mut expected = out_bias;
-        for k in 0..l2 {
-            h2[k] = h2[k].clamp(0.0, 1.0);
-            h2[k] *= h2[k];
-            expected += h2[k] * out_weights[k];
-        }
+            let mut expected = out_bias;
+            for k in 0..l2 {
+                h2[k] = h2[k].clamp(0.0, 1.0);
+                if !crelu {
+                    h2[k] *= h2[k];
+                }
+                expected += h2[k] * out_weights[k];
+            }
 
-        assert!((actual - expected).abs() < 0.000001);
+            let mut scalar_scratch = vec![MaybeUninit::<f32>::uninit(); l2];
+            let scalar_actual = scalar_forward_l2(
+                &l1_out,
+                &l2_weights,
+                &l2_biases,
+                l2,
+                l2_total,
+                l2_off,
+                &out_weights,
+                out_bias,
+                crelu,
+                &mut scalar_scratch,
+            );
+            assert!(
+                (scalar_actual - expected).abs() < 0.000001,
+                "scalar_forward_l2 mismatch (crelu={crelu})"
+            );
+
+            let mut simd128_scratch = vec![MaybeUninit::<f32>::uninit(); l2];
+            let simd128_actual = simd128_forward_l2(
+                &l1_out,
+                &l2_weights,
+                &l2_biases,
+                l2,
+                l2_total,
+                l2_off,
+                &out_weights,
+                out_bias,
+                crelu,
+                &mut simd128_scratch,
+            );
+            assert!(
+                (simd128_actual - expected).abs() < 0.000001,
+                "simd128_forward_l2 mismatch (crelu={crelu})"
+            );
+
+            let mut simd_scratch = vec![MaybeUninit::<f32>::uninit(); l2];
+            let simd_actual = simd_forward_l2(
+                &l1_out,
+                &l2_weights,
+                &l2_biases,
+                l2,
+                l2_total,
+                l2_off,
+                &out_weights,
+                out_bias,
+                crelu,
+                &mut simd_scratch,
+            );
+            assert!(
+                (simd_actual - expected).abs() < 0.000001,
+                "simd_forward_l2 mismatch (crelu={crelu})"
+            );
+
+            let mut simd512_scratch = vec![MaybeUninit::<f32>::uninit(); l2];
+            let simd512_actual = simd512_forward_l2(
+                &l1_out,
+                &l2_weights,
+                &l2_biases,
+                l2,
+                l2_total,
+                l2_off,
+                &out_weights,
+                out_bias,
+                crelu,
+                &mut simd512_scratch,
+            );
+            assert!(
+                (simd512_actual - expected).abs() < 0.000001,
+                "simd512_forward_l2 mismatch (crelu={crelu})"
+            );
+        }
     }
 }
