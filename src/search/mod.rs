@@ -15,9 +15,9 @@ use crate::movegen::{
 #[cfg(target_arch = "x86_64")]
 use crate::nnue::Avx512NnueBackend;
 use crate::nnue::{
-    evaluate_other_net, evaluate_other_net_acc, ClassicHalfKpNet, NNUEAccumulator, NNUENet,
-    NNUEThreatAccumulator, NnueBackend, OtherAccumulator, OtherNetData, ScalarNnueBackend,
-    Simd128NnueBackend, Simd512NnueBackend, SimdNnueBackend,
+    evaluate_other_net, evaluate_other_net_acc, ClassicHalfKpAccumulator, ClassicHalfKpNet,
+    NNUEAccumulator, NNUENet, NNUEThreatAccumulator, NnueBackend, OtherAccumulator, OtherNetData,
+    ScalarNnueBackend, Simd128NnueBackend, Simd512NnueBackend, SimdNnueBackend,
 };
 use crate::syzygy::SyzygyTables;
 use crate::time_management::{iteration_time_decision, IterationTiming};
@@ -135,6 +135,7 @@ pub struct Searcher {
     pub nnue_stack: Vec<NNUEAccumulator>,
     pub threat_stack: Vec<NNUEThreatAccumulator>,
     pub(crate) other_stack: Vec<OtherAccumulator>,
+    pub(crate) classic_stack: Vec<ClassicHalfKpAccumulator>,
     pub nnue_net: Option<Arc<NNUENet>>,
     pub(crate) other_net: Option<Arc<OtherNetData>>,
     pub(crate) classic_net: Option<Arc<ClassicHalfKpNet>>,

@@ -147,15 +147,16 @@ impl SearchEval for OtherNnueEval<'_> {
         }
     }
 }
+
 impl SearchEval for ClassicHalfKpEval<'_> {
     #[inline(always)]
     fn static_eval<const CHESS960: bool>(
         self,
         searcher: &Searcher,
         st: &BoardState,
-        _ply: usize,
+        ply: usize,
     ) -> i32 {
-        searcher.static_eval_classic_halfkp::<CHESS960>(st, self.net)
+        searcher.static_eval_classic_halfkp::<CHESS960>(st, ply, self.net)
     }
 
     #[inline(always)]
@@ -167,23 +168,35 @@ impl SearchEval for ClassicHalfKpEval<'_> {
     #[inline(always)]
     fn push_acc(
         self,
-        _searcher: &mut Searcher,
-        _st_before: &BoardState,
-        _st_after: &BoardState,
+        searcher: &mut Searcher,
+        st_before: &BoardState,
+        st_after: &BoardState,
         _sr: usize,
         _sc: usize,
         _er: usize,
         _ec: usize,
         _promotion: u8,
-        _ply: usize,
+        ply: usize,
     ) {
+        searcher.push_classic_acc(self.net, st_before, st_after, ply);
     }
 
     #[inline(always)]
-    fn ensure_child_stack(self, _searcher: &mut Searcher, _ply: usize) {}
+    fn ensure_child_stack(self, searcher: &mut Searcher, ply: usize) {
+        if ply + 1 >= searcher.classic_stack.len() && ply + 1 < MAX_PLY + 1 {
+            searcher
+                .classic_stack
+                .resize(ply + 2, crate::nnue::ClassicHalfKpAccumulator::new());
+        }
+    }
 
     #[inline(always)]
-    fn copy_null_acc(self, _searcher: &mut Searcher, _ply: usize) {}
+    fn copy_null_acc(self, searcher: &mut Searcher, ply: usize) {
+        if ply + 1 < searcher.classic_stack.len() {
+            let (parents, children) = searcher.classic_stack.split_at_mut(ply + 1);
+            children[0].clone_from(&parents[ply]);
+        }
+    }
 }
 
 impl<'a, B: NnueBackend> SearchEval for NnueEval<'a, B> {

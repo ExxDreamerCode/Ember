@@ -40,7 +40,7 @@ pub(crate) use self::backend::{
 };
 #[cfg(test)]
 pub(crate) use self::classic::synthetic_test_net_bytes;
-pub(crate) use self::classic::ClassicHalfKpNet;
+pub(crate) use self::classic::{ClassicHalfKpAccumulator, ClassicHalfKpNet};
 pub use self::features::{
     compute_king_buckets, threat_feature_count, KbLayout, NNUEThreatAccumulator,
 };

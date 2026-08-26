@@ -113,6 +113,7 @@ impl Searcher {
             nnue_stack: Vec::new(),
             threat_stack: Vec::new(),
             other_stack: Vec::new(),
+            classic_stack: Vec::new(),
             nnue_net: current_nnue_net(),
             other_net: current_other_net(),
             classic_net: current_classic_net(),
@@ -146,6 +147,7 @@ impl Searcher {
         if let Some(net) = self.other_net.as_deref() {
             self.nnue_stack.clear();
             self.threat_stack.clear();
+            self.classic_stack.clear();
             if self.other_stack.len() < MAX_PLY + 1 {
                 self.other_stack
                     .resize(MAX_PLY + 1, OtherAccumulator::new());
@@ -154,6 +156,17 @@ impl Searcher {
             return;
         }
         self.other_stack.clear();
+        if let Some(net) = self.classic_net.as_deref() {
+            self.nnue_stack.clear();
+            self.threat_stack.clear();
+            if self.classic_stack.len() < MAX_PLY + 1 {
+                self.classic_stack
+                    .resize(MAX_PLY + 1, ClassicHalfKpAccumulator::new());
+            }
+            self.classic_stack[0].refresh(net, st);
+            return;
+        }
+        self.classic_stack.clear();
         if let Some(net) = self.nnue_net.as_deref() {
             if self.nnue_stack.len() < MAX_PLY + 1 {
                 self.nnue_stack
@@ -178,6 +191,14 @@ impl Searcher {
                 self.other_stack.resize(ply + 1, OtherAccumulator::new());
             }
             self.other_stack[ply].refresh(net, st);
+            return;
+        }
+        if let Some(net) = self.classic_net.as_deref() {
+            if self.classic_stack.len() <= ply {
+                self.classic_stack
+                    .resize(ply + 1, ClassicHalfKpAccumulator::new());
+            }
+            self.classic_stack[ply].refresh(net, st);
             return;
         }
         let Some(net) = self.nnue_net.as_deref() else {
@@ -990,12 +1011,18 @@ impl Searcher {
     pub(super) fn static_eval_classic_halfkp<const CHESS960: bool>(
         &self,
         st: &BoardState,
+        ply: usize,
         net: &ClassicHalfKpNet,
     ) -> i32 {
         if CHESS960 && st.mc <= 3 {
             return self.static_eval_classic::<CHESS960>(st);
         }
-        with_endgame_mopup(st, net.evaluate_stm(st))
+        let base = if let Some(accumulator) = self.classic_stack.get(ply) {
+            net.evaluate_stm_acc(accumulator, st)
+        } else {
+            net.evaluate_stm(st)
+        };
+        with_endgame_mopup(st, base)
     }
 
     pub(super) fn corrected_eval_classic_halfkp<const CHESS960: bool>(
@@ -1270,6 +1297,20 @@ impl Searcher {
             return;
         }
         let (parents, children) = self.other_stack.split_at_mut(ply + 1);
+        children[0].update_from_parent(&parents[ply], net, before, after);
+    }
+
+    pub(super) fn push_classic_acc(
+        &mut self,
+        net: &ClassicHalfKpNet,
+        before: &BoardState,
+        after: &BoardState,
+        ply: usize,
+    ) {
+        if ply + 1 >= self.classic_stack.len() {
+            return;
+        }
+        let (parents, children) = self.classic_stack.split_at_mut(ply + 1);
         children[0].update_from_parent(&parents[ply], net, before, after);
     }
 
