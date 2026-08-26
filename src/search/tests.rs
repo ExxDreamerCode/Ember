@@ -29,7 +29,10 @@ fn classic_halfkp_net_is_selected_over_classic_eval() {
     searcher.classic_net = Some(Arc::new(net.clone()));
     searcher.init_nnue_stack(&st);
 
-    assert_eq!(searcher.static_eval_classic_halfkp::<false>(&st, &net), 20);
+    assert_eq!(
+        searcher.static_eval_classic_halfkp::<false>(&st, 0, &net),
+        20
+    );
     assert_eq!(searcher.corrected_eval(&st), 20);
     assert_ne!(searcher.corrected_eval_classic::<false>(&st), 20);
 }

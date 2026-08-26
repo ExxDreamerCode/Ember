@@ -48,7 +48,7 @@ fn feature_index(
     piece: u8,
 ) -> Option<usize> {
     let piece_type = piece % 6;
-    if piece_type == KING as u8 {
+    if piece_type == KING {
         return None;
     }
     let piece_color = piece / 6;
@@ -454,8 +454,11 @@ mod tests {
             + 4;
         let ft_weights_start = ft_bias_start + HALF_DIM * 2;
         let ft_weights_end = ft_weights_start + FT_DIM * HALF_DIM * 2;
-        for chunk in bytes[ft_weights_start..ft_weights_end].chunks_exact_mut(2) {
-            let value = (next() % 61 - 30) as i16;
+        for chunk in bytes[ft_weights_start..ft_weights_end]
+            .as_chunks_mut::<2>()
+            .0
+        {
+            let value = (next() % 61) as i16 - 30;
             chunk.copy_from_slice(&value.to_le_bytes());
         }
 
