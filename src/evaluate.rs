@@ -436,15 +436,16 @@ pub(crate) fn evaluate_nnue_acc_with_backend<B: NnueBackend>(
 }
 
 pub fn evaluate_nnue(st: &BoardState) -> i32 {
+    let mopup_enabled = crate::search::endgame_mopup_opt_in();
     if let Some(classic) = current_classic_net() {
         let stm_score = classic.evaluate_stm(st);
         let white_base = if st.w { stm_score } else { -stm_score };
-        return crate::search::add_endgame_mopup_white(st, white_base);
+        return crate::search::add_endgame_mopup_white(mopup_enabled, st, white_base);
     }
     if let Some(other) = current_other_net() {
         let base = evaluate_other_net(&other, st);
         let white_base = if st.w { base } else { -base };
-        return crate::search::add_endgame_mopup_white(st, white_base);
+        return crate::search::add_endgame_mopup_white(mopup_enabled, st, white_base);
     }
     with_nnue_net(|net| {
         let mut acc = NNUEAccumulator::new(net.hidden_size);
@@ -456,11 +457,11 @@ pub fn evaluate_nnue(st: &BoardState) -> i32 {
             let pc: u32 = (0..12).map(|i| st.bb[i].count_ones()).sum();
             let score = net.forward_with_threats::<ScalarNnueBackend>(&acc, &threats, stm, pc);
             let stm_score = if stm == WHITE { score } else { -score };
-            crate::search::add_endgame_mopup_white(st, stm_score)
+            crate::search::add_endgame_mopup_white(mopup_enabled, st, stm_score)
         } else {
             acc.refresh(net, st);
             let score = evaluate_nnue_acc(net, &acc, st);
-            crate::search::add_endgame_mopup_white(st, score)
+            crate::search::add_endgame_mopup_white(mopup_enabled, st, score)
         }
     })
     .unwrap_or_else(|| evaluate(st))

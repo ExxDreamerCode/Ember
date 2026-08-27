@@ -842,6 +842,20 @@ fn singular_extensions_require_explicit_experimental_opt_in() {
 
 #[cfg(feature = "search-debug")]
 #[test]
+fn endgame_mopup_requires_explicit_experimental_opt_in() {
+    let stopped = Arc::new(AtomicBool::new(false));
+    let shared_tt = Arc::new(SharedTT::new(1));
+    let mut searcher = Searcher::new(shared_tt, stopped);
+
+    searcher.debug.enable_endgame_mopup = false;
+    assert!(!searcher.endgame_mopup_enabled());
+
+    searcher.debug.enable_endgame_mopup = true;
+    assert!(searcher.endgame_mopup_enabled());
+}
+
+#[cfg(feature = "search-debug")]
+#[test]
 fn singular_search_extends_a_synthetic_only_move_tt_result() {
     let mut st = state_from_fen("7k/8/5K2/5Q2/8/8/8/8 b - - 0 1");
     let legal_moves = generate_moves(&st, st.w, &st.cr, st.ep);

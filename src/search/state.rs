@@ -72,7 +72,10 @@ fn endgame_mopup_white(st: &BoardState) -> i32 {
 }
 
 #[inline(always)]
-fn with_endgame_mopup(st: &BoardState, score_stm: i32) -> i32 {
+fn with_endgame_mopup(enabled: bool, st: &BoardState, score_stm: i32) -> i32 {
+    if !enabled {
+        return score_stm;
+    }
     let mu = endgame_mopup_white(st);
     if st.w {
         score_stm + mu
@@ -82,8 +85,28 @@ fn with_endgame_mopup(st: &BoardState, score_stm: i32) -> i32 {
 }
 
 #[inline(always)]
-pub(crate) fn add_endgame_mopup_white(st: &BoardState, score_white: i32) -> i32 {
+pub(crate) fn add_endgame_mopup_white(enabled: bool, st: &BoardState, score_white: i32) -> i32 {
+    if !enabled {
+        return score_white;
+    }
     score_white + endgame_mopup_white(st)
+}
+
+#[cfg(feature = "search-debug")]
+#[inline(always)]
+pub(crate) fn endgame_mopup_opt_in() -> bool {
+    std::env::var("EMBER_ENABLE_ENDGAME_MOPUP")
+        .map(|value| {
+            let value = value.to_ascii_lowercase();
+            value == "1" || value == "true" || value == "yes" || value == "on"
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(not(feature = "search-debug"))]
+#[inline(always)]
+pub(crate) fn endgame_mopup_opt_in() -> bool {
+    false
 }
 
 impl Searcher {
@@ -915,6 +938,16 @@ impl Searcher {
         true
     }
 
+    #[cfg(feature = "search-debug")]
+    pub(super) fn endgame_mopup_enabled(&self) -> bool {
+        self.debug.enable_endgame_mopup
+    }
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    pub(super) fn endgame_mopup_enabled(&self) -> bool {
+        false
+    }
+
     #[inline(always)]
     pub(super) fn static_eval_classic<const CHESS960: bool>(&self, st: &BoardState) -> i32 {
         if CHESS960 && st.mc <= 3 {
@@ -962,7 +995,7 @@ impl Searcher {
             }
         }
         let stm_score = if st.w { score } else { -score };
-        with_endgame_mopup(st, stm_score)
+        with_endgame_mopup(self.endgame_mopup_enabled(), st, stm_score)
     }
 
     #[inline(always)]
@@ -986,7 +1019,7 @@ impl Searcher {
             threats.refresh(net, st);
             net.forward_with_threats::<B>(&acc, &threats, stm, pc)
         };
-        with_endgame_mopup(st, base)
+        with_endgame_mopup(self.endgame_mopup_enabled(), st, base)
     }
 
     #[inline(always)]
@@ -1004,7 +1037,7 @@ impl Searcher {
         } else {
             evaluate_other_net(net, st)
         };
-        with_endgame_mopup(st, base)
+        with_endgame_mopup(self.endgame_mopup_enabled(), st, base)
     }
 
     #[inline(always)]
@@ -1022,7 +1055,7 @@ impl Searcher {
         } else {
             net.evaluate_stm(st)
         };
-        with_endgame_mopup(st, base)
+        with_endgame_mopup(self.endgame_mopup_enabled(), st, base)
     }
 
     pub(super) fn corrected_eval_classic_halfkp<const CHESS960: bool>(
@@ -1033,7 +1066,7 @@ impl Searcher {
         if CHESS960 && st.mc <= 3 {
             return self.corrected_eval_classic::<CHESS960>(st);
         }
-        with_endgame_mopup(st, net.evaluate_stm(st))
+        with_endgame_mopup(self.endgame_mopup_enabled(), st, net.evaluate_stm(st))
     }
 
     pub(super) fn corrected_eval_other_nnue<const CHESS960: bool>(
@@ -1044,7 +1077,11 @@ impl Searcher {
         if CHESS960 && st.mc <= 3 {
             return self.corrected_eval_classic::<CHESS960>(st);
         }
-        with_endgame_mopup(st, evaluate_other_net(net, st))
+        with_endgame_mopup(
+            self.endgame_mopup_enabled(),
+            st,
+            evaluate_other_net(net, st),
+        )
     }
 
     pub fn corrected_eval(&self, st: &BoardState) -> i32 {
@@ -1130,7 +1167,7 @@ impl Searcher {
         B::refresh(&mut acc, net, st);
         let score = evaluate_nnue_acc_with_backend::<B>(net, &acc, st);
         let stm_score = if st.w { score } else { -score };
-        with_endgame_mopup(st, stm_score)
+        with_endgame_mopup(self.endgame_mopup_enabled(), st, stm_score)
     }
 
     #[inline(always)]
@@ -1149,7 +1186,7 @@ impl Searcher {
         let stm = if st.w { WHITE } else { BLACK };
         let pc: u32 = (0..12).map(|i| st.bb[i].count_ones()).sum();
         let base = net.forward_with_threats::<B>(&acc, &threats, stm, pc);
-        with_endgame_mopup(st, base)
+        with_endgame_mopup(self.endgame_mopup_enabled(), st, base)
     }
 
     pub fn update_correction_history(&mut self, st: &BoardState, score: i32, depth: i32) {

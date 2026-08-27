@@ -168,6 +168,7 @@ use self::qsearch::{
 };
 mod state;
 pub(crate) use state::add_endgame_mopup_white;
+pub(crate) use state::endgame_mopup_opt_in;
 
 #[cfg(test)]
 mod tests;

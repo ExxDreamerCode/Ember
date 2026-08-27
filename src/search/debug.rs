@@ -19,6 +19,7 @@ pub struct SearchDebug {
     pub enable_singular_multi_extensions: bool,
     pub enable_singular_multicut: bool,
     pub enable_singular_negative_extensions: bool,
+    pub enable_endgame_mopup: bool,
     pub(super) trace_roots: bool,
     pub(super) trace_nnue_parity: bool,
     pub(super) trace_singular_candidates: bool,
@@ -497,6 +498,7 @@ impl SearchDebug {
             enable_singular_negative_extensions: env_flag(
                 "EMBER_ENABLE_SINGULAR_NEGATIVE_EXTENSIONS",
             ),
+            enable_endgame_mopup: env_flag("EMBER_ENABLE_ENDGAME_MOPUP"),
             trace_roots: env_flag("EMBER_TRACE_ROOT_SEARCH"),
             trace_nnue_parity: env_flag("EMBER_TRACE_NNUE_PARITY"),
             trace_singular_candidates: env_flag("EMBER_TRACE_SINGULAR_CANDIDATES"),
