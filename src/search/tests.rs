@@ -15,6 +15,28 @@ fn legal_move(st: &BoardState, uci: &str) -> Move {
         .unwrap_or_else(|| panic!("expected legal move {uci}"))
 }
 
+#[test]
+fn classic_halfkp_net_is_selected_over_classic_eval() {
+    let bytes = crate::nnue::synthetic_test_net_bytes(320);
+    let net = crate::nnue::ClassicHalfKpNet::parse(&bytes)
+        .expect("synthetic legacy HalfKP net should parse");
+    let st = state_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    let stopped = Arc::new(AtomicBool::new(false));
+    let shared_tt = Arc::new(SharedTT::new(1));
+    let mut searcher = Searcher::new(shared_tt, stopped);
+    searcher.nnue_net = None;
+    searcher.other_net = None;
+    searcher.classic_net = Some(Arc::new(net.clone()));
+    searcher.init_nnue_stack(&st);
+
+    assert_eq!(
+        searcher.static_eval_classic_halfkp::<false>(&st, 0, &net),
+        20
+    );
+    assert_eq!(searcher.corrected_eval(&st), 20);
+    assert_ne!(searcher.corrected_eval_classic::<false>(&st), 20);
+}
+
 fn qualifying_singular_evidence(mv: Move) -> SingularEvidence {
     SingularEvidence {
         enabled: true,
@@ -816,6 +838,20 @@ fn singular_extensions_require_explicit_experimental_opt_in() {
     searcher.debug.enable_singular_negative_extensions = true;
     assert!(!searcher.singular_multicut_enabled());
     assert!(searcher.singular_negative_extensions_enabled());
+}
+
+#[cfg(feature = "search-debug")]
+#[test]
+fn endgame_mopup_requires_explicit_experimental_opt_in() {
+    let stopped = Arc::new(AtomicBool::new(false));
+    let shared_tt = Arc::new(SharedTT::new(1));
+    let mut searcher = Searcher::new(shared_tt, stopped);
+
+    searcher.debug.enable_endgame_mopup = false;
+    assert!(!searcher.endgame_mopup_enabled());
+
+    searcher.debug.enable_endgame_mopup = true;
+    assert!(searcher.endgame_mopup_enabled());
 }
 
 #[cfg(feature = "search-debug")]

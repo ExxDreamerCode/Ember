@@ -266,6 +266,62 @@ impl Searcher {
         cnt: &mut u64,
         ply: usize,
     ) -> i32 {
+        let other_net = self.other_net.clone();
+        if let Some(net) = other_net.as_deref() {
+            return if st.chess960 {
+                self.qsearch_mode_scalar::<true, false, _>(
+                    st,
+                    alpha,
+                    beta,
+                    depth,
+                    start,
+                    tl,
+                    cnt,
+                    ply,
+                    OtherNnueEval { net },
+                )
+            } else {
+                self.qsearch_mode_scalar::<false, false, _>(
+                    st,
+                    alpha,
+                    beta,
+                    depth,
+                    start,
+                    tl,
+                    cnt,
+                    ply,
+                    OtherNnueEval { net },
+                )
+            };
+        }
+        let classic_net = self.classic_net.clone();
+        if let Some(net) = classic_net.as_deref() {
+            return if st.chess960 {
+                self.qsearch_mode_scalar::<true, false, _>(
+                    st,
+                    alpha,
+                    beta,
+                    depth,
+                    start,
+                    tl,
+                    cnt,
+                    ply,
+                    ClassicHalfKpEval { net },
+                )
+            } else {
+                self.qsearch_mode_scalar::<false, false, _>(
+                    st,
+                    alpha,
+                    beta,
+                    depth,
+                    start,
+                    tl,
+                    cnt,
+                    ply,
+                    ClassicHalfKpEval { net },
+                )
+            };
+        }
         let nnue_net = self.nnue_net.clone();
         match (st.chess960, nnue_net.as_deref()) {
             (true, Some(net)) => {

@@ -1,6 +1,8 @@
 use super::Searcher;
 use crate::board::{BoardState, MAX_PLY};
-use crate::nnue::{NNUEAccumulator, NNUENet, NNUEThreatAccumulator, NnueBackend};
+use crate::nnue::{
+    ClassicHalfKpNet, NNUEAccumulator, NNUENet, NNUEThreatAccumulator, NnueBackend, OtherNetData,
+};
 
 #[derive(Clone, Copy)]
 pub(super) struct ClassicEval;
@@ -15,6 +17,16 @@ pub(super) struct NnueEval<'a, B: NnueBackend> {
 pub(super) struct ThreatNnueEval<'a, B: NnueBackend> {
     pub(super) net: &'a NNUENet,
     pub(super) _backend: B,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct OtherNnueEval<'a> {
+    pub(super) net: &'a OtherNetData,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ClassicHalfKpEval<'a> {
+    pub(super) net: &'a ClassicHalfKpNet,
 }
 
 pub(super) trait SearchEval: Copy {
@@ -83,6 +95,108 @@ impl SearchEval for ClassicEval {
 
     #[inline(always)]
     fn copy_null_acc(self, _searcher: &mut Searcher, _ply: usize) {}
+}
+
+impl SearchEval for OtherNnueEval<'_> {
+    #[inline(always)]
+    fn static_eval<const CHESS960: bool>(
+        self,
+        searcher: &Searcher,
+        st: &BoardState,
+        ply: usize,
+    ) -> i32 {
+        searcher.static_eval_other_nnue::<CHESS960>(st, ply, self.net)
+    }
+
+    #[inline(always)]
+    fn corrected_eval<const CHESS960: bool>(self, searcher: &Searcher, st: &BoardState) -> i32 {
+        searcher.corrected_eval_other_nnue::<CHESS960>(st, self.net)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn push_acc(
+        self,
+        searcher: &mut Searcher,
+        st_before: &BoardState,
+        st_after: &BoardState,
+        _sr: usize,
+        _sc: usize,
+        _er: usize,
+        _ec: usize,
+        _promotion: u8,
+        ply: usize,
+    ) {
+        searcher.push_other_acc(self.net, st_before, st_after, ply);
+    }
+
+    #[inline(always)]
+    fn ensure_child_stack(self, searcher: &mut Searcher, ply: usize) {
+        if ply + 1 >= searcher.other_stack.len() && ply + 1 < MAX_PLY + 1 {
+            searcher
+                .other_stack
+                .resize(ply + 2, crate::nnue::OtherAccumulator::new());
+        }
+    }
+
+    #[inline(always)]
+    fn copy_null_acc(self, searcher: &mut Searcher, ply: usize) {
+        if ply + 1 < searcher.other_stack.len() {
+            let (parents, children) = searcher.other_stack.split_at_mut(ply + 1);
+            children[0].clone_from(&parents[ply]);
+        }
+    }
+}
+
+impl SearchEval for ClassicHalfKpEval<'_> {
+    #[inline(always)]
+    fn static_eval<const CHESS960: bool>(
+        self,
+        searcher: &Searcher,
+        st: &BoardState,
+        ply: usize,
+    ) -> i32 {
+        searcher.static_eval_classic_halfkp::<CHESS960>(st, ply, self.net)
+    }
+
+    #[inline(always)]
+    fn corrected_eval<const CHESS960: bool>(self, searcher: &Searcher, st: &BoardState) -> i32 {
+        searcher.corrected_eval_classic_halfkp::<CHESS960>(st, self.net)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn push_acc(
+        self,
+        searcher: &mut Searcher,
+        st_before: &BoardState,
+        st_after: &BoardState,
+        _sr: usize,
+        _sc: usize,
+        _er: usize,
+        _ec: usize,
+        _promotion: u8,
+        ply: usize,
+    ) {
+        searcher.push_classic_acc(self.net, st_before, st_after, ply);
+    }
+
+    #[inline(always)]
+    fn ensure_child_stack(self, searcher: &mut Searcher, ply: usize) {
+        if ply + 1 >= searcher.classic_stack.len() && ply + 1 < MAX_PLY + 1 {
+            searcher
+                .classic_stack
+                .resize(ply + 2, crate::nnue::ClassicHalfKpAccumulator::new());
+        }
+    }
+
+    #[inline(always)]
+    fn copy_null_acc(self, searcher: &mut Searcher, ply: usize) {
+        if ply + 1 < searcher.classic_stack.len() {
+            let (parents, children) = searcher.classic_stack.split_at_mut(ply + 1);
+            children[0].clone_from(&parents[ply]);
+        }
+    }
 }
 
 impl<'a, B: NnueBackend> SearchEval for NnueEval<'a, B> {

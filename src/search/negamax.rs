@@ -1345,6 +1345,66 @@ impl Searcher {
         tl: f64,
         cnt: &mut u64,
     ) -> i32 {
+        let other_net = self.other_net.clone();
+        if let Some(net) = other_net.as_deref() {
+            return if st.chess960 {
+                self.negamax_mode_scalar::<true, NODE_LIMITED, _>(
+                    st,
+                    depth,
+                    ply,
+                    alpha,
+                    beta,
+                    can_null,
+                    start,
+                    tl,
+                    cnt,
+                    OtherNnueEval { net },
+                )
+            } else {
+                self.negamax_mode_scalar::<false, NODE_LIMITED, _>(
+                    st,
+                    depth,
+                    ply,
+                    alpha,
+                    beta,
+                    can_null,
+                    start,
+                    tl,
+                    cnt,
+                    OtherNnueEval { net },
+                )
+            };
+        }
+        let classic_net = self.classic_net.clone();
+        if let Some(net) = classic_net.as_deref() {
+            return if st.chess960 {
+                self.negamax_mode_scalar::<true, NODE_LIMITED, _>(
+                    st,
+                    depth,
+                    ply,
+                    alpha,
+                    beta,
+                    can_null,
+                    start,
+                    tl,
+                    cnt,
+                    ClassicHalfKpEval { net },
+                )
+            } else {
+                self.negamax_mode_scalar::<false, NODE_LIMITED, _>(
+                    st,
+                    depth,
+                    ply,
+                    alpha,
+                    beta,
+                    can_null,
+                    start,
+                    tl,
+                    cnt,
+                    ClassicHalfKpEval { net },
+                )
+            };
+        }
         let nnue_net = self.nnue_net.clone();
         match (st.chess960, nnue_net.as_deref()) {
             (true, Some(net)) => {
@@ -1457,6 +1517,66 @@ impl Searcher {
         tl: f64,
         cnt: &mut u64,
     ) -> i32 {
+        let other_net = self.other_net.clone();
+        if let Some(net) = other_net.as_deref() {
+            return if st.chess960 {
+                self.negamax_mode_simd128::<true, NODE_LIMITED, _>(
+                    st,
+                    depth,
+                    ply,
+                    alpha,
+                    beta,
+                    can_null,
+                    start,
+                    tl,
+                    cnt,
+                    OtherNnueEval { net },
+                )
+            } else {
+                self.negamax_mode_simd128::<false, NODE_LIMITED, _>(
+                    st,
+                    depth,
+                    ply,
+                    alpha,
+                    beta,
+                    can_null,
+                    start,
+                    tl,
+                    cnt,
+                    OtherNnueEval { net },
+                )
+            };
+        }
+        let classic_net = self.classic_net.clone();
+        if let Some(net) = classic_net.as_deref() {
+            return if st.chess960 {
+                self.negamax_mode_simd128::<true, NODE_LIMITED, _>(
+                    st,
+                    depth,
+                    ply,
+                    alpha,
+                    beta,
+                    can_null,
+                    start,
+                    tl,
+                    cnt,
+                    ClassicHalfKpEval { net },
+                )
+            } else {
+                self.negamax_mode_simd128::<false, NODE_LIMITED, _>(
+                    st,
+                    depth,
+                    ply,
+                    alpha,
+                    beta,
+                    can_null,
+                    start,
+                    tl,
+                    cnt,
+                    ClassicHalfKpEval { net },
+                )
+            };
+        }
         let nnue_net = self.nnue_net.clone();
         match (st.chess960, nnue_net.as_deref()) {
             (true, Some(net)) => {
@@ -1569,6 +1689,66 @@ impl Searcher {
         tl: f64,
         cnt: &mut u64,
     ) -> i32 {
+        let other_net = self.other_net.clone();
+        if let Some(net) = other_net.as_deref() {
+            return if st.chess960 {
+                self.negamax_mode_simd256::<true, NODE_LIMITED, _>(
+                    st,
+                    depth,
+                    ply,
+                    alpha,
+                    beta,
+                    can_null,
+                    start,
+                    tl,
+                    cnt,
+                    OtherNnueEval { net },
+                )
+            } else {
+                self.negamax_mode_simd256::<false, NODE_LIMITED, _>(
+                    st,
+                    depth,
+                    ply,
+                    alpha,
+                    beta,
+                    can_null,
+                    start,
+                    tl,
+                    cnt,
+                    OtherNnueEval { net },
+                )
+            };
+        }
+        let classic_net = self.classic_net.clone();
+        if let Some(net) = classic_net.as_deref() {
+            return if st.chess960 {
+                self.negamax_mode_simd256::<true, NODE_LIMITED, _>(
+                    st,
+                    depth,
+                    ply,
+                    alpha,
+                    beta,
+                    can_null,
+                    start,
+                    tl,
+                    cnt,
+                    ClassicHalfKpEval { net },
+                )
+            } else {
+                self.negamax_mode_simd256::<false, NODE_LIMITED, _>(
+                    st,
+                    depth,
+                    ply,
+                    alpha,
+                    beta,
+                    can_null,
+                    start,
+                    tl,
+                    cnt,
+                    ClassicHalfKpEval { net },
+                )
+            };
+        }
         let nnue_net = self.nnue_net.clone();
         match (st.chess960, nnue_net.as_deref()) {
             (true, Some(net)) => {
@@ -1681,6 +1861,66 @@ impl Searcher {
         tl: f64,
         cnt: &mut u64,
     ) -> i32 {
+        let other_net = self.other_net.clone();
+        if let Some(net) = other_net.as_deref() {
+            return if st.chess960 {
+                self.negamax_mode_simd512::<true, NODE_LIMITED, _>(
+                    st,
+                    depth,
+                    ply,
+                    alpha,
+                    beta,
+                    can_null,
+                    start,
+                    tl,
+                    cnt,
+                    OtherNnueEval { net },
+                )
+            } else {
+                self.negamax_mode_simd512::<false, NODE_LIMITED, _>(
+                    st,
+                    depth,
+                    ply,
+                    alpha,
+                    beta,
+                    can_null,
+                    start,
+                    tl,
+                    cnt,
+                    OtherNnueEval { net },
+                )
+            };
+        }
+        let classic_net = self.classic_net.clone();
+        if let Some(net) = classic_net.as_deref() {
+            return if st.chess960 {
+                self.negamax_mode_simd512::<true, NODE_LIMITED, _>(
+                    st,
+                    depth,
+                    ply,
+                    alpha,
+                    beta,
+                    can_null,
+                    start,
+                    tl,
+                    cnt,
+                    ClassicHalfKpEval { net },
+                )
+            } else {
+                self.negamax_mode_simd512::<false, NODE_LIMITED, _>(
+                    st,
+                    depth,
+                    ply,
+                    alpha,
+                    beta,
+                    can_null,
+                    start,
+                    tl,
+                    cnt,
+                    ClassicHalfKpEval { net },
+                )
+            };
+        }
         let nnue_net = self.nnue_net.clone();
         match (st.chess960, nnue_net.as_deref()) {
             (true, Some(net)) => {
@@ -1795,8 +2035,68 @@ impl Searcher {
         tl: f64,
         cnt: &mut u64,
     ) -> i32 {
+        let other_net = self.other_net.clone();
         let nnue_net = self.nnue_net.clone();
+        let classic_net = self.classic_net.clone();
         unsafe {
+            if let Some(net) = other_net.as_deref() {
+                return if st.chess960 {
+                    self.negamax_mode_x86_v3::<true, NODE_LIMITED, _>(
+                        st,
+                        depth,
+                        ply,
+                        alpha,
+                        beta,
+                        can_null,
+                        start,
+                        tl,
+                        cnt,
+                        OtherNnueEval { net },
+                    )
+                } else {
+                    self.negamax_mode_x86_v3::<false, NODE_LIMITED, _>(
+                        st,
+                        depth,
+                        ply,
+                        alpha,
+                        beta,
+                        can_null,
+                        start,
+                        tl,
+                        cnt,
+                        OtherNnueEval { net },
+                    )
+                };
+            }
+            if let Some(net) = classic_net.as_deref() {
+                return if st.chess960 {
+                    self.negamax_mode_x86_v3::<true, NODE_LIMITED, _>(
+                        st,
+                        depth,
+                        ply,
+                        alpha,
+                        beta,
+                        can_null,
+                        start,
+                        tl,
+                        cnt,
+                        ClassicHalfKpEval { net },
+                    )
+                } else {
+                    self.negamax_mode_x86_v3::<false, NODE_LIMITED, _>(
+                        st,
+                        depth,
+                        ply,
+                        alpha,
+                        beta,
+                        can_null,
+                        start,
+                        tl,
+                        cnt,
+                        ClassicHalfKpEval { net },
+                    )
+                };
+            }
             match (st.chess960, nnue_net.as_deref()) {
                 (true, Some(net)) => {
                     if net.has_threat_features() {
@@ -1913,8 +2213,68 @@ impl Searcher {
         tl: f64,
         cnt: &mut u64,
     ) -> i32 {
+        let other_net = self.other_net.clone();
         let nnue_net = self.nnue_net.clone();
+        let classic_net = self.classic_net.clone();
         unsafe {
+            if let Some(net) = other_net.as_deref() {
+                return if st.chess960 {
+                    self.negamax_mode_x86_avx512::<true, NODE_LIMITED, _>(
+                        st,
+                        depth,
+                        ply,
+                        alpha,
+                        beta,
+                        can_null,
+                        start,
+                        tl,
+                        cnt,
+                        OtherNnueEval { net },
+                    )
+                } else {
+                    self.negamax_mode_x86_avx512::<false, NODE_LIMITED, _>(
+                        st,
+                        depth,
+                        ply,
+                        alpha,
+                        beta,
+                        can_null,
+                        start,
+                        tl,
+                        cnt,
+                        OtherNnueEval { net },
+                    )
+                };
+            }
+            if let Some(net) = classic_net.as_deref() {
+                return if st.chess960 {
+                    self.negamax_mode_x86_avx512::<true, NODE_LIMITED, _>(
+                        st,
+                        depth,
+                        ply,
+                        alpha,
+                        beta,
+                        can_null,
+                        start,
+                        tl,
+                        cnt,
+                        ClassicHalfKpEval { net },
+                    )
+                } else {
+                    self.negamax_mode_x86_avx512::<false, NODE_LIMITED, _>(
+                        st,
+                        depth,
+                        ply,
+                        alpha,
+                        beta,
+                        can_null,
+                        start,
+                        tl,
+                        cnt,
+                        ClassicHalfKpEval { net },
+                    )
+                };
+            }
             match (st.chess960, nnue_net.as_deref()) {
                 (true, Some(net)) => {
                     if net.has_threat_features() {

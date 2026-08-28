@@ -52,3 +52,9 @@ ratings/ccrl/
 __pycache__/
 *.py[cod]
 1.sh
+/nn-*.nnue
+/net-*.nnue
+.scratch/
+NOTES_EXTERNAL_NETS.md
+/*.out
+OtherNNUE.toml

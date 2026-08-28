@@ -821,7 +821,8 @@ impl Engine {
                 let mut cur_best_repeats = false;
                 let mut loop_alpha = alpha;
 
-                for (_root_index, &mv) in sorted.iter().enumerate() {
+                #[allow(unused)]
+                for (root_index, &mv) in sorted.iter().enumerate() {
                     if !self.searcher.pondering.load(Ordering::Relaxed)
                         && start.elapsed().as_secs_f64() > time_limit
                     {
@@ -903,7 +904,7 @@ impl Engine {
                     #[cfg(feature = "search-debug")]
                     self.searcher.emit_debug_root_trace(
                         depth,
-                        _root_index,
+                        root_index,
                         &move_to_uci(&old, mv),
                         loop_alpha,
                         beta,

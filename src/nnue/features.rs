@@ -428,19 +428,22 @@ impl NNUEThreatAccumulator {
             collect_threat_attackers(after, square, &mut after_candidates);
         }
 
+        let before_mailbox = threat_mailbox(before);
+        let after_mailbox = threat_mailbox(after);
+
         for piece in 0..THREAT_COLORED_PIECES {
             let mut before_squares = before_candidates[piece] & before.bb[piece];
             while before_squares != 0 {
                 let square = before_squares.trailing_zeros() as usize;
                 before_squares &= before_squares - 1;
-                self.apply_piece_threats(net, before, piece, square, -1);
+                self.apply_piece_threats(net, before, &before_mailbox, piece, square, -1);
             }
 
             let mut after_squares = after_candidates[piece] & after.bb[piece];
             while after_squares != 0 {
                 let square = after_squares.trailing_zeros() as usize;
                 after_squares &= after_squares - 1;
-                self.apply_piece_threats(net, after, piece, square, 1);
+                self.apply_piece_threats(net, after, &after_mailbox, piece, square, 1);
             }
         }
 
@@ -514,6 +517,7 @@ impl NNUEThreatAccumulator {
         &mut self,
         net: &NNUENet,
         st: &BoardState,
+        mailbox: &[usize; 64],
         piece: usize,
         square: usize,
         sign: i16,
@@ -523,7 +527,6 @@ impl NNUEThreatAccumulator {
         let white = color_occupancy(st, WHITE);
         let black = color_occupancy(st, BLACK);
         let occ = white | black;
-        let mailbox = threat_mailbox(st);
         let attacker = threat_colored_piece(color, piece_type);
         let mut attacks = threat_piece_attacks_on_board(piece_type, color, square, occ) & occ;
 

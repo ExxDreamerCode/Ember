@@ -12,6 +12,7 @@ from compare_fixture_corpus import (  # noqa: E402
     direction,
     disabled_status,
     move_matches,
+    parse_uci_option,
     parse_fixture,
     summarize,
     uci_setup_commands,
@@ -99,6 +100,14 @@ book\t0\tbook fen\t-\ta2a3\tbook\t0\t0\t0
         self.assertIn(
             "setoption name Book value <embedded>",
             uci_setup_commands(DEFAULT_HASH_MB, use_embedded_book=True),
+        )
+        self.assertEqual(parse_uci_option("NNUE=/tmp/net.nnue"), ("NNUE", "/tmp/net.nnue"))
+        self.assertIn(
+            "setoption name NNUE value /tmp/net.nnue",
+            uci_setup_commands(
+                DEFAULT_HASH_MB,
+                options=[("NNUE", "/tmp/net.nnue")],
+            ),
         )
 
     def test_position_summary_compares_pass_counts_across_depths(self):

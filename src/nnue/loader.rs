@@ -1,9 +1,9 @@
+use super::other_nets::{load_other_net, OtherNetInfo};
 use super::{
     compute_king_buckets, threat_feature_count, KbLayout, NNUENet, COMPACT_ZERO_ROW,
     MAX_HIDDEN_SIZE, NNUE_OUTPUT_BUCKETS, PSQ_INPUTS_PER_BUCKET, QA, QB,
 };
-use std::fs::File;
-use std::io::{BufReader, Read as IoRead};
+use std::io::Read as IoRead;
 
 const NNUE_MAGIC: u32 = 0x4E4E5545;
 const COMPACT_NNUE_MAGIC: u32 = 0x314E4345;
@@ -75,6 +75,7 @@ struct VersionFlags {
     l1sc: i32,
     bucketed: bool,
     dual: bool,
+    hl_crelu: bool,
     nkb: usize,
     layout: KbLayout,
     ft: usize,
@@ -131,15 +132,18 @@ impl NNUENet {
     }
 
     pub fn load(path: &str) -> Result<Self, String> {
-        let len = std::fs::metadata(path)
-            .map_err(|e| format!("stat: {}", e))?
-            .len();
-        let f = File::open(path).map_err(|e| format!("open: {}", e))?;
-        let mut r = BufReader::new(f);
-        Self::load_reader(&mut r, len, path)
+        let data = std::fs::read(path).map_err(|e| format!("read {}: {}", path, e))?;
+        Self::load_from_bytes(&data, path)
     }
 
     pub fn load_from_bytes(data: &[u8], name: &str) -> Result<Self, String> {
+        if OtherNetInfo::is_format(data) {
+            let other = load_other_net(data)?;
+            return Err(format!(
+                "external-format net detected and decoded ({}) but cannot be returned as a native NNUENet ({}); load it through evaluate::init_nnue or the UCI NNUE option",
+                other.overview, name
+            ));
+        }
         let len = data.len() as u64;
         let mut r = std::io::Cursor::new(data);
         Self::load_reader(&mut r, len, name)
@@ -292,6 +296,7 @@ impl NNUENet {
             out_weights_f: ow_f,
             out_bias_f: ob_f,
             dual_l1: flags.dual,
+            crelu_hidden: flags.hl_crelu,
             num_king_buckets: flags.nkb,
             kb_layout: flags.layout,
             king_bucket: kbt,
@@ -459,6 +464,7 @@ impl NNUENet {
             l1sc: QA,
             bucketed: false,
             dual: false,
+            hl_crelu: false,
             nkb: 16,
             layout: KbLayout::Uniform,
             ft: 0,
@@ -489,6 +495,7 @@ impl NNUENet {
                 flags.dual = f & 16 != 0;
                 let ext = f & 128 != 0;
                 let cons_inline = if !ext { f & 32 != 0 } else { false };
+                flags.hl_crelu = ext && (f & 32 != 0);
                 flags.has_threats = f & 64 != 0;
 
                 flags.ft = read_u16(r)? as usize;

@@ -1,5 +1,114 @@
 use super::*;
 
+fn endgame_mopup_white(st: &BoardState) -> i32 {
+    let wpc: u32 = (0..6).map(|i| st.bb[i].count_ones()).sum();
+    let bpc: u32 = (6..12).map(|i| st.bb[i].count_ones()).sum();
+    let winner = if bpc == 1 && wpc > 1 {
+        0
+    } else if wpc == 1 && bpc > 1 {
+        1
+    } else {
+        return 0;
+    };
+
+    let (q, r, bi, kn, cw_pop) = if winner == 0 {
+        (
+            st.bb[crate::types::WQ].count_ones(),
+            st.bb[crate::types::WR].count_ones(),
+            st.bb[crate::types::WB].count_ones(),
+            st.bb[crate::types::WN].count_ones(),
+            wpc,
+        )
+    } else {
+        (
+            st.bb[crate::types::BQ].count_ones(),
+            st.bb[crate::types::BR].count_ones(),
+            st.bb[crate::types::BB].count_ones(),
+            st.bb[crate::types::BN].count_ones(),
+            bpc,
+        )
+    };
+
+    if !(q > 0 || r > 0 || bi >= 2 || (bi >= 1 && kn >= 1)) {
+        return 0;
+    }
+
+    let loser_white = winner == 1;
+    let lk = crate::nnue::convert(st.king_sq(loser_white) as u8) as usize;
+    let wk = crate::nnue::convert(st.king_sq(!loser_white) as u8) as usize;
+    let (lf, lr) = (lk % 8, lk / 8);
+    let (wf, wr) = (wk % 8, wk / 8);
+    let (p_edge, p_prox, p_corner) = (70i32, 15i32, 80i32);
+    let cmd = (if lf < 4 { 3 - lf } else { lf - 4 }) + (if lr < 4 { 3 - lr } else { lr - 4 });
+    let md = (lf as i32 - wf as i32).abs() + (lr as i32 - wr as i32).abs();
+    let mut term = p_edge * cmd as i32 + p_prox * (14 - md);
+
+    // KBN: only the two squares of the bishop's colour are mating corners.
+    if cw_pop == 3 && bi == 1 && kn == 1 {
+        let bsq = (if winner == 0 {
+            st.bb[crate::types::WB].trailing_zeros()
+        } else {
+            st.bb[crate::types::BB].trailing_zeros()
+        }) as usize;
+        let bsq_phys = crate::nnue::convert(bsq as u8);
+        let light = ((bsq_phys % 8) + (bsq_phys / 8)) & 1 == 1;
+        let corners: [(i32, i32); 2] = if light {
+            [(0, 7), (7, 0)]
+        } else {
+            [(0, 0), (7, 7)]
+        };
+        let dmin = corners
+            .iter()
+            .map(|&(cf, cr)| (lf as i32 - cf).abs() + (lr as i32 - cr).abs())
+            .min()
+            .unwrap();
+        term += p_corner * (7 - dmin);
+    }
+    if winner == 0 {
+        term
+    } else {
+        -term
+    }
+}
+
+#[inline(always)]
+fn with_endgame_mopup(enabled: bool, st: &BoardState, score_stm: i32) -> i32 {
+    if !enabled {
+        return score_stm;
+    }
+    let mu = endgame_mopup_white(st);
+    if st.w {
+        score_stm + mu
+    } else {
+        score_stm - mu
+    }
+}
+
+#[inline(always)]
+pub(crate) fn add_endgame_mopup_white(enabled: bool, st: &BoardState, score_white: i32) -> i32 {
+    if !enabled {
+        return score_white;
+    }
+    score_white + endgame_mopup_white(st)
+}
+
+#[cfg(feature = "search-debug")]
+#[inline(always)]
+pub(crate) fn endgame_mopup_opt_in() -> bool {
+    std::env::var("EMBER_ENABLE_ENDGAME_MOPUP")
+        .map(|value| {
+            let value = value.to_ascii_lowercase();
+            value == "1" || value == "true" || value == "yes" || value == "on"
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(not(feature = "search-debug"))]
+#[inline(always)]
+pub(crate) fn endgame_mopup_opt_in() -> bool {
+    false
+}
+
 impl Searcher {
     pub fn new(shared_tt: Arc<SharedTT>, stopped: Arc<AtomicBool>) -> Self {
         Searcher {
@@ -26,7 +135,11 @@ impl Searcher {
             shared_node_counter: None,
             nnue_stack: Vec::new(),
             threat_stack: Vec::new(),
+            other_stack: Vec::new(),
+            classic_stack: Vec::new(),
             nnue_net: current_nnue_net(),
+            other_net: current_other_net(),
+            classic_net: current_classic_net(),
             search_backend: active_search_backend(),
             syzygy: SyzygyTables::new(),
             move_bufs: Vec::new(),
@@ -45,6 +158,8 @@ impl Searcher {
 
     pub fn refresh_nnue_net(&mut self) {
         self.nnue_net = current_nnue_net();
+        self.other_net = current_other_net();
+        self.classic_net = current_classic_net();
     }
 
     pub fn refresh_search_backend(&mut self) {
@@ -52,6 +167,29 @@ impl Searcher {
     }
 
     pub fn init_nnue_stack(&mut self, st: &BoardState) {
+        if let Some(net) = self.other_net.as_deref() {
+            self.nnue_stack.clear();
+            self.threat_stack.clear();
+            self.classic_stack.clear();
+            if self.other_stack.len() < MAX_PLY + 1 {
+                self.other_stack
+                    .resize(MAX_PLY + 1, OtherAccumulator::new());
+            }
+            self.other_stack[0].refresh(net, st);
+            return;
+        }
+        self.other_stack.clear();
+        if let Some(net) = self.classic_net.as_deref() {
+            self.nnue_stack.clear();
+            self.threat_stack.clear();
+            if self.classic_stack.len() < MAX_PLY + 1 {
+                self.classic_stack
+                    .resize(MAX_PLY + 1, ClassicHalfKpAccumulator::new());
+            }
+            self.classic_stack[0].refresh(net, st);
+            return;
+        }
+        self.classic_stack.clear();
         if let Some(net) = self.nnue_net.as_deref() {
             if self.nnue_stack.len() < MAX_PLY + 1 {
                 self.nnue_stack
@@ -71,6 +209,21 @@ impl Searcher {
     }
 
     pub fn refresh_nnue_stack_at(&mut self, ply: usize, st: &BoardState) {
+        if let Some(net) = self.other_net.as_deref() {
+            if self.other_stack.len() <= ply {
+                self.other_stack.resize(ply + 1, OtherAccumulator::new());
+            }
+            self.other_stack[ply].refresh(net, st);
+            return;
+        }
+        if let Some(net) = self.classic_net.as_deref() {
+            if self.classic_stack.len() <= ply {
+                self.classic_stack
+                    .resize(ply + 1, ClassicHalfKpAccumulator::new());
+            }
+            self.classic_stack[ply].refresh(net, st);
+            return;
+        }
         let Some(net) = self.nnue_net.as_deref() else {
             return;
         };
@@ -198,6 +351,8 @@ impl Searcher {
         dst.rep_root_len = dst.rep_stack_len;
         dst.import_learning(&self.export_learning());
         dst.nnue_net = self.nnue_net.clone();
+        dst.other_net = self.other_net.clone();
+        dst.classic_net = self.classic_net.clone();
         dst.search_backend = self.search_backend;
         dst.syzygy = self.syzygy.clone();
         dst.pondering = Arc::clone(&self.pondering);
@@ -783,6 +938,16 @@ impl Searcher {
         true
     }
 
+    #[cfg(feature = "search-debug")]
+    pub(super) fn endgame_mopup_enabled(&self) -> bool {
+        self.debug.enable_endgame_mopup
+    }
+    #[cfg(not(feature = "search-debug"))]
+    #[inline(always)]
+    pub(super) fn endgame_mopup_enabled(&self) -> bool {
+        false
+    }
+
     #[inline(always)]
     pub(super) fn static_eval_classic<const CHESS960: bool>(&self, st: &BoardState) -> i32 {
         if CHESS960 && st.mc <= 3 {
@@ -829,11 +994,8 @@ impl Searcher {
                 );
             }
         }
-        if st.w {
-            score
-        } else {
-            -score
-        }
+        let stm_score = if st.w { score } else { -score };
+        with_endgame_mopup(self.endgame_mopup_enabled(), st, stm_score)
     }
 
     #[inline(always)]
@@ -848,7 +1010,7 @@ impl Searcher {
         }
         let stm = if st.w { WHITE } else { BLACK };
         let pc: u32 = (0..12).map(|i| st.bb[i].count_ones()).sum();
-        if ply < self.nnue_stack.len() && ply < self.threat_stack.len() {
+        let base = if ply < self.nnue_stack.len() && ply < self.threat_stack.len() {
             net.forward_with_threats::<B>(&self.nnue_stack[ply], &self.threat_stack[ply], stm, pc)
         } else {
             let mut acc = NNUEAccumulator::new(net.hidden_size);
@@ -856,10 +1018,87 @@ impl Searcher {
             let mut threats = NNUEThreatAccumulator::new(net.hidden_size);
             threats.refresh(net, st);
             net.forward_with_threats::<B>(&acc, &threats, stm, pc)
+        };
+        with_endgame_mopup(self.endgame_mopup_enabled(), st, base)
+    }
+
+    #[inline(always)]
+    pub(super) fn static_eval_other_nnue<const CHESS960: bool>(
+        &self,
+        st: &BoardState,
+        ply: usize,
+        net: &OtherNetData,
+    ) -> i32 {
+        if CHESS960 && st.mc <= 3 {
+            return self.static_eval_classic::<CHESS960>(st);
         }
+        let base = if let Some(accumulator) = self.other_stack.get(ply) {
+            evaluate_other_net_acc(net, accumulator, st)
+        } else {
+            evaluate_other_net(net, st)
+        };
+        with_endgame_mopup(self.endgame_mopup_enabled(), st, base)
+    }
+
+    #[inline(always)]
+    pub(super) fn static_eval_classic_halfkp<const CHESS960: bool>(
+        &self,
+        st: &BoardState,
+        ply: usize,
+        net: &ClassicHalfKpNet,
+    ) -> i32 {
+        if CHESS960 && st.mc <= 3 {
+            return self.static_eval_classic::<CHESS960>(st);
+        }
+        let base = if let Some(accumulator) = self.classic_stack.get(ply) {
+            net.evaluate_stm_acc(accumulator, st)
+        } else {
+            net.evaluate_stm(st)
+        };
+        with_endgame_mopup(self.endgame_mopup_enabled(), st, base)
+    }
+
+    pub(super) fn corrected_eval_classic_halfkp<const CHESS960: bool>(
+        &self,
+        st: &BoardState,
+        net: &ClassicHalfKpNet,
+    ) -> i32 {
+        if CHESS960 && st.mc <= 3 {
+            return self.corrected_eval_classic::<CHESS960>(st);
+        }
+        with_endgame_mopup(self.endgame_mopup_enabled(), st, net.evaluate_stm(st))
+    }
+
+    pub(super) fn corrected_eval_other_nnue<const CHESS960: bool>(
+        &self,
+        st: &BoardState,
+        net: &OtherNetData,
+    ) -> i32 {
+        if CHESS960 && st.mc <= 3 {
+            return self.corrected_eval_classic::<CHESS960>(st);
+        }
+        with_endgame_mopup(
+            self.endgame_mopup_enabled(),
+            st,
+            evaluate_other_net(net, st),
+        )
     }
 
     pub fn corrected_eval(&self, st: &BoardState) -> i32 {
+        if let Some(net) = self.classic_net.as_deref() {
+            return if st.chess960 {
+                ClassicHalfKpEval { net }.corrected_eval::<true>(self, st)
+            } else {
+                ClassicHalfKpEval { net }.corrected_eval::<false>(self, st)
+            };
+        }
+        if let Some(net) = self.other_net.as_deref() {
+            return if st.chess960 {
+                OtherNnueEval { net }.corrected_eval::<true>(self, st)
+            } else {
+                OtherNnueEval { net }.corrected_eval::<false>(self, st)
+            };
+        }
         match (st.chess960, self.nnue_net.as_deref()) {
             (true, Some(net)) => {
                 if net.has_threat_features() {
@@ -927,11 +1166,8 @@ impl Searcher {
         let mut acc = NNUEAccumulator::new(net.hidden_size);
         B::refresh(&mut acc, net, st);
         let score = evaluate_nnue_acc_with_backend::<B>(net, &acc, st);
-        if st.w {
-            score
-        } else {
-            -score
-        }
+        let stm_score = if st.w { score } else { -score };
+        with_endgame_mopup(self.endgame_mopup_enabled(), st, stm_score)
     }
 
     #[inline(always)]
@@ -949,7 +1185,8 @@ impl Searcher {
         threats.refresh(net, st);
         let stm = if st.w { WHITE } else { BLACK };
         let pc: u32 = (0..12).map(|i| st.bb[i].count_ones()).sum();
-        net.forward_with_threats::<B>(&acc, &threats, stm, pc)
+        let base = net.forward_with_threats::<B>(&acc, &threats, stm, pc);
+        with_endgame_mopup(self.endgame_mopup_enabled(), st, base)
     }
 
     pub fn update_correction_history(&mut self, st: &BoardState, score: i32, depth: i32) {
@@ -1084,6 +1321,34 @@ impl Searcher {
         if !ok {
             B::refresh(&mut self.nnue_stack[ply + 1], net, st_after);
         }
+    }
+
+    pub(super) fn push_other_acc(
+        &mut self,
+        net: &OtherNetData,
+        before: &BoardState,
+        after: &BoardState,
+        ply: usize,
+    ) {
+        if ply + 1 >= self.other_stack.len() {
+            return;
+        }
+        let (parents, children) = self.other_stack.split_at_mut(ply + 1);
+        children[0].update_from_parent(&parents[ply], net, before, after);
+    }
+
+    pub(super) fn push_classic_acc(
+        &mut self,
+        net: &ClassicHalfKpNet,
+        before: &BoardState,
+        after: &BoardState,
+        ply: usize,
+    ) {
+        if ply + 1 >= self.classic_stack.len() {
+            return;
+        }
+        let (parents, children) = self.classic_stack.split_at_mut(ply + 1);
+        children[0].update_from_parent(&parents[ply], net, before, after);
     }
 
     #[inline(always)]
