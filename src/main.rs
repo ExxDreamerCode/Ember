@@ -226,7 +226,7 @@ fn run_uci_loop() {
 
         match parts[0] {
             "uci" => {
-                println!("id name Ember 1.2.0");
+                println!("id name Ember 1.3.0");
                 println!("id author ExxDreamerCode");
                 println!(
                     "option name Hash type spin default 256 min {} max {}",

@@ -39,8 +39,8 @@ Each binary is packaged separately. Windows uses ZIP; Linux and macOS use
 `tar.gz`. Example names:
 
 ```text
-ember-1.2.0-01234567-linux-amd64.tar.gz
-ember-1.2.0-01234567-windows-arm64.zip
+ember-1.3.0-01234567-linux-amd64.tar.gz
+ember-1.3.0-01234567-windows-arm64.zip
 ```
 
 The directory inside the archive uses the same name as the archive without its

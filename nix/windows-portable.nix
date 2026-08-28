@@ -39,7 +39,7 @@ let
 in
 pkgs.stdenvNoCC.mkDerivation {
   pname = "ember-lichess-windows-portable";
-  version = "1.2.0";
+  version = "1.3.0";
 
   dontUnpack = true;
   nativeBuildInputs = [
@@ -178,7 +178,7 @@ PY
     cp "${../windows/Verify.cmd}" "$bundle/Verify.cmd"
 
     cat > "$bundle/VERSIONS.txt" <<EOF
-Ember: 1.2.0 (x86-64-v3, static MSVC CRT)
+Ember: 1.3.0 (x86-64-v3, static MSVC CRT)
 Python: ${pythonVersion} embeddable x86-64
 Rich: ${richVersion}
 lichess-bot revision: ${lichessBotRevision}
