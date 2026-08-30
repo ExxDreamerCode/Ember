@@ -1,4 +1,4 @@
-use crate::backend::{nnue_backend_available, NnueBackendKind};
+﻿use crate::backend::{nnue_backend_available, NnueBackendKind};
 use crate::board::BoardState;
 use crate::types::WHITE;
 use std::mem::MaybeUninit;

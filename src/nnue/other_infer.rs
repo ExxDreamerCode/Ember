@@ -1,13 +1,13 @@
-use super::other_nets::{OtherNetData, OtherStack};
+﻿use super::other_nets::{OtherNetData, OtherStack};
 use crate::board::{BoardState, EMPTY_SQ, KING_ATTACKS, KNIGHT_ATTACKS};
 use std::sync::OnceLock;
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
-    __m256i, _mm256_add_epi32, _mm256_castsi256_si128, _mm256_cvtepi8_epi16, _mm256_cvtepu8_epi16,
-    _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_madd_epi16, _mm256_max_epi16,
-    _mm256_min_epi16, _mm256_mullo_epi16, _mm256_packus_epi16, _mm256_permute2x128_si256,
-    _mm256_set1_epi16, _mm256_setzero_si256, _mm256_srli_epi16, _mm256_storeu_si256,
+    __m256i, _mm256_add_epi32, _mm256_loadu_si256, _mm256_madd_epi16, _mm256_maddubs_epi16,
+    _mm256_max_epi16, _mm256_min_epi16, _mm256_mullo_epi16, _mm256_packus_epi16,
+    _mm256_permute2x128_si256, _mm256_set1_epi16, _mm256_setzero_si256, _mm256_srli_epi16,
+    _mm256_storeu_si256,
 };
 
 const PSQ_DIMS: usize = 22_528;
@@ -279,12 +279,12 @@ fn threat_lut() -> &'static ThreatLut {
     LUT.get_or_init(ThreatLut::build)
 }
 
-fn active_threat_indices(state: &BoardState, perspective: u32) -> Vec<usize> {
+fn collect_active_threat_indices(state: &BoardState, perspective: u32, out: &mut Vec<usize>) {
     let lut = threat_lut();
     let king_square = find_king(state, perspective);
     let occupancy = state.bb.iter().copied().fold(0u64, |all, bb| all | bb);
     let all_pawns = state.bb[0] | state.bb[6];
-    let mut active = Vec::with_capacity(128);
+    out.clear();
 
     for color in 0..2u32 {
         let pawns = state.bb[(color * 6) as usize];
@@ -306,7 +306,7 @@ fn active_threat_indices(state: &BoardState, perspective: u32) -> Vec<usize> {
                     king_square,
                 );
                 if index < THREAT_DIMS {
-                    active.push(index);
+                    out.push(index);
                 }
             }
 
@@ -321,7 +321,7 @@ fn active_threat_indices(state: &BoardState, perspective: u32) -> Vec<usize> {
                         king_square,
                     );
                     if index < THREAT_DIMS {
-                        active.push(index);
+                        out.push(index);
                     }
                 }
             }
@@ -346,14 +346,12 @@ fn active_threat_indices(state: &BoardState, perspective: u32) -> Vec<usize> {
                         king_square,
                     );
                     if index < THREAT_DIMS {
-                        active.push(index);
+                        out.push(index);
                     }
                 }
             }
         }
     }
-
-    active
 }
 
 fn find_king(state: &BoardState, perspective: u32) -> u32 {
@@ -454,7 +452,8 @@ impl OtherAccumulator {
             }
         }
 
-        let mut threat_indices = active_threat_indices(state, perspective);
+        let mut threat_indices = std::mem::take(&mut self.threat_indices[side]);
+        collect_active_threat_indices(state, perspective, &mut threat_indices);
         threat_indices.sort_unstable();
         for &index in &threat_indices {
             add_threat_row(
@@ -511,7 +510,8 @@ impl OtherAccumulator {
                 }
             }
 
-            let mut added = active_threat_indices(after, perspective);
+            let mut added = std::mem::take(&mut self.threat_indices[side]);
+            collect_active_threat_indices(after, perspective, &mut added);
             added.sort_unstable();
             let removed = &parent.threat_indices[side];
             let (mut before_index, mut after_index) = (0, 0);
@@ -641,28 +641,56 @@ fn clipped_relu(value: i32, weight_scale_bits: i32) -> u8 {
 unsafe fn dot_product_avx2(input: &[u8], weights: &[i8]) -> i32 {
     debug_assert_eq!(input.len(), weights.len());
     debug_assert_eq!(input.len() % 32, 0);
+    // SAFETY: inputs are clamped to [0,127] and weights fit in i8, so every
+    // u8*i8 pair product and adjacent-pair sum fits in i16 (max 32258 < 32767);
+    // `_mm256_maddubs_epi16` exactly reproduces the mullo+madd reference sum.
     let ones = _mm256_set1_epi16(1);
     let mut sums = _mm256_setzero_si256();
     for offset in (0..input.len()).step_by(32) {
-        let input_bytes =
-            unsafe { _mm256_loadu_si256(input.as_ptr().add(offset).cast::<__m256i>()) };
-        let weight_bytes =
-            unsafe { _mm256_loadu_si256(weights.as_ptr().add(offset).cast::<__m256i>()) };
-
-        let input_low = _mm256_cvtepu8_epi16(_mm256_castsi256_si128(input_bytes));
-        let weight_low = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(weight_bytes));
-        let products_low = _mm256_mullo_epi16(input_low, weight_low);
-        sums = _mm256_add_epi32(sums, _mm256_madd_epi16(products_low, ones));
-
-        let input_high = _mm256_cvtepu8_epi16(_mm256_extracti128_si256(input_bytes, 1));
-        let weight_high = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(weight_bytes, 1));
-        let products_high = _mm256_mullo_epi16(input_high, weight_high);
-        sums = _mm256_add_epi32(sums, _mm256_madd_epi16(products_high, ones));
+        let input_bytes = _mm256_loadu_si256(input.as_ptr().add(offset).cast::<__m256i>());
+        let weight_bytes = _mm256_loadu_si256(weights.as_ptr().add(offset).cast::<__m256i>());
+        let pair_sums = _mm256_maddubs_epi16(input_bytes, weight_bytes);
+        sums = _mm256_add_epi32(sums, _mm256_madd_epi16(pair_sums, ones));
     }
 
     let mut lanes = [0i32; 8];
     unsafe { _mm256_storeu_si256(lanes.as_mut_ptr().cast::<__m256i>(), sums) };
     lanes.into_iter().fold(0i32, i32::wrapping_add)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2")]
+unsafe fn fc0_forward_avx2(
+    transformed: &[u8; HIDDEN_SIZE],
+    weights: &[i8],
+    biases: &[i32],
+    out: &mut [i32; 32],
+) {
+    debug_assert_eq!(weights.len(), 32 * HIDDEN_SIZE);
+    debug_assert_eq!(biases.len(), 32);
+    let ones = _mm256_set1_epi16(1);
+    for group in 0..4 {
+        let mut sums = [_mm256_setzero_si256(); 8];
+        for offset in (0..HIDDEN_SIZE).step_by(32) {
+            let input_bytes =
+                unsafe { _mm256_loadu_si256(transformed.as_ptr().add(offset).cast::<__m256i>()) };
+            for (lane, group_acc) in sums.iter_mut().enumerate() {
+                let w_ptr = weights
+                    .as_ptr()
+                    .add((group * 8 + lane) * HIDDEN_SIZE + offset)
+                    .cast::<__m256i>();
+                let weight_bytes = unsafe { _mm256_loadu_si256(w_ptr) };
+                let pair_sums = _mm256_maddubs_epi16(input_bytes, weight_bytes);
+                *group_acc = _mm256_add_epi32(*group_acc, _mm256_madd_epi16(pair_sums, ones));
+            }
+        }
+        for lane in 0..8 {
+            let mut lanes = [0i32; 8];
+            unsafe { _mm256_storeu_si256(lanes.as_mut_ptr().cast::<__m256i>(), sums[lane]) };
+            out[group * 8 + lane] = biases[group * 8 + lane]
+                .wrapping_add(lanes.into_iter().fold(0i32, i32::wrapping_add));
+        }
+    }
 }
 
 fn dot_product(input: &[u8], weights: &[i8]) -> i32 {
@@ -686,9 +714,28 @@ fn dot_product(input: &[u8], weights: &[i8]) -> i32 {
 
 fn forward_stack(stack: &OtherStack, transformed: &[u8; HIDDEN_SIZE]) -> i32 {
     let mut fc0 = [0i32; 32];
-    for (output, value) in fc0.iter_mut().enumerate() {
-        let weights = &stack.fc0_weights[output * HIDDEN_SIZE..(output + 1) * HIDDEN_SIZE];
-        *value = stack.fc0_bias[output].wrapping_add(dot_product(transformed, weights));
+    #[cfg(target_arch = "x86_64")]
+    {
+        static AVX2_FC0: OnceLock<bool> = OnceLock::new();
+        if *AVX2_FC0.get_or_init(|| std::is_x86_feature_detected!("avx2")) {
+            // SAFETY: runtime AVX2 detection above; weights are 32 rows of exactly
+            // HIDDEN_SIZE bytes (a multiple of 32), biases have 32 entries.
+            unsafe {
+                fc0_forward_avx2(transformed, &stack.fc0_weights, &stack.fc0_bias, &mut fc0);
+            }
+        } else {
+            for (output, value) in fc0.iter_mut().enumerate() {
+                let weights = &stack.fc0_weights[output * HIDDEN_SIZE..(output + 1) * HIDDEN_SIZE];
+                *value = stack.fc0_bias[output].wrapping_add(dot_product(transformed, weights));
+            }
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        for (output, value) in fc0.iter_mut().enumerate() {
+            let weights = &stack.fc0_weights[output * HIDDEN_SIZE..(output + 1) * HIDDEN_SIZE];
+            *value = stack.fc0_bias[output].wrapping_add(dot_product(transformed, weights));
+        }
     }
 
     let mut activation0 = [0u8; 64];
@@ -770,8 +817,8 @@ pub fn evaluate_other_net(net: &OtherNetData, state: &BoardState) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        active_threat_indices, evaluate_other_net, halfka_index, threat_lut, OtherAccumulator,
-        THREAT_DIMS,
+        collect_active_threat_indices, evaluate_other_net, halfka_index, threat_lut,
+        OtherAccumulator, THREAT_DIMS,
     };
     use crate::board::{move_ec, move_er, move_promotion, move_sc, move_sr};
     use crate::movegen::{apply_move, generate_moves};
@@ -820,7 +867,8 @@ mod tests {
     fn blocked_pawn_push_is_an_active_threat() {
         let mut engine = Engine::new();
         engine.set_fen("7k/8/8/8/8/4p3/4P3/2K5 w - - 0 1");
-        let indices = active_threat_indices(&engine.st, 0);
+        let mut indices = Vec::new();
+        collect_active_threat_indices(&engine.st, 0, &mut indices);
         assert_eq!(indices.len(), 1);
     }
 

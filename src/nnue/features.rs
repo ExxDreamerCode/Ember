@@ -397,7 +397,8 @@ impl NNUEThreatAccumulator {
         }
         self.hs = net.hidden_size;
 
-        let mut changed_squares = Vec::with_capacity(4);
+        let mut changed_squares = [0u32; 4];
+        let mut changed_count = 0usize;
         let mut before_candidates = [0u64; THREAT_COLORED_PIECES];
         let mut after_candidates = [0u64; THREAT_COLORED_PIECES];
 
@@ -407,8 +408,10 @@ impl NNUEThreatAccumulator {
             while squares != 0 {
                 let square = squares.trailing_zeros() as usize;
                 squares &= squares - 1;
-                if !changed_squares.contains(&square) {
-                    changed_squares.push(square);
+                if !changed_squares[..changed_count].contains(&(square as u32)) {
+                    debug_assert!(changed_count < changed_squares.len());
+                    changed_squares[changed_count] = square as u32;
+                    changed_count += 1;
                 }
                 if before.bb[piece] & (1u64 << square) != 0 {
                     before_candidates[piece] |= 1u64 << square;
@@ -419,31 +422,41 @@ impl NNUEThreatAccumulator {
             }
         }
 
-        if changed_squares.is_empty() {
+        if changed_count == 0 {
             return true;
         }
 
-        for &square in &changed_squares {
-            collect_threat_attackers(before, square, &mut before_candidates);
-            collect_threat_attackers(after, square, &mut after_candidates);
+        for &square in &changed_squares[..changed_count] {
+            collect_threat_attackers(before, square as usize, &mut before_candidates);
+            collect_threat_attackers(after, square as usize, &mut after_candidates);
         }
 
         let before_mailbox = threat_mailbox(before);
         let after_mailbox = threat_mailbox(after);
+        let before_occ = color_occupancy(before, WHITE) | color_occupancy(before, BLACK);
+        let after_occ = color_occupancy(after, WHITE) | color_occupancy(after, BLACK);
 
         for piece in 0..THREAT_COLORED_PIECES {
             let mut before_squares = before_candidates[piece] & before.bb[piece];
             while before_squares != 0 {
                 let square = before_squares.trailing_zeros() as usize;
                 before_squares &= before_squares - 1;
-                self.apply_piece_threats(net, before, &before_mailbox, piece, square, -1);
+                self.apply_piece_threats(
+                    net,
+                    before,
+                    &before_mailbox,
+                    before_occ,
+                    piece,
+                    square,
+                    -1,
+                );
             }
 
             let mut after_squares = after_candidates[piece] & after.bb[piece];
             while after_squares != 0 {
                 let square = after_squares.trailing_zeros() as usize;
                 after_squares &= after_squares - 1;
-                self.apply_piece_threats(net, after, &after_mailbox, piece, square, 1);
+                self.apply_piece_threats(net, after, &after_mailbox, after_occ, piece, square, 1);
             }
         }
 
@@ -513,22 +526,25 @@ impl NNUEThreatAccumulator {
         simd::simd_sub_i8_row(acc, row);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn apply_piece_threats(
         &mut self,
         net: &NNUENet,
         st: &BoardState,
         mailbox: &[usize; 64],
+        occ: u64,
         piece: usize,
         square: usize,
         sign: i16,
     ) {
         let color = (piece / 6) as u8;
         let piece_type = (piece % 6) as u8;
-        let white = color_occupancy(st, WHITE);
-        let black = color_occupancy(st, BLACK);
-        let occ = white | black;
         let attacker = threat_colored_piece(color, piece_type);
         let mut attacks = threat_piece_attacks_on_board(piece_type, color, square, occ) & occ;
+
+        // Mirroring depends only on the board; compute it once per piece.
+        let white_mirrored = convert(st.king_sq(true) as u8) as u32 % 8 >= 4;
+        let black_mirrored = convert(st.king_sq(false) as u8) as u32 % 8 >= 4;
 
         while attacks != 0 {
             let target = attacks.trailing_zeros() as usize;
@@ -538,8 +554,11 @@ impl NNUEThreatAccumulator {
                 continue;
             }
             for perspective in [WHITE, BLACK] {
-                let king_square = convert(st.king_sq(perspective == WHITE) as u8) as u32;
-                let mirrored = king_square % 8 >= 4;
+                let mirrored = if perspective == WHITE {
+                    white_mirrored
+                } else {
+                    black_mirrored
+                };
                 let Some(index) = threat_index(
                     attacker,
                     u32::from(convert(square as u8)),

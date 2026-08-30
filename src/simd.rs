@@ -1123,6 +1123,39 @@ pub fn simd_l1_matmul(
     l1_biases: &[i16],
     out: &mut [MaybeUninit<i32>],
 ) {
+    // Fast path for L1=16 nets: the 16 outputs share one contiguous [j][out]
+    // row, so each sp[j]/np[j] is broadcast once for both 8-output accumulators.
+    let chunks = out.as_chunks_mut::<I32_LANES>().0;
+    let full_outputs = chunks.len() * I32_LANES;
+    if full_outputs == I32_LANES * 2
+        && l1_total == I32_LANES * 2
+        && l1_off.is_multiple_of(I32_LANES)
+    {
+        let mut s0 = I32x::splat(0);
+        let mut s1 = I32x::splat(0);
+        let mut n0 = I32x::splat(0);
+        let mut n1 = I32x::splat(0);
+        for j in 0..pw {
+            let sv = I32x::splat(sp[j] as i32);
+            let nv = I32x::splat(np[j] as i32);
+            let base = j * l1_total + l1_off;
+            let sw0 = unsafe { load_i16_i32(l1_weights, base) };
+            let sw1 = unsafe { load_i16_i32(l1_weights, base + I32_LANES) };
+            let nw0 = unsafe { load_i16_i32(l1_weights, (pw + j) * l1_total + l1_off) };
+            let nw1 = unsafe { load_i16_i32(l1_weights, (pw + j) * l1_total + l1_off + I32_LANES) };
+            s0 += sv * sw0;
+            s1 += sv * sw1;
+            n0 += nv * nw0;
+            n1 += nv * nw1;
+        }
+
+        let b0 = unsafe { load_i16_i32(l1_biases, l1_off) } * I32x::splat(pw_scale);
+        let b1 = unsafe { load_i16_i32(l1_biases, l1_off + I32_LANES) } * I32x::splat(pw_scale);
+        write_i32_array(&mut chunks[0], (b0 + s0 + n0).to_array());
+        write_i32_array(&mut chunks[1], (b1 + s1 + n1).to_array());
+        return;
+    }
+
     let (out_chunks, out_tail) = out.as_chunks_mut::<I32_LANES>();
     for (chunk_idx, out_chunk) in out_chunks.iter_mut().enumerate() {
         let i = chunk_idx * I32_LANES;
@@ -1956,46 +1989,54 @@ mod tests {
 
     #[test]
     fn l1_matmul_matches_scalar_reference() {
-        let pw = 7usize;
-        let l1_total = 32usize;
-        let l1_off = 5usize;
-        let l1 = 19usize;
-        let pw_scale = (QA * QA) >> 9;
+        for (l1_total, l1_off, l1) in [
+            (32usize, 5usize, 19usize),
+            // Covers the contiguous 16-output fast path used by the native
+            // threat network (FT=1024, L1=16).
+            (16usize, 0usize, 16usize),
+        ] {
+            let pw = 7usize;
+            let pw_scale = (QA * QA) >> 9;
 
-        let sp: Vec<u8> = (0..pw).map(|i| (3 + i * 17) as u8).collect();
-        let np: Vec<u8> = (0..pw).map(|i| (5 + i * 19) as u8).collect();
-        let weights: Vec<i16> = (0..2 * pw * l1_total)
-            .map(|i| ((i as i32 * 37 % 257) - 128) as i16)
-            .collect();
-        let biases: Vec<i16> = (0..l1_off + l1)
-            .map(|i| ((i as i32 * 11 % 53) - 26) as i16)
-            .collect();
+            let sp: Vec<u8> = (0..pw).map(|i| (3 + i * 17) as u8).collect();
+            let np: Vec<u8> = (0..pw).map(|i| (5 + i * 19) as u8).collect();
+            let weights: Vec<i16> = (0..2 * pw * l1_total)
+                .map(|i| ((i as i32 * 37 % 257) - 128) as i16)
+                .collect();
+            let biases: Vec<i16> = (0..l1_off + l1)
+                .map(|i| ((i as i32 * 11 % 53) - 26) as i16)
+                .collect();
 
-        let mut actual = vec![MaybeUninit::<i32>::uninit(); l1];
-        simd_l1_matmul(
-            &sp,
-            &np,
-            l1_total,
-            l1,
-            l1_off,
-            pw,
-            pw_scale,
-            &weights,
-            &biases,
-            &mut actual,
-        );
+            let mut actual = vec![MaybeUninit::<i32>::uninit(); l1];
+            simd_l1_matmul(
+                &sp,
+                &np,
+                l1_total,
+                l1,
+                l1_off,
+                pw,
+                pw_scale,
+                &weights,
+                &biases,
+                &mut actual,
+            );
 
-        let mut expected = vec![0i32; l1];
-        for (i, value) in expected.iter_mut().enumerate().take(l1) {
-            let gi = l1_off + i;
-            *value = biases[gi] as i32 * pw_scale;
-            for j in 0..pw {
-                *value += sp[j] as i32 * weights[j * l1_total + gi] as i32;
-                *value += np[j] as i32 * weights[(pw + j) * l1_total + gi] as i32;
+            let mut expected = vec![0i32; l1];
+            for (i, value) in expected.iter_mut().enumerate().take(l1) {
+                let gi = l1_off + i;
+                *value = biases[gi] as i32 * pw_scale;
+                for j in 0..pw {
+                    *value += sp[j] as i32 * weights[j * l1_total + gi] as i32;
+                    *value += np[j] as i32 * weights[(pw + j) * l1_total + gi] as i32;
+                }
             }
-        }
 
-        assert_eq!(initialized_values(&actual), expected);
+            assert_eq!(
+                initialized_values(&actual),
+                expected,
+                "mismatch for l1_total={l1_total} l1_off={l1_off} l1={l1}"
+            );
+        }
     }
 
     #[test]
