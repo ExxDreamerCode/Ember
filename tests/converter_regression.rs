@@ -3,7 +3,8 @@ use std::process::Command;
 
 #[test]
 fn bullet_converter_accounts_for_v10_extended_header() {
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("training/convert_bullet_to_nnue.py");
+    let script =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("training/v1/convert_bullet_to_nnue_v1.py");
     let python = r#"
 import importlib.util
 import os
