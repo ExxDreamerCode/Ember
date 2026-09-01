@@ -278,7 +278,10 @@ impl Searcher {
                     tl,
                     cnt,
                     ply,
-                    EmberV2Eval { net },
+                    EmberV2Eval {
+                        net,
+                        _backend: ScalarNnueBackend,
+                    },
                 )
             } else {
                 self.qsearch_mode_scalar::<false, false, _>(
@@ -290,7 +293,10 @@ impl Searcher {
                     tl,
                     cnt,
                     ply,
-                    EmberV2Eval { net },
+                    EmberV2Eval {
+                        net,
+                        _backend: ScalarNnueBackend,
+                    },
                 )
             };
         }

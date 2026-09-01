@@ -1,5 +1,13 @@
+#[cfg(target_arch = "x86_64")]
+use super::backend::Avx512NnueBackend;
+use super::backend::{
+    NnueBackend, ScalarNnueBackend, Simd128NnueBackend, Simd512NnueBackend, SimdNnueBackend,
+};
 use super::ember_v2_net::{EmberV2Data, EmberV2Stack};
 use crate::board::{BoardState, EMPTY_SQ, KING_ATTACKS, KNIGHT_ATTACKS};
+use std::simd::cmp::SimdOrd;
+use std::simd::num::{SimdInt, SimdUint};
+use std::simd::Simd;
 use std::sync::OnceLock;
 
 #[cfg(target_arch = "x86_64")]
@@ -19,6 +27,21 @@ const OUTPUT_SCALE: i32 = 16;
 const WEIGHT_SCALE_BITS: i32 = 6;
 const FT_MAX_VAL: i32 = 255;
 const HIDDEN_ONE_VAL: i32 = 128;
+
+type I8x128 = Simd<i8, 8>;
+type U8x128 = Simd<u8, 8>;
+type I16x128 = Simd<i16, 8>;
+type I32x128 = Simd<i32, 8>;
+type I8x256 = Simd<i8, 16>;
+#[allow(dead_code)]
+type U8x256 = Simd<u8, 16>;
+type I16x256 = Simd<i16, 16>;
+#[allow(dead_code)]
+type I32x256 = Simd<i32, 16>;
+type I8x512 = Simd<i8, 32>;
+type U8x512 = Simd<u8, 32>;
+type I16x512 = Simd<i16, 32>;
+type I32x512 = Simd<i32, 32>;
 
 const NUM_VALID_TARGETS: [u32; 12] = [6, 10, 8, 8, 10, 0, 6, 10, 8, 8, 10, 0];
 
@@ -354,49 +377,57 @@ fn find_king(state: &BoardState, perspective: u32) -> u32 {
     state.bb[if perspective == 0 { 5 } else { 11 }].trailing_zeros()
 }
 
-fn add_psq_row(
+pub(crate) trait EmberV2Backend: NnueBackend {
+    fn add_i8_row(accumulator: &mut [i16], row: &[i8]);
+    fn sub_i8_row(accumulator: &mut [i16], row: &[i8]);
+    fn transform(accumulator: &[i16; HIDDEN_SIZE], output: &mut [u8]);
+    fn dot(input: &[u8], weights: &[i8]) -> i32;
+    fn fc0(transformed: &[u8; HIDDEN_SIZE], weights: &[i8], biases: &[i32], output: &mut [i32; 32]);
+}
+
+fn add_psq_row<B: EmberV2Backend>(
     accumulator: &mut [i16; HIDDEN_SIZE],
     psqt: &mut [i32; PSQT_BUCKETS],
     row: &[i16],
     psqt_row: &[i32],
 ) {
-    crate::simd::simd_add_row(accumulator, row);
+    B::add_row(accumulator, row);
     for (value, weight) in psqt.iter_mut().zip(psqt_row.iter()) {
         *value = value.wrapping_add(*weight);
     }
 }
 
-fn add_threat_row(
+fn add_threat_row<B: EmberV2Backend>(
     accumulator: &mut [i16; HIDDEN_SIZE],
     psqt: &mut [i32; PSQT_BUCKETS],
     row: &[i8],
     psqt_row: &[i32],
 ) {
-    crate::simd::simd_add_i8_row(accumulator, row);
+    B::add_i8_row(accumulator, row);
     for (value, weight) in psqt.iter_mut().zip(psqt_row.iter()) {
         *value = value.wrapping_add(*weight);
     }
 }
 
-fn remove_psq_row(
+fn remove_psq_row<B: EmberV2Backend>(
     accumulator: &mut [i16; HIDDEN_SIZE],
     psqt: &mut [i32; PSQT_BUCKETS],
     row: &[i16],
     psqt_row: &[i32],
 ) {
-    crate::simd::simd_sub_row(accumulator, row);
+    B::sub_row(accumulator, row);
     for (value, weight) in psqt.iter_mut().zip(psqt_row.iter()) {
         *value = value.wrapping_sub(*weight);
     }
 }
 
-fn remove_threat_row(
+fn remove_threat_row<B: EmberV2Backend>(
     accumulator: &mut [i16; HIDDEN_SIZE],
     psqt: &mut [i32; PSQT_BUCKETS],
     row: &[i8],
     psqt_row: &[i32],
 ) {
-    crate::simd::simd_sub_i8_row(accumulator, row);
+    B::sub_i8_row(accumulator, row);
     for (value, weight) in psqt.iter_mut().zip(psqt_row.iter()) {
         *value = value.wrapping_sub(*weight);
     }
@@ -418,13 +449,22 @@ impl EmberV2Accumulator {
         }
     }
 
-    pub(crate) fn refresh(&mut self, net: &EmberV2Data, state: &BoardState) {
+    pub(crate) fn refresh_with_backend<B: EmberV2Backend>(
+        &mut self,
+        net: &EmberV2Data,
+        state: &BoardState,
+    ) {
         for perspective in 0..2u32 {
-            self.refresh_perspective(net, state, perspective);
+            self.refresh_perspective::<B>(net, state, perspective);
         }
     }
 
-    fn refresh_perspective(&mut self, net: &EmberV2Data, state: &BoardState, perspective: u32) {
+    fn refresh_perspective<B: EmberV2Backend>(
+        &mut self,
+        net: &EmberV2Data,
+        state: &BoardState,
+        perspective: u32,
+    ) {
         let side = perspective as usize;
         for (value, bias) in self.accumulation[side].iter_mut().zip(net.ft_bias.iter()) {
             *value = *bias;
@@ -439,7 +479,7 @@ impl EmberV2Accumulator {
                 pieces &= pieces - 1;
                 let index = halfka_index(perspective, square, piece, king_square);
                 debug_assert!(index < PSQ_DIMS);
-                add_psq_row(
+                add_psq_row::<B>(
                     &mut self.accumulation[side],
                     &mut self.psqt[side],
                     &net.psq_weights[index * HIDDEN_SIZE..(index + 1) * HIDDEN_SIZE],
@@ -452,7 +492,7 @@ impl EmberV2Accumulator {
         collect_active_threat_indices(state, perspective, &mut threat_indices);
         threat_indices.sort_unstable();
         for &index in &threat_indices {
-            add_threat_row(
+            add_threat_row::<B>(
                 &mut self.accumulation[side],
                 &mut self.psqt[side],
                 &net.threat_weights[index * HIDDEN_SIZE..(index + 1) * HIDDEN_SIZE],
@@ -462,7 +502,7 @@ impl EmberV2Accumulator {
         self.threat_indices[side] = threat_indices;
     }
 
-    pub(crate) fn update_from_parent(
+    pub(crate) fn update_from_parent_with_backend<B: EmberV2Backend>(
         &mut self,
         parent: &Self,
         net: &EmberV2Data,
@@ -472,7 +512,7 @@ impl EmberV2Accumulator {
         self.clone_from(parent);
         for perspective in 0..2u32 {
             if find_king(before, perspective) != find_king(after, perspective) {
-                self.refresh_perspective(net, after, perspective);
+                self.refresh_perspective::<B>(net, after, perspective);
                 continue;
             }
 
@@ -487,7 +527,7 @@ impl EmberV2Accumulator {
                 if before_piece != EMPTY_SQ {
                     let index =
                         halfka_index(perspective, square, u32::from(before_piece), king_square);
-                    remove_psq_row(
+                    remove_psq_row::<B>(
                         &mut self.accumulation[side],
                         &mut self.psqt[side],
                         &net.psq_weights[index * HIDDEN_SIZE..(index + 1) * HIDDEN_SIZE],
@@ -497,7 +537,7 @@ impl EmberV2Accumulator {
                 if after_piece != EMPTY_SQ {
                     let index =
                         halfka_index(perspective, square, u32::from(after_piece), king_square);
-                    add_psq_row(
+                    add_psq_row::<B>(
                         &mut self.accumulation[side],
                         &mut self.psqt[side],
                         &net.psq_weights[index * HIDDEN_SIZE..(index + 1) * HIDDEN_SIZE],
@@ -518,7 +558,7 @@ impl EmberV2Accumulator {
                         after_index += 1;
                     }
                     (Some(&old), Some(&new)) if old < new => {
-                        remove_threat_row(
+                        remove_threat_row::<B>(
                             &mut self.accumulation[side],
                             &mut self.psqt[side],
                             &net.threat_weights[old * HIDDEN_SIZE..(old + 1) * HIDDEN_SIZE],
@@ -527,7 +567,7 @@ impl EmberV2Accumulator {
                         before_index += 1;
                     }
                     (_, Some(&new)) => {
-                        add_threat_row(
+                        add_threat_row::<B>(
                             &mut self.accumulation[side],
                             &mut self.psqt[side],
                             &net.threat_weights[new * HIDDEN_SIZE..(new + 1) * HIDDEN_SIZE],
@@ -536,7 +576,7 @@ impl EmberV2Accumulator {
                         after_index += 1;
                     }
                     (Some(&old), None) => {
-                        remove_threat_row(
+                        remove_threat_row::<B>(
                             &mut self.accumulation[side],
                             &mut self.psqt[side],
                             &net.threat_weights[old * HIDDEN_SIZE..(old + 1) * HIDDEN_SIZE],
@@ -604,21 +644,154 @@ unsafe fn transformed_features_avx2(accumulator: &[i16; HIDDEN_SIZE], output: &m
     }
 }
 
-fn transformed_features(accumulator: &[i16; HIDDEN_SIZE], output: &mut [u8]) {
+fn transformed_features_scalar(accumulator: &[i16; HIDDEN_SIZE], output: &mut [u8]) {
     debug_assert_eq!(output.len(), HIDDEN_SIZE / 2);
-    #[cfg(target_arch = "x86_64")]
-    {
-        static AVX2_FEATURES: OnceLock<bool> = OnceLock::new();
-        if *AVX2_FEATURES.get_or_init(|| std::is_x86_feature_detected!("avx2")) {
-            // SAFETY: runtime feature detection above guarantees AVX2 support,
-            // and output is exactly HIDDEN_SIZE/2 bytes, a multiple of 32.
-            return unsafe { transformed_features_avx2(accumulator, output) };
-        }
-    }
     for (index, slot) in output.iter_mut().enumerate() {
         *slot = transformed_feature(accumulator, index);
     }
 }
+
+macro_rules! define_simd_v2_kernels {
+    (
+        $add_i8:ident,
+        $sub_i8:ident,
+        $transform:ident,
+        $dot:ident,
+        $fc0:ident,
+        $i8_vector:ty,
+        $u8_vector:ty,
+        $i16_vector:ty,
+        $i32_vector:ty,
+        $lanes:expr
+    ) => {
+        #[inline(always)]
+        fn $add_i8(accumulator: &mut [i16], row: &[i8]) {
+            debug_assert_eq!(accumulator.len(), row.len());
+            let (accumulator_chunks, accumulator_tail) = accumulator.as_chunks_mut::<$lanes>();
+            let (row_chunks, row_tail) = row.as_chunks::<$lanes>();
+            for (accumulator_chunk, row_chunk) in accumulator_chunks.iter_mut().zip(row_chunks) {
+                let accumulator_values = <$i16_vector>::from_array(*accumulator_chunk);
+                let row_values = <$i8_vector>::from_array(*row_chunk).cast::<i16>();
+                *accumulator_chunk = (accumulator_values + row_values).to_array();
+            }
+            crate::simd::scalar_add_i8_row(accumulator_tail, row_tail);
+        }
+
+        #[inline(always)]
+        fn $sub_i8(accumulator: &mut [i16], row: &[i8]) {
+            debug_assert_eq!(accumulator.len(), row.len());
+            let (accumulator_chunks, accumulator_tail) = accumulator.as_chunks_mut::<$lanes>();
+            let (row_chunks, row_tail) = row.as_chunks::<$lanes>();
+            for (accumulator_chunk, row_chunk) in accumulator_chunks.iter_mut().zip(row_chunks) {
+                let accumulator_values = <$i16_vector>::from_array(*accumulator_chunk);
+                let row_values = <$i8_vector>::from_array(*row_chunk).cast::<i16>();
+                *accumulator_chunk = (accumulator_values - row_values).to_array();
+            }
+            crate::simd::scalar_sub_i8_row(accumulator_tail, row_tail);
+        }
+
+        #[allow(dead_code)]
+        #[inline(always)]
+        fn $transform(accumulator: &[i16; HIDDEN_SIZE], output: &mut [u8]) {
+            debug_assert_eq!(output.len(), HIDDEN_SIZE / 2);
+            let (first, second) = accumulator.split_at(HIDDEN_SIZE / 2);
+            let (first_chunks, first_tail) = first.as_chunks::<$lanes>();
+            let (second_chunks, second_tail) = second.as_chunks::<$lanes>();
+            let (output_chunks, output_tail) = output.as_chunks_mut::<$lanes>();
+            let zero = <$i32_vector>::splat(0);
+            let maximum = <$i32_vector>::splat(FT_MAX_VAL);
+            for ((first_chunk, second_chunk), output_chunk) in
+                first_chunks.iter().zip(second_chunks).zip(output_chunks)
+            {
+                let first_values = <$i16_vector>::from_array(*first_chunk)
+                    .cast::<i32>()
+                    .simd_clamp(zero, maximum);
+                let second_values = <$i16_vector>::from_array(*second_chunk)
+                    .cast::<i32>()
+                    .simd_clamp(zero, maximum);
+                *output_chunk = ((first_values * second_values) / <$i32_vector>::splat(512))
+                    .cast::<u8>()
+                    .to_array();
+            }
+            debug_assert!(first_tail.is_empty());
+            debug_assert!(second_tail.is_empty());
+            debug_assert!(output_tail.is_empty());
+        }
+
+        #[allow(dead_code)]
+        #[inline(always)]
+        fn $dot(input: &[u8], weights: &[i8]) -> i32 {
+            debug_assert_eq!(input.len(), weights.len());
+            let (input_chunks, input_tail) = input.as_chunks::<$lanes>();
+            let (weight_chunks, weight_tail) = weights.as_chunks::<$lanes>();
+            let mut sum = 0i32;
+            for (input_chunk, weight_chunk) in input_chunks.iter().zip(weight_chunks) {
+                let input_values = <$u8_vector>::from_array(*input_chunk).cast::<i32>();
+                let weight_values = <$i8_vector>::from_array(*weight_chunk).cast::<i32>();
+                sum = sum.wrapping_add((input_values * weight_values).reduce_sum());
+            }
+            input_tail
+                .iter()
+                .zip(weight_tail)
+                .fold(sum, |sum, (&input, &weight)| {
+                    sum.wrapping_add(i32::from(input) * i32::from(weight))
+                })
+        }
+
+        #[allow(dead_code)]
+        #[inline(always)]
+        fn $fc0(
+            transformed: &[u8; HIDDEN_SIZE],
+            weights: &[i8],
+            biases: &[i32],
+            output: &mut [i32; 32],
+        ) {
+            debug_assert_eq!(weights.len(), 32 * HIDDEN_SIZE);
+            debug_assert_eq!(biases.len(), 32);
+            for (index, value) in output.iter_mut().enumerate() {
+                let row = &weights[index * HIDDEN_SIZE..(index + 1) * HIDDEN_SIZE];
+                *value = biases[index].wrapping_add($dot(transformed, row));
+            }
+        }
+    };
+}
+
+define_simd_v2_kernels!(
+    add_i8_row_simd128,
+    sub_i8_row_simd128,
+    transformed_features_simd128,
+    dot_product_simd128,
+    fc0_forward_simd128,
+    I8x128,
+    U8x128,
+    I16x128,
+    I32x128,
+    8
+);
+define_simd_v2_kernels!(
+    add_i8_row_simd256,
+    sub_i8_row_simd256,
+    transformed_features_simd256,
+    dot_product_simd256,
+    fc0_forward_simd256,
+    I8x256,
+    U8x256,
+    I16x256,
+    I32x256,
+    16
+);
+define_simd_v2_kernels!(
+    add_i8_row_simd512,
+    sub_i8_row_simd512,
+    transformed_features_simd512,
+    dot_product_simd512,
+    fc0_forward_simd512,
+    I8x512,
+    U8x512,
+    I16x512,
+    I32x512,
+    32
+);
 
 fn saturating_i16(value: i32) -> i16 {
     value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
@@ -689,17 +862,8 @@ unsafe fn fc0_forward_avx2(
     }
 }
 
-fn dot_product(input: &[u8], weights: &[i8]) -> i32 {
+fn dot_product_scalar(input: &[u8], weights: &[i8]) -> i32 {
     debug_assert_eq!(input.len(), weights.len());
-    #[cfg(target_arch = "x86_64")]
-    {
-        static AVX2: OnceLock<bool> = OnceLock::new();
-        if *AVX2.get_or_init(|| std::is_x86_feature_detected!("avx2")) {
-            // SAFETY: runtime feature detection above guarantees AVX2 support,
-            // and all supported layer widths are multiples of 32.
-            return unsafe { dot_product_avx2(input, weights) };
-        }
-    }
     input
         .iter()
         .zip(weights.iter())
@@ -708,31 +872,254 @@ fn dot_product(input: &[u8], weights: &[i8]) -> i32 {
         })
 }
 
-fn forward_stack(stack: &EmberV2Stack, transformed: &[u8; HIDDEN_SIZE]) -> i32 {
+fn fc0_forward_scalar(
+    transformed: &[u8; HIDDEN_SIZE],
+    weights: &[i8],
+    biases: &[i32],
+    output: &mut [i32; 32],
+) {
+    debug_assert_eq!(weights.len(), 32 * HIDDEN_SIZE);
+    debug_assert_eq!(biases.len(), 32);
+    for (index, value) in output.iter_mut().enumerate() {
+        let row = &weights[index * HIDDEN_SIZE..(index + 1) * HIDDEN_SIZE];
+        *value = biases[index].wrapping_add(dot_product_scalar(transformed, row));
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
+unsafe fn add_i8_row_x86_v3(accumulator: &mut [i16], row: &[i8]) {
+    add_i8_row_simd256(accumulator, row);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
+unsafe fn sub_i8_row_x86_v3(accumulator: &mut [i16], row: &[i8]) {
+    sub_i8_row_simd256(accumulator, row);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,avx512f,avx512bw,avx512dq,avx512vl,bmi1,bmi2,fma,lzcnt,popcnt")]
+unsafe fn add_i8_row_x86_avx512(accumulator: &mut [i16], row: &[i8]) {
+    add_i8_row_simd512(accumulator, row);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,avx512f,avx512bw,avx512dq,avx512vl,bmi1,bmi2,fma,lzcnt,popcnt")]
+unsafe fn sub_i8_row_x86_avx512(accumulator: &mut [i16], row: &[i8]) {
+    sub_i8_row_simd512(accumulator, row);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,avx512f,avx512bw,avx512dq,avx512vl,bmi1,bmi2,fma,lzcnt,popcnt")]
+unsafe fn transformed_features_x86_avx512(accumulator: &[i16; HIDDEN_SIZE], output: &mut [u8]) {
+    transformed_features_simd512(accumulator, output);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,avx512f,avx512bw,avx512dq,avx512vl,bmi1,bmi2,fma,lzcnt,popcnt")]
+unsafe fn dot_product_x86_avx512(input: &[u8], weights: &[i8]) -> i32 {
+    dot_product_simd512(input, weights)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,avx512f,avx512bw,avx512dq,avx512vl,bmi1,bmi2,fma,lzcnt,popcnt")]
+unsafe fn fc0_forward_x86_avx512(
+    transformed: &[u8; HIDDEN_SIZE],
+    weights: &[i8],
+    biases: &[i32],
+    output: &mut [i32; 32],
+) {
+    fc0_forward_simd512(transformed, weights, biases, output);
+}
+
+impl EmberV2Backend for ScalarNnueBackend {
+    #[inline(always)]
+    fn add_i8_row(accumulator: &mut [i16], row: &[i8]) {
+        crate::simd::scalar_add_i8_row(accumulator, row);
+    }
+
+    #[inline(always)]
+    fn sub_i8_row(accumulator: &mut [i16], row: &[i8]) {
+        crate::simd::scalar_sub_i8_row(accumulator, row);
+    }
+
+    #[inline(always)]
+    fn transform(accumulator: &[i16; HIDDEN_SIZE], output: &mut [u8]) {
+        transformed_features_scalar(accumulator, output);
+    }
+
+    #[inline(always)]
+    fn dot(input: &[u8], weights: &[i8]) -> i32 {
+        dot_product_scalar(input, weights)
+    }
+
+    #[inline(always)]
+    fn fc0(
+        transformed: &[u8; HIDDEN_SIZE],
+        weights: &[i8],
+        biases: &[i32],
+        output: &mut [i32; 32],
+    ) {
+        fc0_forward_scalar(transformed, weights, biases, output);
+    }
+}
+
+macro_rules! impl_portable_ember_v2_backend {
+    ($backend:ty, $add_i8:ident, $sub_i8:ident, $transform:ident, $dot:ident, $fc0:ident) => {
+        impl EmberV2Backend for $backend {
+            #[inline(always)]
+            fn add_i8_row(accumulator: &mut [i16], row: &[i8]) {
+                $add_i8(accumulator, row);
+            }
+
+            #[inline(always)]
+            fn sub_i8_row(accumulator: &mut [i16], row: &[i8]) {
+                $sub_i8(accumulator, row);
+            }
+
+            #[inline(always)]
+            fn transform(accumulator: &[i16; HIDDEN_SIZE], output: &mut [u8]) {
+                $transform(accumulator, output);
+            }
+
+            #[inline(always)]
+            fn dot(input: &[u8], weights: &[i8]) -> i32 {
+                $dot(input, weights)
+            }
+
+            #[inline(always)]
+            fn fc0(
+                transformed: &[u8; HIDDEN_SIZE],
+                weights: &[i8],
+                biases: &[i32],
+                output: &mut [i32; 32],
+            ) {
+                $fc0(transformed, weights, biases, output);
+            }
+        }
+    };
+}
+
+impl_portable_ember_v2_backend!(
+    Simd128NnueBackend,
+    add_i8_row_simd128,
+    sub_i8_row_simd128,
+    transformed_features_simd128,
+    dot_product_simd128,
+    fc0_forward_simd128
+);
+
+impl EmberV2Backend for SimdNnueBackend {
+    #[inline(always)]
+    fn add_i8_row(accumulator: &mut [i16], row: &[i8]) {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            add_i8_row_x86_v3(accumulator, row);
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        add_i8_row_simd256(accumulator, row);
+    }
+
+    #[inline(always)]
+    fn sub_i8_row(accumulator: &mut [i16], row: &[i8]) {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            sub_i8_row_x86_v3(accumulator, row);
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        sub_i8_row_simd256(accumulator, row);
+    }
+
+    #[inline(always)]
+    fn transform(accumulator: &[i16; HIDDEN_SIZE], output: &mut [u8]) {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            transformed_features_avx2(accumulator, output);
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        transformed_features_simd256(accumulator, output);
+    }
+
+    #[inline(always)]
+    fn dot(input: &[u8], weights: &[i8]) -> i32 {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            dot_product_avx2(input, weights)
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        dot_product_simd256(input, weights)
+    }
+
+    #[inline(always)]
+    fn fc0(
+        transformed: &[u8; HIDDEN_SIZE],
+        weights: &[i8],
+        biases: &[i32],
+        output: &mut [i32; 32],
+    ) {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            fc0_forward_avx2(transformed, weights, biases, output);
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        fc0_forward_simd256(transformed, weights, biases, output);
+    }
+}
+
+impl_portable_ember_v2_backend!(
+    Simd512NnueBackend,
+    add_i8_row_simd512,
+    sub_i8_row_simd512,
+    transformed_features_simd512,
+    dot_product_simd512,
+    fc0_forward_simd512
+);
+
+#[cfg(target_arch = "x86_64")]
+impl EmberV2Backend for Avx512NnueBackend {
+    #[inline(always)]
+    fn add_i8_row(accumulator: &mut [i16], row: &[i8]) {
+        unsafe {
+            add_i8_row_x86_avx512(accumulator, row);
+        }
+    }
+
+    #[inline(always)]
+    fn sub_i8_row(accumulator: &mut [i16], row: &[i8]) {
+        unsafe {
+            sub_i8_row_x86_avx512(accumulator, row);
+        }
+    }
+
+    #[inline(always)]
+    fn transform(accumulator: &[i16; HIDDEN_SIZE], output: &mut [u8]) {
+        unsafe {
+            transformed_features_x86_avx512(accumulator, output);
+        }
+    }
+
+    #[inline(always)]
+    fn dot(input: &[u8], weights: &[i8]) -> i32 {
+        unsafe { dot_product_x86_avx512(input, weights) }
+    }
+
+    #[inline(always)]
+    fn fc0(
+        transformed: &[u8; HIDDEN_SIZE],
+        weights: &[i8],
+        biases: &[i32],
+        output: &mut [i32; 32],
+    ) {
+        unsafe {
+            fc0_forward_x86_avx512(transformed, weights, biases, output);
+        }
+    }
+}
+
+fn forward_stack<B: EmberV2Backend>(stack: &EmberV2Stack, transformed: &[u8; HIDDEN_SIZE]) -> i32 {
     let mut fc0 = [0i32; 32];
-    #[cfg(target_arch = "x86_64")]
-    {
-        static AVX2_FC0: OnceLock<bool> = OnceLock::new();
-        if *AVX2_FC0.get_or_init(|| std::is_x86_feature_detected!("avx2")) {
-            // SAFETY: runtime AVX2 detection above; weights are 32 rows of exactly
-            // HIDDEN_SIZE bytes (a multiple of 32), biases have 32 entries.
-            unsafe {
-                fc0_forward_avx2(transformed, &stack.fc0_weights, &stack.fc0_bias, &mut fc0);
-            }
-        } else {
-            for (output, value) in fc0.iter_mut().enumerate() {
-                let weights = &stack.fc0_weights[output * HIDDEN_SIZE..(output + 1) * HIDDEN_SIZE];
-                *value = stack.fc0_bias[output].wrapping_add(dot_product(transformed, weights));
-            }
-        }
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        for (output, value) in fc0.iter_mut().enumerate() {
-            let weights = &stack.fc0_weights[output * HIDDEN_SIZE..(output + 1) * HIDDEN_SIZE];
-            *value = stack.fc0_bias[output].wrapping_add(dot_product(transformed, weights));
-        }
-    }
+    B::fc0(transformed, &stack.fc0_weights, &stack.fc0_bias, &mut fc0);
 
     let mut activation0 = [0u8; 64];
     for index in 0..32 {
@@ -743,7 +1130,7 @@ fn forward_stack(stack: &EmberV2Stack, transformed: &[u8; HIDDEN_SIZE]) -> i32 {
     let mut fc1 = [0i32; 32];
     for (output, value) in fc1.iter_mut().enumerate() {
         let weights = &stack.fc1_weights[output * 64..(output + 1) * 64];
-        *value = stack.fc1_bias[output].wrapping_add(dot_product(&activation0, weights));
+        *value = stack.fc1_bias[output].wrapping_add(B::dot(&activation0, weights));
     }
 
     let mut activation1 = [0u8; 64];
@@ -757,11 +1144,11 @@ fn forward_stack(stack: &EmberV2Stack, transformed: &[u8; HIDDEN_SIZE]) -> i32 {
     activations[64..].copy_from_slice(&activation1);
     let output = stack
         .fc2_bias
-        .wrapping_add(dot_product(&activations, &stack.fc2_weights));
+        .wrapping_add(B::dot(&activations, &stack.fc2_weights));
     output.wrapping_add(fc0[30].wrapping_sub(fc0[31]))
 }
 
-fn evaluate_ember_v2_acc_components(
+fn evaluate_ember_v2_acc_components<B: EmberV2Backend>(
     net: &EmberV2Data,
     accumulator: &EmberV2Accumulator,
     state: &BoardState,
@@ -779,7 +1166,7 @@ fn evaluate_ember_v2_acc_components(
     let mut transformed = [0u8; HIDDEN_SIZE];
     for (output_side, &perspective) in perspectives.iter().enumerate() {
         let base = output_side * HIDDEN_SIZE / 2;
-        transformed_features(
+        B::transform(
             &accumulator.accumulation[perspective],
             &mut transformed[base..base + HIDDEN_SIZE / 2],
         );
@@ -788,32 +1175,152 @@ fn evaluate_ember_v2_acc_components(
     let psqt_value = (accumulator.psqt[side_to_move][bucket] - accumulator.psqt[opponent][bucket])
         .wrapping_div(2)
         / OUTPUT_SCALE;
-    let forward = forward_stack(&net.stacks[bucket], &transformed);
+    let forward = forward_stack::<B>(&net.stacks[bucket], &transformed);
     let multiplier = i64::from(600 * OUTPUT_SCALE);
     let denominator = i64::from(HIDDEN_ONE_VAL) * i64::from(1 << WEIGHT_SCALE_BITS) * 2;
     let positional = ((i64::from(forward) * multiplier) / denominator) as i32 / OUTPUT_SCALE;
     (psqt_value, positional)
 }
 
-pub(crate) fn evaluate_ember_v2_acc(
+pub(crate) fn evaluate_ember_v2_acc_with_backend<B: EmberV2Backend>(
     net: &EmberV2Data,
     accumulator: &EmberV2Accumulator,
     state: &BoardState,
 ) -> i32 {
-    let (psqt, positional) = evaluate_ember_v2_acc_components(net, accumulator, state);
+    let (psqt, positional) = evaluate_ember_v2_acc_components::<B>(net, accumulator, state);
     psqt + positional
 }
 
 pub fn evaluate_ember_v2(net: &EmberV2Data, state: &BoardState) -> i32 {
+    evaluate_ember_v2_with_backend::<ScalarNnueBackend>(net, state)
+}
+
+pub(crate) fn evaluate_ember_v2_with_backend<B: EmberV2Backend>(
+    net: &EmberV2Data,
+    state: &BoardState,
+) -> i32 {
     let mut accumulator = EmberV2Accumulator::new();
-    accumulator.refresh(net, state);
-    evaluate_ember_v2_acc(net, &accumulator, state)
+    accumulator.refresh_with_backend::<B>(net, state);
+    evaluate_ember_v2_acc_with_backend::<B>(net, &accumulator, state)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{collect_active_threat_indices, halfka_index, threat_lut, THREAT_DIMS};
     use crate::Engine;
+
+    fn synthetic_net(states: &[crate::board::BoardState]) -> super::EmberV2Data {
+        let mut max_index = 0;
+        for state in states {
+            for perspective in 0..2u32 {
+                let king_square = super::find_king(state, perspective);
+                for piece in 0..12u32 {
+                    let mut pieces = state.bb[piece as usize];
+                    while pieces != 0 {
+                        let square = pieces.trailing_zeros();
+                        pieces &= pieces - 1;
+                        max_index = max_index.max(super::halfka_index(
+                            perspective,
+                            square,
+                            piece,
+                            king_square,
+                        ));
+                    }
+                }
+                let mut threats = Vec::new();
+                super::collect_active_threat_indices(state, perspective, &mut threats);
+                assert!(
+                    threats.is_empty(),
+                    "synthetic position must have no threats"
+                );
+            }
+        }
+
+        let mut psq_weights = vec![0i16; (max_index + 1) * super::HIDDEN_SIZE];
+        for (index, value) in psq_weights.iter_mut().enumerate() {
+            *value = ((index * 17 + 5) % 31) as i16 - 15;
+        }
+        let mut psqt = vec![0i32; (max_index + 1) * super::PSQT_BUCKETS];
+        for (index, value) in psqt.iter_mut().enumerate() {
+            *value = (index as i32 * 97).wrapping_sub(4_001);
+        }
+        let mut ft_bias = vec![0i16; super::HIDDEN_SIZE];
+        for (index, value) in ft_bias.iter_mut().enumerate() {
+            *value = ((index * 23 + 3) % 257) as i16 - 1;
+        }
+
+        let stacks = (0..super::PSQT_BUCKETS)
+            .map(|bucket| {
+                let mut fc0_weights = vec![0i8; 32 * super::HIDDEN_SIZE];
+                for (index, weight) in fc0_weights.iter_mut().enumerate() {
+                    *weight = ((index * 29 + bucket * 11 + 7) % 256) as u8 as i8;
+                }
+                let mut fc1_weights = vec![0i8; 32 * 64];
+                for (index, weight) in fc1_weights.iter_mut().enumerate() {
+                    *weight = ((index * 31 + bucket * 13 + 9) % 256) as u8 as i8;
+                }
+                let mut fc2_weights = vec![0i8; 128];
+                for (index, weight) in fc2_weights.iter_mut().enumerate() {
+                    *weight = ((index * 37 + bucket * 17 + 1) % 256) as u8 as i8;
+                }
+                super::EmberV2Stack {
+                    fc0_bias: (0..32)
+                        .map(|index| index * 10_007 - bucket as i32 * 503)
+                        .collect(),
+                    fc0_weights,
+                    fc1_bias: (0..32)
+                        .map(|index| index * 2_003 + bucket as i32 * 101)
+                        .collect(),
+                    fc1_weights,
+                    fc2_bias: bucket as i32 * 997 - 2_011,
+                    fc2_weights,
+                }
+            })
+            .collect();
+
+        super::EmberV2Data {
+            hidden_size: super::HIDDEN_SIZE,
+            psq_dims: super::PSQ_DIMS,
+            threat_dims: super::THREAT_DIMS,
+            num_stacks: super::PSQT_BUCKETS,
+            ft_bias,
+            threat_weights: Vec::new(),
+            threat_psqt: Vec::new(),
+            psq_weights,
+            psqt,
+            stacks,
+            overview: "synthetic backend parity net".into(),
+        }
+    }
+
+    fn assert_accumulator_backend_matches_scalar<B: super::EmberV2Backend>(
+        net: &super::EmberV2Data,
+        before: &crate::board::BoardState,
+        after: &crate::board::BoardState,
+    ) {
+        let mut scalar_before = super::EmberV2Accumulator::new();
+        scalar_before.refresh_with_backend::<crate::nnue::ScalarNnueBackend>(net, before);
+        let expected_before = super::evaluate_ember_v2_acc_with_backend::<
+            crate::nnue::ScalarNnueBackend,
+        >(net, &scalar_before, before);
+
+        let mut backend_before = super::EmberV2Accumulator::new();
+        backend_before.refresh_with_backend::<B>(net, before);
+        assert_eq!(backend_before.accumulation, scalar_before.accumulation);
+        assert_eq!(backend_before.psqt, scalar_before.psqt);
+        assert_eq!(
+            super::evaluate_ember_v2_acc_with_backend::<B>(net, &backend_before, before),
+            expected_before
+        );
+
+        let mut incremental = super::EmberV2Accumulator::new();
+        incremental.update_from_parent_with_backend::<B>(&backend_before, net, before, after);
+        let mut refreshed = super::EmberV2Accumulator::new();
+        refreshed.refresh_with_backend::<B>(net, after);
+        assert_eq!(incremental.accumulation, refreshed.accumulation);
+        assert_eq!(incremental.psqt, refreshed.psqt);
+        assert_eq!(incremental.threat_indices, refreshed.threat_indices);
+    }
 
     #[test]
     fn halfka_indices_match_v2_square_conventions() {
@@ -843,6 +1350,122 @@ mod tests {
         let mut indices = Vec::new();
         collect_active_threat_indices(&engine.st, 0, &mut indices);
         assert_eq!(indices.len(), 1);
+    }
+
+    fn assert_backend_kernels_match_scalar<B: super::EmberV2Backend>() {
+        let mut accumulator = [0i16; super::HIDDEN_SIZE];
+        for (index, value) in accumulator.iter_mut().enumerate() {
+            *value = ((index as i32 * 7919) % 997 - 498) as i16;
+        }
+        accumulator[..6].copy_from_slice(&[0, 255, 256, -1, i16::MIN, i16::MAX]);
+
+        let mut expected_features = [0u8; super::HIDDEN_SIZE / 2];
+        super::transformed_features_scalar(&accumulator, &mut expected_features);
+        let mut actual_features = [0u8; super::HIDDEN_SIZE / 2];
+        B::transform(&accumulator, &mut actual_features);
+        assert_eq!(actual_features, expected_features);
+
+        let mut input = [0u8; super::HIDDEN_SIZE];
+        let mut weights = [0i8; super::HIDDEN_SIZE];
+        for (index, value) in input.iter_mut().enumerate() {
+            *value = ((index * 37 + 11) % 128) as u8;
+        }
+        for (index, weight) in weights.iter_mut().enumerate() {
+            *weight = ((index * 53 + 19) % 256) as u8 as i8;
+        }
+        input[..4].fill(127);
+        weights[..4].copy_from_slice(&[127, 127, -128, -128]);
+        for width in [64, 128, super::HIDDEN_SIZE] {
+            assert_eq!(
+                B::dot(&input[..width], &weights[..width]),
+                super::dot_product_scalar(&input[..width], &weights[..width]),
+                "dot-product mismatch at width {width}"
+            );
+        }
+
+        let mut fc0_weights = vec![0i8; 32 * super::HIDDEN_SIZE];
+        for (index, weight) in fc0_weights.iter_mut().enumerate() {
+            *weight = ((index * 29 + index / super::HIDDEN_SIZE * 17 + 7) % 256) as u8 as i8;
+        }
+        let mut biases = [0i32; 32];
+        for (index, bias) in biases.iter_mut().enumerate() {
+            *bias = match index {
+                0 => i32::MAX,
+                1 => i32::MIN,
+                _ => (index as i32 * 104_729).wrapping_sub(700_001),
+            };
+        }
+        let mut expected_fc0 = [0i32; 32];
+        super::fc0_forward_scalar(&input, &fc0_weights, &biases, &mut expected_fc0);
+        let mut actual_fc0 = [0i32; 32];
+        B::fc0(&input, &fc0_weights, &biases, &mut actual_fc0);
+        assert_eq!(actual_fc0, expected_fc0);
+
+        let mut row = [0i8; super::HIDDEN_SIZE];
+        for (index, value) in row.iter_mut().enumerate() {
+            *value = ((index * 43 + 23) % 256) as u8 as i8;
+        }
+        let mut row_accumulator = [0i16; super::HIDDEN_SIZE];
+        for (index, value) in row_accumulator.iter_mut().enumerate() {
+            *value = (index as i16 % 401) - 200;
+        }
+        let mut expected_accumulator = row_accumulator;
+        crate::simd::scalar_add_i8_row(&mut expected_accumulator, &row);
+        let mut actual_accumulator = row_accumulator;
+        B::add_i8_row(&mut actual_accumulator, &row);
+        assert_eq!(actual_accumulator, expected_accumulator);
+        B::sub_i8_row(&mut actual_accumulator, &row);
+        assert_eq!(actual_accumulator, row_accumulator);
+    }
+
+    #[test]
+    fn portable_ember_v2_backends_match_scalar_kernels() {
+        assert_backend_kernels_match_scalar::<crate::nnue::Simd128NnueBackend>();
+        assert_backend_kernels_match_scalar::<crate::nnue::Simd512NnueBackend>();
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn x86_ember_v2_backends_match_scalar_kernels() {
+        if crate::backend::x86_v3_available() {
+            assert_backend_kernels_match_scalar::<crate::nnue::SimdNnueBackend>();
+        }
+        if crate::backend::x86_avx512_available() {
+            assert_backend_kernels_match_scalar::<crate::nnue::Avx512NnueBackend>();
+        }
+    }
+
+    #[test]
+    fn ember_v2_backends_match_full_refresh_and_incremental_scores() {
+        let mut engine = Engine::new();
+        engine.set_fen("K7/8/8/8/8/8/8/k7 w - - 0 1");
+        let before = engine.st;
+        assert!(engine.make_move_uci(0, 0, 0, 1, 0));
+        let after = engine.st;
+        let net = synthetic_net(&[before, after]);
+
+        assert_accumulator_backend_matches_scalar::<crate::nnue::ScalarNnueBackend>(
+            &net, &before, &after,
+        );
+        assert_accumulator_backend_matches_scalar::<crate::nnue::Simd128NnueBackend>(
+            &net, &before, &after,
+        );
+        assert_accumulator_backend_matches_scalar::<crate::nnue::Simd512NnueBackend>(
+            &net, &before, &after,
+        );
+        #[cfg(target_arch = "x86_64")]
+        {
+            if crate::backend::x86_v3_available() {
+                assert_accumulator_backend_matches_scalar::<crate::nnue::SimdNnueBackend>(
+                    &net, &before, &after,
+                );
+            }
+            if crate::backend::x86_avx512_available() {
+                assert_accumulator_backend_matches_scalar::<crate::nnue::Avx512NnueBackend>(
+                    &net, &before, &after,
+                );
+            }
+        }
     }
 
     #[test]

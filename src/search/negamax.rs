@@ -1358,7 +1358,10 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
-                    EmberV2Eval { net },
+                    EmberV2Eval {
+                        net,
+                        _backend: ScalarNnueBackend,
+                    },
                 )
             } else {
                 self.negamax_mode_scalar::<false, NODE_LIMITED, _>(
@@ -1371,7 +1374,10 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
-                    EmberV2Eval { net },
+                    EmberV2Eval {
+                        net,
+                        _backend: ScalarNnueBackend,
+                    },
                 )
             };
         }
@@ -1530,7 +1536,10 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
-                    EmberV2Eval { net },
+                    EmberV2Eval {
+                        net,
+                        _backend: Simd128NnueBackend,
+                    },
                 )
             } else {
                 self.negamax_mode_simd128::<false, NODE_LIMITED, _>(
@@ -1543,7 +1552,10 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
-                    EmberV2Eval { net },
+                    EmberV2Eval {
+                        net,
+                        _backend: Simd128NnueBackend,
+                    },
                 )
             };
         }
@@ -1702,7 +1714,10 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
-                    EmberV2Eval { net },
+                    EmberV2Eval {
+                        net,
+                        _backend: SimdNnueBackend,
+                    },
                 )
             } else {
                 self.negamax_mode_simd256::<false, NODE_LIMITED, _>(
@@ -1715,7 +1730,10 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
-                    EmberV2Eval { net },
+                    EmberV2Eval {
+                        net,
+                        _backend: SimdNnueBackend,
+                    },
                 )
             };
         }
@@ -1874,7 +1892,10 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
-                    EmberV2Eval { net },
+                    EmberV2Eval {
+                        net,
+                        _backend: Simd512NnueBackend,
+                    },
                 )
             } else {
                 self.negamax_mode_simd512::<false, NODE_LIMITED, _>(
@@ -1887,7 +1908,10 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
-                    EmberV2Eval { net },
+                    EmberV2Eval {
+                        net,
+                        _backend: Simd512NnueBackend,
+                    },
                 )
             };
         }
@@ -2051,7 +2075,10 @@ impl Searcher {
                         start,
                         tl,
                         cnt,
-                        EmberV2Eval { net },
+                        EmberV2Eval {
+                            net,
+                            _backend: SimdNnueBackend,
+                        },
                     )
                 } else {
                     self.negamax_mode_x86_v3::<false, NODE_LIMITED, _>(
@@ -2064,7 +2091,10 @@ impl Searcher {
                         start,
                         tl,
                         cnt,
-                        EmberV2Eval { net },
+                        EmberV2Eval {
+                            net,
+                            _backend: SimdNnueBackend,
+                        },
                     )
                 };
             }
@@ -2229,7 +2259,10 @@ impl Searcher {
                         start,
                         tl,
                         cnt,
-                        EmberV2Eval { net },
+                        EmberV2Eval {
+                            net,
+                            _backend: Avx512NnueBackend,
+                        },
                     )
                 } else {
                     self.negamax_mode_x86_avx512::<false, NODE_LIMITED, _>(
@@ -2242,7 +2275,10 @@ impl Searcher {
                         start,
                         tl,
                         cnt,
-                        EmberV2Eval { net },
+                        EmberV2Eval {
+                            net,
+                            _backend: Avx512NnueBackend,
+                        },
                     )
                 };
             }

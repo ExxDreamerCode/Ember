@@ -15,9 +15,10 @@ use crate::movegen::{
 #[cfg(target_arch = "x86_64")]
 use crate::nnue::Avx512NnueBackend;
 use crate::nnue::{
-    evaluate_ember_v2, evaluate_ember_v2_acc, ClassicHalfKpAccumulator, ClassicHalfKpNet,
-    EmberV2Accumulator, EmberV2Data, NNUEAccumulator, NNUENet, NNUEThreatAccumulator, NnueBackend,
-    ScalarNnueBackend, Simd128NnueBackend, Simd512NnueBackend, SimdNnueBackend,
+    evaluate_ember_v2_acc_with_backend, evaluate_ember_v2_with_backend, ClassicHalfKpAccumulator,
+    ClassicHalfKpNet, EmberV2Accumulator, EmberV2Backend, EmberV2Data, NNUEAccumulator, NNUENet,
+    NNUEThreatAccumulator, NnueBackend, ScalarNnueBackend, Simd128NnueBackend, Simd512NnueBackend,
+    SimdNnueBackend,
 };
 use crate::syzygy::SyzygyTables;
 use crate::time_management::{iteration_time_decision, IterationTiming};

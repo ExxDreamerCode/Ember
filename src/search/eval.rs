@@ -1,7 +1,8 @@
 use super::Searcher;
 use crate::board::{BoardState, MAX_PLY};
 use crate::nnue::{
-    ClassicHalfKpNet, EmberV2Data, NNUEAccumulator, NNUENet, NNUEThreatAccumulator, NnueBackend,
+    ClassicHalfKpNet, EmberV2Backend, EmberV2Data, NNUEAccumulator, NNUENet, NNUEThreatAccumulator,
+    NnueBackend,
 };
 
 #[derive(Clone, Copy)]
@@ -20,8 +21,9 @@ pub(super) struct ThreatNnueEval<'a, B: NnueBackend> {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct EmberV2Eval<'a> {
+pub(super) struct EmberV2Eval<'a, B: EmberV2Backend> {
     pub(super) net: &'a EmberV2Data,
+    pub(super) _backend: B,
 }
 
 #[derive(Clone, Copy)]
@@ -97,7 +99,7 @@ impl SearchEval for ClassicEval {
     fn copy_null_acc(self, _searcher: &mut Searcher, _ply: usize) {}
 }
 
-impl SearchEval for EmberV2Eval<'_> {
+impl<B: EmberV2Backend> SearchEval for EmberV2Eval<'_, B> {
     #[inline(always)]
     fn static_eval<const CHESS960: bool>(
         self,
@@ -105,12 +107,12 @@ impl SearchEval for EmberV2Eval<'_> {
         st: &BoardState,
         ply: usize,
     ) -> i32 {
-        searcher.static_eval_ember_v2::<CHESS960>(st, ply, self.net)
+        searcher.static_eval_ember_v2::<CHESS960, B>(st, ply, self.net)
     }
 
     #[inline(always)]
     fn corrected_eval<const CHESS960: bool>(self, searcher: &Searcher, st: &BoardState) -> i32 {
-        searcher.corrected_eval_ember_v2::<CHESS960>(st, self.net)
+        searcher.corrected_eval_ember_v2::<CHESS960, B>(st, self.net)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -127,7 +129,7 @@ impl SearchEval for EmberV2Eval<'_> {
         _promotion: u8,
         ply: usize,
     ) {
-        searcher.push_other_acc(self.net, st_before, st_after, ply);
+        searcher.push_other_acc::<B>(self.net, st_before, st_after, ply);
     }
 
     #[inline(always)]

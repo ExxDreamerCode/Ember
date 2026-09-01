@@ -167,6 +167,28 @@ impl Searcher {
     }
 
     pub fn init_nnue_stack(&mut self, st: &BoardState) {
+        match self.search_backend {
+            SearchBackendKind::Scalar => self.init_nnue_stack_with_backend::<ScalarNnueBackend>(st),
+            SearchBackendKind::X86V3 => self.init_nnue_stack_with_backend::<SimdNnueBackend>(st),
+            SearchBackendKind::Aarch64Simd128 => {
+                self.init_nnue_stack_with_backend::<Simd128NnueBackend>(st)
+            }
+            SearchBackendKind::Aarch64Simd256 => {
+                self.init_nnue_stack_with_backend::<SimdNnueBackend>(st)
+            }
+            SearchBackendKind::Aarch64Simd512 => {
+                self.init_nnue_stack_with_backend::<Simd512NnueBackend>(st)
+            }
+            SearchBackendKind::X86Avx512 => {
+                #[cfg(target_arch = "x86_64")]
+                self.init_nnue_stack_with_backend::<Avx512NnueBackend>(st);
+                #[cfg(not(target_arch = "x86_64"))]
+                self.init_nnue_stack_with_backend::<ScalarNnueBackend>(st);
+            }
+        }
+    }
+
+    fn init_nnue_stack_with_backend<B: EmberV2Backend>(&mut self, st: &BoardState) {
         if let Some(net) = self.ember_v2_net.as_deref() {
             self.nnue_stack.clear();
             self.threat_stack.clear();
@@ -175,7 +197,7 @@ impl Searcher {
                 self.ember_v2_stack
                     .resize(MAX_PLY + 1, EmberV2Accumulator::new());
             }
-            self.ember_v2_stack[0].refresh(net, st);
+            self.ember_v2_stack[0].refresh_with_backend::<B>(net, st);
             return;
         }
         self.ember_v2_stack.clear();
@@ -196,25 +218,55 @@ impl Searcher {
                     .resize(MAX_PLY + 1, NNUEAccumulator::new(net.hidden_size));
             }
             if net.has_threat_features() {
-                self.nnue_stack[0].refresh_with_backend::<ScalarNnueBackend>(net, st);
+                self.nnue_stack[0].refresh_with_backend::<B>(net, st);
                 if self.threat_stack.len() < MAX_PLY + 1 {
                     self.threat_stack
                         .resize(MAX_PLY + 1, NNUEThreatAccumulator::new(net.hidden_size));
                 }
                 self.threat_stack[0].refresh(net, st);
             } else {
-                self.nnue_stack[0].refresh(net, st);
+                self.nnue_stack[0].refresh_with_backend::<B>(net, st);
             }
         }
     }
 
     pub fn refresh_nnue_stack_at(&mut self, ply: usize, st: &BoardState) {
+        match self.search_backend {
+            SearchBackendKind::Scalar => {
+                self.refresh_nnue_stack_at_with_backend::<ScalarNnueBackend>(ply, st)
+            }
+            SearchBackendKind::X86V3 => {
+                self.refresh_nnue_stack_at_with_backend::<SimdNnueBackend>(ply, st)
+            }
+            SearchBackendKind::Aarch64Simd128 => {
+                self.refresh_nnue_stack_at_with_backend::<Simd128NnueBackend>(ply, st)
+            }
+            SearchBackendKind::Aarch64Simd256 => {
+                self.refresh_nnue_stack_at_with_backend::<SimdNnueBackend>(ply, st)
+            }
+            SearchBackendKind::Aarch64Simd512 => {
+                self.refresh_nnue_stack_at_with_backend::<Simd512NnueBackend>(ply, st)
+            }
+            SearchBackendKind::X86Avx512 => {
+                #[cfg(target_arch = "x86_64")]
+                self.refresh_nnue_stack_at_with_backend::<Avx512NnueBackend>(ply, st);
+                #[cfg(not(target_arch = "x86_64"))]
+                self.refresh_nnue_stack_at_with_backend::<ScalarNnueBackend>(ply, st);
+            }
+        }
+    }
+
+    fn refresh_nnue_stack_at_with_backend<B: EmberV2Backend>(
+        &mut self,
+        ply: usize,
+        st: &BoardState,
+    ) {
         if let Some(net) = self.ember_v2_net.as_deref() {
             if self.ember_v2_stack.len() <= ply {
                 self.ember_v2_stack
                     .resize(ply + 1, EmberV2Accumulator::new());
             }
-            self.ember_v2_stack[ply].refresh(net, st);
+            self.ember_v2_stack[ply].refresh_with_backend::<B>(net, st);
             return;
         }
         if let Some(net) = self.classic_net.as_deref() {
@@ -233,14 +285,14 @@ impl Searcher {
                 .resize(ply + 1, NNUEAccumulator::new(net.hidden_size));
         }
         if net.has_threat_features() {
-            self.nnue_stack[ply].refresh_with_backend::<ScalarNnueBackend>(net, st);
+            self.nnue_stack[ply].refresh_with_backend::<B>(net, st);
             if self.threat_stack.len() <= ply {
                 self.threat_stack
                     .resize(ply + 1, NNUEThreatAccumulator::new(net.hidden_size));
             }
             self.threat_stack[ply].refresh(net, st);
         } else {
-            self.nnue_stack[ply].refresh(net, st);
+            self.nnue_stack[ply].refresh_with_backend::<B>(net, st);
         }
     }
 
@@ -1024,7 +1076,7 @@ impl Searcher {
     }
 
     #[inline(always)]
-    pub(super) fn static_eval_ember_v2<const CHESS960: bool>(
+    pub(super) fn static_eval_ember_v2<const CHESS960: bool, B: EmberV2Backend>(
         &self,
         st: &BoardState,
         ply: usize,
@@ -1034,9 +1086,9 @@ impl Searcher {
             return self.static_eval_classic::<CHESS960>(st);
         }
         let base = if let Some(accumulator) = self.ember_v2_stack.get(ply) {
-            evaluate_ember_v2_acc(net, accumulator, st)
+            evaluate_ember_v2_acc_with_backend::<B>(net, accumulator, st)
         } else {
-            evaluate_ember_v2(net, st)
+            evaluate_ember_v2_with_backend::<B>(net, st)
         };
         with_endgame_mopup(self.endgame_mopup_enabled(), st, base)
     }
@@ -1070,7 +1122,7 @@ impl Searcher {
         with_endgame_mopup(self.endgame_mopup_enabled(), st, net.evaluate_stm(st))
     }
 
-    pub(super) fn corrected_eval_ember_v2<const CHESS960: bool>(
+    pub(super) fn corrected_eval_ember_v2<const CHESS960: bool, B: EmberV2Backend>(
         &self,
         st: &BoardState,
         net: &EmberV2Data,
@@ -1078,10 +1130,36 @@ impl Searcher {
         if CHESS960 && st.mc <= 3 {
             return self.corrected_eval_classic::<CHESS960>(st);
         }
-        with_endgame_mopup(self.endgame_mopup_enabled(), st, evaluate_ember_v2(net, st))
+        with_endgame_mopup(
+            self.endgame_mopup_enabled(),
+            st,
+            evaluate_ember_v2_with_backend::<B>(net, st),
+        )
     }
 
     pub fn corrected_eval(&self, st: &BoardState) -> i32 {
+        match self.search_backend {
+            SearchBackendKind::Scalar => self.corrected_eval_with_backend::<ScalarNnueBackend>(st),
+            SearchBackendKind::X86V3 => self.corrected_eval_with_backend::<SimdNnueBackend>(st),
+            SearchBackendKind::Aarch64Simd128 => {
+                self.corrected_eval_with_backend::<Simd128NnueBackend>(st)
+            }
+            SearchBackendKind::Aarch64Simd256 => {
+                self.corrected_eval_with_backend::<SimdNnueBackend>(st)
+            }
+            SearchBackendKind::Aarch64Simd512 => {
+                self.corrected_eval_with_backend::<Simd512NnueBackend>(st)
+            }
+            SearchBackendKind::X86Avx512 => {
+                #[cfg(target_arch = "x86_64")]
+                return self.corrected_eval_with_backend::<Avx512NnueBackend>(st);
+                #[cfg(not(target_arch = "x86_64"))]
+                self.corrected_eval_with_backend::<ScalarNnueBackend>(st)
+            }
+        }
+    }
+
+    fn corrected_eval_with_backend<B: EmberV2Backend + Default>(&self, st: &BoardState) -> i32 {
         if let Some(net) = self.classic_net.as_deref() {
             return if st.chess960 {
                 ClassicHalfKpEval { net }.corrected_eval::<true>(self, st)
@@ -1091,9 +1169,17 @@ impl Searcher {
         }
         if let Some(net) = self.ember_v2_net.as_deref() {
             return if st.chess960 {
-                EmberV2Eval { net }.corrected_eval::<true>(self, st)
+                EmberV2Eval {
+                    net,
+                    _backend: B::default(),
+                }
+                .corrected_eval::<true>(self, st)
             } else {
-                EmberV2Eval { net }.corrected_eval::<false>(self, st)
+                EmberV2Eval {
+                    net,
+                    _backend: B::default(),
+                }
+                .corrected_eval::<false>(self, st)
             };
         }
         match (st.chess960, self.nnue_net.as_deref()) {
@@ -1101,13 +1187,13 @@ impl Searcher {
                 if net.has_threat_features() {
                     ThreatNnueEval {
                         net,
-                        _backend: ScalarNnueBackend,
+                        _backend: B::default(),
                     }
                     .corrected_eval::<true>(self, st)
                 } else {
                     NnueEval {
                         net,
-                        _backend: ScalarNnueBackend,
+                        _backend: B::default(),
                     }
                     .corrected_eval::<true>(self, st)
                 }
@@ -1117,13 +1203,13 @@ impl Searcher {
                 if net.has_threat_features() {
                     ThreatNnueEval {
                         net,
-                        _backend: ScalarNnueBackend,
+                        _backend: B::default(),
                     }
                     .corrected_eval::<false>(self, st)
                 } else {
                     NnueEval {
                         net,
-                        _backend: ScalarNnueBackend,
+                        _backend: B::default(),
                     }
                     .corrected_eval::<false>(self, st)
                 }
@@ -1320,7 +1406,7 @@ impl Searcher {
         }
     }
 
-    pub(super) fn push_other_acc(
+    pub(super) fn push_other_acc<B: EmberV2Backend>(
         &mut self,
         net: &EmberV2Data,
         before: &BoardState,
@@ -1331,7 +1417,7 @@ impl Searcher {
             return;
         }
         let (parents, children) = self.ember_v2_stack.split_at_mut(ply + 1);
-        children[0].update_from_parent(&parents[ply], net, before, after);
+        children[0].update_from_parent_with_backend::<B>(&parents[ply], net, before, after);
     }
 
     pub(super) fn push_classic_acc(
