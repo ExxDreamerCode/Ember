@@ -366,6 +366,8 @@ pub fn init_nnue(path: &str) -> Result<(), String> {
         *v2_lock = Some(Arc::new(v2));
         let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
         *lock = None;
+        let mut classic_lock = CLASSIC_NNET.write().map_err(|e| e.to_string())?;
+        *classic_lock = None;
         return Ok(());
     }
     let net = NNUENet::load_from_bytes(&data, path)?;
@@ -373,6 +375,8 @@ pub fn init_nnue(path: &str) -> Result<(), String> {
     *lock = Some(Arc::new(net));
     let mut v2_lock = EMBER_V2_NNET.write().map_err(|e| e.to_string())?;
     *v2_lock = None;
+    let mut classic_lock = CLASSIC_NNET.write().map_err(|e| e.to_string())?;
+    *classic_lock = None;
     Ok(())
 }
 
@@ -544,4 +548,41 @@ pub fn evaluate(st: &BoardState) -> i32 {
     }
 
     (mg_score * phase + eg_score * (TOTAL_PHASE - phase)) / TOTAL_PHASE
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nnue::synthetic_test_net_bytes;
+    use std::path::Path;
+    use std::sync::Mutex;
+
+    static NETWORK_STATE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    struct ResetNetworkState;
+
+    impl Drop for ResetNetworkState {
+        fn drop(&mut self) {
+            let _ = reset_nnue();
+        }
+    }
+
+    #[test]
+    fn loading_native_net_clears_stale_classic_net() {
+        // This observes the private mutually-exclusive global network slots. A
+        // public score assertion cannot prove that an inactive stale slot was cleared.
+        let _lock = NETWORK_STATE_TEST_LOCK.lock().unwrap();
+        reset_nnue().unwrap();
+        let _reset = ResetNetworkState;
+
+        let classic = ClassicHalfKpNet::parse(&synthetic_test_net_bytes(0)).unwrap();
+        *CLASSIC_NNET.write().unwrap() = Some(Arc::new(classic));
+
+        let native_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/net.nnue");
+        init_nnue(native_path.to_str().unwrap()).unwrap();
+
+        assert!(current_classic_net().is_none());
+        assert!(current_ember_v2().is_none());
+        assert!(current_nnue_net().is_some());
+    }
 }
