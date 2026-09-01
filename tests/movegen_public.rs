@@ -80,6 +80,29 @@ fn filtered_pseudo_tactical_names(st: &BoardState) -> BTreeSet<String> {
 }
 
 #[test]
+fn move_generators_never_capture_the_opponent_king() {
+    // This malformed but accepted root has the inactive king in check. The
+    // invariant covers both public legal and pseudo generators, which a TSV
+    // best-move fixture cannot observe, and prevents evaluators from receiving
+    // a child position with a missing king.
+    let st = state_from_fen("8/8/8/R2pP1k1/8/8/6Q1/4K3 w - d6 0 1");
+    let opponent_king = st.king_sq(!st.w);
+
+    let mut tactical = Vec::new();
+    generate_pseudo_captures_promotions_into(&st, st.w, &st.cr, st.ep, &mut tactical);
+    for (name, moves) in [
+        ("legal", generate_moves(&st, st.w, &st.cr, st.ep)),
+        ("pseudo", generate_pseudo_moves(&st, st.w, &st.cr, st.ep)),
+        ("tactical", tactical),
+    ] {
+        assert!(
+            moves.iter().all(|&mv| move_to(mv) != opponent_king),
+            "{name} generator emitted an opponent-king capture"
+        );
+    }
+}
+
+#[test]
 fn filtered_pseudo_moves_match_legal_moves_for_rule_positions() {
     let positions = [
         state_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),

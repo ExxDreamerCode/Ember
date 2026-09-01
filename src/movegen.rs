@@ -750,6 +750,8 @@ fn generate_pseudo_moves_into_impl<const CHESS960: bool>(
         black_occ(&st.bb)
     };
     let opp = occ ^ own;
+    let enemy_king = st.bb[if wturn { BK } else { WK }];
+    let capturable_opp = opp & !enemy_king;
     let free = !occ;
 
     macro_rules! push_move {
@@ -827,7 +829,7 @@ fn generate_pseudo_moves_into_impl<const CHESS960: bool>(
 
         let promo_pawns = pawns & promo_rank_bb;
         let normal_pawns = pawns & !promo_rank_bb;
-        let cap_targets = opp | ep.map_or(0, bit);
+        let cap_targets = capturable_opp | ep.map_or(0, bit);
         let att_c1 = if wturn {
             (normal_pawns & !0x0101010101010101u64) >> 9
         } else {
@@ -894,7 +896,7 @@ fn generate_pseudo_moves_into_impl<const CHESS960: bool>(
         } else {
             (promo_pawns & !0x0101010101010101u64) << 7
         };
-        let mut tmp = pc1 & opp;
+        let mut tmp = pc1 & capturable_opp;
         while tmp != 0 {
             let t = tmp.trailing_zeros() as usize;
             let f = if wturn { t + 9 } else { t - 7 };
@@ -906,7 +908,7 @@ fn generate_pseudo_moves_into_impl<const CHESS960: bool>(
         } else {
             (promo_pawns & !0x8080808080808080u64) << 9
         };
-        let mut tmp = pc2 & opp;
+        let mut tmp = pc2 & capturable_opp;
         while tmp != 0 {
             let t = tmp.trailing_zeros() as usize;
             let f = if wturn { t + 7 } else { t - 9 };
@@ -919,7 +921,11 @@ fn generate_pseudo_moves_into_impl<const CHESS960: bool>(
         let mut knights = if wturn { st.bb[WN] } else { st.bb[BN] };
         while knights != 0 {
             let f = knights.trailing_zeros() as usize;
-            let targets = if tactical_only { opp } else { !own };
+            let targets = if tactical_only {
+                capturable_opp
+            } else {
+                !own & !enemy_king
+            };
             let mut att = KNIGHT_ATTACKS[f] & targets;
             while att != 0 {
                 let t = att.trailing_zeros() as usize;
@@ -934,7 +940,11 @@ fn generate_pseudo_moves_into_impl<const CHESS960: bool>(
         let mut bishops = if wturn { st.bb[WB] } else { st.bb[BB] };
         while bishops != 0 {
             let f = bishops.trailing_zeros() as usize;
-            let targets = if tactical_only { opp } else { !own };
+            let targets = if tactical_only {
+                capturable_opp
+            } else {
+                !own & !enemy_king
+            };
             let mut att = bishop_attacks(f, occ) & targets;
             while att != 0 {
                 let t = att.trailing_zeros() as usize;
@@ -949,7 +959,11 @@ fn generate_pseudo_moves_into_impl<const CHESS960: bool>(
         let mut rooks = if wturn { st.bb[WR] } else { st.bb[BR] };
         while rooks != 0 {
             let f = rooks.trailing_zeros() as usize;
-            let targets = if tactical_only { opp } else { !own };
+            let targets = if tactical_only {
+                capturable_opp
+            } else {
+                !own & !enemy_king
+            };
             let mut att = rook_attacks(f, occ) & targets;
             while att != 0 {
                 let t = att.trailing_zeros() as usize;
@@ -964,7 +978,11 @@ fn generate_pseudo_moves_into_impl<const CHESS960: bool>(
         let mut queens = if wturn { st.bb[WQ] } else { st.bb[BQ] };
         while queens != 0 {
             let f = queens.trailing_zeros() as usize;
-            let targets = if tactical_only { opp } else { !own };
+            let targets = if tactical_only {
+                capturable_opp
+            } else {
+                !own & !enemy_king
+            };
             let mut att = (bishop_attacks(f, occ) | rook_attacks(f, occ)) & targets;
             while att != 0 {
                 let t = att.trailing_zeros() as usize;
@@ -977,7 +995,11 @@ fn generate_pseudo_moves_into_impl<const CHESS960: bool>(
 
     {
         let kf = st.king_sq(wturn);
-        let targets = if tactical_only { opp } else { !own };
+        let targets = if tactical_only {
+            capturable_opp
+        } else {
+            !own & !enemy_king
+        };
         let mut att = KING_ATTACKS[kf] & targets;
         while att != 0 {
             let t = att.trailing_zeros() as usize;
@@ -1052,6 +1074,8 @@ pub fn generate_moves_into_mode<const CHESS960: bool>(
         black_occ(&st.bb)
     };
     let opp = occ ^ own;
+    let enemy_king = st.bb[if wturn { BK } else { WK }];
+    let capturable_opp = opp & !enemy_king;
     let free = !occ;
     let king_sq_own = st.king_sq(wturn);
     let checkers_bb = attackers_to(&st.bb, occ, king_sq_own, !wturn);
@@ -1172,7 +1196,7 @@ pub fn generate_moves_into_mode<const CHESS960: bool>(
         }
         let promo_pawns = pawns & promo_rank_bb;
         let normal_pawns = pawns & !promo_rank_bb;
-        let cap_targets = opp | ep.map_or(0, bit);
+        let cap_targets = capturable_opp | ep.map_or(0, bit);
         let att_c1 = if wturn {
             (normal_pawns & !0x0101010101010101u64) >> 9
         } else {
@@ -1238,7 +1262,7 @@ pub fn generate_moves_into_mode<const CHESS960: bool>(
         } else {
             (promo_pawns & !0x0101010101010101u64) << 7
         };
-        let mut tmp = pc1 & opp;
+        let mut tmp = pc1 & capturable_opp;
         while tmp != 0 {
             let t = tmp.trailing_zeros() as usize;
             let f = if wturn { t + 9 } else { t - 7 };
@@ -1252,7 +1276,7 @@ pub fn generate_moves_into_mode<const CHESS960: bool>(
         } else {
             (promo_pawns & !0x8080808080808080u64) << 9
         };
-        let mut tmp = pc2 & opp;
+        let mut tmp = pc2 & capturable_opp;
         while tmp != 0 {
             let t = tmp.trailing_zeros() as usize;
             let f = if wturn { t + 7 } else { t - 9 };
@@ -1267,7 +1291,7 @@ pub fn generate_moves_into_mode<const CHESS960: bool>(
         let mut knights = if wturn { st.bb[WN] } else { st.bb[BN] };
         while knights != 0 {
             let f = knights.trailing_zeros() as usize;
-            let mut att = KNIGHT_ATTACKS[f] & !own;
+            let mut att = KNIGHT_ATTACKS[f] & !own & !enemy_king;
             while att != 0 {
                 let t = att.trailing_zeros() as usize;
                 try_push!(f, t);
@@ -1281,7 +1305,7 @@ pub fn generate_moves_into_mode<const CHESS960: bool>(
         let mut bishops = if wturn { st.bb[WB] } else { st.bb[BB] };
         while bishops != 0 {
             let f = bishops.trailing_zeros() as usize;
-            let mut att = bishop_attacks(f, occ) & !own;
+            let mut att = bishop_attacks(f, occ) & !own & !enemy_king;
             while att != 0 {
                 let t = att.trailing_zeros() as usize;
                 try_push!(f, t);
@@ -1295,7 +1319,7 @@ pub fn generate_moves_into_mode<const CHESS960: bool>(
         let mut rooks = if wturn { st.bb[WR] } else { st.bb[BR] };
         while rooks != 0 {
             let f = rooks.trailing_zeros() as usize;
-            let mut att = rook_attacks(f, occ) & !own;
+            let mut att = rook_attacks(f, occ) & !own & !enemy_king;
             while att != 0 {
                 let t = att.trailing_zeros() as usize;
                 try_push!(f, t);
@@ -1309,7 +1333,7 @@ pub fn generate_moves_into_mode<const CHESS960: bool>(
         let mut queens = if wturn { st.bb[WQ] } else { st.bb[BQ] };
         while queens != 0 {
             let f = queens.trailing_zeros() as usize;
-            let att = (bishop_attacks(f, occ) | rook_attacks(f, occ)) & !own;
+            let att = (bishop_attacks(f, occ) | rook_attacks(f, occ)) & !own & !enemy_king;
             let mut att = att;
             while att != 0 {
                 let t = att.trailing_zeros() as usize;
@@ -1322,7 +1346,7 @@ pub fn generate_moves_into_mode<const CHESS960: bool>(
 
     {
         let kf = king_sq_own;
-        let mut att = KING_ATTACKS[kf] & !own;
+        let mut att = KING_ATTACKS[kf] & !own & !enemy_king;
         while att != 0 {
             let t = att.trailing_zeros() as usize;
             let cap = st.mailbox[t];
