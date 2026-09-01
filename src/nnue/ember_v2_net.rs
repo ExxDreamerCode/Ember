@@ -59,7 +59,10 @@ fn le_u32_at(data: &[u8], at: usize) -> u32 {
 }
 
 fn magic_matches_at(data: &[u8], at: usize) -> bool {
-    (0..LEB128_MAGIC_LEN).all(|i| data[at + i] == LEB128_MAGIC[i])
+    let Some(end) = at.checked_add(LEB128_MAGIC_LEN) else {
+        return false;
+    };
+    data.get(at..end) == Some(LEB128_MAGIC.as_slice())
 }
 
 fn find_magic_at_or_after(data: &[u8], start: usize) -> Option<usize> {
@@ -398,7 +401,7 @@ pub(crate) fn decode_signed_leb(data: &[u8], mut pos: usize) -> Result<(i64, usi
 
 #[cfg(test)]
 mod tests {
-    use super::{EmberV2Info, TensorDesc, LEB128_MAGIC};
+    use super::{EmberV2Info, TensorDesc, ARCH_HASH, LEB128_MAGIC, LEB128_MAGIC_LEN};
 
     fn push_u32(out: &mut Vec<u8>, value: u32) {
         out.extend_from_slice(&value.to_le_bytes());
@@ -463,6 +466,17 @@ mod tests {
     fn truncated_description_is_rejected() {
         let bytes = build(0, "x", &[]);
         assert!(EmberV2Info::try_parse(&bytes[..8]).is_err());
+    }
+
+    #[test]
+    fn short_container_body_is_rejected_without_panicking() {
+        for trailing_bytes in 1..LEB128_MAGIC_LEN {
+            let mut bytes = build(ARCH_HASH, "short body", &[]);
+            bytes.resize(bytes.len() + trailing_bytes, 0);
+
+            let info = EmberV2Info::try_parse(&bytes).expect("header should still parse");
+            assert!(info.decode(&bytes).is_err());
+        }
     }
 
     #[test]
