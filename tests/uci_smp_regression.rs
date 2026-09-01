@@ -178,6 +178,45 @@ fn malformed_uci_input_is_rejected_without_crashing() {
 }
 
 #[test]
+fn external_compact_nnue_loads_through_the_uci_option() {
+    let compact_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/net.compact.nnue");
+    let (mut child, rx) = spawn_ember();
+    let mut stdin = child.stdin.take().expect("capture Ember stdin");
+
+    writeln!(stdin, "uci").unwrap();
+    assert!(wait_for_line(&rx, "uciok", Duration::from_secs(5)).is_some());
+    writeln!(stdin, "setoption name Hash value 16").unwrap();
+    writeln!(stdin, "setoption name Book value").unwrap();
+    writeln!(
+        stdin,
+        "setoption name NNUE value {}",
+        compact_path.display()
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+    assert!(
+        wait_for_line(&rx, "info string Loaded NNUE ", Duration::from_secs(5)).is_some(),
+        "external compact NNUE did not report a successful load"
+    );
+
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some());
+    writeln!(stdin, "position startpos").unwrap();
+    writeln!(stdin, "go depth 1").unwrap();
+    stdin.flush().unwrap();
+    assert!(
+        wait_for_line(&rx, "bestmove ", Duration::from_secs(5)).is_some(),
+        "search did not use the externally loaded compact NNUE"
+    );
+
+    writeln!(stdin, "quit").unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+    assert!(child.wait().expect("wait for Ember").success());
+}
+
+#[test]
 fn queued_quit_during_search_exits_cleanly() {
     let (mut child, _rx) = spawn_ember();
     let mut stdin = child.stdin.take().expect("capture Ember stdin");

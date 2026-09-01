@@ -239,8 +239,8 @@ fn threat_accumulator_uses_board_pawn_attack_direction() {
 fn compact_embedded_nnue_matches_dense_scores() {
     let dense =
         NNUENet::load_from_bytes(DENSE_NET, "<dense test>").expect("dense NNUE should load");
-    let compact = NNUENet::load_compact_from_bytes(COMPACT_NET, "<compact test>")
-        .expect("compact NNUE should load");
+    let compact = NNUENet::load_from_bytes(COMPACT_NET, "<compact test>")
+        .expect("general NNUE loader should detect the compact format");
 
     assert!(
         COMPACT_NET.len() + 3_000_000 < DENSE_NET.len(),

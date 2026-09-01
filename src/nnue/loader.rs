@@ -144,6 +144,9 @@ impl NNUENet {
                 v2.overview, name
             ));
         }
+        if data.starts_with(&COMPACT_NNUE_MAGIC.to_le_bytes()) {
+            return Self::load_compact_from_bytes(data, name);
+        }
         let len = data.len() as u64;
         let mut r = std::io::Cursor::new(data);
         Self::load_reader(&mut r, len, name)
