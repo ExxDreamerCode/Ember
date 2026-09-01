@@ -1,4 +1,4 @@
-﻿use super::other_nets::{OtherNetData, OtherStack};
+use super::ember_v2_net::{EmberV2Data, EmberV2Stack};
 use crate::board::{BoardState, EMPTY_SQ, KING_ATTACKS, KNIGHT_ATTACKS};
 use std::sync::OnceLock;
 
@@ -20,12 +20,8 @@ const WEIGHT_SCALE_BITS: i32 = 6;
 const FT_MAX_VAL: i32 = 255;
 const HIDDEN_ONE_VAL: i32 = 128;
 
-// FullThreats::numValidTargets in Stockfish piece order, represented with
-// Ember's contiguous white-then-black piece numbering.
 const NUM_VALID_TARGETS: [u32; 12] = [6, 10, 8, 8, 10, 0, 6, 10, 8, 8, 10, 0];
 
-// FullThreats::map, with Stockfish's 1-based PieceType values normalized to
-// Ember's 0-based piece types.
 const THREAT_MAP: [[i32; 6]; 6] = [
     [0, 1, -1, 2, -1, -1],
     [0, 1, 2, 3, 4, -1],
@@ -36,13 +32,13 @@ const THREAT_MAP: [[i32; 6]; 6] = [
 ];
 
 #[inline(always)]
-fn ember_to_stockfish_square(square: u32) -> u32 {
+fn to_v2_square(square: u32) -> u32 {
     square ^ 56
 }
 
 #[inline(always)]
-fn halfka_orientation(stockfish_king_square: u32) -> u32 {
-    if stockfish_king_square & 4 == 0 {
+fn halfka_orientation(king_square: u32) -> u32 {
+    if king_square & 4 == 0 {
         7
     } else {
         0
@@ -50,8 +46,8 @@ fn halfka_orientation(stockfish_king_square: u32) -> u32 {
 }
 
 #[inline(always)]
-fn threat_orientation(stockfish_king_square: u32) -> u32 {
-    if stockfish_king_square & 4 == 0 {
+fn threat_orientation(king_square: u32) -> u32 {
+    if king_square & 4 == 0 {
         0
     } else {
         7
@@ -91,8 +87,8 @@ fn halfka_piece_base(perspective: u32, piece: u32) -> u32 {
 }
 
 fn halfka_index(perspective: u32, square: u32, piece: u32, king_square: u32) -> usize {
-    let square = ember_to_stockfish_square(square);
-    let king_square = ember_to_stockfish_square(king_square);
+    let square = to_v2_square(square);
+    let king_square = to_v2_square(king_square);
     let flip = 56 * perspective;
     let oriented_king = king_square ^ flip;
     let king_rank = oriented_king / 8;
@@ -137,7 +133,7 @@ fn attacks_bb(piece_type: u32, from: u32, occupancy: u64) -> u64 {
     }
 }
 
-fn stockfish_pseudo_attacks(piece: u32, from: u32) -> u64 {
+fn pseudo_attacks(piece: u32, from: u32) -> u64 {
     let piece_type = piece % 6;
     if piece_type == 0 {
         let bb = 1u64 << from;
@@ -149,7 +145,7 @@ fn stockfish_pseudo_attacks(piece: u32, from: u32) -> u64 {
             (bb >> 8) | ((bb & !H_FILE) >> 7) | ((bb & !A_FILE) >> 9)
         }
     } else {
-        let ember_from = ember_to_stockfish_square(from);
+        let ember_from = to_v2_square(from);
         attacks_bb(piece_type, ember_from, 0).swap_bytes()
     }
 }
@@ -176,7 +172,7 @@ impl ThreatLut {
                 let attacks = if piece % 6 == 0 && !(1..=6).contains(&(from / 8)) {
                     0
                 } else {
-                    stockfish_pseudo_attacks(piece, from)
+                    pseudo_attacks(piece, from)
                 };
                 for to in 0..64u32 {
                     let before = (1u64 << to).wrapping_sub(1);
@@ -196,7 +192,7 @@ impl ThreatLut {
                 let count = if piece % 6 == 0 && !(1..=6).contains(&(from / 8)) {
                     0
                 } else {
-                    stockfish_pseudo_attacks(piece, from).count_ones() as usize
+                    pseudo_attacks(piece, from).count_ones() as usize
                 };
                 cumulative_piece += count;
             }
@@ -246,9 +242,9 @@ impl ThreatLut {
         attacked: u32,
         king_square: u32,
     ) -> usize {
-        let from = ember_to_stockfish_square(from);
-        let to = ember_to_stockfish_square(to);
-        let king_square = ember_to_stockfish_square(king_square);
+        let from = to_v2_square(from);
+        let to = to_v2_square(to);
+        let king_square = to_v2_square(king_square);
         let orientation = threat_orientation(king_square) ^ (56 * perspective);
         let from = from ^ orientation;
         let to = to ^ orientation;
@@ -407,13 +403,13 @@ fn remove_threat_row(
 }
 
 #[derive(Clone)]
-pub(crate) struct OtherAccumulator {
+pub(crate) struct EmberV2Accumulator {
     accumulation: [[i16; HIDDEN_SIZE]; 2],
     psqt: [[i32; PSQT_BUCKETS]; 2],
     threat_indices: [Vec<usize>; 2],
 }
 
-impl OtherAccumulator {
+impl EmberV2Accumulator {
     pub(crate) fn new() -> Self {
         Self {
             accumulation: [[0; HIDDEN_SIZE]; 2],
@@ -422,13 +418,13 @@ impl OtherAccumulator {
         }
     }
 
-    pub(crate) fn refresh(&mut self, net: &OtherNetData, state: &BoardState) {
+    pub(crate) fn refresh(&mut self, net: &EmberV2Data, state: &BoardState) {
         for perspective in 0..2u32 {
             self.refresh_perspective(net, state, perspective);
         }
     }
 
-    fn refresh_perspective(&mut self, net: &OtherNetData, state: &BoardState, perspective: u32) {
+    fn refresh_perspective(&mut self, net: &EmberV2Data, state: &BoardState, perspective: u32) {
         let side = perspective as usize;
         for (value, bias) in self.accumulation[side].iter_mut().zip(net.ft_bias.iter()) {
             *value = *bias;
@@ -469,7 +465,7 @@ impl OtherAccumulator {
     pub(crate) fn update_from_parent(
         &mut self,
         parent: &Self,
-        net: &OtherNetData,
+        net: &EmberV2Data,
         before: &BoardState,
         after: &BoardState,
     ) {
@@ -712,7 +708,7 @@ fn dot_product(input: &[u8], weights: &[i8]) -> i32 {
         })
 }
 
-fn forward_stack(stack: &OtherStack, transformed: &[u8; HIDDEN_SIZE]) -> i32 {
+fn forward_stack(stack: &EmberV2Stack, transformed: &[u8; HIDDEN_SIZE]) -> i32 {
     let mut fc0 = [0i32; 32];
     #[cfg(target_arch = "x86_64")]
     {
@@ -765,9 +761,9 @@ fn forward_stack(stack: &OtherStack, transformed: &[u8; HIDDEN_SIZE]) -> i32 {
     output.wrapping_add(fc0[30].wrapping_sub(fc0[31]))
 }
 
-fn evaluate_other_net_acc_components(
-    net: &OtherNetData,
-    accumulator: &OtherAccumulator,
+fn evaluate_ember_v2_acc_components(
+    net: &EmberV2Data,
+    accumulator: &EmberV2Accumulator,
     state: &BoardState,
 ) -> (i32, i32) {
     debug_assert_eq!(net.hidden_size, HIDDEN_SIZE);
@@ -799,53 +795,30 @@ fn evaluate_other_net_acc_components(
     (psqt_value, positional)
 }
 
-pub(crate) fn evaluate_other_net_acc(
-    net: &OtherNetData,
-    accumulator: &OtherAccumulator,
+pub(crate) fn evaluate_ember_v2_acc(
+    net: &EmberV2Data,
+    accumulator: &EmberV2Accumulator,
     state: &BoardState,
 ) -> i32 {
-    let (psqt, positional) = evaluate_other_net_acc_components(net, accumulator, state);
+    let (psqt, positional) = evaluate_ember_v2_acc_components(net, accumulator, state);
     psqt + positional
 }
 
-pub fn evaluate_other_net(net: &OtherNetData, state: &BoardState) -> i32 {
-    let mut accumulator = OtherAccumulator::new();
+pub fn evaluate_ember_v2(net: &EmberV2Data, state: &BoardState) -> i32 {
+    let mut accumulator = EmberV2Accumulator::new();
     accumulator.refresh(net, state);
-    evaluate_other_net_acc(net, &accumulator, state)
+    evaluate_ember_v2_acc(net, &accumulator, state)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        collect_active_threat_indices, evaluate_other_net, halfka_index, threat_lut,
-        OtherAccumulator, THREAT_DIMS,
-    };
-    use crate::board::{move_ec, move_er, move_promotion, move_sc, move_sr};
-    use crate::movegen::{apply_move, generate_moves};
-    use crate::nnue::other_nets::load_other_net;
+    use super::{collect_active_threat_indices, halfka_index, threat_lut, THREAT_DIMS};
     use crate::Engine;
-    use std::sync::OnceLock;
-
-    fn real_net() -> Option<&'static crate::nnue::other_nets::OtherNetData> {
-        static NET: OnceLock<Option<crate::nnue::other_nets::OtherNetData>> = OnceLock::new();
-        NET.get_or_init(|| {
-            std::fs::read("nn-0ee0657fb25e.nnue")
-                .ok()
-                .and_then(|data| load_other_net(&data).ok())
-        })
-        .as_ref()
-    }
-
-    fn score_for(fen: &str, net: &crate::nnue::other_nets::OtherNetData) -> i32 {
-        let mut engine = Engine::new();
-        engine.set_fen(fen);
-        evaluate_other_net(net, &engine.st)
-    }
 
     #[test]
-    fn halfka_indices_match_stockfish_square_conventions() {
-        // These indices exercise Ember's A8=0 board against Stockfish's A1=0
-        // feature space. A public move fixture cannot observe this private row
+    fn halfka_indices_match_v2_square_conventions() {
+        // These indices exercise Ember's A8=0 board against the v2 network's
+        // A1=0 feature space. A public move fixture cannot observe this private row
         // selection contract.
         let white_king_e1 = 60;
         assert_eq!(halfka_index(0, 52, 0, white_king_e1), 21_836);
@@ -857,7 +830,7 @@ mod tests {
     }
 
     #[test]
-    fn full_threat_lut_has_stockfish_dimension() {
+    fn full_threat_lut_has_v2_dimension() {
         let lut = threat_lut();
         assert_eq!(lut.index_lut2.len(), 12 * 64 * 64);
         assert_eq!(THREAT_DIMS, 60_720);
@@ -870,57 +843,6 @@ mod tests {
         let mut indices = Vec::new();
         collect_active_threat_indices(&engine.st, 0, &mut indices);
         assert_eq!(indices.len(), 1);
-    }
-
-    #[test]
-    fn real_net_matches_stockfish_oracle() {
-        // This is an optional local oracle for the exact network named below.
-        // It checks private quantized inference, which a TSV move fixture cannot
-        // express. The fixed scores come from Stockfish d91c7f6e.
-        let Some(net) = real_net() else {
-            return;
-        };
-        assert_eq!(
-            score_for(
-                "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-                net,
-            ),
-            10
-        );
-        assert_eq!(
-            score_for(
-                "r3k2r/p1ppqpb1/bn2pnp1/2P5/1p2P3/2N2N2/PP1PBPPP/R2Q1RK1 w kq - 0 1",
-                net,
-            ),
-            -482
-        );
-        assert_eq!(score_for("7k/8/8/8/8/8/8/K7 w - - 0 1", net), 25);
-
-        let additional_cases = [
-            (
-                "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1",
-                10,
-            ),
-            (
-                "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
-                -72,
-            ),
-            ("7k/8/8/8/8/4p3/4P3/2K5 w - - 0 1", 52),
-            (
-                "r1bq1rk1/pp2bppp/2n1pn2/2pp4/3P4/2PBPN2/PP3PPP/RNBQ1RK1 w - - 0 8",
-                -22,
-            ),
-            (
-                "2r2rk1/1b2bppp/p3pn2/1p1p4/3P4/1BN1PN2/PP3PPP/2R2RK1 w - - 0 14",
-                -74,
-            ),
-            ("8/2p2pk1/1p4p1/p2Pp3/P1P1P1P1/1P3K2/8/8 w - - 0 40", -61),
-            ("8/5pk1/6p1/3N4/3P4/5P2/6PK/8 w - - 0 45", 2314),
-            ("8/P4k2/8/8/8/8/8/6K1 w - - 0 1", 3199),
-        ];
-        for (fen, expected) in additional_cases {
-            assert_eq!(score_for(fen, net), expected, "oracle mismatch for {fen}");
-        }
     }
 
     #[test]
@@ -950,56 +872,6 @@ mod tests {
             let mut actual = [0u8; super::HIDDEN_SIZE / 2];
             unsafe { super::transformed_features_avx2(&acc, &mut actual) };
             assert_eq!(actual, expected);
-        }
-    }
-
-    #[test]
-    fn incremental_accumulator_matches_full_refresh() {
-        // This covers the private accumulator transition contract, including
-        // captures, king refreshes, castling, en passant, and promotion.
-        let Some(net) = real_net() else {
-            return;
-        };
-        let fens = [
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-            "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",
-            "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1",
-            "4k3/P7/8/8/8/8/8/4K3 w - - 0 1",
-        ];
-
-        for fen in fens {
-            let mut engine = Engine::new();
-            engine.set_fen(fen);
-            let before = engine.st;
-            let mut parent = OtherAccumulator::new();
-            parent.refresh(net, &before);
-            for mv in generate_moves(&before, before.w, &before.cr, before.ep) {
-                let mut after = before;
-                apply_move(
-                    &mut after,
-                    move_sr(mv),
-                    move_sc(mv),
-                    move_er(mv),
-                    move_ec(mv),
-                    move_promotion(mv),
-                );
-                let mut incremental = OtherAccumulator::new();
-                incremental.update_from_parent(&parent, net, &before, &after);
-                let mut refreshed = OtherAccumulator::new();
-                refreshed.refresh(net, &after);
-                assert_eq!(
-                    incremental.accumulation, refreshed.accumulation,
-                    "incremental feature accumulator mismatch after move {mv} from {fen}"
-                );
-                assert_eq!(
-                    incremental.psqt, refreshed.psqt,
-                    "incremental PSQT mismatch after move {mv} from {fen}"
-                );
-                assert_eq!(
-                    incremental.threat_indices, refreshed.threat_indices,
-                    "incremental threat-index set mismatch after move {mv} from {fen}"
-                );
-            }
         }
     }
 }

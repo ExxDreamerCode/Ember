@@ -135,10 +135,10 @@ impl Searcher {
             shared_node_counter: None,
             nnue_stack: Vec::new(),
             threat_stack: Vec::new(),
-            other_stack: Vec::new(),
+            ember_v2_stack: Vec::new(),
             classic_stack: Vec::new(),
             nnue_net: current_nnue_net(),
-            other_net: current_other_net(),
+            ember_v2_net: current_ember_v2(),
             classic_net: current_classic_net(),
             search_backend: active_search_backend(),
             syzygy: SyzygyTables::new(),
@@ -158,7 +158,7 @@ impl Searcher {
 
     pub fn refresh_nnue_net(&mut self) {
         self.nnue_net = current_nnue_net();
-        self.other_net = current_other_net();
+        self.ember_v2_net = current_ember_v2();
         self.classic_net = current_classic_net();
     }
 
@@ -167,18 +167,18 @@ impl Searcher {
     }
 
     pub fn init_nnue_stack(&mut self, st: &BoardState) {
-        if let Some(net) = self.other_net.as_deref() {
+        if let Some(net) = self.ember_v2_net.as_deref() {
             self.nnue_stack.clear();
             self.threat_stack.clear();
             self.classic_stack.clear();
-            if self.other_stack.len() < MAX_PLY + 1 {
-                self.other_stack
-                    .resize(MAX_PLY + 1, OtherAccumulator::new());
+            if self.ember_v2_stack.len() < MAX_PLY + 1 {
+                self.ember_v2_stack
+                    .resize(MAX_PLY + 1, EmberV2Accumulator::new());
             }
-            self.other_stack[0].refresh(net, st);
+            self.ember_v2_stack[0].refresh(net, st);
             return;
         }
-        self.other_stack.clear();
+        self.ember_v2_stack.clear();
         if let Some(net) = self.classic_net.as_deref() {
             self.nnue_stack.clear();
             self.threat_stack.clear();
@@ -209,11 +209,12 @@ impl Searcher {
     }
 
     pub fn refresh_nnue_stack_at(&mut self, ply: usize, st: &BoardState) {
-        if let Some(net) = self.other_net.as_deref() {
-            if self.other_stack.len() <= ply {
-                self.other_stack.resize(ply + 1, OtherAccumulator::new());
+        if let Some(net) = self.ember_v2_net.as_deref() {
+            if self.ember_v2_stack.len() <= ply {
+                self.ember_v2_stack
+                    .resize(ply + 1, EmberV2Accumulator::new());
             }
-            self.other_stack[ply].refresh(net, st);
+            self.ember_v2_stack[ply].refresh(net, st);
             return;
         }
         if let Some(net) = self.classic_net.as_deref() {
@@ -351,7 +352,7 @@ impl Searcher {
         dst.rep_root_len = dst.rep_stack_len;
         dst.import_learning(&self.export_learning());
         dst.nnue_net = self.nnue_net.clone();
-        dst.other_net = self.other_net.clone();
+        dst.ember_v2_net = self.ember_v2_net.clone();
         dst.classic_net = self.classic_net.clone();
         dst.search_backend = self.search_backend;
         dst.syzygy = self.syzygy.clone();
@@ -1023,19 +1024,19 @@ impl Searcher {
     }
 
     #[inline(always)]
-    pub(super) fn static_eval_other_nnue<const CHESS960: bool>(
+    pub(super) fn static_eval_ember_v2<const CHESS960: bool>(
         &self,
         st: &BoardState,
         ply: usize,
-        net: &OtherNetData,
+        net: &EmberV2Data,
     ) -> i32 {
         if CHESS960 && st.mc <= 3 {
             return self.static_eval_classic::<CHESS960>(st);
         }
-        let base = if let Some(accumulator) = self.other_stack.get(ply) {
-            evaluate_other_net_acc(net, accumulator, st)
+        let base = if let Some(accumulator) = self.ember_v2_stack.get(ply) {
+            evaluate_ember_v2_acc(net, accumulator, st)
         } else {
-            evaluate_other_net(net, st)
+            evaluate_ember_v2(net, st)
         };
         with_endgame_mopup(self.endgame_mopup_enabled(), st, base)
     }
@@ -1069,19 +1070,15 @@ impl Searcher {
         with_endgame_mopup(self.endgame_mopup_enabled(), st, net.evaluate_stm(st))
     }
 
-    pub(super) fn corrected_eval_other_nnue<const CHESS960: bool>(
+    pub(super) fn corrected_eval_ember_v2<const CHESS960: bool>(
         &self,
         st: &BoardState,
-        net: &OtherNetData,
+        net: &EmberV2Data,
     ) -> i32 {
         if CHESS960 && st.mc <= 3 {
             return self.corrected_eval_classic::<CHESS960>(st);
         }
-        with_endgame_mopup(
-            self.endgame_mopup_enabled(),
-            st,
-            evaluate_other_net(net, st),
-        )
+        with_endgame_mopup(self.endgame_mopup_enabled(), st, evaluate_ember_v2(net, st))
     }
 
     pub fn corrected_eval(&self, st: &BoardState) -> i32 {
@@ -1092,11 +1089,11 @@ impl Searcher {
                 ClassicHalfKpEval { net }.corrected_eval::<false>(self, st)
             };
         }
-        if let Some(net) = self.other_net.as_deref() {
+        if let Some(net) = self.ember_v2_net.as_deref() {
             return if st.chess960 {
-                OtherNnueEval { net }.corrected_eval::<true>(self, st)
+                EmberV2Eval { net }.corrected_eval::<true>(self, st)
             } else {
-                OtherNnueEval { net }.corrected_eval::<false>(self, st)
+                EmberV2Eval { net }.corrected_eval::<false>(self, st)
             };
         }
         match (st.chess960, self.nnue_net.as_deref()) {
@@ -1325,15 +1322,15 @@ impl Searcher {
 
     pub(super) fn push_other_acc(
         &mut self,
-        net: &OtherNetData,
+        net: &EmberV2Data,
         before: &BoardState,
         after: &BoardState,
         ply: usize,
     ) {
-        if ply + 1 >= self.other_stack.len() {
+        if ply + 1 >= self.ember_v2_stack.len() {
             return;
         }
-        let (parents, children) = self.other_stack.split_at_mut(ply + 1);
+        let (parents, children) = self.ember_v2_stack.split_at_mut(ply + 1);
         children[0].update_from_parent(&parents[ply], net, before, after);
     }
 

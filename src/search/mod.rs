@@ -4,7 +4,7 @@ use crate::board::{
     INF, KING_ATTACKS, MATE, MAX_HALF_MOVE_CLOCK, MAX_PLY, NO_MOVE, QS_DEPTH, WP,
 };
 use crate::evaluate::{
-    current_classic_net, current_nnue_net, current_other_net, evaluate,
+    current_classic_net, current_ember_v2, current_nnue_net, evaluate,
     evaluate_nnue_acc_with_backend,
 };
 use crate::movegen::{
@@ -15,8 +15,8 @@ use crate::movegen::{
 #[cfg(target_arch = "x86_64")]
 use crate::nnue::Avx512NnueBackend;
 use crate::nnue::{
-    evaluate_other_net, evaluate_other_net_acc, ClassicHalfKpAccumulator, ClassicHalfKpNet,
-    NNUEAccumulator, NNUENet, NNUEThreatAccumulator, NnueBackend, OtherAccumulator, OtherNetData,
+    evaluate_ember_v2, evaluate_ember_v2_acc, ClassicHalfKpAccumulator, ClassicHalfKpNet,
+    EmberV2Accumulator, EmberV2Data, NNUEAccumulator, NNUENet, NNUEThreatAccumulator, NnueBackend,
     ScalarNnueBackend, Simd128NnueBackend, Simd512NnueBackend, SimdNnueBackend,
 };
 use crate::syzygy::SyzygyTables;
@@ -134,10 +134,10 @@ pub struct Searcher {
     shared_node_counter: Option<Arc<AtomicU64>>,
     pub nnue_stack: Vec<NNUEAccumulator>,
     pub threat_stack: Vec<NNUEThreatAccumulator>,
-    pub(crate) other_stack: Vec<OtherAccumulator>,
+    pub(crate) ember_v2_stack: Vec<EmberV2Accumulator>,
     pub(crate) classic_stack: Vec<ClassicHalfKpAccumulator>,
     pub nnue_net: Option<Arc<NNUENet>>,
-    pub(crate) other_net: Option<Arc<OtherNetData>>,
+    pub(crate) ember_v2_net: Option<Arc<EmberV2Data>>,
     pub(crate) classic_net: Option<Arc<ClassicHalfKpNet>>,
     pub search_backend: SearchBackendKind,
     pub syzygy: SyzygyTables,
@@ -151,7 +151,7 @@ pub struct Searcher {
 
 mod eval;
 use self::eval::{
-    ClassicEval, ClassicHalfKpEval, NnueEval, OtherNnueEval, SearchEval, ThreatNnueEval,
+    ClassicEval, ClassicHalfKpEval, EmberV2Eval, NnueEval, SearchEval, ThreatNnueEval,
 };
 
 mod negamax;

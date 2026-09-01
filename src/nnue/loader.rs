@@ -1,4 +1,4 @@
-use super::other_nets::{load_other_net, OtherNetInfo};
+﻿use super::ember_v2_net::{load_ember_v2, EmberV2Info};
 use super::{
     compute_king_buckets, threat_feature_count, KbLayout, NNUENet, COMPACT_ZERO_ROW,
     MAX_HIDDEN_SIZE, NNUE_OUTPUT_BUCKETS, PSQ_INPUTS_PER_BUCKET, QA, QB,
@@ -137,11 +137,11 @@ impl NNUENet {
     }
 
     pub fn load_from_bytes(data: &[u8], name: &str) -> Result<Self, String> {
-        if OtherNetInfo::is_format(data) {
-            let other = load_other_net(data)?;
+        if EmberV2Info::is_format(data) {
+            let v2 = load_ember_v2(data)?;
             return Err(format!(
-                "external-format net detected and decoded ({}) but cannot be returned as a native NNUENet ({}); load it through evaluate::init_nnue or the UCI NNUE option",
-                other.overview, name
+                "V2-format net detected and decoded ({}) but cannot be returned as a native NNUENet ({}); load it through evaluate::init_nnue or the UCI NNUE option",
+                v2.overview, name
             ));
         }
         let len = data.len() as u64;

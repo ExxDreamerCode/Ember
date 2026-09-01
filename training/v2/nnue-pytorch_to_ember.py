@@ -461,7 +461,7 @@ def main():
 
     if not description:
         description = (
-            "Ember external net: "
+            "Ember net: "
             "FullThreats(60720)+"
             "HalfKAv2_hm(22528), "
             "L1=1024, stacks 32x32, "

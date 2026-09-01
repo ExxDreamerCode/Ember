@@ -1,11 +1,11 @@
-use crate::board::{
+﻿use crate::board::{
     all_occ, bit, black_occ, sq, sq_c, sq_r, white_occ, BoardState, BB, BK, BN, BP, BQ, BR,
     KING_ATTACKS, KNIGHT_ATTACKS, WB, WK, WN, WP, WQ, WR,
 };
 use crate::magic::{bishop_attacks, rook_attacks};
 use crate::nnue::{
-    evaluate_other_net, ClassicHalfKpNet, NNUEAccumulator, NNUENet, NNUEThreatAccumulator,
-    NnueBackend, OtherNetData, OtherNetInfo, ScalarNnueBackend,
+    evaluate_ember_v2, ClassicHalfKpNet, EmberV2Data, EmberV2Info, NNUEAccumulator, NNUENet,
+    NNUEThreatAccumulator, NnueBackend, ScalarNnueBackend,
 };
 use crate::types::{BLACK, WHITE};
 use std::sync::{Arc, RwLock};
@@ -334,7 +334,7 @@ fn king_safety(bb: &[u64; 12], white: bool, phase: i32) -> i32 {
 }
 
 static NNUE_NET: RwLock<Option<Arc<NNUENet>>> = RwLock::new(None);
-static OTHER_NNET: RwLock<Option<Arc<OtherNetData>>> = RwLock::new(None);
+static EMBER_V2_NNET: RwLock<Option<Arc<EmberV2Data>>> = RwLock::new(None);
 static CLASSIC_NNET: RwLock<Option<Arc<ClassicHalfKpNet>>> = RwLock::new(None);
 
 pub const EMBEDDED_NNUE: &[u8] = include_bytes!("net.compact.nnue");
@@ -351,19 +351,19 @@ pub fn init_nnue(path: &str) -> Result<(), String> {
         let mut lock = CLASSIC_NNET.write().map_err(|e| e.to_string())?;
         *lock = Some(Arc::new(net));
         *NNUE_NET.write().map_err(|e| e.to_string())? = None;
-        *OTHER_NNET.write().map_err(|e| e.to_string())? = None;
+        *EMBER_V2_NNET.write().map_err(|e| e.to_string())? = None;
         return Ok(());
     }
-    if OtherNetInfo::is_format(&data) {
-        let info = OtherNetInfo::try_parse(&data)?;
+    if EmberV2Info::is_format(&data) {
+        let info = EmberV2Info::try_parse(&data)?;
         let desc = String::from_utf8_lossy(&info.description);
-        let other = info.decode(&data)?;
+        let v2 = info.decode(&data)?;
         println!(
-            "info string Loaded external net {} (arch hash={:#x}, desc=\"{}\", {})",
-            path, info.hash, desc, other.overview
+            "info string Loaded Ember V2 net {} (arch hash={:#x}, desc=\"{}\", {})",
+            path, info.hash, desc, v2.overview
         );
-        let mut other_lock = OTHER_NNET.write().map_err(|e| e.to_string())?;
-        *other_lock = Some(Arc::new(other));
+        let mut v2_lock = EMBER_V2_NNET.write().map_err(|e| e.to_string())?;
+        *v2_lock = Some(Arc::new(v2));
         let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
         *lock = None;
         return Ok(());
@@ -371,16 +371,16 @@ pub fn init_nnue(path: &str) -> Result<(), String> {
     let net = NNUENet::load_from_bytes(&data, path)?;
     let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
     *lock = Some(Arc::new(net));
-    let mut other_lock = OTHER_NNET.write().map_err(|e| e.to_string())?;
-    *other_lock = None;
+    let mut v2_lock = EMBER_V2_NNET.write().map_err(|e| e.to_string())?;
+    *v2_lock = None;
     Ok(())
 }
 
 pub fn reset_nnue() -> Result<(), String> {
     let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
     *lock = None;
-    let mut other_lock = OTHER_NNET.write().map_err(|e| e.to_string())?;
-    *other_lock = None;
+    let mut v2_lock = EMBER_V2_NNET.write().map_err(|e| e.to_string())?;
+    *v2_lock = None;
     let mut classic_lock = CLASSIC_NNET.write().map_err(|e| e.to_string())?;
     *classic_lock = None;
     Ok(())
@@ -390,8 +390,8 @@ pub fn init_embedded_nnue() -> Result<(), String> {
     let net = NNUENet::load_compact_from_bytes(EMBEDDED_NNUE, "<embedded>")?;
     let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
     *lock = Some(Arc::new(net));
-    let mut other_lock = OTHER_NNET.write().map_err(|e| e.to_string())?;
-    *other_lock = None;
+    let mut v2_lock = EMBER_V2_NNET.write().map_err(|e| e.to_string())?;
+    *v2_lock = None;
     let mut classic_lock = CLASSIC_NNET.write().map_err(|e| e.to_string())?;
     *classic_lock = None;
     Ok(())
@@ -401,8 +401,8 @@ pub fn current_nnue_net() -> Option<Arc<NNUENet>> {
     NNUE_NET.read().ok()?.clone()
 }
 
-pub fn current_other_net() -> Option<Arc<OtherNetData>> {
-    OTHER_NNET.read().ok()?.clone()
+pub fn current_ember_v2() -> Option<Arc<EmberV2Data>> {
+    EMBER_V2_NNET.read().ok()?.clone()
 }
 
 pub fn current_classic_net() -> Option<Arc<ClassicHalfKpNet>> {
@@ -442,8 +442,8 @@ pub fn evaluate_nnue(st: &BoardState) -> i32 {
         let white_base = if st.w { stm_score } else { -stm_score };
         return crate::search::add_endgame_mopup_white(mopup_enabled, st, white_base);
     }
-    if let Some(other) = current_other_net() {
-        let base = evaluate_other_net(&other, st);
+    if let Some(v2) = current_ember_v2() {
+        let base = evaluate_ember_v2(&v2, st);
         let white_base = if st.w { base } else { -base };
         return crate::search::add_endgame_mopup_white(mopup_enabled, st, white_base);
     }

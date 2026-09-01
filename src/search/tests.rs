@@ -1,4 +1,4 @@
-use super::*;
+﻿use super::*;
 use crate::board::encode_move;
 use crate::engine::Engine;
 
@@ -25,7 +25,7 @@ fn classic_halfkp_net_is_selected_over_classic_eval() {
     let shared_tt = Arc::new(SharedTT::new(1));
     let mut searcher = Searcher::new(shared_tt, stopped);
     searcher.nnue_net = None;
-    searcher.other_net = None;
+    searcher.ember_v2_net = None;
     searcher.classic_net = Some(Arc::new(net.clone()));
     searcher.init_nnue_stack(&st);
 

@@ -1,4 +1,4 @@
-pub(crate) const OTHER_NNUE_VERSION: u32 = 0x6A448AFA;
+﻿pub(crate) const EMBER_V2_VERSION: u32 = 0x6A448AFA;
 
 pub(crate) const LEB128_MAGIC_LEN: usize = 17;
 
@@ -21,7 +21,7 @@ pub struct TensorDesc {
     pub byte_count: usize,
 }
 
-pub struct OtherNetInfo {
+pub struct EmberV2Info {
     pub version: u32,
     pub hash: u32,
     pub description: Vec<u8>,
@@ -30,7 +30,7 @@ pub struct OtherNetInfo {
 }
 
 #[allow(dead_code)]
-pub struct OtherStack {
+pub struct EmberV2Stack {
     pub fc0_bias: Vec<i32>,
     pub fc0_weights: Vec<i8>,
     pub fc1_bias: Vec<i32>,
@@ -40,7 +40,7 @@ pub struct OtherStack {
 }
 
 #[allow(dead_code)]
-pub struct OtherNetData {
+pub struct EmberV2Data {
     pub hidden_size: usize,
     pub psq_dims: usize,
     pub threat_dims: usize,
@@ -50,7 +50,7 @@ pub struct OtherNetData {
     pub threat_psqt: Vec<i32>,
     pub psq_weights: Vec<i16>,
     pub psqt: Vec<i32>,
-    pub stacks: Vec<OtherStack>,
+    pub stacks: Vec<EmberV2Stack>,
     pub overview: String,
 }
 
@@ -104,9 +104,9 @@ fn scan_tensors(data: &[u8], start: usize) -> Vec<TensorDesc> {
     out
 }
 
-impl OtherNetInfo {
+impl EmberV2Info {
     pub fn is_format(data: &[u8]) -> bool {
-        data.len() >= 4 && le_u32_at(data, 0) == OTHER_NNUE_VERSION
+        data.len() >= 4 && le_u32_at(data, 0) == EMBER_V2_VERSION
     }
 
     pub fn try_parse(data: &[u8]) -> Result<Self, String> {
@@ -114,10 +114,10 @@ impl OtherNetInfo {
             return Err("net file too short for a header".into());
         }
         if !Self::is_format(data) {
-            return Err("not an external-net container".into());
+            return Err("not an v2-net container".into());
         }
         let version = le_u32_at(data, 0);
-        if version != OTHER_NNUE_VERSION {
+        if version != EMBER_V2_VERSION {
             return Err(format!("unsupported net version {:#x}", version));
         }
         let hash = le_u32_at(data, 4);
@@ -129,7 +129,7 @@ impl OtherNetInfo {
         let description = data[12..desc_end].to_vec();
         let tensors = scan_tensors(data, desc_end);
 
-        Ok(OtherNetInfo {
+        Ok(EmberV2Info {
             version,
             hash,
             description,
@@ -155,10 +155,10 @@ impl OtherNetInfo {
         s
     }
 
-    pub fn decode(&self, data: &[u8]) -> Result<OtherNetData, String> {
+    pub fn decode(&self, data: &[u8]) -> Result<EmberV2Data, String> {
         if self.hash != ARCH_HASH {
             return Err(format!(
-                "unsupported external-net architecture hash {:#x} (expected {:#x})",
+                "unsupported architecture hash {:#x} (expected {:#x})",
                 self.hash, ARCH_HASH
             ));
         }
@@ -176,7 +176,7 @@ impl OtherNetInfo {
         let hidden_size = ft_bias.len();
         if hidden_size != HIDDEN_SIZE {
             return Err(format!(
-                "unsupported external hidden size {} (expected {})",
+                "unsupported hidden size {} (expected {})",
                 hidden_size, HIDDEN_SIZE
             ));
         }
@@ -188,7 +188,7 @@ impl OtherNetInfo {
         let threat_dims = threat_r / hidden_size;
         if threat_dims != THREAT_DIMS {
             return Err(format!(
-                "unsupported external threat dimensions {} (expected {})",
+                "unsupported threat dimensions {} (expected {})",
                 threat_dims, THREAT_DIMS
             ));
         }
@@ -210,7 +210,7 @@ impl OtherNetInfo {
         let psq_dims = psq_weights.len() / hidden_size;
         if psq_dims != PSQ_DIMS {
             return Err(format!(
-                "unsupported external PSQ dimensions {} (expected {})",
+                "unsupported PSQ dimensions {} (expected {})",
                 psq_dims, PSQ_DIMS
             ));
         }
@@ -226,7 +226,7 @@ impl OtherNetInfo {
         let num_stacks = tail.len() / STACK_BYTES;
         if num_stacks != NUM_STACKS {
             return Err(format!(
-                "unsupported external stack count {} (expected {})",
+                "unsupported stack count {} (expected {})",
                 num_stacks, NUM_STACKS
             ));
         }
@@ -249,7 +249,7 @@ impl OtherNetInfo {
         );
         let ft_bias = checked_i16_values(ft_bias, "feature-transformer biases")?;
         let psq_weights = checked_i16_values(psq_weights, "PSQ weights")?;
-        Ok(OtherNetData {
+        Ok(EmberV2Data {
             hidden_size,
             psq_dims,
             threat_dims,
@@ -275,7 +275,7 @@ fn checked_i16_values(values: Vec<i32>, name: &str) -> Result<Vec<i16>, String> 
         .collect()
 }
 
-fn parse_stack(seg: &[u8]) -> Result<OtherStack, String> {
+fn parse_stack(seg: &[u8]) -> Result<EmberV2Stack, String> {
     let mut cur = 4;
     let read_i32s = |cur: &mut usize, n: usize| -> Result<Vec<i32>, String> {
         let mut out = Vec::with_capacity(n);
@@ -304,7 +304,7 @@ fn parse_stack(seg: &[u8]) -> Result<OtherStack, String> {
     let fc1_weights = read_i8s(&mut cur, 32 * 64)?;
     let fc2_bias = read_i32s(&mut cur, 1)?;
     let fc2_weights = read_i8s(&mut cur, 128)?;
-    Ok(OtherStack {
+    Ok(EmberV2Stack {
         fc0_bias,
         fc0_weights,
         fc1_bias,
@@ -345,8 +345,8 @@ fn decode_leb_values(data: &[u8], start: usize) -> Result<(Vec<i32>, usize), Str
     Ok((vals, dp + bc))
 }
 
-pub(crate) fn load_other_net(data: &[u8]) -> Result<OtherNetData, String> {
-    let info = OtherNetInfo::try_parse(data)?;
+pub(crate) fn load_ember_v2(data: &[u8]) -> Result<EmberV2Data, String> {
+    let info = EmberV2Info::try_parse(data)?;
     info.decode(data)
 }
 
@@ -398,7 +398,7 @@ pub(crate) fn decode_signed_leb(data: &[u8], mut pos: usize) -> Result<(i64, usi
 
 #[cfg(test)]
 mod tests {
-    use super::{OtherNetInfo, TensorDesc, LEB128_MAGIC};
+    use super::{EmberV2Info, TensorDesc, LEB128_MAGIC};
 
     fn push_u32(out: &mut Vec<u8>, value: u32) {
         out.extend_from_slice(&value.to_le_bytes());
@@ -424,9 +424,9 @@ mod tests {
 
     #[test]
     fn recognizes_signature() {
-        assert!(OtherNetInfo::is_format(&[0xfa, 0x8a, 0x44, 0x6a]));
-        assert!(!OtherNetInfo::is_format(&[0x45, 0x43, 0x4e, 0x31]));
-        assert!(!OtherNetInfo::is_format(&[0x45, 0x55, 0x4e, 0x4e]));
+        assert!(EmberV2Info::is_format(&[0xfa, 0x8a, 0x44, 0x6a]));
+        assert!(!EmberV2Info::is_format(&[0x45, 0x43, 0x4e, 0x31]));
+        assert!(!EmberV2Info::is_format(&[0x45, 0x55, 0x4e, 0x4e]));
     }
 
     #[test]
@@ -442,7 +442,7 @@ mod tests {
                 (false, 50),
             ],
         );
-        let info = OtherNetInfo::try_parse(&bytes).unwrap();
+        let info = EmberV2Info::try_parse(&bytes).unwrap();
         assert_eq!(info.version, 0x6a448afa);
         assert_eq!(info.hash, 0x1234_5678);
         assert_eq!(info.description.len(), 7);
@@ -462,18 +462,18 @@ mod tests {
     #[test]
     fn truncated_description_is_rejected() {
         let bytes = build(0, "x", &[]);
-        assert!(OtherNetInfo::try_parse(&bytes[..8]).is_err());
+        assert!(EmberV2Info::try_parse(&bytes[..8]).is_err());
     }
 
     #[test]
     fn decode_rejects_an_unknown_architecture_before_tensor_loading() {
         let bytes = build(0x1234_5678, "unknown", &[]);
-        let info = OtherNetInfo::try_parse(&bytes).expect("container header should parse");
+        let info = EmberV2Info::try_parse(&bytes).expect("container header should parse");
         let error = match info.decode(&bytes) {
             Ok(_) => panic!("an unknown feature architecture must not be guessed"),
             Err(error) => error,
         };
-        assert!(error.contains("unsupported external-net architecture hash"));
+        assert!(error.contains("unsupported architecture hash"));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use super::*;
+﻿use super::*;
 
 const LMP_MOVE_COUNTS: [usize; 8] = [4, 7, 11, 17, 24, 33, 44, 57];
 const LMP_MOVE_COUNT_SCALE_PERMILLE: i64 = 1000;
@@ -1345,8 +1345,8 @@ impl Searcher {
         tl: f64,
         cnt: &mut u64,
     ) -> i32 {
-        let other_net = self.other_net.clone();
-        if let Some(net) = other_net.as_deref() {
+        let ember_v2_net = self.ember_v2_net.clone();
+        if let Some(net) = ember_v2_net.as_deref() {
             return if st.chess960 {
                 self.negamax_mode_scalar::<true, NODE_LIMITED, _>(
                     st,
@@ -1358,7 +1358,7 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
-                    OtherNnueEval { net },
+                    EmberV2Eval { net },
                 )
             } else {
                 self.negamax_mode_scalar::<false, NODE_LIMITED, _>(
@@ -1371,7 +1371,7 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
-                    OtherNnueEval { net },
+                    EmberV2Eval { net },
                 )
             };
         }
@@ -1517,8 +1517,8 @@ impl Searcher {
         tl: f64,
         cnt: &mut u64,
     ) -> i32 {
-        let other_net = self.other_net.clone();
-        if let Some(net) = other_net.as_deref() {
+        let ember_v2_net = self.ember_v2_net.clone();
+        if let Some(net) = ember_v2_net.as_deref() {
             return if st.chess960 {
                 self.negamax_mode_simd128::<true, NODE_LIMITED, _>(
                     st,
@@ -1530,7 +1530,7 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
-                    OtherNnueEval { net },
+                    EmberV2Eval { net },
                 )
             } else {
                 self.negamax_mode_simd128::<false, NODE_LIMITED, _>(
@@ -1543,7 +1543,7 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
-                    OtherNnueEval { net },
+                    EmberV2Eval { net },
                 )
             };
         }
@@ -1689,8 +1689,8 @@ impl Searcher {
         tl: f64,
         cnt: &mut u64,
     ) -> i32 {
-        let other_net = self.other_net.clone();
-        if let Some(net) = other_net.as_deref() {
+        let ember_v2_net = self.ember_v2_net.clone();
+        if let Some(net) = ember_v2_net.as_deref() {
             return if st.chess960 {
                 self.negamax_mode_simd256::<true, NODE_LIMITED, _>(
                     st,
@@ -1702,7 +1702,7 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
-                    OtherNnueEval { net },
+                    EmberV2Eval { net },
                 )
             } else {
                 self.negamax_mode_simd256::<false, NODE_LIMITED, _>(
@@ -1715,7 +1715,7 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
-                    OtherNnueEval { net },
+                    EmberV2Eval { net },
                 )
             };
         }
@@ -1861,8 +1861,8 @@ impl Searcher {
         tl: f64,
         cnt: &mut u64,
     ) -> i32 {
-        let other_net = self.other_net.clone();
-        if let Some(net) = other_net.as_deref() {
+        let ember_v2_net = self.ember_v2_net.clone();
+        if let Some(net) = ember_v2_net.as_deref() {
             return if st.chess960 {
                 self.negamax_mode_simd512::<true, NODE_LIMITED, _>(
                     st,
@@ -1874,7 +1874,7 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
-                    OtherNnueEval { net },
+                    EmberV2Eval { net },
                 )
             } else {
                 self.negamax_mode_simd512::<false, NODE_LIMITED, _>(
@@ -1887,7 +1887,7 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
-                    OtherNnueEval { net },
+                    EmberV2Eval { net },
                 )
             };
         }
@@ -2035,11 +2035,11 @@ impl Searcher {
         tl: f64,
         cnt: &mut u64,
     ) -> i32 {
-        let other_net = self.other_net.clone();
+        let ember_v2_net = self.ember_v2_net.clone();
         let nnue_net = self.nnue_net.clone();
         let classic_net = self.classic_net.clone();
         unsafe {
-            if let Some(net) = other_net.as_deref() {
+            if let Some(net) = ember_v2_net.as_deref() {
                 return if st.chess960 {
                     self.negamax_mode_x86_v3::<true, NODE_LIMITED, _>(
                         st,
@@ -2051,7 +2051,7 @@ impl Searcher {
                         start,
                         tl,
                         cnt,
-                        OtherNnueEval { net },
+                        EmberV2Eval { net },
                     )
                 } else {
                     self.negamax_mode_x86_v3::<false, NODE_LIMITED, _>(
@@ -2064,7 +2064,7 @@ impl Searcher {
                         start,
                         tl,
                         cnt,
-                        OtherNnueEval { net },
+                        EmberV2Eval { net },
                     )
                 };
             }
@@ -2213,11 +2213,11 @@ impl Searcher {
         tl: f64,
         cnt: &mut u64,
     ) -> i32 {
-        let other_net = self.other_net.clone();
+        let ember_v2_net = self.ember_v2_net.clone();
         let nnue_net = self.nnue_net.clone();
         let classic_net = self.classic_net.clone();
         unsafe {
-            if let Some(net) = other_net.as_deref() {
+            if let Some(net) = ember_v2_net.as_deref() {
                 return if st.chess960 {
                     self.negamax_mode_x86_avx512::<true, NODE_LIMITED, _>(
                         st,
@@ -2229,7 +2229,7 @@ impl Searcher {
                         start,
                         tl,
                         cnt,
-                        OtherNnueEval { net },
+                        EmberV2Eval { net },
                     )
                 } else {
                     self.negamax_mode_x86_avx512::<false, NODE_LIMITED, _>(
@@ -2242,7 +2242,7 @@ impl Searcher {
                         start,
                         tl,
                         cnt,
-                        OtherNnueEval { net },
+                        EmberV2Eval { net },
                     )
                 };
             }

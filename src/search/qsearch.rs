@@ -1,4 +1,4 @@
-use super::*;
+﻿use super::*;
 
 const QSEARCH_DELTA_MARGIN_CP: i32 = 1125;
 const QSEARCH_CHECK_CAP_DEPTH: i32 = 4;
@@ -266,8 +266,8 @@ impl Searcher {
         cnt: &mut u64,
         ply: usize,
     ) -> i32 {
-        let other_net = self.other_net.clone();
-        if let Some(net) = other_net.as_deref() {
+        let ember_v2_net = self.ember_v2_net.clone();
+        if let Some(net) = ember_v2_net.as_deref() {
             return if st.chess960 {
                 self.qsearch_mode_scalar::<true, false, _>(
                     st,
@@ -278,7 +278,7 @@ impl Searcher {
                     tl,
                     cnt,
                     ply,
-                    OtherNnueEval { net },
+                    EmberV2Eval { net },
                 )
             } else {
                 self.qsearch_mode_scalar::<false, false, _>(
@@ -290,7 +290,7 @@ impl Searcher {
                     tl,
                     cnt,
                     ply,
-                    OtherNnueEval { net },
+                    EmberV2Eval { net },
                 )
             };
         }

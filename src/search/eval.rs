@@ -1,7 +1,7 @@
 use super::Searcher;
 use crate::board::{BoardState, MAX_PLY};
 use crate::nnue::{
-    ClassicHalfKpNet, NNUEAccumulator, NNUENet, NNUEThreatAccumulator, NnueBackend, OtherNetData,
+    ClassicHalfKpNet, EmberV2Data, NNUEAccumulator, NNUENet, NNUEThreatAccumulator, NnueBackend,
 };
 
 #[derive(Clone, Copy)]
@@ -20,8 +20,8 @@ pub(super) struct ThreatNnueEval<'a, B: NnueBackend> {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct OtherNnueEval<'a> {
-    pub(super) net: &'a OtherNetData,
+pub(super) struct EmberV2Eval<'a> {
+    pub(super) net: &'a EmberV2Data,
 }
 
 #[derive(Clone, Copy)]
@@ -97,7 +97,7 @@ impl SearchEval for ClassicEval {
     fn copy_null_acc(self, _searcher: &mut Searcher, _ply: usize) {}
 }
 
-impl SearchEval for OtherNnueEval<'_> {
+impl SearchEval for EmberV2Eval<'_> {
     #[inline(always)]
     fn static_eval<const CHESS960: bool>(
         self,
@@ -105,12 +105,12 @@ impl SearchEval for OtherNnueEval<'_> {
         st: &BoardState,
         ply: usize,
     ) -> i32 {
-        searcher.static_eval_other_nnue::<CHESS960>(st, ply, self.net)
+        searcher.static_eval_ember_v2::<CHESS960>(st, ply, self.net)
     }
 
     #[inline(always)]
     fn corrected_eval<const CHESS960: bool>(self, searcher: &Searcher, st: &BoardState) -> i32 {
-        searcher.corrected_eval_other_nnue::<CHESS960>(st, self.net)
+        searcher.corrected_eval_ember_v2::<CHESS960>(st, self.net)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -132,17 +132,17 @@ impl SearchEval for OtherNnueEval<'_> {
 
     #[inline(always)]
     fn ensure_child_stack(self, searcher: &mut Searcher, ply: usize) {
-        if ply + 1 >= searcher.other_stack.len() && ply + 1 < MAX_PLY + 1 {
+        if ply + 1 >= searcher.ember_v2_stack.len() && ply + 1 < MAX_PLY + 1 {
             searcher
-                .other_stack
-                .resize(ply + 2, crate::nnue::OtherAccumulator::new());
+                .ember_v2_stack
+                .resize(ply + 2, crate::nnue::EmberV2Accumulator::new());
         }
     }
 
     #[inline(always)]
     fn copy_null_acc(self, searcher: &mut Searcher, ply: usize) {
-        if ply + 1 < searcher.other_stack.len() {
-            let (parents, children) = searcher.other_stack.split_at_mut(ply + 1);
+        if ply + 1 < searcher.ember_v2_stack.len() {
+            let (parents, children) = searcher.ember_v2_stack.split_at_mut(ply + 1);
             children[0].clone_from(&parents[ply]);
         }
     }
