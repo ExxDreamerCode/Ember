@@ -2,8 +2,10 @@
 import argparse
 import glob
 import os
+import stat
 import struct
 import sys
+import tempfile
 import gc
 
 PINNED_COMMIT = "a7830b2a91d15f6d3214bd21b1a6cc5cf7701b82"
@@ -29,6 +31,52 @@ STACK_BYTES = (
 )
 
 MAGIC = b"COMPRESSED_LEB128"
+
+
+def paths_refer_to_same_file(first, second):
+    first = os.path.abspath(first)
+    second = os.path.abspath(second)
+
+    if os.path.exists(first) and os.path.exists(second):
+        try:
+            return os.path.samefile(first, second)
+        except OSError:
+            pass
+
+    return os.path.realpath(first) == os.path.realpath(second)
+
+
+def write_verified_output(out, writer, verifier):
+    out = os.path.abspath(out)
+    output_dir = os.path.dirname(out)
+    output_name = os.path.basename(out)
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{output_name}.",
+        suffix=".tmp",
+        dir=output_dir,
+    )
+    os.close(fd)
+
+    try:
+        writer(temporary)
+        info = verifier(temporary)
+
+        if os.path.exists(out):
+            mode = stat.S_IMODE(os.stat(out).st_mode)
+        else:
+            current_umask = os.umask(0)
+            os.umask(current_umask)
+            mode = 0o666 & ~current_umask
+
+        os.chmod(temporary, mode)
+
+        os.replace(temporary, out)
+        return info
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def import_nnue_pytorch(repo):
@@ -443,8 +491,6 @@ def main():
             f"Checkpoint does not exist: {ckpt}"
         )
 
-    M, torch = import_nnue_pytorch(args.repo)
-
     if args.out:
         out = os.path.abspath(args.out)
     else:
@@ -456,6 +502,11 @@ def main():
             )[0]
             + ".nnue",
         )
+
+    if paths_refer_to_same_file(ckpt, out):
+        parser.error("--out must not refer to the input checkpoint")
+
+    M, torch = import_nnue_pytorch(args.repo)
 
     description = args.description
 
@@ -478,16 +529,16 @@ def main():
 
     print("Writing:", out)
 
-    write_container(
-        torch,
-        model,
+    info = write_verified_output(
         out,
-        description.encode("utf-8"),
+        lambda temporary: write_container(
+            torch,
+            model,
+            temporary,
+            description.encode("utf-8"),
+        ),
+        verify,
     )
-
-    print("Verifying...")
-
-    info = verify(out)
 
     print("Wrote:", out)
     print(
