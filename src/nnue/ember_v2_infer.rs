@@ -874,4 +874,74 @@ mod tests {
             assert_eq!(actual, expected);
         }
     }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn fused_avx2_dot_products_match_scalar() {
+        if !std::is_x86_feature_detected!("avx2") {
+            return;
+        }
+
+        // This directly checks the private quantized arithmetic introduced by
+        // the fused AVX2 path; a public move fixture cannot isolate it.
+        fn scalar_dot(input: &[u8], weights: &[i8]) -> i32 {
+            input
+                .iter()
+                .zip(weights)
+                .fold(0i32, |sum, (&input, &weight)| {
+                    sum.wrapping_add(i32::from(input) * i32::from(weight))
+                })
+        }
+
+        let mut input = [0u8; super::HIDDEN_SIZE];
+        for (index, value) in input.iter_mut().enumerate() {
+            *value = ((index * 37 + 11) % 128) as u8;
+        }
+        input[..4].fill(127);
+
+        let mut dot_weights = [0i8; super::HIDDEN_SIZE];
+        for (index, weight) in dot_weights.iter_mut().enumerate() {
+            *weight = ((index * 53 + 19) % 256) as u8 as i8;
+        }
+        dot_weights[0] = 127;
+        dot_weights[1] = 127;
+        dot_weights[2] = -128;
+        dot_weights[3] = -128;
+
+        for width in [64, 128, super::HIDDEN_SIZE] {
+            let expected = scalar_dot(&input[..width], &dot_weights[..width]);
+            // SAFETY: runtime detection above guarantees AVX2 support, and all
+            // tested widths are multiples of 32.
+            let actual = unsafe { super::dot_product_avx2(&input[..width], &dot_weights[..width]) };
+            assert_eq!(actual, expected, "dot-product mismatch at width {width}");
+        }
+
+        let mut fc0_weights = vec![0i8; 32 * super::HIDDEN_SIZE];
+        for (index, weight) in fc0_weights.iter_mut().enumerate() {
+            *weight = ((index * 29 + index / super::HIDDEN_SIZE * 17 + 7) % 256) as u8 as i8;
+        }
+        fc0_weights[..4].copy_from_slice(&[127, 127, -128, -128]);
+
+        let mut biases = [0i32; 32];
+        for (index, bias) in biases.iter_mut().enumerate() {
+            *bias = match index {
+                0 => i32::MAX,
+                1 => i32::MIN,
+                _ => (index as i32 * 104_729).wrapping_sub(700_001),
+            };
+        }
+
+        let mut expected = [0i32; 32];
+        for (output, value) in expected.iter_mut().enumerate() {
+            let weights =
+                &fc0_weights[output * super::HIDDEN_SIZE..(output + 1) * super::HIDDEN_SIZE];
+            *value = biases[output].wrapping_add(scalar_dot(&input, weights));
+        }
+
+        let mut actual = [0i32; 32];
+        // SAFETY: runtime detection above guarantees AVX2 support and the
+        // buffers have the exact fixed sizes required by the fused kernel.
+        unsafe { super::fc0_forward_avx2(&input, &fc0_weights, &biases, &mut actual) };
+        assert_eq!(actual, expected);
+    }
 }
