@@ -55,7 +55,7 @@ echo -e "uci\nisready\nquit" | cargo run --release
 | `BookMinMoveWeight` | spin | 2 | 1-65535 | Минимальный абсолютный вес хода из книги |
 | `BookMinMoveWeightPermille` | spin | 10 | 0-1000 | Минимальная доля веса хода в промилле |
 | `NNUE`      | string | `<embedded>` | —        | Путь к файлу нейросети .nnue      |
-| `NNUEBackend` | combo | `auto` | `auto`, доступные backend-ы | Backend для NNUE-поиска |
+| `NNUEBackend` | combo | `auto` | `auto`, доступные backend-ы | Backend для NNUE-поиска Ember V1/V2 |
 | `TraceFile` | string | `<empty>`    | —        | Путь к TraceBack файлу .jsonl     |
 | `SyzygyPath` | string | `<empty>` | — | Путь к папке с Syzygy таблицами (DTZ) |
 | `UCI_Chess960` | check | `false`    | —        | Включение/отключение Chess 960     |
@@ -149,8 +149,9 @@ setoption name NNUE value C:\путь\к\file.nnue  # загрузить вне�
 setoption name NNUE value my-net.nnue
 ```
 
-Backend для NNUE-поиска выбирается автоматически по процессору. Для
-проверок и замеров его можно переопределить:
+Backend для NNUE-поиска выбирается автоматически по процессору и одинаково
+применяется к сетям Ember V1 и Ember V2. Для проверок и замеров его можно
+переопределить:
 
 ```
 setoption name NNUEBackend value scalar
@@ -180,12 +181,14 @@ info string Loaded NNUE v6 my-net.nnue SCReLU (FT=1024 L1=0 L2=0)
 - **Ember V2** — формат-контейнер для второй версии архитектуры Ember с фиксированной
   раскладкой (полу-трансформер с PSQ- и threat-фичами, за которым следуют
   несколько стеков `Affine`); размеры проверяются при загрузке. Выводится как
-  `Loaded Ember V2 net <путь> (arch hash=... desc="..." ...)`.
+  `Loaded Ember V2 net <путь> (arch hash=... desc="..." ...)`. Эти файлы уже
+  используют сжатие из NNUE PyTorch и не требуют преобразования в компактный
+  формат Ember `ECN1`.
 - **Компактный формат (ECN1)** — сжатый вариант собственной сети V1 Ember (магическое
   число `ECN1`, создаётся скриптом `training/v1/compact_nnue_v1.py`). Он сокращает
   фича-трансформер до плотного базиса плюс карты коррекции — это не отдельная
-  архитектура, а лишь формат хранения той же собственной сети. Встроенная сеть
-  хранится именно в этом виде и загружается через опцию `NNUE` как `<embedded>`.
+  архитектура, а лишь формат хранения той же собственной сети. Через опцию `NNUE`
+  загружаются как внешние файлы `ECN1`, так и встроенная сеть в этом формате.
 - **Классическая сеть `HalfKP(Friend)`** — классический формат Stockfish с фичей
   `HalfKP(Friend)` и слоями `AffineTransform` + `ClippedReLU`. Выводится как
   `Loaded legacy HalfKP net <путь>`.
