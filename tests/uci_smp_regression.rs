@@ -179,7 +179,8 @@ fn malformed_uci_input_is_rejected_without_crashing() {
 
 #[test]
 fn external_compact_nnue_loads_through_the_uci_option() {
-    let compact_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/net.compact.nnue");
+    let compact_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("networks/V1/1.0.0-1.3.1/net.compact.nnue");
     let (mut child, rx) = spawn_ember();
     let mut stdin = child.stdin.take().expect("capture Ember stdin");
 

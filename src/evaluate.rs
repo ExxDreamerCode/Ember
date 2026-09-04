@@ -1,4 +1,4 @@
-﻿use crate::board::{
+use crate::board::{
     all_occ, bit, black_occ, sq, sq_c, sq_r, white_occ, BoardState, BB, BK, BN, BP, BQ, BR,
     KING_ATTACKS, KNIGHT_ATTACKS, WB, WK, WN, WP, WQ, WR,
 };
@@ -337,15 +337,14 @@ static NNUE_NET: RwLock<Option<Arc<NNUENet>>> = RwLock::new(None);
 static EMBER_V2_NNET: RwLock<Option<Arc<EmberV2Data>>> = RwLock::new(None);
 static CLASSIC_NNET: RwLock<Option<Arc<ClassicHalfKpNet>>> = RwLock::new(None);
 
-pub const EMBEDDED_NNUE: &[u8] = include_bytes!("net.compact.nnue");
+pub const EMBEDDED_NNUE: &[u8] = include_bytes!("net.nnue");
 
-pub fn init_nnue(path: &str) -> Result<(), String> {
-    let data = std::fs::read(path).map_err(|e| format!("read {}: {}", path, e))?;
-    if ClassicHalfKpNet::is_format(&data) {
-        let net = ClassicHalfKpNet::parse(&data)?;
+fn load_nnue_bytes(data: &[u8], name: &str) -> Result<(), String> {
+    if ClassicHalfKpNet::is_format(data) {
+        let net = ClassicHalfKpNet::parse(data)?;
         println!(
             "info string Loaded legacy HalfKP net {} ({})",
-            path,
+            name,
             net.overview()
         );
         let mut lock = CLASSIC_NNET.write().map_err(|e| e.to_string())?;
@@ -354,13 +353,13 @@ pub fn init_nnue(path: &str) -> Result<(), String> {
         *EMBER_V2_NNET.write().map_err(|e| e.to_string())? = None;
         return Ok(());
     }
-    if EmberV2Info::is_format(&data) {
-        let info = EmberV2Info::try_parse(&data)?;
+    if EmberV2Info::is_format(data) {
+        let info = EmberV2Info::try_parse(data)?;
         let desc = String::from_utf8_lossy(&info.description);
-        let v2 = info.decode(&data)?;
+        let v2 = info.decode(data)?;
         println!(
             "info string Loaded Ember V2 net {} (arch hash={:#x}, desc=\"{}\", {})",
-            path, info.hash, desc, v2.overview
+            name, info.hash, desc, v2.overview
         );
         let mut v2_lock = EMBER_V2_NNET.write().map_err(|e| e.to_string())?;
         *v2_lock = Some(Arc::new(v2));
@@ -370,7 +369,7 @@ pub fn init_nnue(path: &str) -> Result<(), String> {
         *classic_lock = None;
         return Ok(());
     }
-    let net = NNUENet::load_from_bytes(&data, path)?;
+    let net = NNUENet::load_from_bytes(data, name)?;
     let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
     *lock = Some(Arc::new(net));
     let mut v2_lock = EMBER_V2_NNET.write().map_err(|e| e.to_string())?;
@@ -378,6 +377,11 @@ pub fn init_nnue(path: &str) -> Result<(), String> {
     let mut classic_lock = CLASSIC_NNET.write().map_err(|e| e.to_string())?;
     *classic_lock = None;
     Ok(())
+}
+
+pub fn init_nnue(path: &str) -> Result<(), String> {
+    let data = std::fs::read(path).map_err(|e| format!("read {}: {}", path, e))?;
+    load_nnue_bytes(&data, path)
 }
 
 pub fn reset_nnue() -> Result<(), String> {
@@ -391,14 +395,7 @@ pub fn reset_nnue() -> Result<(), String> {
 }
 
 pub fn init_embedded_nnue() -> Result<(), String> {
-    let net = NNUENet::load_compact_from_bytes(EMBEDDED_NNUE, "<embedded>")?;
-    let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
-    *lock = Some(Arc::new(net));
-    let mut v2_lock = EMBER_V2_NNET.write().map_err(|e| e.to_string())?;
-    *v2_lock = None;
-    let mut classic_lock = CLASSIC_NNET.write().map_err(|e| e.to_string())?;
-    *classic_lock = None;
-    Ok(())
+    load_nnue_bytes(EMBEDDED_NNUE, "<embedded>")
 }
 
 pub fn current_nnue_net() -> Option<Arc<NNUENet>> {
@@ -578,7 +575,10 @@ mod tests {
         let classic = ClassicHalfKpNet::parse(&synthetic_test_net_bytes(0)).unwrap();
         *CLASSIC_NNET.write().unwrap() = Some(Arc::new(classic));
 
-        let native_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/net.nnue");
+        // The embedded src/net.nnue is now an Ember V2 container, so the native
+        // (dense V1) slot is exercised with the archived V1 network under networks/V1.
+        let native_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("networks/V1/1.0.0-1.3.1/net.nnue");
         init_nnue(native_path.to_str().unwrap()).unwrap();
 
         assert!(current_classic_net().is_none());

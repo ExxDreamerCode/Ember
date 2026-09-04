@@ -6,7 +6,9 @@ use ember_chess::Engine;
 use std::hint::black_box;
 use std::time::Instant;
 
-const NET: &[u8] = include_bytes!("../net.nnue");
+// Archived V1 dense network; src/net.nnue is now an Ember V2 container that the
+// native NNUENet loader rejects, so the microbench targets the V1 net under networks/V1.
+const NET: &[u8] = include_bytes!("../../networks/V1/1.0.0-1.3.1/net.nnue");
 
 const FENS: &[&str] = &[
     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
@@ -103,7 +105,7 @@ fn main() {
     let refresh_loops = parse_arg("--refresh-loops", 2000);
     let update_loops = parse_arg("--update-loops", 200);
     let net =
-        NNUENet::load_from_bytes(NET, "<microbench>").expect("embedded dense NNUE should load");
+        NNUENet::load_from_bytes(NET, "<microbench>").expect("archived V1 dense NNUE should load");
     let states = states();
 
     let refresh_calls = refresh_loops * states.len();
