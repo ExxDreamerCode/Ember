@@ -154,8 +154,9 @@ resource cleanup, parser behavior, and other subsystem invariants. Python toolin
 deployment tooling should have their regressions in their existing Python test suites.
 
 The fast fixture test validates the TSV schema, numeric fields, and cross-file ID uniqueness.
-The ignored release fixture test runs every active move case and is exercised by its
-dedicated CI job.
+The ignored in-process release fixture test runs every active hard-layer case from
+`engine_regressions.tsv`. Soft active cases are judged by the two-binary fixture gate, which
+preserves every pass/fail flip and applies the selected baseline-relative policy.
 
 ## Diagnosing a bad game or move
 
@@ -224,7 +225,7 @@ Run checks in increasing cost order and stop on a real failure:
 4. `cargo clippy --locked --all-targets --all-features -- -D warnings`
 5. `cargo test --locked --all-features -- --test-threads=1` with the repository's documented
    stack limits
-6. The ignored release move-fixture suite when chess behavior changed
+6. The ignored in-process hard-layer move-fixture suite when chess behavior changed
 7. Relevant old-CPU, cross-architecture, packaging, or deployment tests
 
 Use the Nix `ci` shell where CI does. Match `.github/workflows/ci.yml` rather than inventing

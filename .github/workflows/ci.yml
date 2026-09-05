@@ -118,6 +118,17 @@ jobs:
           nix develop .#ci --command cargo build --locked
           --release --bin ember
 
+      - name: Run in-process hard move regressions
+        run: |
+          nix develop .#ci --command bash -c "
+            ulimit -s 65536
+            export RUST_MIN_STACK=16777216
+            cargo test --locked --release --all-features \
+              --test lichess_puzzle_corpus \
+              ember_solves_hard_move_regressions -- \
+              --ignored --test-threads=1
+          "
+
       - name: Restore baseline build cache
         uses: actions/cache@v4
         with:
