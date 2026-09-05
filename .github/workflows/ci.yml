@@ -123,19 +123,17 @@ jobs:
         with:
           path: target/baseline-target
           key: ember-fixture-baseline-${{ env.BASELINE_SHA }}-${{ runner.os }}
-          restore-keys: ember-fixture-baseline-
 
       - name: Build baseline binary
         run: |
           set -euo pipefail
           rm -rf baseline-worktree
           git worktree add -f --detach baseline-worktree "$BASELINE_SHA"
-          if [ ! -x target/baseline-target/release/ember ]; then
-            cd baseline-worktree
-            nix develop .#ci --command cargo build --locked \
-              --release --bin ember --target-dir ../target/baseline-target
-            cd ..
-          fi
+          rm -f target/baseline-target/release/ember
+          cd baseline-worktree
+          nix develop .#ci --command cargo build --locked \
+            --release --bin ember --target-dir ../target/baseline-target
+          cd ..
           cp target/baseline-target/release/ember baseline-worktree/ember-baseline
 
       - name: Run two-binary fixture gate
@@ -169,63 +167,74 @@ jobs:
           report_path = Path("results/fixture-gate/corpus.json")
           report = None
           if report_path.exists():
-              with open(report_path, encoding="utf-8") as handle:
-                  data = json.load(handle)
-              gate = data["gate"]
-              metadata = data["metadata"]
-              lines = [
-                  "## Fixture gate (two-binary comparison)",
-                  "",
-                  f"- Baseline: `{metadata['baseline_label']}` "
-                  f"(`{metadata['baseline_sha256'][:12]}`)",
-                  f"- Candidate: `{metadata['candidate_label']}` "
-                  f"(`{metadata['candidate_sha256'][:12]}`)",
-                  f"- Active checks: `{gate['active_checks']}`",
-                  f"- Baseline passes: `{gate['baseline_passes']}`",
-                  f"- Candidate passes: `{gate['candidate_passes']}`",
-                  f"- Net loss: `{gate['net_loss']}` "
-                  f"(tolerance `{gate['net_tolerance']}`)",
-                  f"- **Verdict: {('FAIL' if not gate['passed'] else 'PASS')}**",
-                  "",
-              ]
-              if gate["reasons"]:
-                  lines.append("Rejected because:")
-                  lines.extend(f"- {reason}" for reason in gate["reasons"])
-                  lines.append("")
-              if gate["hard_regressed"]:
-                  lines.append("Hard-layer regressions:")
-                  lines.extend(
-                      f"- `{item['fixture']}:{item['line']}` `{item['id']}` "
-                      f"expected=`{item['expected']}` "
-                      f"baseline=`{item['baseline_move']}` "
-                      f"candidate=`{item['candidate_move']}`"
-                      for item in gate["hard_regressed"]
+              try:
+                  with open(report_path, encoding="utf-8") as handle:
+                      data = json.load(handle)
+              except (OSError, json.JSONDecodeError) as error:
+                  report = f"Fixture gate report is unreadable: {error}"
+              gate = data.get("gate") if report is None else None
+              if gate is None and report is None:
+                  report = (
+                      "Fixture gate comparison did not complete: corpus.json has "
+                      "no gate verdict. Inspect the comparison logs and artifact."
                   )
-                  lines.append("")
-              if gate["regressed"]:
-                  shown = gate["regressed"][:50]
-                  lines.append(
-                      f"Regressed (baseline-only): {len(gate['regressed'])} cases"
-                  )
-                  lines.extend(
-                      f"- `{item['fixture']}:{item['line']}` `{item['id']}` "
-                      f"expected=`{item['expected']}` "
-                      f"baseline=`{item['baseline_move']}` "
-                      f"candidate=`{item['candidate_move']}`"
-                      for item in shown
-                  )
-                  if len(gate["regressed"]) > len(shown):
-                      lines.append(
-                          f"- ... and {len(gate['regressed']) - len(shown)} more"
+              if gate is not None:
+                  metadata = data["metadata"]
+                  lines = [
+                      "## Fixture gate (two-binary comparison)",
+                      "",
+                      f"- Baseline: `{metadata['baseline_label']}` "
+                      f"(`{metadata['baseline_sha256'][:12]}`)",
+                      f"- Candidate: `{metadata['candidate_label']}` "
+                      f"(`{metadata['candidate_sha256'][:12]}`)",
+                      f"- Active checks: `{gate['active_checks']}`",
+                      f"- Baseline passes: `{gate['baseline_passes']}`",
+                      f"- Candidate passes: `{gate['candidate_passes']}`",
+                      f"- Net loss: `{gate['net_loss']}` "
+                      f"(tolerance `{gate['net_tolerance']}`)",
+                      f"- **Verdict: {('FAIL' if not gate['passed'] else 'PASS')}**",
+                      "",
+                  ]
+                  if gate["reasons"]:
+                      lines.append("Rejected because:")
+                      lines.extend(f"- {reason}" for reason in gate["reasons"])
+                      lines.append("")
+                  if gate["hard_failed"]:
+                      lines.append("Hard-layer candidate failures:")
+                      lines.extend(
+                          f"- `{item['fixture']}:{item['line']}` `{item['id']}` "
+                          f"expected=`{item['expected']}` "
+                          f"baseline=`{item['baseline_move']}` "
+                          f"candidate=`{item['candidate_move']}`"
+                          for item in gate["hard_failed"]
                       )
-                  lines.append("")
-              if gate["fixed"]:
-                  lines.append(f"Fixed (candidate-only): {len(gate['fixed'])} cases")
-              lines.append(
-                  "Full per-case report: `corpus.tsv` and `corpus.json` in the "
-                  "`fixture-gate` artifact."
-              )
-              report = "\n".join(lines)
+                      lines.append("")
+                  if gate["regressed"]:
+                      shown = gate["regressed"][:50]
+                      lines.append(
+                          f"Regressed (baseline-only): {len(gate['regressed'])} cases"
+                      )
+                      lines.extend(
+                          f"- `{item['fixture']}:{item['line']}` `{item['id']}` "
+                          f"expected=`{item['expected']}` "
+                          f"baseline=`{item['baseline_move']}` "
+                          f"candidate=`{item['candidate_move']}`"
+                          for item in shown
+                      )
+                      if len(gate["regressed"]) > len(shown):
+                          lines.append(
+                              f"- ... and {len(gate['regressed']) - len(shown)} more"
+                          )
+                      lines.append("")
+                  if gate["fixed"]:
+                      lines.append(
+                          f"Fixed (candidate-only): {len(gate['fixed'])} cases"
+                      )
+                  lines.append(
+                      "Full per-case report: `corpus.tsv` and `corpus.json` in the "
+                      "`fixture-gate` artifact."
+                  )
+                  report = "\n".join(lines)
           else:
               report = (
                   "Fixture gate report is unavailable: the comparison step did not "
