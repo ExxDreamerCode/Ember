@@ -76,8 +76,13 @@ pub(super) fn lmr_reduction_with_history(
 ) -> i32 {
     let base = lmr_reduction(move_index, actual_depth, is_pv);
     let history = history.clamp(-LMR_HISTORY_CLAMP, LMR_HISTORY_CLAMP);
-    let max_reduction = (actual_depth - 1).max(1);
+    let max_reduction = (actual_depth - 1).max(0);
     (base - history / LMR_HISTORY_DIVISOR).clamp(0, max_reduction)
+}
+
+#[inline(always)]
+pub(super) fn lmr_needs_full_depth_research(reduction: i32, score: i32, alpha: i32) -> bool {
+    reduction > 0 && score > alpha
 }
 
 #[inline(always)]
@@ -1092,7 +1097,7 @@ macro_rules! negamax_mode_body {
                     $cnt,
                     $eval,
                 );
-                if s2 > $alpha {
+                let full_depth_score = if lmr_needs_full_depth_research(r, s2, $alpha) {
                     #[cfg(feature = "search-debug")]
                     {
                         $this.debug.stats.lmr_researches += 1;
@@ -1109,24 +1114,25 @@ macro_rules! negamax_mode_body {
                         $cnt,
                         $eval,
                     );
-                    if s3 > $alpha && is_pv {
-                        -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
-                            $st,
-                            new_depth,
-                            $ply + 1,
-                            -beta,
-                            -$alpha,
-                            true,
-                            $start,
-                            $tl,
-                            $cnt,
-                            $eval,
-                        )
-                    } else {
-                        s3
-                    }
+                    s3
                 } else {
                     s2
+                };
+                if full_depth_score > $alpha && is_pv {
+                    -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
+                        $st,
+                        new_depth,
+                        $ply + 1,
+                        -beta,
+                        -$alpha,
+                        true,
+                        $start,
+                        $tl,
+                        $cnt,
+                        $eval,
+                    )
+                } else {
+                    full_depth_score
                 }
             } else if is_pv {
                 let s2 = -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
