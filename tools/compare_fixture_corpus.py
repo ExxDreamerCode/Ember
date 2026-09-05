@@ -435,42 +435,64 @@ def write_tsv(path, rows):
 def evaluate_gate(
     rows,
     hard_fixtures=(),
+    profile="strict",
     net_tolerance_permille=10,
     floor_ratio_permille=800,
 ):
+    if profile not in ("strict", "rearchitecture"):
+        raise ValueError(f"unknown fixture gate profile {profile!r}")
+
     active = [row for row in rows if row["check"]["activation"] == "active"]
     baseline_passes = sum(1 for row in active if row["baseline"]["passed"])
     candidate_passes = sum(1 for row in active if row["candidate"]["passed"])
-    baseline_errors = sum(1 for row in active if row["baseline"]["error"] is not None)
-    candidate_errors = sum(1 for row in active if row["candidate"]["error"] is not None)
+    baseline_errors = sum(1 for row in rows if row["baseline"]["error"] is not None)
+    candidate_errors = sum(1 for row in rows if row["candidate"]["error"] is not None)
     baseline_only = [row for row in active if row["direction"] == "baseline-only"]
     candidate_only = [row for row in active if row["direction"] == "candidate-only"]
 
     hard = {name for name in hard_fixtures}
-    hard_regressed = [
+    active_fixture_names = {row["check"]["fixture"] for row in active}
+    missing_hard_fixtures = sorted(hard - active_fixture_names)
+    hard_failed = [
         row
         for row in active
-        if row["check"]["fixture"] in hard and row["direction"] == "baseline-only"
+        if row["check"]["fixture"] in hard and not row["candidate"]["passed"]
     ]
 
     net_loss = baseline_passes - candidate_passes
-    net_tolerance = round(baseline_passes * net_tolerance_permille / 1000)
-    floor = round(baseline_passes * floor_ratio_permille / 1000)
+    net_tolerance = baseline_passes * net_tolerance_permille // 1000
+    floor = (baseline_passes * floor_ratio_permille + 999) // 1000
 
     reasons = []
-    if hard_regressed:
+    if missing_hard_fixtures:
         reasons.append(
-            f"{len(hard_regressed)} hard-layer regression(s) in "
+            "hard fixture(s) have no active checks: "
+            f"{', '.join(missing_hard_fixtures)}"
+        )
+    if hard_failed:
+        reasons.append(
+            f"{len(hard_failed)} hard-layer candidate failure(s) in "
             f"{', '.join(sorted(hard))}"
         )
-    if net_loss > net_tolerance:
+    if baseline_errors or candidate_errors:
         reasons.append(
-            f"net loss {net_loss} exceeds tolerance {net_tolerance} "
+            "engine errors invalidate the comparison "
+            f"(baseline {baseline_errors}, candidate {candidate_errors})"
+        )
+    if (
+        profile == "strict"
+        and net_loss * 1000 > baseline_passes * net_tolerance_permille
+    ):
+        reasons.append(
+            f"net loss {net_loss} exceeds exact tolerance "
             f"({net_tolerance_permille} permille of {baseline_passes} baseline passes)"
         )
-    if candidate_passes < floor:
+    if (
+        profile == "rearchitecture"
+        and candidate_passes * 1000 < baseline_passes * floor_ratio_permille
+    ):
         reasons.append(
-            f"candidate {candidate_passes} below absolute floor {floor} "
+            f"candidate {candidate_passes} below proportional floor {floor} "
             f"({floor_ratio_permille} permille of baseline {baseline_passes})"
         )
 
@@ -493,6 +515,7 @@ def evaluate_gate(
 
     return {
         "passed": not reasons,
+        "profile": profile,
         "active_checks": len(active),
         "baseline_passes": baseline_passes,
         "candidate_passes": candidate_passes,
@@ -502,7 +525,10 @@ def evaluate_gate(
         "baseline_errors": baseline_errors,
         "candidate_errors": candidate_errors,
         "hard_fixtures": sorted(hard),
-        "hard_regressed": summarize_rows(hard_regressed),
+        "missing_hard_fixtures": missing_hard_fixtures,
+        "hard_failed": summarize_rows(hard_failed),
+        # Retain this field for consumers of the first gate-report schema.
+        "hard_regressed": summarize_rows(hard_failed),
         "regressed": summarize_rows(baseline_only),
         "fixed": summarize_rows(candidate_only),
         "reasons": reasons,
@@ -517,18 +543,22 @@ def format_gate_report(gate):
         f"baseline passes: {gate['baseline_passes']}; "
         f"candidate passes: {gate['candidate_passes']}"
     )
-    lines.append(
-        f"net loss: {gate['net_loss']} (tolerance {gate['net_tolerance']}); "
-        f"absolute floor: {gate['floor']}"
-    )
+    lines.append(f"profile: {gate['profile']}")
+    if gate["profile"] == "strict":
+        lines.append(
+            f"net loss: {gate['net_loss']} "
+            f"(whole-case tolerance {gate['net_tolerance']})"
+        )
+    else:
+        lines.append(f"proportional candidate floor: {gate['floor']}")
     if gate["baseline_errors"] or gate["candidate_errors"]:
         lines.append(
-            "WARNING: engine errors -> "
+            "INVALID: engine errors -> "
             f"baseline {gate['baseline_errors']}, candidate {gate['candidate_errors']} "
-            "(counted as failures)"
+            "(comparison rejected)"
         )
     for header, items in (
-        ("HARD-layer regressions", gate["hard_regressed"]),
+        ("HARD-layer candidate failures", gate["hard_failed"]),
         ("Regressed (baseline-only, active)", gate["regressed"]),
         ("Fixed (candidate-only, active)", gate["fixed"]),
     ):
@@ -586,6 +616,15 @@ def main():
         help=(
             "enforce the two-binary fixture gate: hard-layer regressions, "
             "net-loss tolerance, and absolute floor over active cases"
+        ),
+    )
+    parser.add_argument(
+        "--gate-profile",
+        choices=("strict", "rearchitecture"),
+        default="strict",
+        help=(
+            "strict enforces the net-loss tolerance; rearchitecture enforces "
+            "the proportional candidate floor (default: strict)"
         ),
     )
     parser.add_argument(
@@ -703,6 +742,7 @@ def main():
     gate = evaluate_gate(
         rows,
         hard_fixtures=hard_fixtures,
+        profile=args.gate_profile,
         net_tolerance_permille=args.gate_net_tolerance_permille,
         floor_ratio_permille=args.gate_floor_ratio_permille,
     )

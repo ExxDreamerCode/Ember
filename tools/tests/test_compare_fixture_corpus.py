@@ -200,8 +200,17 @@ class FixtureGateTests(unittest.TestCase):
         ]
         gate = evaluate_gate(rows, net_tolerance_permille=15)
         self.assertEqual(gate["net_loss"], 1)
-        self.assertEqual(gate["net_tolerance"], 2)
+        self.assertEqual(gate["net_tolerance"], 1)
         self.assertTrue(gate["passed"])
+
+    def test_net_loss_uses_exact_ratio_instead_of_rounded_allowance(self):
+        rows = [
+            gate_row("active", "a.tsv", i, f"a{i}", True, i != 33)
+            for i in range(34)
+        ]
+        gate = evaluate_gate(rows, net_tolerance_permille=15)
+        self.assertEqual(gate["net_tolerance"], 0)
+        self.assertFalse(gate["passed"])
 
     def test_net_loss_beyond_tolerance_fails(self):
         rows = [
@@ -235,10 +244,14 @@ class FixtureGateTests(unittest.TestCase):
             gate_row("active", "a.tsv", i, f"a{i}", True, i < 79)
             for i in range(100)
         ]
-        gate = evaluate_gate(rows, floor_ratio_permille=800)
+        gate = evaluate_gate(
+            rows,
+            profile="rearchitecture",
+            floor_ratio_permille=800,
+        )
         self.assertEqual(gate["floor"], 80)
         self.assertFalse(gate["passed"])
-        self.assertTrue(any("below absolute floor" in r for r in gate["reasons"]))
+        self.assertTrue(any("below proportional floor" in r for r in gate["reasons"]))
 
     def test_absolute_floor_is_relative_to_baseline(self):
         rows = [
@@ -247,6 +260,7 @@ class FixtureGateTests(unittest.TestCase):
         ]
         gate = evaluate_gate(
             rows,
+            profile="rearchitecture",
             net_tolerance_permille=1000,
             floor_ratio_permille=500,
         )
@@ -274,6 +288,31 @@ class FixtureGateTests(unittest.TestCase):
         self.assertEqual(len(gate["hard_regressed"]), 0)
         self.assertTrue(gate["passed"])
 
+    def test_hard_layer_must_pass_even_when_baseline_also_fails(self):
+        rows = [
+            gate_row(
+                "active", "engine_regressions.tsv", 1, "hard1", False, False
+            ),
+        ]
+        gate = evaluate_gate(
+            rows,
+            hard_fixtures=["engine_regressions.tsv"],
+        )
+        self.assertFalse(gate["passed"])
+        self.assertEqual(len(gate["hard_failed"]), 1)
+
+    def test_missing_hard_fixture_is_a_configuration_failure(self):
+        rows = [gate_row("active", "a.tsv", 1, "a1", True, True)]
+        gate = evaluate_gate(
+            rows,
+            hard_fixtures=["engine_regressions.tsv"],
+        )
+        self.assertFalse(gate["passed"])
+        self.assertEqual(
+            gate["missing_hard_fixtures"],
+            ["engine_regressions.tsv"],
+        )
+
     def test_zero_baseline_is_not_garbage(self):
         rows = [
             gate_row("active", "a.tsv", 1, "a1", False, True),
@@ -286,12 +325,34 @@ class FixtureGateTests(unittest.TestCase):
         self.assertTrue(gate["passed"])
 
     def test_errors_count_as_failures_and_are_reported(self):
-        row = gate_row("active", "a.tsv", 1, "a1", True, False)
+        row = gate_row("disabled", "a.tsv", 1, "a1", False, False)
         row["candidate"]["error"] = "engine crashed"
         row["candidate"]["bestmove"] = None
         gate = evaluate_gate([row])
         self.assertEqual(gate["candidate_errors"], 1)
+        self.assertFalse(gate["passed"])
+        self.assertTrue(any("invalidate" in reason for reason in gate["reasons"]))
         self.assertIn("engine errors", format_gate_report(gate))
+
+    def test_gate_profiles_do_not_combine_unrelated_thresholds(self):
+        rows = [
+            gate_row("active", "a.tsv", i, f"a{i}", True, i < 79)
+            for i in range(100)
+        ]
+        strict = evaluate_gate(
+            rows,
+            profile="strict",
+            net_tolerance_permille=1000,
+            floor_ratio_permille=800,
+        )
+        rearchitecture = evaluate_gate(
+            rows,
+            profile="rearchitecture",
+            net_tolerance_permille=0,
+            floor_ratio_permille=800,
+        )
+        self.assertTrue(strict["passed"])
+        self.assertFalse(rearchitecture["passed"])
 
     def test_report_lists_regressed_and_fixed(self):
         rows = [

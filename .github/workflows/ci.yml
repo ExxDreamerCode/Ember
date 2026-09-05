@@ -152,9 +152,9 @@ jobs:
             --timeout 300 \
             --hash-mb 256 \
             --gate \
+            --gate-profile strict \
             --gate-hard-fixtures engine_regressions.tsv \
             --gate-net-tolerance-permille 10 \
-            --gate-floor-ratio-permille 800 \
             --output-json results/fixture-gate/corpus.json \
             --output-tsv results/fixture-gate/corpus.tsv
 
