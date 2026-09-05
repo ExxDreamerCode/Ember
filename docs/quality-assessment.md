@@ -10,24 +10,26 @@ CI enforces the two-binary fixture gate in the `lichess-puzzle-corpus` job. It b
 the baseline revision (PR base or previous push) and the candidate, then runs
 `tools/compare_fixture_corpus.py --gate` over every active and disabled TSV row.
 
-The gate only blocks on agreed invariants, not on every fixture flip:
+The gate only blocks on active, agreed invariants. Disabled rows are still run and reported,
+but cannot affect the verdict:
 
-- **Hard layer**: no active `engine_regressions.tsv` case may regress pass->fail.
-  These are book main lines, repetition, fifty-move, castling, and tablebase
-  invariants that encode a bug fix, not search taste.
-- **Net loss**: the candidate must not lose more than `1%` of the baseline's
+- **Hard layer**: every active `engine_regressions.tsv` case must pass in the candidate,
+  even when the baseline also fails. These are book main lines, repetition, fifty-move,
+  castling, and tablebase invariants that encode a bug fix, not search taste.
+- **Execution validity**: an engine error, rejected setup history, truncated fixed-depth
+  search, searched depth-zero book case, or nonzero exit invalidates the comparison.
+- **Strict profile**: the candidate must not lose more than `1%` of the baseline's
   active-case solves (a change that fixes five and breaks three is automatically
   acceptable).
-- **Absolute floor**: as a safety net for large intentional rearchitectures
-  (new NNUE, search restructuring), the candidate must still solve at least
-  `80%` of baseline solves. A coordinated crosscut is expected to flip many
-  preference cases; the floor keeps that from silently collapsing the culture
-  while allowing a genuine improvement that reorders scores.
+- **Rearchitecture profile**: for a predeclared large intentional rearchitecture
+  (new NNUE or search restructuring), select this profile instead. It requires the
+  candidate to solve at least `80%` of the baseline's active solves. It replaces,
+  rather than combines with, the strict net-loss rule.
 
 The report (`results/fixture-gate/corpus.json`) lists every pass->fail and
 fail->pass flip with fixture, line, expected, baseline move, and candidate move.
-A merge that changes move choice should either fix or consciously update the
-affected case; see `AGENTS.md`, "Do not comment out a failing active row".
+A merge that changes move choice should either fix or consciously update an active
+case. Unverified, disputed, or unresolved cases belong in the report-only disabled tier.
 
 To run the gate locally against the previous release:
 
@@ -41,9 +43,9 @@ python3 tools/compare_fixture_corpus.py \
   --workers 4 \
   --hash-mb 256 \
   --gate \
+  --gate-profile strict \
   --gate-hard-fixtures engine_regressions.tsv \
   --gate-net-tolerance-permille 10 \
-  --gate-floor-ratio-permille 800 \
   --output-json results/fixture-gate/corpus.json \
   --output-tsv results/fixture-gate/corpus.tsv
 ```
@@ -167,8 +169,9 @@ mining pass. It first lets Ember play against stronger Stockfish from randomized
 starts. When Stockfish gets a large advantage immediately after an Ember move, the tool
 starts a second game from that position with colors swapped: Ember receives the advantaged
 side and Stockfish defends with more time. If Ember loses the advantage, the run records the
-first large evaluation drop, writes PGNs and JSON traces, classifies the case, and emits an
-active TSV row in `tests/fixtures/advantage_preservation.tsv`.
+first large evaluation drop, writes PGNs and JSON traces, classifies the case, and emits a
+disabled TSV file inside that run's result directory. Invalid candidate rows are preserved
+separately in `rejected-cases.json` instead of aborting the completed mining run.
 
 Example:
 
@@ -181,11 +184,15 @@ python3 tools/hunt_lost_advantage.py \
   --output-dir results/lost-advantage
 ```
 
-The generated TSV rows are active. Treat them as a triage queue, not as a green test suite
-to satisfy immediately. First inspect the bucket summary, pick the largest
+The generated TSV rows are deliberately disabled. Treat them as a triage queue, not as a
+green test suite to satisfy immediately. First inspect the bucket summary, pick the largest
 or most clearly causal class, and verify a representative sample with deeper analysis. Only
-refine a row's `expected_move` in the same commit that fixes the underlying class or
-establishes a narrow invariant that Ember should already satisfy.
+uncomment a row in the same commit that fixes the underlying class or establishes a narrow
+invariant that Ember should already satisfy. The generator rejects cases without a distinct
+Stockfish move and positive evaluation-loss evidence instead of publishing contradictions.
+After review, merge useful rows into
+`tests/fixtures/advantage_preservation.tsv`. An explicit `--fixture-output` never replaces an
+existing file unless `--overwrite-fixture` is also passed.
 
 The run is diagnostic rather than statistical. Its value is the preserved artifact set:
 source PGNs, replay PGNs, raw UCI logs, per-move JSON, the generated fixture rows, the seed,
@@ -202,7 +209,7 @@ smaller question: did Ember's own fixed-depth search visit the same line, and if
 where did Ember evaluate or prune it differently?
 
 `tools/compare_mistake_trace.py` automates this first pass for TSV-backed positions. It
-parses fixture rows, reconstructs the full move history, labels the root
+parses active or disabled fixture rows, reconstructs the full move history, labels the root
 with Stockfish, runs Ember with `EMBER_TRACE_SEARCH_DAG` restricted to the suspicious root
 move and the witness root move, and writes both JSON and Markdown summaries. For repetition
 conversion triage, combine:
@@ -228,7 +235,7 @@ draw returns. If Ember and the reference move have equal root scores, treat that
 tie-breaking/order hypothesis, not as proof that any non-repeating move is safe.
 
 Use the trace result to propose the narrowest policy, then run the normal quality gates. A
-policy that fixes solve-rate fixture rows but loses a paired head-to-head gate is rejected;
-keep the trace artifact and revisit the rows when a narrower cause is found. The
+policy that fixes disabled fixture rows but loses a paired head-to-head gate is rejected;
+keep the trace artifact and leave the rows disabled until a narrower cause is found. The
 technique is evidence for where to look next, not a substitute for Elo, NPS, active fixture,
 and clock-safety checks.
