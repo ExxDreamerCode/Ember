@@ -80,6 +80,12 @@ pub(super) fn lmr_reduction_with_history(
     (base - history / LMR_HISTORY_DIVISOR).clamp(0, max_reduction)
 }
 
+#[cfg(any(feature = "search-debug", test))]
+#[inline(always)]
+pub(super) fn lmr_reduction_is_saturated(unclamped_reduction: i32, max_reduction: i32) -> bool {
+    unclamped_reduction < 0 || unclamped_reduction > max_reduction
+}
+
 #[inline(always)]
 pub(super) fn lmr_needs_full_depth_research(reduction: i32, score: i32, alpha: i32) -> bool {
     reduction > 0 && score > alpha
@@ -1080,6 +1086,23 @@ macro_rules! negamax_mode_body {
                 );
                 #[cfg(feature = "search-debug")]
                 {
+                    let base_reduction = lmr_reduction(move_index, actual_depth, is_pv);
+                    if r == base_reduction {
+                        $this.debug.stats.lmr_unchanged_reductions += 1;
+                    } else if r > base_reduction {
+                        $this.debug.stats.lmr_increased_reductions += 1;
+                    } else {
+                        $this.debug.stats.lmr_decreased_reductions += 1;
+                    }
+                    if r == 0 {
+                        $this.debug.stats.lmr_zero_reductions += 1;
+                    }
+                    let history = $this.history[lmr_hfk][lmr_htk]
+                        .clamp(-LMR_HISTORY_CLAMP, LMR_HISTORY_CLAMP);
+                    let unclamped_reduction = base_reduction - history / LMR_HISTORY_DIVISOR;
+                    if lmr_reduction_is_saturated(unclamped_reduction, (actual_depth - 1).max(0)) {
+                        $this.debug.stats.lmr_saturated_reductions += 1;
+                    }
                     $this.debug.stats.lmr_searches += 1;
                     $this.debug.stats.lmr_reduction_sum += r as u64;
                     $this.debug.stats.lmr_max_reduction =

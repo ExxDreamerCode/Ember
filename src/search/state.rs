@@ -653,7 +653,7 @@ impl Searcher {
         }
         let s = self.debug.stats;
         eprintln!(
-            "info string search-debug root depth={depth} order={order} move={mv} alpha={alpha} beta={beta} score={score} nodes={nodes} seldepth={} tt_hits={} tt_max_depth={} tt_cutoffs={} rfp={} futility={} null={}/{} iid={} lmp={} history={} see={} lmr={}/{} lmr_sum={} lmr_max={} qnodes={} qdelta={} qsee={} qcheck_cap={} probcut_eligible={} probcut_safety={} probcut_tt={} probcut_candidates={} probcut_see={} probcut_qpass={} probcut_verify={} probcut_nodes={} probcut_cutoffs={} probcut_stops={} singular_candidates={} singular_safety={} singular_verify={} singular_nodes={} singular_extensions={} singular_extension_plies={} singular_negative={} singular_multicut={} singular_alternatives={} singular_stops={}",
+            "info string search-debug root depth={depth} order={order} move={mv} alpha={alpha} beta={beta} score={score} nodes={nodes} seldepth={} tt_hits={} tt_max_depth={} tt_cutoffs={} rfp={} futility={} null={}/{} iid={} lmp={} history={} see={} lmr={}/{} lmr_sum={} lmr_max={} lmr_adjust={}/{}/{} lmr_zero={} lmr_saturated={} qnodes={} qdelta={} qsee={} qcheck_cap={} probcut_eligible={} probcut_safety={} probcut_tt={} probcut_candidates={} probcut_see={} probcut_qpass={} probcut_verify={} probcut_nodes={} probcut_cutoffs={} probcut_stops={} singular_candidates={} singular_safety={} singular_verify={} singular_nodes={} singular_extensions={} singular_extension_plies={} singular_negative={} singular_multicut={} singular_alternatives={} singular_stops={}",
             s.max_ply,
             s.tt_hits,
             s.tt_max_depth,
@@ -670,6 +670,11 @@ impl Searcher {
             s.lmr_searches,
             s.lmr_reduction_sum,
             s.lmr_max_reduction,
+            s.lmr_unchanged_reductions,
+            s.lmr_increased_reductions,
+            s.lmr_decreased_reductions,
+            s.lmr_zero_reductions,
+            s.lmr_saturated_reductions,
             s.qnodes,
             s.q_delta_cutoffs,
             s.q_see_skips,

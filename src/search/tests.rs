@@ -315,6 +315,16 @@ fn lmr_history_adjustment_stays_within_depth_bounds() {
 }
 
 #[test]
+fn lmr_saturation_covers_both_clamp_boundaries() {
+    // Private contract: debug saturation counts only adjustments changed by
+    // either clamp. Values already on a boundary are not saturated.
+    assert!(lmr_reduction_is_saturated(-1, 4));
+    assert!(lmr_reduction_is_saturated(5, 4));
+    assert!(!lmr_reduction_is_saturated(0, 4));
+    assert!(!lmr_reduction_is_saturated(4, 4));
+}
+
+#[test]
 fn lmr_researches_only_after_a_reduced_search_improves_alpha() {
     // Private contract: a zero reduction has already searched the move at
     // full depth, so repeating the same null-window search is redundant. A PV
