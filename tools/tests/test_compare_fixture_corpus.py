@@ -9,6 +9,7 @@ sys.path.insert(0, str(TOOLS_DIR))
 
 from compare_fixture_corpus import (  # noqa: E402
     DEFAULT_HASH_MB,
+    FixtureCheck,
     direction,
     disabled_status,
     evaluate_gate,
@@ -16,22 +17,82 @@ from compare_fixture_corpus import (  # noqa: E402
     move_matches,
     parse_uci_option,
     parse_fixture,
+    run_check,
+    search_observations,
     summarize,
     uci_setup_commands,
 )
 
 
 class CompareFixtureCorpusTests(unittest.TestCase):
+    def fake_engine(
+        self,
+        directory,
+        info_line,
+        exit_code=0,
+        diagnostic=None,
+        setup_info=None,
+        bestmove="a1a2",
+    ):
+        script = Path(directory) / "fake-engine"
+        info_code = (
+            f"print({info_line!r}, flush=True)" if info_line is not None else "pass"
+        )
+        diagnostic_code = (
+            f"print({diagnostic!r}, flush=True)" if diagnostic is not None else "pass"
+        )
+        setup_info_code = (
+            f"print({setup_info!r}, flush=True)" if setup_info is not None else "pass"
+        )
+        script.write_text(
+            f"""#!/usr/bin/env python3
+import sys
+
+for command in sys.stdin:
+    command = command.strip()
+    if command == "uci":
+        {setup_info_code}
+        print("uciok", flush=True)
+    elif command == "isready":
+        print("readyok", flush=True)
+    elif command.startswith("position "):
+        {diagnostic_code}
+    elif command.startswith("go "):
+        {info_code}
+        print("bestmove {bestmove}", flush=True)
+    elif command == "quit":
+        raise SystemExit({exit_code})
+""",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        return script
+
+    def fixture_check(self, depth):
+        return FixtureCheck(
+            fixture="cases.tsv",
+            line_number=2,
+            activation="active",
+            fixture_format="standard",
+            variant="standard",
+            case_id="case",
+            depth=depth,
+            fen="8/8/8/8/8/8/8/K6k w - - 0 1",
+            setup_move="-",
+            expected_move="a1a2",
+        )
+
     def test_parses_active_and_both_disabled_formats(self):
+        fen = "8/8/8/8/8/8/8/K6k w - - 0 1"
         contents = """\
 # source comment
 id\tdepth\tfen_before_blunder\tsetup_move\texpected_move\tthemes\trating\tpopularity\tplays
-active\t4\tactive fen\t-\ta1a2\ttheme\t0\t0\t0
-book\t0\tbook fen\t-\ta2a3\tbook\t0\t0\t0
-# disabled\t7\tdisabled fen\t-\tb1b2|b1c3\ttheme\t0\t0\t0
+active\t4\t{fen}\t-\ta1a2\ttheme\t0\t0\t0
+book\t0\t{fen}\t-\ta2a3\tbook\t0\t0\t0
+# disabled\t7\t{fen}\t-\tb1b2|b1c3\ttheme\t0\t0\t0
 # failed_id\tfen_before_blunder\tsetup_move\texpected_move\tgot_depth2\tgot_depth3\tgot_depth4\tthemes\trating\tpopularity\tplays
-# mined\tmined fen\tc1c2\td1d2\te1e2\te1e3\te1e4\ttheme\t0\t0\t0
-"""
+# mined\t{fen}\tc1c2\td1d2\te1e2\te1e3\te1e4\ttheme\t0\t0\t0
+""".format(fen=fen)
         with tempfile.TemporaryDirectory() as directory:
             fixture = Path(directory) / "cases.tsv"
             fixture.write_text(contents, encoding="utf-8")
@@ -56,6 +117,17 @@ book\t0\tbook fen\t-\ta2a3\tbook\t0\t0\t0
         self.assertFalse(move_matches("a1a4", "a1a2|a1a3"))
         self.assertTrue(move_matches("a1a4", "!a1a2|a1a3"))
         self.assertFalse(move_matches("a1a2", "!a1a2|a1a3"))
+
+    def test_rejects_malformed_fen_rank_widths(self):
+        contents = """\
+id\tdepth\tfen_before_blunder\tsetup_move\texpected_move\tthemes\trating\tpopularity\tplays
+bad-rank\t4\t8/8/8/8/8/7/8/K6k w - - 0 1\t-\ta1a2\ttheme\t0\t0\t0
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Path(directory) / "cases.tsv"
+            fixture.write_text(contents, encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "expands to 7 squares"):
+                parse_fixture(fixture)
 
     def test_directions(self):
         self.assertEqual(direction(True, True), "both-pass")
@@ -111,6 +183,126 @@ book\t0\tbook fen\t-\ta2a3\tbook\t0\t0\t0
                 options=[("NNUE", "/tmp/net.nnue")],
             ),
         )
+
+    def test_extracts_depth_and_nodes_from_search_output(self):
+        self.assertEqual(
+            search_observations(
+                [
+                    "info depth 1 score cp 3 nodes 5 pv a1a2",
+                    "info depth 4 score cp 7 nodes 42 pv a1a2",
+                ]
+            ),
+            (4, 42),
+        )
+        self.assertEqual(
+            search_observations(
+                [
+                    "info depth 4 score cp 7 nodes 40 pv a1a2",
+                    "info depth 4 score cp 8 nodes 42 pv a1a2",
+                ]
+            ),
+            (4, 42),
+        )
+        self.assertEqual(search_observations(["info nodes 7"]), (None, 7))
+
+    def test_run_check_ignores_setup_telemetry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            engine = self.fake_engine(
+                directory,
+                None,
+                setup_info="info depth 40 score cp 0 nodes 999 pv a1a2",
+            )
+            result = run_check(
+                engine,
+                self.fixture_check(4),
+                5.0,
+                DEFAULT_HASH_MB,
+            )
+        self.assertFalse(result["passed"])
+        self.assertIn("did not report search depth and nodes", result["error"])
+
+    def test_run_check_rejects_search_below_requested_depth(self):
+        with tempfile.TemporaryDirectory() as directory:
+            engine = self.fake_engine(
+                directory,
+                "info depth 3 score cp 0 nodes 10 pv a1a2",
+            )
+            result = run_check(engine, self.fixture_check(4), 5.0, DEFAULT_HASH_MB)
+        self.assertFalse(result["passed"])
+        self.assertIn("below requested depth", result["error"])
+
+    def test_run_check_requires_zero_nodes_for_book_fixture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            engine = self.fake_engine(
+                directory,
+                "info depth 1 score cp 0 nodes 1 pv a1a2",
+            )
+            result = run_check(engine, self.fixture_check(0), 5.0, DEFAULT_HASH_MB)
+        self.assertFalse(result["passed"])
+        self.assertIn("book check searched 1 node", result["error"])
+
+    def test_unreported_book_stats_require_explicit_baseline_compatibility(self):
+        with tempfile.TemporaryDirectory() as directory:
+            engine = self.fake_engine(directory, None)
+            strict = run_check(engine, self.fixture_check(0), 5.0, DEFAULT_HASH_MB)
+            compatible = run_check(
+                engine,
+                self.fixture_check(0),
+                5.0,
+                DEFAULT_HASH_MB,
+                allow_unreported_book_stats=True,
+            )
+        self.assertFalse(strict["passed"])
+        self.assertIn("did not report search depth and nodes", strict["error"])
+        self.assertTrue(compatible["passed"])
+        self.assertIsNone(compatible["reported_depth"])
+        self.assertIsNone(compatible["reported_nodes"])
+
+    def test_run_check_rejects_position_setup_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            engine = self.fake_engine(
+                directory,
+                "info depth 4 score cp 0 nodes 10 pv a1a2",
+                diagnostic="info string Stopping position move list at illegal move: a1a2",
+            )
+            result = run_check(engine, self.fixture_check(4), 5.0, DEFAULT_HASH_MB)
+        self.assertFalse(result["passed"])
+        self.assertIn("position setup was rejected", result["error"])
+
+    def test_forbidden_fixture_rejects_null_or_illegal_bestmove(self):
+        check = self.fixture_check(4)
+        check = FixtureCheck(
+            **{
+                **check.__dict__,
+                "expected_move": "!a1b1",
+            }
+        )
+        for bestmove in ("0000", "a1a8", "invalid"):
+            with self.subTest(bestmove=bestmove), tempfile.TemporaryDirectory() as directory:
+                engine = self.fake_engine(
+                    directory,
+                    "info depth 4 score cp 0 nodes 10 pv a1a2",
+                    bestmove=bestmove,
+                )
+                result = run_check(
+                    engine,
+                    check,
+                    5.0,
+                    DEFAULT_HASH_MB,
+                )
+            self.assertFalse(result["passed"])
+            self.assertIn("bestmove", result["error"])
+
+    def test_run_check_rejects_nonzero_engine_exit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            engine = self.fake_engine(
+                directory,
+                "info depth 4 score cp 0 nodes 10 pv a1a2",
+                exit_code=7,
+            )
+            result = run_check(engine, self.fixture_check(4), 5.0, DEFAULT_HASH_MB)
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["error"], "engine exited with status 7")
 
     def test_position_summary_compares_pass_counts_across_depths(self):
         def row(line, baseline, candidate):

@@ -5,12 +5,15 @@ import concurrent.futures
 import hashlib
 import json
 import queue
+import re
 import subprocess
 import sys
 import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+import chess
 
 
 STANDARD_HEADER = [
@@ -42,6 +45,11 @@ DEFAULT_HASH_MB = 256
 # Exit code used when a --gate comparison fails its acceptance rules.
 GATE_EXIT_FAIL = 2
 
+POSITION_ERROR_PREFIXES = (
+    "info string Ignoring invalid FEN:",
+    "info string Stopping position move list at illegal move:",
+)
+
 
 @dataclass(frozen=True)
 class FixtureCheck:
@@ -68,6 +76,30 @@ def _parse_variant(path, line_number, raw):
     raise ValueError(f"{path}:{line_number}: invalid fixture variant {raw!r}")
 
 
+def _validate_fen_board(path, line_number, fen):
+    fields = fen.split()
+    if not fields:
+        raise ValueError(f"{path}:{line_number}: empty FEN")
+    ranks = fields[0].split("/")
+    if len(ranks) != 8:
+        raise ValueError(f"{path}:{line_number}: FEN board must contain 8 ranks")
+    for rank_number, rank in enumerate(ranks, 1):
+        width = 0
+        for symbol in rank:
+            if symbol in "12345678":
+                width += int(symbol)
+            elif symbol in "pnbrqkPNBRQK":
+                width += 1
+            else:
+                raise ValueError(
+                    f"{path}:{line_number}: invalid FEN board symbol {symbol!r}"
+                )
+        if width != 8:
+            raise ValueError(
+                f"{path}:{line_number}: FEN rank {rank_number} expands to {width} squares"
+            )
+
+
 def _standard_check(path, line_number, activation, columns, variant):
     try:
         depth = int(columns[1])
@@ -75,6 +107,7 @@ def _standard_check(path, line_number, activation, columns, variant):
         raise ValueError(f"{path}:{line_number}: invalid depth {columns[1]!r}") from error
     if not 0 <= depth <= 64:
         raise ValueError(f"{path}:{line_number}: depth must be in 0..=64")
+    _validate_fen_board(path, line_number, columns[2])
     return FixtureCheck(
         fixture=path.name,
         line_number=line_number,
@@ -110,6 +143,7 @@ def parse_fixture(path):
                     _standard_check(path, line_number, "disabled", columns, variant)
                 )
             elif len(columns) == len(MINED_HEADER):
+                _validate_fen_board(path, line_number, columns[1])
                 for depth in (2, 3, 4):
                     checks.append(
                         FixtureCheck(
@@ -159,6 +193,19 @@ def move_matches(actual, expected):
     return actual in expected.split("|")
 
 
+def validate_bestmove(check, actual):
+    if actual in {"0000", "(none)"}:
+        raise RuntimeError(f"engine returned null bestmove {actual}")
+    try:
+        board = chess.Board(check.fen, chess960=check.variant == "chess960")
+        if check.setup_move != "-":
+            for move in check.setup_move.split():
+                board.push_uci(move)
+        board.parse_uci(actual)
+    except ValueError as error:
+        raise RuntimeError(f"engine returned illegal bestmove {actual!r}") from error
+
+
 def parse_uci_option(value):
     if "=" not in value:
         raise argparse.ArgumentTypeError("expected NAME=VALUE")
@@ -200,7 +247,69 @@ def uci_setup_commands(hash_mb, use_embedded_book=False, chess960=False, options
     return tuple(commands)
 
 
-def run_check(binary, check, timeout, hash_mb, options=()):
+def search_observations(output):
+    depths = []
+    nodes_at_depth = {}
+    reported_nodes = None
+    for line in output:
+        if not line.startswith("info "):
+            continue
+        depth_match = re.search(r"(?:^|\s)depth\s+(\d+)(?:\s|$)", line)
+        nodes_match = re.search(r"(?:^|\s)nodes\s+(\d+)(?:\s|$)", line)
+        if depth_match is not None:
+            depth = int(depth_match.group(1))
+            depths.append(depth)
+        if nodes_match is not None:
+            reported_nodes = int(nodes_match.group(1))
+            if depth_match is not None:
+                nodes_at_depth[depth] = reported_nodes
+    reported_depth = max(depths, default=None)
+    if reported_depth in nodes_at_depth:
+        reported_nodes = nodes_at_depth[reported_depth]
+    return reported_depth, reported_nodes
+
+
+def validate_uci_contract(
+    check,
+    position_output,
+    reported_depth,
+    reported_nodes,
+    allow_unreported_book_stats=False,
+):
+    diagnostics = [
+        line
+        for line in position_output
+        if line.startswith(POSITION_ERROR_PREFIXES)
+    ]
+    if diagnostics:
+        raise RuntimeError(f"position setup was rejected: {diagnostics[0]}")
+    if (
+        check.depth == 0
+        and reported_depth is None
+        and reported_nodes is None
+        and allow_unreported_book_stats
+    ):
+        return
+    if reported_depth is None or reported_nodes is None:
+        raise RuntimeError("engine did not report search depth and nodes")
+    if check.depth == 0 and reported_nodes != 0:
+        raise RuntimeError(
+            f"depth-zero book check searched {reported_nodes} node(s)"
+        )
+    if check.depth > 0 and reported_depth < check.depth:
+        raise RuntimeError(
+            f"engine stopped at depth {reported_depth}, below requested depth {check.depth}"
+        )
+
+
+def run_check(
+    binary,
+    check,
+    timeout,
+    hash_mb,
+    options=(),
+    allow_unreported_book_stats=False,
+):
     started = time.monotonic()
     deadline = started + timeout
     process = subprocess.Popen(
@@ -245,16 +354,34 @@ def run_check(binary, check, timeout, hash_mb, options=()):
         position = f"position fen {check.fen}"
         if check.setup_move != "-":
             position += f" moves {check.setup_move}"
+        position_output_start = len(output)
         send(position)
         send(f"go depth {check.depth}")
         bestmove_line = _read_until(lines, "bestmove ", deadline, output)
-        bestmove = bestmove_line.split()[1]
+        fields = bestmove_line.split()
+        if len(fields) < 2:
+            raise RuntimeError("engine returned malformed bestmove")
+        bestmove = fields[1]
+        position_output = output[position_output_start:]
+        reported_depth, reported_nodes = search_observations(position_output)
+        validate_uci_contract(
+            check,
+            position_output,
+            reported_depth,
+            reported_nodes,
+            allow_unreported_book_stats,
+        )
+        validate_bestmove(check, bestmove)
         send("quit")
-        process.wait(timeout=max(1.0, deadline - time.monotonic()))
+        return_code = process.wait(timeout=max(1.0, deadline - time.monotonic()))
         reader.join(timeout=1.0)
+        if return_code != 0:
+            raise RuntimeError(f"engine exited with status {return_code}")
         return {
             "bestmove": bestmove,
             "passed": move_matches(bestmove, check.expected_move),
+            "reported_depth": reported_depth,
+            "reported_nodes": reported_nodes,
             "elapsed_seconds": time.monotonic() - started,
             "error": None,
         }
@@ -273,15 +400,36 @@ def run_check(binary, check, timeout, hash_mb, options=()):
             "error": str(error),
             "output_tail": output[-40:],
         }
+    finally:
+        for stream in (process.stdin, process.stdout):
+            if stream is not None:
+                stream.close()
 
 
-def run_binary(label, binary, checks, workers, timeout, hash_mb, options=()):
+def run_binary(
+    label,
+    binary,
+    checks,
+    workers,
+    timeout,
+    hash_mb,
+    options=(),
+    allow_unreported_book_stats=False,
+):
     results = {}
     completed = 0
     started = time.monotonic()
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
-            executor.submit(run_check, binary, check, timeout, hash_mb, options): check
+            executor.submit(
+                run_check,
+                binary,
+                check,
+                timeout,
+                hash_mb,
+                options,
+                allow_unreported_book_stats,
+            ): check
             for check in checks
         }
         for future in concurrent.futures.as_completed(futures):
@@ -594,6 +742,14 @@ def main():
         metavar="NAME=VALUE",
     )
     parser.add_argument(
+        "--baseline-allow-unreported-book-stats",
+        action="store_true",
+        help=(
+            "allow a historical baseline to omit depth/node telemetry for "
+            "depth-zero book results; observed nonzero nodes still fail"
+        ),
+    )
+    parser.add_argument(
         "--candidate-option",
         action="append",
         type=parse_uci_option,
@@ -678,6 +834,7 @@ def main():
         args.timeout,
         args.hash_mb,
         args.baseline_option,
+        args.baseline_allow_unreported_book_stats,
     )
     candidate, candidate_seconds = run_binary(
         args.candidate_label,
@@ -710,6 +867,9 @@ def main():
             "baseline_binary": str(Path(args.baseline).resolve()),
             "baseline_sha256": sha256(args.baseline),
             "baseline_options": args.baseline_option,
+            "baseline_allow_unreported_book_stats": (
+                args.baseline_allow_unreported_book_stats
+            ),
             "candidate_label": args.candidate_label,
             "candidate_binary": str(Path(args.candidate).resolve()),
             "candidate_sha256": sha256(args.candidate),

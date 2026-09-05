@@ -322,6 +322,7 @@
             coreutils
             rustToolchain
             (python3.withPackages (ps: [
+              ps.chess
               ps.pyyaml
               ps.requests
             ]))
