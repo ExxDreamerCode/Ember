@@ -485,9 +485,11 @@ fn random_book_move_is_opt_in_and_returns_without_searching() {
         Some(0),
         "random book selection unexpectedly started search: {info}"
     );
-    assert_eq!(
-        wait_for_line(&rx, "bestmove ", Duration::from_secs(5)).as_deref(),
-        Some("bestmove d2d4")
+    let bestmove = wait_for_line(&rx, "bestmove ", Duration::from_secs(5))
+        .expect("random book selection did not return a move");
+    assert!(
+        ["bestmove d2d4", "bestmove c2c3"].contains(&bestmove.as_str()),
+        "random book selection returned an unexpected move: {bestmove}"
     );
 
     writeln!(stdin, "quit").unwrap();

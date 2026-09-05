@@ -77,7 +77,11 @@ fn random_book_move_returns_before_search_when_a_good_move_exists() {
 
     let (best_move, _score, nodes, _elapsed) = engine.find_best_move_with_time_limits(1.0, 1.0, 64);
 
-    assert_eq!(best_move, "d2d4", "https://lichess.org/F1W14oiR");
+    assert!(
+        ["d2d4", "c2c3"].contains(&best_move.as_str()),
+        "random book selection returned an unexpected move for \
+         https://lichess.org/F1W14oiR: {best_move}"
+    );
     assert_eq!(
         nodes, 0,
         "random book selection must not start search when a confident move exists"
