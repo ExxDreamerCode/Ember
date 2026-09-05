@@ -55,6 +55,7 @@ __pycache__/
 /nn-*.nnue
 /net-*.nnue
 .scratch/
+/baseline-worktree/
 NOTES_EXTERNAL_NETS.md
 /*.out
 OtherNNUE.toml

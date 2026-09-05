@@ -153,8 +153,22 @@ resource cleanup, parser behavior, and other subsystem invariants. Python toolin
 deployment tooling should have their regressions in their existing Python test suites.
 
 The fast fixture test validates the TSV schema, numeric fields, and cross-file ID uniqueness.
-The ignored release fixture test runs every active move case and is exercised by its
-dedicated CI job.
+The dedicated CI job `lichess-puzzle-corpus` runs a two-binary fixture **gate**: it builds
+the baseline (PR base or the previous push commit) and the candidate, then runs
+`tools/compare_fixture_corpus.py --gate` over every active and disabled row. The gate
+summarizes flips and blocks only on agreed invariants, not on every fixture flip. See
+`docs/release-tests.md` and `tools/compare_fixture_corpus.py` for the exact rules.
+
+Do not comment out a failing active row just to keep CI green. The two-binary gate already
+reports pass->fail and fail->pass flips against the baseline. Prefer to:
+
+1. Verify the flip honestly: if the candidate move is better (stronger reference engine,
+   or a deliberate improvement), update `expected_move` in the same change that ships the
+   engine behavior and record the evidence in the fixture comment.
+2. If the flip is a genuine near-tie, prefer relaxing `expected_move` to alternatives,
+   to a forbidden-move `!...` invariant, or to a documented `DISABLED` row with a reason.
+3. If the flip looks wrong, fix the engine or investigate before merging; do not paper over
+   it with a disabled row.
 
 ## Diagnosing a bad game or move
 

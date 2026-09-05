@@ -4,6 +4,50 @@ This document collects the repository tooling used to assess Ember's playing str
 search behavior, and regression risk. Commands below assume they are run from the repository
 root.
 
+## Fixture gate
+
+CI enforces the two-binary fixture gate in the `lichess-puzzle-corpus` job. It builds
+the baseline revision (PR base or previous push) and the candidate, then runs
+`tools/compare_fixture_corpus.py --gate` over every active and disabled TSV row.
+
+The gate only blocks on agreed invariants, not on every fixture flip:
+
+- **Hard layer**: no active `engine_regressions.tsv` case may regress pass->fail.
+  These are book main lines, repetition, fifty-move, castling, and tablebase
+  invariants that encode a bug fix, not search taste.
+- **Net loss**: the candidate must not lose more than `1%` of the baseline's
+  active-case solves (a change that fixes five and breaks three is automatically
+  acceptable).
+- **Absolute floor**: as a safety net for large intentional rearchitectures
+  (new NNUE, search restructuring), the candidate must still solve at least
+  `80%` of baseline solves. A coordinated crosscut is expected to flip many
+  preference cases; the floor keeps that from silently collapsing the culture
+  while allowing a genuine improvement that reorders scores.
+
+The report (`results/fixture-gate/corpus.json`) lists every pass->fail and
+fail->pass flip with fixture, line, expected, baseline move, and candidate move.
+A merge that changes move choice should either fix or consciously update the
+affected case; see `AGENTS.md`, "Do not comment out a failing active row".
+
+To run the gate locally against the previous release:
+
+```bash
+python3 tools/compare_fixture_corpus.py \
+  --fixtures tests/fixtures \
+  --baseline path/to/previous/ember \
+  --candidate path/to/candidate/ember \
+  --baseline-label V1.1.2 \
+  --candidate-label candidate \
+  --workers 4 \
+  --hash-mb 256 \
+  --gate \
+  --gate-hard-fixtures engine_regressions.tsv \
+  --gate-net-tolerance-permille 10 \
+  --gate-floor-ratio-permille 800 \
+  --output-json results/fixture-gate/corpus.json \
+  --output-tsv results/fixture-gate/corpus.tsv
+```
+
 ## Elo measurement
 
 The repository includes a Nix environment and scripts for automated matches through Cute
