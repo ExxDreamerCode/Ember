@@ -11,6 +11,8 @@ from compare_fixture_corpus import (  # noqa: E402
     DEFAULT_HASH_MB,
     direction,
     disabled_status,
+    evaluate_gate,
+    format_gate_report,
     move_matches,
     parse_uci_option,
     parse_fixture,
@@ -139,6 +141,174 @@ book\t0\tbook fen\t-\ta2a3\tbook\t0\t0\t0
             summary["disabled-status"],
             {"lost-while-disabled": 1, "fixed-by-candidate": 2},
         )
+
+
+def gate_row(
+    activation,
+    fixture,
+    line,
+    case_id,
+    baseline_passed,
+    candidate_passed,
+    baseline_move="-",
+    candidate_move="-",
+    expected="a1a2",
+    depth=4,
+):
+    return {
+        "check": {
+            "activation": activation,
+            "fixture": fixture,
+            "line_number": line,
+            "fixture_format": "standard",
+            "variant": "standard",
+            "case_id": case_id,
+            "depth": depth,
+            "expected_move": expected,
+        },
+        "baseline": {"passed": baseline_passed, "error": None, "bestmove": baseline_move},
+        "candidate": {"passed": candidate_passed, "error": None, "bestmove": candidate_move},
+        "direction": direction(baseline_passed, candidate_passed),
+    }
+
+
+class FixtureGateTests(unittest.TestCase):
+    def test_counts_only_active_cases(self):
+        rows = [
+            gate_row("active", "a.tsv", 1, "a1", True, True),
+            gate_row("active", "a.tsv", 2, "a2", True, False),
+            gate_row("disabled", "a.tsv", 3, "a3", True, False),
+            gate_row("disabled", "a.tsv", 4, "a4", False, True),
+        ]
+        gate = evaluate_gate(
+            rows,
+            net_tolerance_permille=1000,
+            floor_ratio_permille=0,
+        )
+        self.assertEqual(gate["active_checks"], 2)
+        self.assertEqual(gate["baseline_passes"], 2)
+        self.assertEqual(gate["candidate_passes"], 1)
+        self.assertEqual(len(gate["regressed"]), 1)
+        self.assertEqual(len(gate["fixed"]), 0)
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["reasons"], [])
+
+    def test_net_loss_within_tolerance_passes(self):
+        rows = [
+            gate_row("active", "a.tsv", i, f"a{i}", True, i != 99)
+            for i in range(100)
+        ]
+        gate = evaluate_gate(rows, net_tolerance_permille=15)
+        self.assertEqual(gate["net_loss"], 1)
+        self.assertEqual(gate["net_tolerance"], 2)
+        self.assertTrue(gate["passed"])
+
+    def test_net_loss_beyond_tolerance_fails(self):
+        rows = [
+            gate_row("active", "a.tsv", i, f"a{i}", True, i < 96)
+            for i in range(100)
+        ]
+        gate = evaluate_gate(rows, net_tolerance_permille=10)
+        self.assertEqual(gate["net_loss"], 4)
+        self.assertEqual(gate["net_tolerance"], 1)
+        self.assertFalse(gate["passed"])
+        self.assertTrue(any("net loss" in reason for reason in gate["reasons"]))
+
+    def test_candidate_only_fixes_never_fail_gate(self):
+        rows = [
+            gate_row("active", "a.tsv", 1, "a1", False, True),
+            gate_row("active", "a.tsv", 2, "a2", False, True),
+        ]
+        gate = evaluate_gate(
+            rows,
+            net_tolerance_permille=1000,
+            floor_ratio_permille=0,
+        )
+        self.assertEqual(gate["baseline_passes"], 0)
+        self.assertEqual(gate["candidate_passes"], 2)
+        self.assertEqual(gate["net_loss"], -2)
+        self.assertTrue(gate["passed"])
+        self.assertEqual(len(gate["fixed"]), 2)
+
+    def test_absolute_floor_blocks_collapse(self):
+        rows = [
+            gate_row("active", "a.tsv", i, f"a{i}", True, i < 79)
+            for i in range(100)
+        ]
+        gate = evaluate_gate(rows, floor_ratio_permille=800)
+        self.assertEqual(gate["floor"], 80)
+        self.assertFalse(gate["passed"])
+        self.assertTrue(any("below absolute floor" in r for r in gate["reasons"]))
+
+    def test_absolute_floor_is_relative_to_baseline(self):
+        rows = [
+            gate_row("active", "a.tsv", i, f"a{i}", True, i < 50)
+            for i in range(100)
+        ]
+        gate = evaluate_gate(
+            rows,
+            net_tolerance_permille=1000,
+            floor_ratio_permille=500,
+        )
+        self.assertEqual(gate["floor"], 50)
+        self.assertEqual(gate["candidate_passes"], 50)
+        self.assertTrue(gate["passed"])
+
+    def test_hard_layer_regression_fails_regardless_of_net(self):
+        rows = [
+            gate_row("active", "engine_regressions.tsv", 1, "hard1", True, False),
+            gate_row("active", "a.tsv", 2, "a1", True, True),
+            gate_row("active", "a.tsv", 3, "a2", True, True),
+        ]
+        gate = evaluate_gate(rows, hard_fixtures=["engine_regressions.tsv"])
+        self.assertFalse(gate["passed"])
+        self.assertEqual(len(gate["hard_regressed"]), 1)
+        self.assertTrue(any("hard-layer" in r for r in gate["reasons"]))
+
+    def test_hard_layer_fix_is_allowed(self):
+        rows = [
+            gate_row("active", "engine_regressions.tsv", 1, "hard1", False, True),
+            gate_row("active", "a.tsv", 2, "a1", True, True),
+        ]
+        gate = evaluate_gate(rows, hard_fixtures=["engine_regressions.tsv"])
+        self.assertEqual(len(gate["hard_regressed"]), 0)
+        self.assertTrue(gate["passed"])
+
+    def test_zero_baseline_is_not_garbage(self):
+        rows = [
+            gate_row("active", "a.tsv", 1, "a1", False, True),
+            gate_row("active", "a.tsv", 2, "a2", False, False),
+        ]
+        gate = evaluate_gate(rows)
+        self.assertEqual(gate["baseline_passes"], 0)
+        self.assertEqual(gate["net_tolerance"], 0)
+        self.assertEqual(gate["floor"], 0)
+        self.assertTrue(gate["passed"])
+
+    def test_errors_count_as_failures_and_are_reported(self):
+        row = gate_row("active", "a.tsv", 1, "a1", True, False)
+        row["candidate"]["error"] = "engine crashed"
+        row["candidate"]["bestmove"] = None
+        gate = evaluate_gate([row])
+        self.assertEqual(gate["candidate_errors"], 1)
+        self.assertIn("engine errors", format_gate_report(gate))
+
+    def test_report_lists_regressed_and_fixed(self):
+        rows = [
+            gate_row(
+                "active", "a.tsv", 1, "a1", True, False,
+                baseline_move="e2e4", candidate_move="g1f3", expected="e2e4",
+            ),
+            gate_row(
+                "active", "b.tsv", 2, "b1", False, True,
+                baseline_move="-", candidate_move="d2d4", expected="d2d4",
+            ),
+        ]
+        gate = evaluate_gate(rows)
+        report = format_gate_report(gate)
+        self.assertIn("a.tsv:1 a1", report)
+        self.assertIn("b.tsv:2 b1", report)
+        self.assertIn("gate verdict: PASS", report)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import hashlib
 import json
 import queue
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -37,6 +38,9 @@ MINED_HEADER = [
     "plays",
 ]
 DEFAULT_HASH_MB = 256
+
+# Exit code used when a --gate comparison fails its acceptance rules.
+GATE_EXIT_FAIL = 2
 
 
 @dataclass(frozen=True)
@@ -255,9 +259,12 @@ def run_check(binary, check, timeout, hash_mb, options=()):
             "error": None,
         }
     except Exception as error:  # Preserve every failed check in the comparison report.
-        if process.poll() is None:
-            process.kill()
-        process.wait()
+        try:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5.0)
+        except Exception:
+            pass
         reader.join(timeout=1.0)
         return {
             "bestmove": None,
@@ -425,6 +432,121 @@ def write_tsv(path, rows):
     Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def evaluate_gate(
+    rows,
+    hard_fixtures=(),
+    net_tolerance_permille=10,
+    floor_ratio_permille=800,
+):
+    active = [row for row in rows if row["check"]["activation"] == "active"]
+    baseline_passes = sum(1 for row in active if row["baseline"]["passed"])
+    candidate_passes = sum(1 for row in active if row["candidate"]["passed"])
+    baseline_errors = sum(1 for row in active if row["baseline"]["error"] is not None)
+    candidate_errors = sum(1 for row in active if row["candidate"]["error"] is not None)
+    baseline_only = [row for row in active if row["direction"] == "baseline-only"]
+    candidate_only = [row for row in active if row["direction"] == "candidate-only"]
+
+    hard = {name for name in hard_fixtures}
+    hard_regressed = [
+        row
+        for row in active
+        if row["check"]["fixture"] in hard and row["direction"] == "baseline-only"
+    ]
+
+    net_loss = baseline_passes - candidate_passes
+    net_tolerance = round(baseline_passes * net_tolerance_permille / 1000)
+    floor = round(baseline_passes * floor_ratio_permille / 1000)
+
+    reasons = []
+    if hard_regressed:
+        reasons.append(
+            f"{len(hard_regressed)} hard-layer regression(s) in "
+            f"{', '.join(sorted(hard))}"
+        )
+    if net_loss > net_tolerance:
+        reasons.append(
+            f"net loss {net_loss} exceeds tolerance {net_tolerance} "
+            f"({net_tolerance_permille} permille of {baseline_passes} baseline passes)"
+        )
+    if candidate_passes < floor:
+        reasons.append(
+            f"candidate {candidate_passes} below absolute floor {floor} "
+            f"({floor_ratio_permille} permille of baseline {baseline_passes})"
+        )
+
+    def summarize_rows(rows_list):
+        items = []
+        for row in rows_list:
+            check = row["check"]
+            items.append(
+                {
+                    "fixture": check["fixture"],
+                    "line": check["line_number"],
+                    "id": check["case_id"],
+                    "depth": check["depth"],
+                    "expected": check["expected_move"],
+                    "baseline_move": row["baseline"]["bestmove"] or "-",
+                    "candidate_move": row["candidate"]["bestmove"] or "-",
+                }
+            )
+        return items
+
+    return {
+        "passed": not reasons,
+        "active_checks": len(active),
+        "baseline_passes": baseline_passes,
+        "candidate_passes": candidate_passes,
+        "net_loss": net_loss,
+        "net_tolerance": net_tolerance,
+        "floor": floor,
+        "baseline_errors": baseline_errors,
+        "candidate_errors": candidate_errors,
+        "hard_fixtures": sorted(hard),
+        "hard_regressed": summarize_rows(hard_regressed),
+        "regressed": summarize_rows(baseline_only),
+        "fixed": summarize_rows(candidate_only),
+        "reasons": reasons,
+    }
+
+
+def format_gate_report(gate):
+    lines = []
+    lines.append("=== Fixture gate ===")
+    lines.append(
+        f"active checks: {gate['active_checks']}; "
+        f"baseline passes: {gate['baseline_passes']}; "
+        f"candidate passes: {gate['candidate_passes']}"
+    )
+    lines.append(
+        f"net loss: {gate['net_loss']} (tolerance {gate['net_tolerance']}); "
+        f"absolute floor: {gate['floor']}"
+    )
+    if gate["baseline_errors"] or gate["candidate_errors"]:
+        lines.append(
+            "WARNING: engine errors -> "
+            f"baseline {gate['baseline_errors']}, candidate {gate['candidate_errors']} "
+            "(counted as failures)"
+        )
+    for header, items in (
+        ("HARD-layer regressions", gate["hard_regressed"]),
+        ("Regressed (baseline-only, active)", gate["regressed"]),
+        ("Fixed (candidate-only, active)", gate["fixed"]),
+    ):
+        if not items:
+            continue
+        lines.append(f"{header} ({len(items)}):")
+        for item in items:
+            lines.append(
+                f"  {item['fixture']}:{item['line']} {item['id']} "
+                f"expected={item['expected']} baseline={item['baseline_move']} "
+                f"candidate={item['candidate_move']}"
+            )
+    lines.append(f"gate verdict: {'PASS' if gate['passed'] else 'FAIL'}")
+    for reason in gate["reasons"]:
+        lines.append(f"  rejected: {reason}")
+    return "\n".join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Compare two Ember binaries across active and disabled TSV fixtures."
@@ -458,12 +580,50 @@ def main():
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--output-json", required=True)
     parser.add_argument("--output-tsv", required=True)
+    parser.add_argument(
+        "--gate",
+        action="store_true",
+        help=(
+            "enforce the two-binary fixture gate: hard-layer regressions, "
+            "net-loss tolerance, and absolute floor over active cases"
+        ),
+    )
+    parser.add_argument(
+        "--gate-hard-fixtures",
+        default="engine_regressions.tsv",
+        metavar="FIXTURE[,FIXTURE...]",
+        help="fixtures whose active pass->fail flips always fail the gate",
+    )
+    parser.add_argument(
+        "--gate-net-tolerance-permille",
+        type=int,
+        default=10,
+        help=(
+            "allowed net active-case loss in permille of baseline passes "
+            "(default: 10 = 1%%)"
+        ),
+    )
+    parser.add_argument(
+        "--gate-floor-ratio-permille",
+        type=int,
+        default=800,
+        help=(
+            "candidate must solve at least this permille of baseline active "
+            "passes as an absolute floor (default: 800 = 80%%)"
+        ),
+    )
     args = parser.parse_args()
 
     if args.workers < 1:
         parser.error("--workers must be positive")
     if args.hash_mb < 1:
         parser.error("--hash-mb must be positive")
+    for permille_name, value in (
+        ("net-tolerance", args.gate_net_tolerance_permille),
+        ("floor-ratio", args.gate_floor_ratio_permille),
+    ):
+        if not 0 <= value <= 1000:
+            parser.error(f"--gate-{permille_name}-permille must be in 0..=1000")
     checks = load_checks(args.fixtures)
     print(
         f"loaded {len(checks)} checks across "
@@ -530,8 +690,29 @@ def main():
     }
     Path(args.output_json).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     write_tsv(args.output_tsv, rows)
-    print(json.dumps(payload["summary"], indent=2), flush=True)
+
+    if not args.gate:
+        print(json.dumps(payload["summary"], indent=2), flush=True)
+        return 0
+
+    hard_fixtures = [
+        name.strip()
+        for name in args.gate_hard_fixtures.split(",")
+        if name.strip()
+    ]
+    gate = evaluate_gate(
+        rows,
+        hard_fixtures=hard_fixtures,
+        net_tolerance_permille=args.gate_net_tolerance_permille,
+        floor_ratio_permille=args.gate_floor_ratio_permille,
+    )
+    payload["gate"] = gate
+    Path(args.output_json).write_text(
+        json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+    )
+    print(format_gate_report(gate), flush=True)
+    return GATE_EXIT_FAIL if not gate["passed"] else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
