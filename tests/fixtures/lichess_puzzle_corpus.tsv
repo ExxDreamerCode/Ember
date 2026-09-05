@@ -899,16 +899,13 @@ id	depth	fen_before_blunder	setup_move	expected_move	themes	rating	popularity	pl
 01244	2	4r1k1/5ppp/n1R2b2/1B3P2/2Q2p1P/pP2qP2/P1P5/1K5R w - - 3 28	b5a6	e3e1	mate,mateIn2,middlegame,queensideAttack,sacrifice,short	619	98	737
 012LI	2	6k1/p4p1p/4bp2/1p2p3/3r4/KP1nQPN1/P5B1/8 w - - 0 33	g2f1	d4a4	endgame,master,mate,mateIn2,sacrifice,short	2224	95	2853
 012wC	4	r2q1rk1/pbpn1p2/1p1bpn1Q/8/8/1B1P1NN1/PPP2PPP/R3K2R b KQ - 0 12	f6h7	g3h5	advantage,kingsideAttack,middlegame,quietMove,short	1441	98	1724
-#
-# Currently failing mined Lichess candidates. These are kept as commented fixtures until Ember learns them.
+# Currently failing mined Lichess candidates. These rows are active: they join the
+# solve-rate corpus and count toward the net meter but never block the gate.
 # Stockfish agreement audit, 2026-07-21: official Stockfish dev-20260720-f4bcd404, https://github.com/official-stockfish/Stockfish/releases/tag/stockfish-dev-20260720-f4bcd404, binary SHA-256 f852c7881146c5047a6546dcd8a8f04f9271734cc36dae40912f13c05a48aaa4.
 # Analysis settings: 8 threads on an 8-core/16-thread Intel Xeon, 4096 MiB hash. Each position was analyzed after setup_move with an unrestricted 50M-node MultiPV=8 search, then a 50M-node comparison of the expected move, Ember's recorded moves, and Stockfish's unrestricted best move.
 # Group 1, Stockfish agrees (high priority): all 81 commented data rows below. The expected move was Stockfish's unrestricted and verified first choice in every case; its smallest verified advantage over Ember's best recorded move was 393 centipawns.
 # Group 2, Stockfish does not agree or the choice is ambiguous (lower priority): none.
 # Uncommented rows interleaved below are already active regressions and are not part of this classification.
-failed_id-d2	2	fen_before_blunder	setup_move	expected_move	themes	rating	popularity	plays
-failed_id-d3	3	fen_before_blunder	setup_move	expected_move	themes	rating	popularity	plays
-failed_id-d4	4	fen_before_blunder	setup_move	expected_move	themes	rating	popularity	plays
 00F5e-d2	2	4k2r/1p2b1p1/p1q1Rp2/2p4p/8/1Q4B1/PP3PpP/6K1 b k - 1 22	c6d7	g3d6	advantage,endgame,short	1716	100	260
 00F5e-d3	3	4k2r/1p2b1p1/p1q1Rp2/2p4p/8/1Q4B1/PP3PpP/6K1 b k - 1 22	c6d7	g3d6	advantage,endgame,short	1716	100	260
 00F5e-d4	4	4k2r/1p2b1p1/p1q1Rp2/2p4p/8/1Q4B1/PP3PpP/6K1 b k - 1 22	c6d7	g3d6	advantage,endgame,short	1716	100	260
