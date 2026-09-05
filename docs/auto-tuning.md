@@ -234,12 +234,14 @@ If you work in the Linux `nix develop .#elo-runner` dev-shell, then
    is the incumbent, so the SPRT Elo is candidate minus incumbent.
 4. The candidate is accepted only when SPRT rejects the null hypothesis in
    favor of the configured positive Elo alternative (`engine_a_better` —
-   "candidate is better"). The generic runner's `engine_b_better` verdict
-   means the null/equality hypothesis was preferred, so the candidate is
-   rejected without claiming that the incumbent is stronger. The
-   `inconclusive` and `continue` verdicts mean there is not enough data. After
-   acceptance the value becomes the new best and the process continues only in
-   the accepted direction.
+   "candidate is better"). Its
+   `engine_a_improvement_not_established` verdict means the null/equality
+   hypothesis was preferred, so the candidate is rejected without claiming
+   that the incumbent is stronger. The `inconclusive` and `continue` verdicts
+   mean there is not enough data. After acceptance the value becomes the new
+   best and the process continues only in the accepted direction.
+   `engine_b_better` is reserved for a non-SPRT comparison whose configured
+   fixed-sample test directly establishes that engine B is stronger.
 5. When both neighbours are rejected, the wider values `current + 2*step` and
    `current - 2*step` are tried in that order.
 6. A value is never tested twice during one parameter search. The parameter
@@ -280,7 +282,8 @@ At the end of a discovery match in `seek.py`:
 
 - `engine_a_better` — the candidate is accepted immediately and written to
   `best.json`;
-- `engine_b_better` — the candidate is rejected;
+- `engine_a_improvement_not_established` — the candidate is rejected because
+  the configured positive improvement was not established;
 - `inconclusive` with `elo >= recheck.min_elo` — the candidate is queued to
   `pending.json` and marked `pending: true` in `journal.jsonl`;
 - `inconclusive` with `elo < recheck.min_elo` — the candidate is rejected.
@@ -333,9 +336,10 @@ The confirmation contract lives in `[confirmation]` before discovery begins.
 It uses a different opening seed, the same Elo hypotheses, and a lower alpha
 than the exploratory matches. Both engines receive every Tune parameter so the
 tuned vector and default vector use the same runtime path. Only the
-`engine_a_better` verdict confirms the vector; `engine_b_better` means the
-positive improvement hypothesis was not established, and a capped
-`inconclusive` result is also not confirmation.
+`engine_a_better` verdict confirms the vector;
+`engine_a_improvement_not_established` means the positive improvement
+hypothesis was not established, and a capped `inconclusive` result is also not
+confirmation.
 
 The confirmation run ID is derived from the exact match configuration,
 candidate vector, and engine binary SHA-256. Repeating the command with the same
