@@ -17,6 +17,8 @@ INFO_RE = re.compile(
     r"^info .*?\bdepth\s+(\d+).*?\bnodes\s+(\d+)"
     r".*?\bnps\s+(\d+).*?\btime\s+(\d+)\b"
 )
+RESERVED_OPTIONS = {"book", "hash", "threads"}
+BACKEND_ACK_PREFIX = "info string NNUE backend set to "
 
 
 def sha256_file(path):
@@ -42,6 +44,61 @@ def parse_binary_arg(value):
     if not path.is_file():
         raise argparse.ArgumentTypeError(f"binary path does not exist: {path}")
     return label, path
+
+
+def parse_option_arg(value):
+    if "=" not in value:
+        raise argparse.ArgumentTypeError("expected NAME=VALUE")
+    name, option_value = value.split("=", 1)
+    name = name.strip()
+    if not name:
+        raise argparse.ArgumentTypeError("option name cannot be empty")
+    if name.casefold() in RESERVED_OPTIONS:
+        raise argparse.ArgumentTypeError(
+            f"{name} has a dedicated benchmark flag and cannot use --option"
+        )
+    return name, option_value
+
+
+def uci_option_commands(hash_mb, threads, disable_book, options=()):
+    commands = [
+        f"setoption name Hash value {hash_mb}",
+        f"setoption name Threads value {threads}",
+    ]
+    if disable_book:
+        commands.append("setoption name Book value")
+    commands.extend(f"setoption name {name} value {value}" for name, value in options)
+    return commands
+
+
+def validate_option_transcript(lines, options):
+    for line in lines:
+        if line.startswith("info string Unknown NNUE backend:") or (
+            line.startswith("info string NNUE backend ")
+            and " is not available on this CPU" in line
+        ):
+            raise RuntimeError(f"engine rejected benchmark option: {line}")
+
+    requested_backend = next(
+        (
+            value
+            for name, value in reversed(options)
+            if name.casefold() == "nnuebackend"
+        ),
+        None,
+    )
+    if requested_backend is None:
+        return {}
+    acknowledgements = [
+        line[len(BACKEND_ACK_PREFIX) :]
+        for line in lines
+        if line.startswith(BACKEND_ACK_PREFIX)
+    ]
+    if not acknowledgements:
+        raise RuntimeError(
+            "engine did not acknowledge the requested NNUEBackend option"
+        )
+    return {"NNUEBackend": acknowledgements[-1]}
 
 
 def load_positions(path):
@@ -88,6 +145,7 @@ def run_one(
     threads,
     disable_book,
     timeout,
+    options=(),
     raw_output_path=None,
 ):
     label, position_command = position
@@ -102,23 +160,25 @@ def run_one(
     )
 
     infos = []
+    transcript = []
     try:
         send(proc, "uci")
-        read_until(proc, lambda line: line == "uciok", deadline)
-        send(proc, f"setoption name Hash value {hash_mb}")
-        send(proc, f"setoption name Threads value {threads}")
-        if disable_book:
-            send(proc, "setoption name Book value")
+        transcript.extend(read_until(proc, lambda line: line == "uciok", deadline))
+        for command in uci_option_commands(
+            hash_mb, threads, disable_book, options
+        ):
+            send(proc, command)
         send(proc, "isready")
-        read_until(proc, lambda line: line == "readyok", deadline)
+        setup_lines = read_until(proc, lambda line: line == "readyok", deadline)
+        transcript.extend(setup_lines)
+        effective_options = validate_option_transcript(setup_lines, options)
         send(proc, "ucinewgame")
         send(proc, f"position {position_command}")
         send(proc, go_command)
         start = time.perf_counter()
         lines = read_until(proc, lambda line: line.startswith("bestmove "), deadline)
+        transcript.extend(lines)
         wall = time.perf_counter() - start
-        if raw_output_path is not None:
-            raw_output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         for line in lines:
             match = INFO_RE.search(line)
             if match:
@@ -132,12 +192,22 @@ def run_one(
                 )
         bestmove = lines[-1].split()[1]
     finally:
-        if proc.poll() is None:
-            try:
-                send(proc, "quit")
-            except BrokenPipeError:
-                pass
-            proc.wait(timeout=5)
+        if raw_output_path is not None:
+            raw_output_path.write_text(
+                "\n".join(transcript) + "\n",
+                encoding="utf-8",
+            )
+        try:
+            if proc.poll() is None:
+                try:
+                    send(proc, "quit")
+                except BrokenPipeError:
+                    pass
+                proc.wait(timeout=5)
+        finally:
+            for stream in (proc.stdin, proc.stdout):
+                if stream is not None:
+                    stream.close()
 
     if not infos:
         raise RuntimeError(f"no info lines parsed for {binary} on {label}")
@@ -151,6 +221,7 @@ def run_one(
         "time_ms": last["time_ms"],
         "wall_seconds": wall,
         "bestmove": bestmove,
+        "effective_options": effective_options,
     }
 
 
@@ -176,11 +247,19 @@ def main():
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--keep-book", action="store_true")
+    parser.add_argument(
+        "--option",
+        action="append",
+        type=parse_option_arg,
+        default=[],
+        metavar="NAME=VALUE",
+        help="set the same UCI option on every binary; may be repeated",
+    )
     parser.add_argument("--json-out", type=Path)
     parser.add_argument(
         "--raw-output-dir",
         type=Path,
-        help="preserve each engine's complete search output in this directory",
+        help="preserve each engine's complete UCI output in this directory",
     )
     args = parser.parse_args()
 
@@ -205,6 +284,7 @@ def main():
                     args.threads,
                     not args.keep_book,
                     args.timeout,
+                    args.option,
                     raw_output_path,
                 )
                 row["label"] = label
@@ -225,6 +305,9 @@ def main():
         "hash_mb": args.hash,
         "threads": args.threads,
         "book_disabled": not args.keep_book,
+        "options": [
+            {"name": name, "value": value} for name, value in args.option
+        ],
         "binaries": {
             label: {
                 "path": str(binary.resolve()),
