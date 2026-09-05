@@ -44,7 +44,7 @@ investigate before accepting the change.
 The baseline is a floor, not an oracle. Do not restore a `V1.1.2` move when strong analysis
 shows that the newer move is better, and do not preserve a known old bug. Record the
 evidence whenever an intentional change breaks a previously passing `V1.1.2` case. Use
-`tools/compare_fixture_corpus.py` to compare active and disabled position regressions across
+`tools/compare_fixture_corpus.py` to compare position regressions across
 two binaries. This UCI-level comparison supplements rather than replaces the in-process
 fixture suite; investigate any difference between those paths instead of silently choosing
 the more convenient result.
@@ -129,10 +129,11 @@ Fixture conventions:
   depth. Depth-based cases should remain deterministic and reasonably cheap.
 - Keep source metadata in `themes`, `rating`, `popularity`, and `plays` when it exists. Use
   neutral zero values for hand-written cases where it does not.
-- If a valuable position still fails and no generally safe fix exists, keep a commented-out
-  row with a `DISABLED` explanation. Do not weaken an active assertion merely to make an
-  unsafe engine change appear green.
-- Before prioritizing mined or externally sourced disabled cases, verify their expected
+- If a valuable position still fails and no generally safe fix exists, record it
+  as an active row with an explanatory comment or relax it to a forbidden-move
+  invariant. Do not weaken an active assertion merely to make an unsafe engine
+  change appear green.
+- Before prioritizing mined or externally sourced cases, verify their expected
   moves with a current strong reference engine at a recorded search budget. Keep supported
   cases separate from disagreements and near-ties so Ember is not tuned to an obsolete or
   subjective label.
@@ -155,20 +156,29 @@ deployment tooling should have their regressions in their existing Python test s
 The fast fixture test validates the TSV schema, numeric fields, and cross-file ID uniqueness.
 The dedicated CI job `lichess-puzzle-corpus` runs a two-binary fixture **gate**: it builds
 the baseline (PR base or the previous push commit) and the candidate, then runs
-`tools/compare_fixture_corpus.py --gate` over every active and disabled row. The gate
+`tools/compare_fixture_corpus.py --gate` over every TSV row. The gate
 summarizes flips and blocks only on agreed invariants, not on every fixture flip. See
 `docs/release-tests.md` and `tools/compare_fixture_corpus.py` for the exact rules.
 
-Do not comment out a failing active row just to keep CI green. The two-binary gate already
-reports pass->fail and fail->pass flips against the baseline. Prefer to:
+Every fixture row is active; there is no disabled tier anymore. The corpus
+directory mixes the strict hard layer (`engine_regressions.tsv`), which blocks
+the gate on any active pass->fail flip, with solve-rate rows (every other TSV,
+including `engine_regressions_optional.tsv`), which only count toward the net
+meter. Explanatory `# ...` comments are the place to record *why* a row exists
+and what invariant it guards; do not turn a row into a commented-out `DISABLED`
+case just because it does not pass on the current revision.
 
-1. Verify the flip honestly: if the candidate move is better (stronger reference engine,
-   or a deliberate improvement), update `expected_move` in the same change that ships the
-   engine behavior and record the evidence in the fixture comment.
-2. If the flip is a genuine near-tie, prefer relaxing `expected_move` to alternatives,
-   to a forbidden-move `!...` invariant, or to a documented `DISABLED` row with a reason.
-3. If the flip looks wrong, fix the engine or investigate before merging; do not paper over
-   it with a disabled row.
+The two-binary gate already reports pass->fail and fail->pass flips against the
+baseline. Prefer to:
+
+1. Verify the flip honestly: if the candidate move is better (stronger reference
+   engine, or a deliberate improvement), update `expected_move` in the same
+   change that ships the engine behavior and record the evidence in the fixture
+   comment.
+2. If the flip is a genuine near-tie, relax `expected_move` to alternatives or a
+   forbidden-move `!...` invariant.
+3. If the flip looks wrong, fix the engine or investigate before merging; do not
+   paper over it by commenting the row out.
 
 ## Diagnosing a bad game or move
 
@@ -187,8 +197,8 @@ reports pass->fail and fail->pass flips against the baseline. Prefer to:
    with a larger clock. Use this to check whether the advantage is practically convertible
    or whether the opponent can expose a hidden search, tablebase, or fifty-move weakness.
    For corpus mining, use `tools/hunt_lost_advantage.py` and keep generated cases in
-   `tests/fixtures/advantage_preservation.tsv` as disabled rows until a bucket is understood
-   and fixed. Classify the failures before tuning search around individual positions.
+   `tests/fixtures/advantage_preservation.tsv` as active solve-rate rows until a bucket is
+   understood and fixed. Classify the failures before tuning search around individual positions.
 6. Reproduce Ember's choice with the original move history and deployment settings. Then
    vary one dimension at a time: book on/off, one thread versus deployment threads, fixed
    depth versus clocked search, clean versus reused process, and tablebases on/off.

@@ -167,8 +167,8 @@ mining pass. It first lets Ember play against stronger Stockfish from randomized
 starts. When Stockfish gets a large advantage immediately after an Ember move, the tool
 starts a second game from that position with colors swapped: Ember receives the advantaged
 side and Stockfish defends with more time. If Ember loses the advantage, the run records the
-first large evaluation drop, writes PGNs and JSON traces, classifies the case, and emits a
-disabled TSV row in `tests/fixtures/advantage_preservation.tsv`.
+first large evaluation drop, writes PGNs and JSON traces, classifies the case, and emits an
+active TSV row in `tests/fixtures/advantage_preservation.tsv`.
 
 Example:
 
@@ -181,11 +181,11 @@ python3 tools/hunt_lost_advantage.py \
   --output-dir results/lost-advantage
 ```
 
-The generated TSV rows are deliberately disabled. Treat them as a triage queue, not as a
-green test suite to satisfy immediately. First inspect the bucket summary, pick the largest
+The generated TSV rows are active. Treat them as a triage queue, not as a green test suite
+to satisfy immediately. First inspect the bucket summary, pick the largest
 or most clearly causal class, and verify a representative sample with deeper analysis. Only
-uncomment a row in the same commit that fixes the underlying class or establishes a narrow
-invariant that Ember should already satisfy.
+refine a row's `expected_move` in the same commit that fixes the underlying class or
+establishes a narrow invariant that Ember should already satisfy.
 
 The run is diagnostic rather than statistical. Its value is the preserved artifact set:
 source PGNs, replay PGNs, raw UCI logs, per-move JSON, the generated fixture rows, the seed,
@@ -202,7 +202,7 @@ smaller question: did Ember's own fixed-depth search visit the same line, and if
 where did Ember evaluate or prune it differently?
 
 `tools/compare_mistake_trace.py` automates this first pass for TSV-backed positions. It
-parses active or disabled fixture rows, reconstructs the full move history, labels the root
+parses fixture rows, reconstructs the full move history, labels the root
 with Stockfish, runs Ember with `EMBER_TRACE_SEARCH_DAG` restricted to the suspicious root
 move and the witness root move, and writes both JSON and Markdown summaries. For repetition
 conversion triage, combine:
@@ -228,7 +228,7 @@ draw returns. If Ember and the reference move have equal root scores, treat that
 tie-breaking/order hypothesis, not as proof that any non-repeating move is safe.
 
 Use the trace result to propose the narrowest policy, then run the normal quality gates. A
-policy that fixes disabled fixture rows but loses a paired head-to-head gate is rejected;
-keep the trace artifact and leave the rows disabled until a narrower cause is found. The
+policy that fixes solve-rate fixture rows but loses a paired head-to-head gate is rejected;
+keep the trace artifact and revisit the rows when a narrower cause is found. The
 technique is evidence for where to look next, not a substitute for Elo, NPS, active fixture,
 and clock-safety checks.

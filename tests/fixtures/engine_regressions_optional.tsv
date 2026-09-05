@@ -1,0 +1,42 @@
+# Optional engine regression cases: formerly commented-out rows moved out of
+# engine_regressions.tsv so the strict hard layer only guards the active main
+# file. They join the corpus exactly like lichess puzzles: they count toward
+# the solve-rate meter but never block the gate by themselves. Explanatory
+# comments are preserved; the DISABLED notes were removed when unblocking.
+
+id	depth	fen_before_blunder	setup_move	expected_move	themes	rating	popularity	plays
+# CCRL game 152, before 16...Bg8. At release depth 16 Ember must play 16...Bxe3, invading instead of repeating the losing bishop retreat covered by the original game regression.
+ccrl-152-bxe3	16	rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1	d2d4 g8f6 c2c4 e7e6 b1c3 d7d5 c4d5 e6d5 c1g5 c7c6 e2e3 c8f5 d1f3 f5g6 g5f6 d8f6 f3f6 g7f6 g1f3 b8d7 f3h4 a7a5 f1e2 b7b5 f2f4 h7h5 f4f5 g6h7 e1g1 f8h6 a1e1	h6e3	ccrl,tactic,game152	0	0	0
+
+# Lichess puzzle 00zOQ, https://lichess.org/training/00zOQ. Rxc2 is a capture, not the quiet seventh-rank invasion for which the extra root ply was introduced; V1.1.2 and strong Stockfish find Re8.
+baseline-00zoq-rook-capture	3	2r3k1/p7/7p/1p4p1/6R1/3B1q1P/2P4P/2B3RK w - - 6 35	g1g2	c8e8	lichess,00zOQ,root-extension,quietMove	0	0	0
+
+# Lichess F1W14oiR before 30.Qxb5. Qxb5 allowed 30...Qa8 31.bxc5 Qxe4; the stronger continuation found in the investigation was 30.bxc5.
+f1w14oir-30-qxb5	20	2r2r2/q3pk2/4p1p1/1pp4p/1P2P3/p3B2P/PbR1QPP1/1R4K1 w - - 2 30	-	b4c5	lichess,F1W14oiR,smp,tactic	0	0	0
+
+# Lichess sGhFxtv2 before 25.Bh5, https://lichess.org/sGhFxtv2. Ember sees 25...Bxc3 26.bxc3 Qf5+ in its PV but undervalues the damage; deep Stockfish analysis prefers 25.a4, with 25.Bg4 also substantially safer.
+sghfxtv2-25-bh5	21	r3n1k1/1pp1Prb1/3p3p/p1n5/2P5/2N1P2P/PPKBBqp1/R2Q2R1 w - - 3 25	-	!e2h5	lichess,sGhFxtv2,exposedKing,horizon,tactic	0	0	0
+
+# Lichess 62oWHyZN before 14...Ne4, https://lichess.org/62oWHyZN. The old quiescence check cap distorted the root by evaluating a still-checked leaf as if it were quiet; Stockfish dev at 100M nodes puts Bxc2 within 0.15 pawn of the best move and about 1.94 pawns above Ne4.
+62owhyzn-14-bxc2	16	r2q1rk1/1p2ppb1/p4np1/2p1Nb2/1n1P1BP1/2N5/PPPQBP2/2KR3R b - - 0 14	-	f5c2	lichess,62oWHyZN,quiescence,check,horizon	0	0	0
+
+# Lichess PsmkiN5M before 19...Ng7, https://lichess.org/PsmkiN5M. Rules-correct search-local cycle handling changed the root tree and left the immediately recapturable Nxh4 exchange three plies beyond the depth-16 horizon; Stockfish 18 at 100M nodes prefers Nxh4 over Ng7 by about 1.19 pawns. Extend only recapturable equal-knight trades when no higher-value capture competes.
+psmkin5m-19-nxh4	16	r1q2rk1/pp3p1p/1np2Bp1/5n2/2P2Q1N/8/P1P2PPP/4RRK1 b - - 6 19	-	f5h4	lichess,PsmkiN5M,quiescence,check,horizon	0	0	0
+
+# Lichess aPSrt6iF before 21.d4, https://lichess.org/aPSrt6iF. In the game Ember spent 7 seconds and chose the central pawn shove; Stockfish 18 at 60 seconds prefers Qxa4 by about 1.8 pawns over d4 because Black's g-pawn/rook attack is already more important than the slow central passer plan.
+apsrt6if-21-qxa4	23	3r2r1/1kpnb3/1pp1q3/4p1pp/pPP1P3/P2PBN2/2Q2PP1/1R3RK1 w - - 0 21	-	c2a4	lichess,aPSrt6iF,kingSafety,passedPawn,horizon	0	0	0
+
+# Lichess aPSrt6iF before 22.d5, https://lichess.org/aPSrt6iF. After 21...g4, Ember spent 29 seconds and continued the same faulty plan with d5; Stockfish 18 at 60 seconds prefers Nxe5 by about 2.6 pawns and shows 22.d5 gxf3 23.dxe6 Rxg2+ as the tactical punishment.
+apsrt6if-22-nxe5	23	3r2r1/1kpnb3/1pp1q3/4p2p/pPPPP1p1/P3BN2/2Q2PP1/1R3RK1 w - - 0 22	-	f3e5	lichess,aPSrt6iF,kingSafety,passedPawn,horizon	0	0	0
+
+# Lichess mamfZxnW before 51.Re1, https://lichess.org/mamfZxnW. The later 65.Kd5 position is already forced-lost at deep Stockfish, but the earlier root cause is here: Ember played a quiet rook move while Stockfish 18 at 20 seconds prefers the immediate g4 break by about 1.2 pawns, keeping the rook/passed-pawn ending close to balanced.
+mamfzxnw-51-g4	23	8/1p4p1/1P2r2p/P1k1Pp1P/Kpp2P2/6P1/4R3/8 w - - 2 51	-	g3g4	lichess,mamfZxnW,endgame,passedPawn,pawnBreak	0	0	0
+
+# Lichess VIVYb2Xq before 75.Rf7, https://lichess.org/VIVYb2Xq. Ember still won, and deeper Stockfish makes this only a conversion nit: Nb4/Ne7/Rf7 are all clearly winning, with Stockfish 18 at 15 seconds putting Nb4 about half a pawn above Rf7. Keep it as an optional cleanup target, not a release blocker.
+vivyb2xq-75-nb4	19	1kb4r/8/1K6/1P1NP3/2P5/8/5R2/8 w - - 7 75	-	d5b4	lichess,VIVYb2Xq,endgame,conversion,nit	0	0	0
+
+# Private ExxDreamerCode_Battle game, 2026-08-14, Ember dev latest–Ember 0.9.3, before 35.Qh5. White had a winning attack, but Qh5 settled for a forced repetition; Stockfish 18 at 20M nodes prefers the unique Qc4 by about 3 pawns. Preserve the full game history supplied with the report.
+exxdreamer-battle-dev-093-35-qc4	14	rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1	e2e4 e7e5 g1f3 b8c6 f1b5 a7a6 b5a4 g8f6 e1g1 f8e7 f1e1 b7b5 a4b3 e8g8 c2c3 d7d6 h2h3 c8b7 d2d4 f8e8 b1d2 e7f8 f3g5 e8e7 d4d5 c6a5 b3c2 h7h6 g5f3 c7c6 b2b4 a5c4 d2c4 b5c4 d5c6 b7c6 d1e2 e7e6 a2a4 a8c8 c1d2 g7g5 a4a5 c6b7 a1d1 f8g7 f3h2 d6d5 d2e3 d8e7 e3c5 c8c5 b4c5 e7c5 e4d5 f6d5 c2f5 e6e7 e2h5 c5a5 h2g4 d5f4 g4h6 g8f8 h5g5 f7f6 g5h4 f4g2	h4c4	privateTournament,ExxDreamerCodeBattle,advantagePreservation,horizon	0	0	0
+
+# Same ExxDreamerCode_Battle game before 39.Nf5. After the earlier advantage was lost, 39.Nf5 let 39...Rxd1 force a losing queen trade; Stockfish 18 at 20M nodes rates 39.Kh2 about 2.1 pawns better. The invariant is to avoid the decisive knight move at the reported depth.
+exxdreamer-battle-dev-093-39-nf5	10	rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1	e2e4 e7e5 g1f3 b8c6 f1b5 a7a6 b5a4 g8f6 e1g1 f8e7 f1e1 b7b5 a4b3 e8g8 c2c3 d7d6 h2h3 c8b7 d2d4 f8e8 b1d2 e7f8 f3g5 e8e7 d4d5 c6a5 b3c2 h7h6 g5f3 c7c6 b2b4 a5c4 d2c4 b5c4 d5c6 b7c6 d1e2 e7e6 a2a4 a8c8 c1d2 g7g5 a4a5 c6b7 a1d1 f8g7 f3h2 d6d5 d2e3 d8e7 e3c5 c8c5 b4c5 e7c5 e4d5 f6d5 c2f5 e6e7 e2h5 c5a5 h2g4 d5f4 g4h6 g8f8 h5g5 f7f6 g5h4 f4g2 h4h5 g2e1 d1e1 a5c3 e1d1 c3a5 f5c2 e7d7	!h6f5	privateTournament,ExxDreamerCodeBattle,baseline,horizon,timeManagement	0	0	0
