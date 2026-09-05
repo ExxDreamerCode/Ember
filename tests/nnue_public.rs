@@ -8,8 +8,8 @@ use ember_chess::Engine;
 
 // Archived V1 networks live under networks/V1; the embedded src/net.nnue is now an
 // Ember V2 container and can no longer be loaded as a native dense V1 network.
-const DENSE_NET: &[u8] = include_bytes!("../networks/V1/1.0.0-1.3.1/net.nnue");
-const COMPACT_NET: &[u8] = include_bytes!("../networks/V1/1.0.0-1.3.1/net.compact.nnue");
+const DENSE_NET: &[u8] = include_bytes!("../networks/V1/1.1.0-1.3.0/net.nnue");
+const COMPACT_NET: &[u8] = include_bytes!("../networks/V1/1.1.1-1.3.0/net.compact.nnue");
 
 fn parse_uci_move(mv: &str) -> (usize, usize, usize, usize, u8) {
     let bytes = mv.as_bytes();

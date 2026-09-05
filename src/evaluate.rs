@@ -574,7 +574,7 @@ mod tests {
         // The embedded src/net.nnue is now an Ember V2 container, so the native
         // (dense V1) slot is exercised with the archived V1 network under networks/V1.
         let native_path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("networks/V1/1.0.0-1.3.1/net.nnue");
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("networks/V1/1.1.0-1.3.0/net.nnue");
         init_nnue(native_path.to_str().unwrap()).unwrap();
 
         assert!(current_classic_net().is_none());
