@@ -197,6 +197,12 @@ def load_checks(fixture_dir):
     return checks
 
 
+def execution_checks(checks, active_only=False):
+    if not active_only:
+        return list(checks)
+    return [check for check in checks if check.activation == "active"]
+
+
 def move_matches(actual, expected):
     if expected.startswith("!"):
         return actual not in expected[1:].split("|")
@@ -774,6 +780,14 @@ def main():
         help=f"UCI Hash value for both engines (default: {DEFAULT_HASH_MB})",
     )
     parser.add_argument("--timeout", type=float, default=300.0)
+    parser.add_argument(
+        "--active-only",
+        action="store_true",
+        help=(
+            "execute only active checks while still parsing every fixture row; "
+            "use this for required CI gates so report-only cases cannot time out"
+        ),
+    )
     parser.add_argument("--output-json", required=True)
     parser.add_argument("--output-tsv", required=True)
     parser.add_argument(
@@ -829,9 +843,14 @@ def main():
     ):
         if not 0 <= value <= 1000:
             parser.error(f"--gate-{permille_name}-permille must be in 0..=1000")
-    checks = load_checks(args.fixtures)
+    all_checks = load_checks(args.fixtures)
+    checks = execution_checks(all_checks, args.active_only)
+    executed_keys = {check.key for check in checks}
+    skipped_checks = [check for check in all_checks if check.key not in executed_keys]
+    if not checks:
+        parser.error("fixture selection contains no executable checks")
     print(
-        f"loaded {len(checks)} checks across "
+        f"loaded {len(all_checks)} checks; executing {len(checks)} across "
         f"{len({(check.fixture, check.line_number) for check in checks})} positions",
         flush=True,
     )
@@ -873,6 +892,7 @@ def main():
 
     payload = {
         "metadata": {
+            "tool_sha256": sha256(Path(__file__)),
             "baseline_label": args.baseline_label,
             "baseline_binary": str(Path(args.baseline).resolve()),
             "baseline_sha256": sha256(args.baseline),
@@ -891,10 +911,15 @@ def main():
             "workers": args.workers,
             "hash_mb": args.hash_mb,
             "timeout_seconds": args.timeout,
+            "loaded_checks": len(all_checks),
+            "executed_checks": len(checks),
+            "skipped_disabled_checks": len(all_checks) - len(checks),
+            "active_only": args.active_only,
             "baseline_wall_seconds": baseline_seconds,
             "candidate_wall_seconds": candidate_seconds,
         },
         "summary": summarize(rows),
+        "skipped": [asdict(check) for check in skipped_checks],
         "rows": rows,
     }
     Path(args.output_json).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")

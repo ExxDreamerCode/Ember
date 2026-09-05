@@ -149,6 +149,7 @@ jobs:
             --workers 4 \
             --timeout 300 \
             --hash-mb 256 \
+            --active-only \
             --gate \
             --gate-profile strict \
             --gate-hard-fixtures engine_regressions.tsv \
@@ -187,6 +188,10 @@ jobs:
                       f"(`{metadata['baseline_sha256'][:12]}`)",
                       f"- Candidate: `{metadata['candidate_label']}` "
                       f"(`{metadata['candidate_sha256'][:12]}`)",
+                      f"- Loaded fixture checks: `{metadata['loaded_checks']}`",
+                      f"- Executed active checks: `{metadata['executed_checks']}`",
+                      f"- Skipped report-only checks: "
+                      f"`{metadata['skipped_disabled_checks']}`",
                       f"- Active checks: `{gate['active_checks']}`",
                       f"- Baseline passes: `{gate['baseline_passes']}`",
                       f"- Candidate passes: `{gate['candidate_passes']}`",
@@ -231,7 +236,7 @@ jobs:
                           f"Fixed (candidate-only): {len(gate['fixed'])} cases"
                       )
                   lines.append(
-                      "Full per-case report: `corpus.tsv` and `corpus.json` in the "
+                      "Full executed-case report: `corpus.tsv` and `corpus.json` in the "
                       "`fixture-gate` artifact."
                   )
                   report = "\n".join(lines)

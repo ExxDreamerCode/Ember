@@ -14,6 +14,7 @@ from compare_fixture_corpus import (  # noqa: E402
     direction,
     disabled_status,
     evaluate_gate,
+    execution_checks,
     format_gate_report,
     load_checks,
     move_matches,
@@ -197,6 +198,26 @@ bad-rank\t4\t8/8/8/8/8/7/8/K6k w - - 0 1\t-\ta1a2\ttheme\t0\t0\t0
         self.assertEqual(direction(True, False), "baseline-only")
         self.assertEqual(direction(False, True), "candidate-only")
         self.assertEqual(direction(False, False), "neither-pass")
+
+    def test_required_gate_can_exclude_report_only_checks(self):
+        checks = [self.fixture_check(4)]
+        checks.append(
+            FixtureCheck(
+                fixture="cases.tsv",
+                line_number=3,
+                activation="disabled",
+                fixture_format="standard",
+                variant="standard",
+                case_id="report-only",
+                depth=64,
+                fen="8/8/8/8/8/8/8/K6k w - - 0 1",
+                setup_move="-",
+                expected_move="a1a2",
+            )
+        )
+
+        self.assertEqual(execution_checks(checks), checks)
+        self.assertEqual(execution_checks(checks, active_only=True), checks[:1])
 
     def test_disabled_status_marks_stale_and_newly_fixed_rows(self):
         def row(activation, baseline, candidate):

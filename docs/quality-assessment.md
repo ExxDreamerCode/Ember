@@ -7,11 +7,15 @@ root.
 ## Fixture gate
 
 CI enforces the two-binary fixture gate in the `lichess-puzzle-corpus` job. It builds
-the baseline revision (PR base or previous push) and the candidate, then runs
-`tools/compare_fixture_corpus.py --gate` over every active and disabled TSV row.
+the baseline revision (PR base or previous push) and the candidate, parses every
+active and disabled TSV row, then runs `tools/compare_fixture_corpus.py --gate`
+with `--active-only` over the active checks.
 
-The gate only blocks on active, agreed invariants. Disabled rows are still run and reported,
-but cannot affect the verdict:
+The required gate only runs active, agreed invariants. Disabled rows remain a report-only
+triage corpus: omit `--active-only` for an explicit offline comparison with a suitable
+per-check timeout. They are not part of required CI because unresolved cases can request
+impractical depths (including depth 64). When disabled rows are explicitly run, an engine
+error still invalidates that comparison.
 
 - **Hard layer**: every active `engine_regressions.tsv` case must pass in the candidate,
   even when the baseline also fails. These are book main lines, repetition, fifty-move,
@@ -28,6 +32,7 @@ but cannot affect the verdict:
 
 The report (`results/fixture-gate/corpus.json`) lists every pass->fail and
 fail->pass flip with fixture, line, expected, baseline move, and candidate move.
+Its `skipped` section lists every parsed report-only row omitted from required execution.
 A merge that changes move choice should either fix or consciously update an active
 case. Unverified, disputed, or unresolved cases belong in the report-only disabled tier.
 
@@ -42,6 +47,7 @@ python3 tools/compare_fixture_corpus.py \
   --candidate-label candidate \
   --workers 4 \
   --hash-mb 256 \
+  --active-only \
   --gate \
   --gate-profile strict \
   --gate-hard-fixtures engine_regressions.tsv \

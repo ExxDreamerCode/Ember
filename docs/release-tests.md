@@ -71,6 +71,7 @@ python3 tools/compare_fixture_corpus.py \
   --candidate-label "candidate" \
   --workers 4 \
   --hash-mb 256 \
+  --active-only \
   --gate \
   --gate-hard-fixtures engine_regressions.tsv \
   --gate-net-tolerance-permille 10 \

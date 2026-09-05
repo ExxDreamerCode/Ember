@@ -44,10 +44,11 @@ investigate before accepting the change.
 The baseline is a floor, not an oracle. Do not restore a `V1.1.2` move when strong analysis
 shows that the newer move is better, and do not preserve a known old bug. Record the
 evidence whenever an intentional change breaks a previously passing `V1.1.2` case. Use
-`tools/compare_fixture_corpus.py` to compare active and disabled position regressions across
-two binaries. This UCI-level comparison supplements rather than replaces the in-process
-fixture suite; investigate any difference between those paths instead of silently choosing
-the more convenient result.
+`tools/compare_fixture_corpus.py` to compare active position regressions across two binaries.
+Run disabled report-only rows explicitly when their requested depths fit the available
+budget. This UCI-level comparison supplements rather than replaces the in-process fixture
+suite; investigate any difference between those paths instead of silently choosing the more
+convenient result.
 
 ## Workspace and reproducibility
 
