@@ -59,3 +59,4 @@ __pycache__/
 NOTES_EXTERNAL_NETS.md
 /*.out
 OtherNNUE.toml
+ember-candidate-vs-base-sprt.toml

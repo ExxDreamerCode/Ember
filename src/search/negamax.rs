@@ -60,6 +60,26 @@ pub(super) fn lmr_reduction(move_index: usize, actual_depth: i32, is_pv: bool) -
     }
 }
 
+/// History-scaled LMR: moves with strong history are reduced less (down to no
+/// reduction at all), moves with weak history are reduced more. The raw
+/// reduction stays within `[0, depth - 1]` so a zero result simply searches the
+/// move at full depth through the normal null-window branch.
+const LMR_HISTORY_CLAMP: i32 = 16384;
+const LMR_HISTORY_DIVISOR: i32 = 2048;
+
+#[inline(always)]
+pub(super) fn lmr_reduction_with_history(
+    move_index: usize,
+    actual_depth: i32,
+    is_pv: bool,
+    history: i32,
+) -> i32 {
+    let base = lmr_reduction(move_index, actual_depth, is_pv);
+    let history = history.clamp(-LMR_HISTORY_CLAMP, LMR_HISTORY_CLAMP);
+    let max_reduction = (actual_depth - 1).max(1);
+    (base - history / LMR_HISTORY_DIVISOR).clamp(0, max_reduction)
+}
+
 #[inline(always)]
 pub(super) fn tactical_check_extension_candidate(
     actual_depth: i32,
@@ -1045,7 +1065,14 @@ macro_rules! negamax_mode_body {
                     $eval,
                 )
             } else if lmr_eligible {
-                let r = lmr_reduction(move_index, actual_depth, is_pv);
+                let (lmr_hfk, lmr_htk) =
+                    from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
+                let r = lmr_reduction_with_history(
+                    move_index,
+                    actual_depth,
+                    is_pv,
+                    $this.history[lmr_hfk][lmr_htk],
+                );
                 #[cfg(feature = "search-debug")]
                 {
                     $this.debug.stats.lmr_searches += 1;

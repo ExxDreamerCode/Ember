@@ -268,6 +268,27 @@ fn lmr_controls_preserve_default_boundaries_and_reductions() {
 }
 
 #[test]
+fn lmr_history_adjustment_stays_within_depth_bounds() {
+    // Private contract: history scales the raw LMR reduction in both
+    // directions, but the result never leaves [0, depth - 1]. A zero
+    // reduction means the move is searched at full depth; the raw
+    // lmr_reduction floor of 1 does not survive the history adjustment.
+    tune::reset();
+    assert_eq!(lmr_reduction_with_history(10, 4, true, 16384), 0);
+    assert!(lmr_reduction_with_history(10, 4, true, -16384) > lmr_reduction(10, 4, true));
+    assert!(lmr_reduction_with_history(10, 4, true, 0) == lmr_reduction(10, 4, true));
+    for history in [-100_000, -4096, 0, 4096, 100_000] {
+        for depth in [2, 4, 6, 20] {
+            for is_pv in [true, false] {
+                let r = lmr_reduction_with_history(10, depth, is_pv, history);
+                assert!((0..=depth - 1).contains(&r));
+            }
+        }
+    }
+    tune::reset();
+}
+
+#[test]
 fn aspiration_window_controls_preserve_the_default_boundary() {
     tune::reset();
     assert_eq!(aspiration_window_delta(4), INF);
