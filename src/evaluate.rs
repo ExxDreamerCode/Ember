@@ -339,6 +339,24 @@ static CLASSIC_NNET: RwLock<Option<Arc<ClassicHalfKpNet>>> = RwLock::new(None);
 
 pub const EMBEDDED_NNUE: &[u8] = include_bytes!("net.nnue");
 
+fn install_nnue_selection(
+    native: Option<Arc<NNUENet>>,
+    ember_v2: Option<Arc<EmberV2Data>>,
+    classic: Option<Arc<ClassicHalfKpNet>>,
+) -> Result<(), String> {
+    // Acquire every slot in one order before changing any of them. In particular,
+    // an Ember V2 install must not hold EMBER_V2_NNET while reset or a native
+    // install holds NNUE_NET, because both operations then wait for each other.
+    let mut native_lock = NNUE_NET.write().map_err(|e| e.to_string())?;
+    let mut ember_v2_lock = EMBER_V2_NNET.write().map_err(|e| e.to_string())?;
+    let mut classic_lock = CLASSIC_NNET.write().map_err(|e| e.to_string())?;
+
+    *native_lock = native;
+    *ember_v2_lock = ember_v2;
+    *classic_lock = classic;
+    Ok(())
+}
+
 fn load_nnue_bytes(data: &[u8], name: &str) -> Result<(), String> {
     if ClassicHalfKpNet::is_format(data) {
         let net = ClassicHalfKpNet::parse(data)?;
@@ -347,11 +365,7 @@ fn load_nnue_bytes(data: &[u8], name: &str) -> Result<(), String> {
             name,
             net.overview()
         );
-        let mut lock = CLASSIC_NNET.write().map_err(|e| e.to_string())?;
-        *lock = Some(Arc::new(net));
-        *NNUE_NET.write().map_err(|e| e.to_string())? = None;
-        *EMBER_V2_NNET.write().map_err(|e| e.to_string())? = None;
-        return Ok(());
+        return install_nnue_selection(None, None, Some(Arc::new(net)));
     }
     if EmberV2Info::is_format(data) {
         let info = EmberV2Info::try_parse(data)?;
@@ -361,22 +375,10 @@ fn load_nnue_bytes(data: &[u8], name: &str) -> Result<(), String> {
             "info string Loaded Ember V2 net {} (arch hash={:#x}, desc=\"{}\", {})",
             name, info.hash, desc, v2.overview
         );
-        let mut v2_lock = EMBER_V2_NNET.write().map_err(|e| e.to_string())?;
-        *v2_lock = Some(Arc::new(v2));
-        let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
-        *lock = None;
-        let mut classic_lock = CLASSIC_NNET.write().map_err(|e| e.to_string())?;
-        *classic_lock = None;
-        return Ok(());
+        return install_nnue_selection(None, Some(Arc::new(v2)), None);
     }
     let net = NNUENet::load_from_bytes(data, name)?;
-    let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
-    *lock = Some(Arc::new(net));
-    let mut v2_lock = EMBER_V2_NNET.write().map_err(|e| e.to_string())?;
-    *v2_lock = None;
-    let mut classic_lock = CLASSIC_NNET.write().map_err(|e| e.to_string())?;
-    *classic_lock = None;
-    Ok(())
+    install_nnue_selection(Some(Arc::new(net)), None, None)
 }
 
 pub fn init_nnue(path: &str) -> Result<(), String> {
@@ -385,13 +387,7 @@ pub fn init_nnue(path: &str) -> Result<(), String> {
 }
 
 pub fn reset_nnue() -> Result<(), String> {
-    let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
-    *lock = None;
-    let mut v2_lock = EMBER_V2_NNET.write().map_err(|e| e.to_string())?;
-    *v2_lock = None;
-    let mut classic_lock = CLASSIC_NNET.write().map_err(|e| e.to_string())?;
-    *classic_lock = None;
-    Ok(())
+    install_nnue_selection(None, None, None)
 }
 
 pub fn init_embedded_nnue() -> Result<(), String> {
