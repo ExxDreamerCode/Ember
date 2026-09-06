@@ -427,7 +427,7 @@ cmd = {json.dumps(sys.executable)}
 
             self.assertEqual(
                 manifest["identity"]["effective_config"]["engine_a"]["cmd"],
-                str(first),
+                str(first.resolve()),
             )
             validate_run_manifest(manifest)
 
@@ -493,7 +493,7 @@ cmd = {json.dumps(sys.executable)}
             )
 
             effective = manifest["identity"]["effective_config"]["engine_a"]
-            self.assertEqual(effective["cmd"], str(engine))
+            self.assertEqual(effective["cmd"], str(engine.resolve()))
             self.assertTrue(Path(effective["options"]["NNUE"]).is_file())
 
     def test_manifest_rejects_changed_syzygy_directory(self):
