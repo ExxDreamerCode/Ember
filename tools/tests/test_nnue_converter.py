@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CONVERTER_PATH = REPO_ROOT / "training" / "v2" / "nnue-pytorch_to_ember.py"
+CONVERTER_PATH = REPO_ROOT / "training" / "en" / "v2" / "nnue-pytorch_to_ember.py"
 
 
 def load_converter():

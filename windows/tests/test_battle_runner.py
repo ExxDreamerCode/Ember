@@ -27,6 +27,19 @@ battle_runner = load_module("battle_runner.py", "battle_runner")
 verify_bundle = load_module("verify_bundle.py", "verify_bundle")
 
 
+def write_fake_engine(root: Path, name: str, body: str) -> Path:
+    script = root / f"{name}.py"
+    script.write_text(textwrap.dedent(body), encoding="utf-8")
+    if os.name == "nt":
+        launcher = root / f"{name}.cmd"
+        launcher.write_text(f'@"{sys.executable}" "{script}"\r\n', encoding="utf-8")
+        return launcher
+    engine = root / name
+    engine.write_text(f"#!{sys.executable}\n{textwrap.dedent(body)}", encoding="utf-8")
+    engine.chmod(0o755)
+    return engine
+
+
 class BattleRunnerTests(unittest.TestCase):
     def test_game_count_accepts_finite_and_infinite_series(self) -> None:
         self.assertEqual(battle_runner.parse_game_count("7"), 7)
@@ -78,36 +91,32 @@ class BattleRunnerTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            engine = root / "async-engine"
-            engine.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!{sys.executable}
-                    import sys
-                    import threading
-                    import time
+            engine = write_fake_engine(
+                root,
+                "async-engine",
+                """\
+                import sys
+                import threading
+                import time
 
-                    search_finished = threading.Event()
+                search_finished = threading.Event()
 
-                    def search():
-                        time.sleep(0.02)
-                        print("info depth 1 score cp 12 nodes 1234 nps 12000", flush=True)
-                        search_finished.set()
-                        print("bestmove e2e4", flush=True)
+                def search():
+                    time.sleep(0.02)
+                    print("info depth 1 score cp 12 nodes 1234 nps 12000", flush=True)
+                    search_finished.set()
+                    print("bestmove e2e4", flush=True)
 
-                    for command in sys.stdin:
-                        command = command.strip()
-                        if command.startswith("go "):
-                            threading.Thread(target=search, daemon=True).start()
-                        elif command == "quit":
-                            if not search_finished.is_set():
-                                raise SystemExit(9)
-                            break
-                    """
-                ),
-                encoding="utf-8",
+                for command in sys.stdin:
+                    command = command.strip()
+                    if command.startswith("go "):
+                        threading.Thread(target=search, daemon=True).start()
+                    elif command == "quit":
+                        if not search_finished.is_set():
+                            raise SystemExit(9)
+                        break
+                """,
             )
-            engine.chmod(0o755)
 
             result = battle_runner.run_benchmark(engine, config, threads=2, output_dir=root)
             raw_log = (root / "benchmark-raw.log").read_text(encoding="utf-8")
@@ -127,22 +136,18 @@ class BattleRunnerTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            engine = root / "failing-engine"
-            engine.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!{sys.executable}
-                    import sys
+            engine = write_fake_engine(
+                root,
+                "failing-engine",
+                """\
+                import sys
 
-                    for command in sys.stdin:
-                        if command.startswith("go "):
-                            print("info string deliberate benchmark failure", flush=True)
-                            raise SystemExit(7)
-                    """
-                ),
-                encoding="utf-8",
+                for command in sys.stdin:
+                    if command.startswith("go "):
+                        print("info string deliberate benchmark failure", flush=True)
+                        raise SystemExit(7)
+                """,
             )
-            engine.chmod(0o755)
 
             with self.assertRaisesRegex(battle_runner.RunnerError, "failed on warmup"):
                 battle_runner.run_benchmark(engine, config, threads=2, output_dir=root)

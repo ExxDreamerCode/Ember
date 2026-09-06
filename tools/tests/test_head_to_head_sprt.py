@@ -17,6 +17,7 @@ from head_to_head import (  # noqa: E402
     detect_workers,
     engine_thread_count,
     materialize_revision_commands,
+    platform_binary,
     probe,
     record_revision_metadata,
     threads_per_game,
@@ -175,14 +176,17 @@ cmd = "/bin/true"
             run_dir = Path(directory) / "run"
             materialize_revision_commands(cfg, run_dir)
 
-            self.assertEqual(
-                Path(cfg["engine_a"]["cmd"]),
-                (run_dir / "builds/engine_a/bin/ember").resolve(),
-            )
-            self.assertEqual(
-                Path(cfg["engine_b"]["cmd"]),
-                (run_dir / "builds/engine_b/bin/ember").resolve(),
-            )
+            for engine_id in ("engine_a", "engine_b"):
+                self.assertEqual(
+                    Path(cfg[engine_id]["cmd"]),
+                    (
+                        run_dir
+                        / "builds"
+                        / engine_id
+                        / "bin"
+                        / platform_binary("ember")
+                    ).resolve(),
+                )
 
     def test_built_revisions_replace_stale_probe_availability(self):
         cfg = {"engine_a": {"name": "candidate"}}
