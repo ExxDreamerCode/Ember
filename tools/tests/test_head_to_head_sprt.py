@@ -80,7 +80,7 @@ class HeadToHeadSprtTests(unittest.TestCase):
         }
 
     @staticmethod
-    def write_identity_config(root, network=None, engine_a_cmd="/bin/true"):
+    def write_identity_config(root, network=None, engine_a_cmd=sys.executable):
         opening = root / "openings.epd"
         opening.write_text("8/8/8/8/8/8/8/K6k w - -\n", encoding="utf-8")
         config = root / "match.toml"
@@ -94,7 +94,7 @@ name = "identity"
 results_dir = {json.dumps(str(root / "results"))}
 opening_source = "file"
 opening_file = {json.dumps(str(opening))}
-cutechess_cmd = "/bin/true"
+cutechess_cmd = {json.dumps(sys.executable)}
 workers = 1
 max_pairs = 4
 depth = 1
@@ -105,7 +105,7 @@ cmd = {json.dumps(str(engine_a_cmd))}
 {nnue_option}
 [engine_b]
 name = "baseline"
-cmd = "/bin/true"
+cmd = {json.dumps(sys.executable)}
 """,
             encoding="utf-8",
         )
@@ -155,11 +155,11 @@ opening_file = {json.dumps(str(root / "openings.epd"))}
 
 [engine_a]
 name = "a"
-cmd = "/bin/true"
+cmd = {json.dumps(sys.executable)}
 
 [engine_b]
 name = "b"
-cmd = "/bin/true"
+cmd = {json.dumps(sys.executable)}
 """,
                 encoding="utf-8",
             )
@@ -479,7 +479,7 @@ cmd = "/bin/true"
             config_path = self.write_identity_config(root)
             text = config_path.read_text(encoding="utf-8")
             text = text.replace(
-                '[engine_a]\nname = "candidate"\ncmd = "/bin/true"',
+                f'[engine_a]\nname = "candidate"\ncmd = {json.dumps(sys.executable)}',
                 '[engine_a]\nname = "candidate"\ncmd = "engine"\ndir = '
                 + json.dumps(str(engine_dir))
                 + '\n\n[engine_a.options]\nNNUE = "network.nnue"',
@@ -505,8 +505,8 @@ cmd = "/bin/true"
             table.write_bytes(b"table")
             config_path = self.write_identity_config(root)
             text = config_path.read_text(encoding="utf-8").replace(
-                '[engine_a]\nname = "candidate"\ncmd = "/bin/true"',
-                '[engine_a]\nname = "candidate"\ncmd = "/bin/true"'
+                f'[engine_a]\nname = "candidate"\ncmd = {json.dumps(sys.executable)}',
+                f'[engine_a]\nname = "candidate"\ncmd = {json.dumps(sys.executable)}'
                 '\n\n[engine_a.options]\nSyzygyPath = '
                 + json.dumps(str(tables)),
             )
