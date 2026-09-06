@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 TOOLS_DIR = Path(__file__).resolve().parents[1]
+REPO_ROOT = TOOLS_DIR.parent
 sys.path.insert(0, str(TOOLS_DIR))
 
 from compare_fixture_corpus import (  # noqa: E402
@@ -154,6 +155,42 @@ bad-rank\t4\t8/8/8/8/8/7/8/K6k w - - 0 1\t-\ta1a2\ttheme\t0\t0\t0
                 )
             with self.assertRaisesRegex(ValueError, "duplicate fixture case IDs"):
                 load_checks(fixture_dir)
+
+    def test_repository_triage_rows_remain_report_only(self):
+        fixture_dir = REPO_ROOT / "tests" / "fixtures"
+        checks = load_checks(fixture_dir)
+
+        advantage = [
+            check
+            for check in checks
+            if check.fixture == "advantage_preservation.tsv"
+        ]
+        active_advantage = [
+            check.case_id for check in advantage if check.activation == "active"
+        ]
+        self.assertEqual(active_advantage, ["advpres-0040"])
+        self.assertEqual(
+            sum(check.activation == "disabled" for check in advantage),
+            99,
+        )
+
+        mined = [check for check in checks if check.fixture_format == "mined"]
+        self.assertTrue(mined)
+        self.assertTrue(all(check.activation == "disabled" for check in mined))
+
+        chess960 = (
+            fixture_dir / "chess960_puzzle_corpus.tsv"
+        ).read_text(encoding="utf-8")
+        reference_disagreements = [
+            line
+            for line in chess960.splitlines()
+            if "sf18-2mnodes-best-" in line
+        ]
+        self.assertTrue(reference_disagreements)
+        self.assertTrue(
+            all(line.startswith("# ") for line in reference_disagreements)
+        )
+        self.assertFalse((fixture_dir / "engine_regressions_optional.tsv").exists())
 
     def test_directions(self):
         self.assertEqual(direction(True, True), "both-pass")
