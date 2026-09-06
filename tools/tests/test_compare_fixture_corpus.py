@@ -14,6 +14,7 @@ from compare_fixture_corpus import (  # noqa: E402
     disabled_status,
     evaluate_gate,
     format_gate_report,
+    load_checks,
     move_matches,
     parse_uci_option,
     parse_fixture,
@@ -128,6 +129,31 @@ bad-rank\t4\t8/8/8/8/8/7/8/K6k w - - 0 1\t-\ta1a2\ttheme\t0\t0\t0
             fixture.write_text(contents, encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "expands to 7 squares"):
                 parse_fixture(fixture)
+
+    def test_rejects_duplicate_case_ids_across_fixture_rows(self):
+        header = "\t".join(
+            [
+                "id",
+                "depth",
+                "fen_before_blunder",
+                "setup_move",
+                "expected_move",
+                "themes",
+                "rating",
+                "popularity",
+                "plays",
+            ]
+        )
+        fen = "8/8/8/8/8/8/8/K6k w - - 0 1"
+        with tempfile.TemporaryDirectory() as directory:
+            fixture_dir = Path(directory)
+            for name in ("a.tsv", "b.tsv"):
+                (fixture_dir / name).write_text(
+                    f"{header}\nduplicate\t1\t{fen}\t-\ta1a2\ttheme\t0\t0\t0\n",
+                    encoding="utf-8",
+                )
+            with self.assertRaisesRegex(ValueError, "duplicate fixture case IDs"):
+                load_checks(fixture_dir)
 
     def test_directions(self):
         self.assertEqual(direction(True, True), "both-pass")

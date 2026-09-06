@@ -26,7 +26,7 @@ class BisectFixtureCaseTests(unittest.TestCase):
         self.assertEqual(check.depth, 3)
         self.assertEqual(check.expected_move, "expected")
 
-    def test_rejects_missing_or_ambiguous_checks(self):
+    def test_rejects_duplicate_or_missing_checks(self):
         fixture = """\
 id\tdepth\tfen_before_blunder\tsetup_move\texpected_move\tthemes\trating\tpopularity\tplays
 duplicate\t4\t8/8/8/8/8/8/8/K6k w - - 0 1\t-\tmove\ttheme\t0\t0\t0
@@ -36,7 +36,14 @@ duplicate\t4\t8/8/8/8/8/8/8/K6k w - - 0 1\t-\tmove\ttheme\t0\t0\t0
             path = Path(directory) / "cases.tsv"
             path.write_text(fixture, encoding="utf-8")
 
-            with self.assertRaisesRegex(ValueError, "found 2"):
+            with self.assertRaisesRegex(ValueError, "duplicate fixture case IDs"):
                 select_check(directory, "duplicate", 4)
+
+            path.write_text(
+                fixture.replace("duplicate\t4", "present\t4", 1).replace(
+                    "duplicate\t4", "second\t4", 1
+                ),
+                encoding="utf-8",
+            )
             with self.assertRaisesRegex(ValueError, "found 0"):
                 select_check(directory, "missing", 4)

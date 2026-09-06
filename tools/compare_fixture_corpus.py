@@ -184,6 +184,16 @@ def load_checks(fixture_dir):
     keys = [check.key for check in checks]
     if len(keys) != len(set(keys)):
         raise ValueError("duplicate fixture/line/depth check key")
+    id_locations = {}
+    for check in checks:
+        id_locations.setdefault(check.case_id, set()).add(
+            (check.fixture, check.line_number)
+        )
+    duplicate_ids = sorted(
+        case_id for case_id, locations in id_locations.items() if len(locations) > 1
+    )
+    if duplicate_ids:
+        raise ValueError(f"duplicate fixture case IDs: {', '.join(duplicate_ids)}")
     return checks
 
 
