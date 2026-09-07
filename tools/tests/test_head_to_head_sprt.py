@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -407,6 +408,15 @@ cmd = {json.dumps(sys.executable)}
     def test_manifest_executes_resolved_target_after_symlink_retarget(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            probe_target = root / "symlink-probe-target"
+            probe_target.write_bytes(b"")
+            probe = root / "symlink-probe"
+            try:
+                probe.symlink_to(probe_target)
+            except OSError:
+                self.skipTest("creating symlinks requires privileges on this platform")
+            probe.unlink()
+
             first = root / "engine-first"
             second = root / "engine-second"
             first.write_bytes(b"first")
@@ -431,6 +441,11 @@ cmd = {json.dumps(sys.executable)}
             )
             validate_run_manifest(manifest)
 
+    @unittest.skipIf(
+        os.name == "nt",
+        "Windows has no executable permission bit; head_to_head skips the"
+        " X_OK check there",
+    )
     def test_manifest_rejects_non_executable_engine_file(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

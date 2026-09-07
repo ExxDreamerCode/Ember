@@ -1,3 +1,4 @@
+import os
 import sys
 import tempfile
 import unittest
@@ -28,6 +29,18 @@ from compare_fixture_corpus import (  # noqa: E402
 
 
 class CompareFixtureCorpusTests(unittest.TestCase):
+    def make_launchable(self, script: Path) -> Path:
+        if os.name != "nt":
+            script.chmod(0o755)
+            return script
+        wrapper = script.with_suffix(".bat")
+        wrapper.write_text(
+            "@echo off\r\n"
+            f'"{sys.executable}" "%~dp0{script.name}" %*\r\n',
+            encoding="ascii",
+        )
+        return wrapper
+
     def fake_engine(
         self,
         directory,
@@ -68,8 +81,7 @@ for command in sys.stdin:
 """,
             encoding="utf-8",
         )
-        script.chmod(0o755)
-        return script
+        return self.make_launchable(script)
 
     def fixture_check(self, depth):
         return FixtureCheck(

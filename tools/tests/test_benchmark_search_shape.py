@@ -1,7 +1,9 @@
 import argparse
 import importlib.util
 import json
+import os
 import pathlib
+import sys
 import tempfile
 import unittest
 
@@ -45,6 +47,18 @@ class SearchShapeArtifactTests(unittest.TestCase):
             ):
                 MODULE.parse_option_arg(option)
 
+    def make_launchable(self, script: pathlib.Path) -> pathlib.Path:
+        if os.name != "nt":
+            script.chmod(0o755)
+            return script
+        wrapper = script.with_suffix(".bat")
+        wrapper.write_text(
+            "@echo off\r\n"
+            f'"{sys.executable}" "%~dp0{script.name}" %*\r\n',
+            encoding="ascii",
+        )
+        return wrapper
+
     def fake_engine(self, directory, setup_lines):
         script = pathlib.Path(directory) / "fake-engine"
         script.write_text(
@@ -68,8 +82,7 @@ for command in sys.stdin:
 """.format(setup_lines=json.dumps(setup_lines)),
             encoding="utf-8",
         )
-        script.chmod(0o755)
-        return script
+        return self.make_launchable(script)
 
     def test_backend_must_be_acknowledged_and_raw_log_keeps_setup(self):
         with tempfile.TemporaryDirectory() as directory:
