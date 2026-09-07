@@ -81,7 +81,7 @@ jobs:
           retention-days: 7
 
   lichess-puzzle-corpus:
-    name: Move regression fixtures (two-binary gate)
+    name: Move regression fixtures
     runs-on: ubuntu-latest
 
     env:
@@ -106,8 +106,14 @@ jobs:
             push) baseline="${{ github.event.before }}" ;;
             *) baseline="" ;;
           esac
-          if [ -z "$baseline" ] || \
-             [ "$baseline" = "0000000000000000000000000000000000000000" ]; then
+          if [ -n "$baseline" ] && \
+             [ "$baseline" != "0000000000000000000000000000000000000000" ] && \
+             git cat-file -e "$baseline^{commit}" 2>/dev/null; then
+            : # the pre-push tip is still part of the fetched history
+          else
+            # The event SHA is empty, or a force push replaced the pre-push
+            # tip so the runner's clone cannot resolve it; compare against
+            # the parent of the checked-out commit instead.
             baseline="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
           fi
           echo "BASELINE_SHA=$baseline" >> "$GITHUB_ENV"
