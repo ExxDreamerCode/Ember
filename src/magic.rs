@@ -21,6 +21,12 @@ struct MagicTables {
 
 #[inline(always)]
 pub fn bishop_attacks(sq: usize, occ: u64) -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(pext) = pext_tables() {
+        // SAFETY: `pext_tables` only returns Some after BMI2 was detected at
+        // runtime, so the `pext` intrinsic is legal on this core.
+        return unsafe { pext_bishop_attacks(sq, occ, pext) };
+    }
     let t = tables();
     let m = &t.bishop[sq];
     let idx = m.offset + (occ & m.mask).wrapping_mul(m.magic).wrapping_shr(m.shift) as usize;
@@ -29,10 +35,93 @@ pub fn bishop_attacks(sq: usize, occ: u64) -> u64 {
 
 #[inline(always)]
 pub fn rook_attacks(sq: usize, occ: u64) -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(pext) = pext_tables() {
+        // SAFETY: `pext_tables` only returns Some after BMI2 was detected at
+        // runtime, so the `pext` intrinsic is legal on this core.
+        return unsafe { pext_rook_attacks(sq, occ, pext) };
+    }
     let t = tables();
     let m = &t.rook[sq];
     let idx = m.offset + (occ & m.mask).wrapping_mul(m.magic).wrapping_shr(m.shift) as usize;
     t.rook_attacks[idx]
+}
+
+#[cfg(target_arch = "x86_64")]
+struct PextEntry {
+    mask: u64,
+    offset: usize,
+}
+
+#[cfg(target_arch = "x86_64")]
+struct PextTables {
+    bishop: [PextEntry; 64],
+    rook: [PextEntry; 64],
+    bishop_attacks: Vec<u64>,
+    rook_attacks: Vec<u64>,
+}
+
+#[cfg(target_arch = "x86_64")]
+static PEXT_TABLES: OnceLock<Option<PextTables>> = OnceLock::new();
+
+#[cfg(target_arch = "x86_64")]
+fn pext_tables() -> Option<&'static PextTables> {
+    PEXT_TABLES
+        .get_or_init(|| {
+            if !std::arch::is_x86_feature_detected!("bmi2") {
+                return None;
+            }
+            Some(build_pext_tables())
+        })
+        .as_ref()
+}
+
+#[cfg(target_arch = "x86_64")]
+fn build_pext_tables() -> PextTables {
+    let mut bishop_attacks_vec = Vec::new();
+    let bishop = std::array::from_fn(|sq| {
+        let mask = bishop_mask(sq);
+        let offset = bishop_attacks_vec.len();
+        for sub in subsets(mask) {
+            bishop_attacks_vec.push(slow_bishop(sq, sub));
+        }
+        PextEntry { mask, offset }
+    });
+
+    let mut rook_attacks_vec = Vec::new();
+    let rook = std::array::from_fn(|sq| {
+        let mask = rook_mask(sq);
+        let offset = rook_attacks_vec.len();
+        for sub in subsets(mask) {
+            rook_attacks_vec.push(slow_rook(sq, sub));
+        }
+        PextEntry { mask, offset }
+    });
+
+    PextTables {
+        bishop,
+        rook,
+        bishop_attacks: bishop_attacks_vec,
+        rook_attacks: rook_attacks_vec,
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "bmi2")]
+unsafe fn pext_bishop_attacks(sq: usize, occ: u64, tables: &PextTables) -> u64 {
+    use std::arch::x86_64::_pext_u64;
+    let entry = &tables.bishop[sq];
+    let idx = entry.offset + _pext_u64(occ & entry.mask, entry.mask) as usize;
+    tables.bishop_attacks[idx]
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "bmi2")]
+unsafe fn pext_rook_attacks(sq: usize, occ: u64, tables: &PextTables) -> u64 {
+    use std::arch::x86_64::_pext_u64;
+    let entry = &tables.rook[sq];
+    let idx = entry.offset + _pext_u64(occ & entry.mask, entry.mask) as usize;
+    tables.rook_attacks[idx]
 }
 
 #[rustfmt::skip]
@@ -217,6 +306,72 @@ impl MagicTables {
             rook: rook_magics_arr,
             bishop_attacks: bishop_attacks_vec,
             rook_attacks: rook_attacks_vec,
+        }
+    }
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+mod pext_tests {
+    use super::{
+        bishop_attacks, bishop_mask, pext_tables, rook_attacks, rook_mask, slow_bishop, slow_rook,
+        subsets,
+    };
+
+    fn pseudo_random_occupancies(count: usize) -> Vec<u64> {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        (0..count)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state
+            })
+            .collect()
+    }
+
+    #[test]
+    fn pext_slider_attacks_match_magic_tables() {
+        let Some(pext) = pext_tables() else {
+            return;
+        };
+
+        for sq in 0..64usize {
+            for occ in pseudo_random_occupancies(256) {
+                assert_eq!(
+                    unsafe { super::pext_bishop_attacks(sq, occ, pext) },
+                    bishop_attacks(sq, occ),
+                    "pext bishop mismatch at square {sq} with occupancy {occ:#x}"
+                );
+                assert_eq!(
+                    unsafe { super::pext_rook_attacks(sq, occ, pext) },
+                    rook_attacks(sq, occ),
+                    "pext rook mismatch at square {sq} with occupancy {occ:#x}"
+                );
+            }
+        }
+
+        for sq in [0usize, 7, 9, 27, 28, 35, 36, 54, 56, 63] {
+            for sub in subsets(bishop_mask(sq)) {
+                assert_eq!(
+                    unsafe { super::pext_bishop_attacks(sq, sub, pext) },
+                    slow_bishop(sq, sub),
+                    "pext bishop subset mismatch at square {sq} with subset {sub:#x}"
+                );
+            }
+            for sub in subsets(rook_mask(sq)) {
+                assert_eq!(
+                    unsafe { super::pext_rook_attacks(sq, sub, pext) },
+                    slow_rook(sq, sub),
+                    "pext rook subset mismatch at square {sq} with subset {sub:#x}"
+                );
+            }
+        }
+
+        for sq in 0..64usize {
+            for occ in pseudo_random_occupancies(64) {
+                assert_eq!(bishop_attacks(sq, occ), slow_bishop(sq, occ));
+                assert_eq!(rook_attacks(sq, occ), slow_rook(sq, occ));
+            }
         }
     }
 }
