@@ -378,7 +378,7 @@ Expected coverage:
 - Windows arm64;
 - macOS amd64;
 - macOS arm64;
-- native Windows MSVC amd64 build-smoke, if enabled in CI.
+- native Windows MSVC amd64 build and test run, if enabled in CI.
 
 Acceptance criteria:
 
