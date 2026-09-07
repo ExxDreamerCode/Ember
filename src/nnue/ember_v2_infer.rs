@@ -298,12 +298,38 @@ fn threat_lut() -> &'static ThreatLut {
     LUT.get_or_init(ThreatLut::build)
 }
 
-fn collect_active_threat_indices(state: &BoardState, perspective: u32, out: &mut Vec<usize>) {
+#[cfg(test)]
+pub(crate) fn collect_active_threat_indices(
+    state: &BoardState,
+    perspective: u32,
+    out: &mut Vec<u16>,
+) {
+    let mut other = Vec::new();
+    let (mine, rest) = if perspective == 0 {
+        (&mut *out, &mut other)
+    } else {
+        (&mut other, &mut *out)
+    };
+    collect_active_threat_indices_both(state, [mine, rest]);
+}
+
+pub(crate) fn collect_active_threat_indices_both(state: &BoardState, outs: [&mut Vec<u16>; 2]) {
+    let [out_white, out_black] = outs;
     let lut = threat_lut();
-    let king_square = find_king(state, perspective);
+    let king_squares = [find_king(state, 0), find_king(state, 1)];
     let occupancy = state.bb.iter().copied().fold(0u64, |all, bb| all | bb);
     let all_pawns = state.bb[0] | state.bb[6];
-    out.clear();
+    out_white.clear();
+    out_black.clear();
+
+    macro_rules! push_threat {
+        ($out:expr, $perspective:expr, $piece:expr, $from:expr, $to:expr, $attacked:expr, $king:expr) => {
+            let index = lut.make_index($perspective, $piece, $from, $to, $attacked, $king);
+            if index < THREAT_DIMS {
+                $out.push(index as u16);
+            }
+        };
+    }
 
     for color in 0..2u32 {
         let pawns = state.bb[(color * 6) as usize];
@@ -316,32 +342,16 @@ fn collect_active_threat_indices(state: &BoardState, perspective: u32, out: &mut
             while attacks != 0 {
                 let to = attacks.trailing_zeros();
                 attacks &= attacks - 1;
-                let index = lut.make_index(
-                    perspective,
-                    color * 6,
-                    from,
-                    to,
-                    piece_at(state, to),
-                    king_square,
-                );
-                if index < THREAT_DIMS {
-                    out.push(index);
-                }
+                let attacked = piece_at(state, to);
+                push_threat!(out_white, 0, color * 6, from, to, attacked, king_squares[0]);
+                push_threat!(out_black, 1, color * 6, from, to, attacked, king_squares[1]);
             }
 
             if let Some(to) = pawn_forward_square(color, from) {
                 if all_pawns & (1u64 << to) != 0 {
-                    let index = lut.make_index(
-                        perspective,
-                        color * 6,
-                        from,
-                        to,
-                        piece_at(state, to),
-                        king_square,
-                    );
-                    if index < THREAT_DIMS {
-                        out.push(index);
-                    }
+                    let attacked = piece_at(state, to);
+                    push_threat!(out_white, 0, color * 6, from, to, attacked, king_squares[0]);
+                    push_threat!(out_black, 1, color * 6, from, to, attacked, king_squares[1]);
                 }
             }
         }
@@ -356,17 +366,9 @@ fn collect_active_threat_indices(state: &BoardState, perspective: u32, out: &mut
                 while attacks != 0 {
                     let to = attacks.trailing_zeros();
                     attacks &= attacks - 1;
-                    let index = lut.make_index(
-                        perspective,
-                        piece,
-                        from,
-                        to,
-                        piece_at(state, to),
-                        king_square,
-                    );
-                    if index < THREAT_DIMS {
-                        out.push(index);
-                    }
+                    let attacked = piece_at(state, to);
+                    push_threat!(out_white, 0, piece, from, to, attacked, king_squares[0]);
+                    push_threat!(out_black, 1, piece, from, to, attacked, king_squares[1]);
                 }
             }
         }
@@ -437,7 +439,7 @@ fn remove_threat_row<B: EmberV2Backend>(
 pub(crate) struct EmberV2Accumulator {
     accumulation: [[i16; HIDDEN_SIZE]; 2],
     psqt: [[i32; PSQT_BUCKETS]; 2],
-    threat_indices: [Vec<usize>; 2],
+    threat_indices: [Vec<u16>; 2],
 }
 
 impl EmberV2Accumulator {
@@ -454,16 +456,25 @@ impl EmberV2Accumulator {
         net: &EmberV2Data,
         state: &BoardState,
     ) {
+        let mut threat_lists = [
+            std::mem::take(&mut self.threat_indices[0]),
+            std::mem::take(&mut self.threat_indices[1]),
+        ];
+        let [list_white, list_black] = &mut threat_lists;
+        collect_active_threat_indices_both(state, [list_white, list_black]);
         for perspective in 0..2u32 {
-            self.refresh_perspective::<B>(net, state, perspective);
+            let side = perspective as usize;
+            self.rebuild_perspective::<B>(net, state, perspective, &threat_lists[side]);
         }
+        self.threat_indices = threat_lists;
     }
 
-    fn refresh_perspective<B: EmberV2Backend>(
+    fn rebuild_perspective<B: EmberV2Backend>(
         &mut self,
         net: &EmberV2Data,
         state: &BoardState,
         perspective: u32,
+        threat_list: &[u16],
     ) {
         let side = perspective as usize;
         for (value, bias) in self.accumulation[side].iter_mut().zip(net.ft_bias.iter()) {
@@ -488,10 +499,8 @@ impl EmberV2Accumulator {
             }
         }
 
-        let mut threat_indices = std::mem::take(&mut self.threat_indices[side]);
-        collect_active_threat_indices(state, perspective, &mut threat_indices);
-        threat_indices.sort_unstable();
-        for &index in &threat_indices {
+        for &index in threat_list {
+            let index = index as usize;
             add_threat_row::<B>(
                 &mut self.accumulation[side],
                 &mut self.psqt[side],
@@ -499,7 +508,6 @@ impl EmberV2Accumulator {
                 &net.threat_psqt[index * PSQT_BUCKETS..(index + 1) * PSQT_BUCKETS],
             );
         }
-        self.threat_indices[side] = threat_indices;
     }
 
     pub(crate) fn update_from_parent_with_backend<B: EmberV2Backend>(
@@ -509,14 +517,23 @@ impl EmberV2Accumulator {
         before: &BoardState,
         after: &BoardState,
     ) {
-        self.clone_from(parent);
+        self.accumulation = parent.accumulation;
+        self.psqt = parent.psqt;
+
+        let mut threat_lists = [
+            std::mem::take(&mut self.threat_indices[0]),
+            std::mem::take(&mut self.threat_indices[1]),
+        ];
+        let [list_white, list_black] = &mut threat_lists;
+        collect_active_threat_indices_both(after, [list_white, list_black]);
+
         for perspective in 0..2u32 {
+            let side = perspective as usize;
             if find_king(before, perspective) != find_king(after, perspective) {
-                self.refresh_perspective::<B>(net, after, perspective);
+                self.rebuild_perspective::<B>(net, after, perspective, &threat_lists[side]);
                 continue;
             }
 
-            let side = perspective as usize;
             let king_square = find_king(after, perspective);
             for square in 0..64u32 {
                 let before_piece = before.mailbox[square as usize];
@@ -546,10 +563,9 @@ impl EmberV2Accumulator {
                 }
             }
 
-            let mut added = std::mem::take(&mut self.threat_indices[side]);
-            collect_active_threat_indices(after, perspective, &mut added);
-            added.sort_unstable();
+            threat_lists[side].sort_unstable();
             let removed = &parent.threat_indices[side];
+            let added = &threat_lists[side];
             let (mut before_index, mut after_index) = (0, 0);
             while before_index < removed.len() || after_index < added.len() {
                 match (removed.get(before_index), added.get(after_index)) {
@@ -561,8 +577,10 @@ impl EmberV2Accumulator {
                         remove_threat_row::<B>(
                             &mut self.accumulation[side],
                             &mut self.psqt[side],
-                            &net.threat_weights[old * HIDDEN_SIZE..(old + 1) * HIDDEN_SIZE],
-                            &net.threat_psqt[old * PSQT_BUCKETS..(old + 1) * PSQT_BUCKETS],
+                            &net.threat_weights
+                                [old as usize * HIDDEN_SIZE..(old as usize + 1) * HIDDEN_SIZE],
+                            &net.threat_psqt
+                                [old as usize * PSQT_BUCKETS..(old as usize + 1) * PSQT_BUCKETS],
                         );
                         before_index += 1;
                     }
@@ -570,8 +588,10 @@ impl EmberV2Accumulator {
                         add_threat_row::<B>(
                             &mut self.accumulation[side],
                             &mut self.psqt[side],
-                            &net.threat_weights[new * HIDDEN_SIZE..(new + 1) * HIDDEN_SIZE],
-                            &net.threat_psqt[new * PSQT_BUCKETS..(new + 1) * PSQT_BUCKETS],
+                            &net.threat_weights
+                                [new as usize * HIDDEN_SIZE..(new as usize + 1) * HIDDEN_SIZE],
+                            &net.threat_psqt
+                                [new as usize * PSQT_BUCKETS..(new as usize + 1) * PSQT_BUCKETS],
                         );
                         after_index += 1;
                     }
@@ -579,16 +599,18 @@ impl EmberV2Accumulator {
                         remove_threat_row::<B>(
                             &mut self.accumulation[side],
                             &mut self.psqt[side],
-                            &net.threat_weights[old * HIDDEN_SIZE..(old + 1) * HIDDEN_SIZE],
-                            &net.threat_psqt[old * PSQT_BUCKETS..(old + 1) * PSQT_BUCKETS],
+                            &net.threat_weights
+                                [old as usize * HIDDEN_SIZE..(old as usize + 1) * HIDDEN_SIZE],
+                            &net.threat_psqt
+                                [old as usize * PSQT_BUCKETS..(old as usize + 1) * PSQT_BUCKETS],
                         );
                         before_index += 1;
                     }
                     (None, None) => break,
                 }
             }
-            self.threat_indices[side] = added;
         }
+        self.threat_indices = threat_lists;
     }
 }
 
