@@ -11,6 +11,7 @@ TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))
 
 from head_to_head import (  # noqa: E402
+    _build,
     capped_verdict,
     command_executable,
     command_label,
@@ -331,6 +332,98 @@ cmd = {json.dumps(sys.executable)}
             metadata["tools"][binary],
             {"path": binary, "available": True},
         )
+
+    def test_build_phase_keeps_the_run_request_fingerprint_stable(self):
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            (root / "README.md").write_text("identity fixture\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                    "-c",
+                    "user.name=fixture",
+                    "commit",
+                    "-qm",
+                    "identity fixture",
+                ],
+                check=True,
+            )
+            head = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+            opening = root / "openings.epd"
+            opening.write_text("8/8/8/8/8/8/8/K6k w - -\n", encoding="utf-8")
+            config_path = root / "match.toml"
+            config_path.write_text(
+                f"""
+[run]
+name = "identity"
+results_dir = {json.dumps(str(root / "results"))}
+opening_source = "file"
+opening_file = {json.dumps(str(opening))}
+cutechess_cmd = {json.dumps(sys.executable)}
+workers = 1
+max_pairs = 4
+depth = 1
+
+[build]
+repo = {json.dumps(str(root))}
+command = ["true"]
+
+[engine_a]
+name = "candidate"
+revision = {json.dumps(head)}
+
+[engine_b]
+name = "baseline"
+revision = {json.dumps(head)}
+""",
+                encoding="utf-8",
+            )
+
+            def fake_build_revision(cfg, run_dir, engine_id):
+                binary = (
+                    run_dir
+                    / "builds"
+                    / engine_id
+                    / "bin"
+                    / platform_binary("ember")
+                )
+                binary.parent.mkdir(parents=True, exist_ok=True)
+                binary.write_bytes(b"fake engine")
+                return {
+                    "engine": engine_id,
+                    "revision": "deadbeef",
+                    "binary": str(binary),
+                    "sha256": "0" * 64,
+                    "command": ["true"],
+                }
+
+            # The probe phase records the run request from the pristine
+            # configuration, exactly like the `probe`/`run` phases do.
+            ensure_run_request(config_path, load_config(config_path), "run")
+
+            with patch(
+                "head_to_head.build_revision", side_effect=fake_build_revision
+            ):
+                _build(config_path, "run")
+
+            # The run phase validates the same pristine configuration again;
+            # a build phase that materialized commands into the live config
+            # would have changed the fingerprint and rejected the run.
+            ensure_run_request(config_path, load_config(config_path), "run")
 
     def test_run_request_allows_only_exact_resume(self):
         with tempfile.TemporaryDirectory() as directory:

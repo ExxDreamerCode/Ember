@@ -1615,7 +1615,6 @@ def _build(
         revision_metadata = {}
         for engine_id in revision_engines:
             revision_metadata[engine_id] = build_revision(cfg, rd, engine_id)
-        materialize_revision_commands(cfg, rd)
         metadata_path = rd / "metadata.json"
         metadata = (
             json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -1625,6 +1624,10 @@ def _build(
         record_revision_metadata(metadata, cfg, revision_metadata)
         write_json(metadata_path, metadata)
         if len(revision_engines) == 2:
+            # prepare_run_manifest re-derives the engine commands on its own
+            # copies and re-validates the run request against the pristine
+            # config. Materializing the commands into `cfg` here would change
+            # the run-request fingerprint and reject the run it just built.
             prepare_run_manifest(
                 config_path,
                 cfg,
