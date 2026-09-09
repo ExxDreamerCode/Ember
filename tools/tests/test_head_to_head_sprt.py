@@ -403,6 +403,9 @@ revision = {json.dumps(head)}
                 )
                 binary.parent.mkdir(parents=True, exist_ok=True)
                 binary.write_bytes(b"fake engine")
+                # resolve_executable requires the executable bit on
+                # POSIX, so the fake binary must be launchable there.
+                binary.chmod(0o755)
                 return {
                     "engine": engine_id,
                     "revision": "deadbeef",
