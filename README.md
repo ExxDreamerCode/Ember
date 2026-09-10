@@ -51,6 +51,7 @@ echo -e "uci\nisready\nquit" | cargo run --release
 | --- | --- | --- | --- | --- |
 | `Hash` | spin | 256 | 1–4096 | Transposition table size in megabytes |
 | `Threads` | spin | 1 | 1–256 | Number of search threads |
+| `MultiPV` | spin | 1 | 1–256 | Number of root moves analyzed and reported independently per depth |
 | `Book` | string | `<embedded>` | — | Path to a `.bin` opening book |
 | `RandomBookMove` | check | false | — | Pick uniformly among safe book moves within 5 centipawns of the best static evaluation |
 | `BookMinMoveWeight` | spin | 2 | 1–65535 | Minimum absolute book move weight |
@@ -121,6 +122,13 @@ setoption name Book value <embedded>
 ```
 
 Any Polyglot-compatible book is supported, including Stockfish books.
+
+When the engine picks a move from the book, it reports the choice with zeroed
+search telemetry and a tag identifying its origin:
+
+```text
+info depth 0 score cp 0 nodes 0 nps 0 time 0 pv e2e4 string book move
+```
 
 ### Neural network (NNUE)
 
