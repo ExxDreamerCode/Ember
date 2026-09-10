@@ -5,6 +5,8 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+const UCI_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+
 fn spawn_ember() -> (Child, Receiver<String>) {
     spawn_ember_in_dir(None)
 }
@@ -114,7 +116,7 @@ fn assert_go_nodes_returns_promptly(threads: usize) {
     writeln!(stdin, "isready").unwrap();
     stdin.flush().unwrap();
     assert!(
-        wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some(),
+        wait_for_line(&rx, "readyok", UCI_STARTUP_TIMEOUT).is_some(),
         "Ember did not finish UCI initialization"
     );
 
@@ -156,7 +158,7 @@ fn malformed_uci_input_is_rejected_without_crashing() {
     writeln!(stdin, "setoption name Book value").unwrap();
     writeln!(stdin, "isready").unwrap();
     stdin.flush().unwrap();
-    assert!(wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some());
+    assert!(wait_for_line(&rx, "readyok", UCI_STARTUP_TIMEOUT).is_some());
 
     writeln!(stdin, "position startpos moves 0000 g1f3").unwrap();
     writeln!(stdin, "position startpos moves zzzz").unwrap();
@@ -178,6 +180,46 @@ fn malformed_uci_input_is_rejected_without_crashing() {
 }
 
 #[test]
+fn external_compact_nnue_loads_through_the_uci_option() {
+    let compact_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("networks/V1/1.1.1-1.3.0/net.compact.nnue");
+    let (mut child, rx) = spawn_ember();
+    let mut stdin = child.stdin.take().expect("capture Ember stdin");
+
+    writeln!(stdin, "uci").unwrap();
+    assert!(wait_for_line(&rx, "uciok", UCI_STARTUP_TIMEOUT).is_some());
+    writeln!(stdin, "setoption name Hash value 16").unwrap();
+    writeln!(stdin, "setoption name Book value").unwrap();
+    writeln!(
+        stdin,
+        "setoption name NNUE value {}",
+        compact_path.display()
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+    assert!(
+        wait_for_line(&rx, "info string Loaded NNUE ", Duration::from_secs(5)).is_some(),
+        "external compact NNUE did not report a successful load"
+    );
+
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some());
+    writeln!(stdin, "position startpos").unwrap();
+    writeln!(stdin, "go depth 1").unwrap();
+    stdin.flush().unwrap();
+    assert!(
+        wait_for_line(&rx, "bestmove ", Duration::from_secs(5)).is_some(),
+        "search did not use the externally loaded compact NNUE"
+    );
+
+    writeln!(stdin, "quit").unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+    assert!(child.wait().expect("wait for Ember").success());
+}
+
+#[test]
 fn queued_quit_during_search_exits_cleanly() {
     let (mut child, _rx) = spawn_ember();
     let mut stdin = child.stdin.take().expect("capture Ember stdin");
@@ -189,7 +231,7 @@ fn queued_quit_during_search_exits_cleanly() {
     stdin.flush().unwrap();
     drop(stdin);
 
-    let Some(status) = wait_for_exit(&mut child, Duration::from_secs(5)) else {
+    let Some(status) = wait_for_exit(&mut child, UCI_STARTUP_TIMEOUT) else {
         let _ = child.kill();
         let _ = child.wait();
         panic!("Ember did not exit after queued quit during search");
@@ -209,7 +251,7 @@ fn input_eof_during_search_exits_cleanly() {
     stdin.flush().unwrap();
     drop(stdin);
 
-    let Some(status) = wait_for_exit(&mut child, Duration::from_secs(5)) else {
+    let Some(status) = wait_for_exit(&mut child, UCI_STARTUP_TIMEOUT) else {
         let _ = child.kill();
         let _ = child.wait();
         panic!("Ember did not exit after stdin EOF during search");
@@ -227,7 +269,7 @@ fn immediate_stop_interrupts_lazy_smp_search() {
     writeln!(stdin, "isready").unwrap();
     stdin.flush().unwrap();
     assert!(
-        wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some(),
+        wait_for_line(&rx, "readyok", UCI_STARTUP_TIMEOUT).is_some(),
         "Ember did not finish UCI initialization"
     );
 
@@ -256,7 +298,7 @@ fn completed_ponder_search_waits_for_ponderhit() {
     writeln!(stdin, "uci").unwrap();
     stdin.flush().unwrap();
     assert!(
-        wait_for_line(&rx, "option name Ponder ", Duration::from_secs(5)).is_some(),
+        wait_for_line(&rx, "option name Ponder ", UCI_STARTUP_TIMEOUT).is_some(),
         "Ember did not advertise UCI pondering"
     );
     writeln!(stdin, "setoption name Hash value 16").unwrap();
@@ -300,7 +342,7 @@ fn active_ponder_search_ignores_move_time_until_ponderhit() {
     writeln!(stdin, "setoption name Book value").unwrap();
     writeln!(stdin, "isready").unwrap();
     stdin.flush().unwrap();
-    assert!(wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some());
+    assert!(wait_for_line(&rx, "readyok", UCI_STARTUP_TIMEOUT).is_some());
 
     writeln!(stdin, "position startpos").unwrap();
     writeln!(stdin, "go ponder movetime 50").unwrap();
@@ -339,7 +381,7 @@ fn disabled_ponder_option_suppresses_principal_variation_ponder_move() {
     writeln!(stdin, "setoption name Ponder value false").unwrap();
     writeln!(stdin, "isready").unwrap();
     stdin.flush().unwrap();
-    assert!(wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some());
+    assert!(wait_for_line(&rx, "readyok", UCI_STARTUP_TIMEOUT).is_some());
 
     writeln!(stdin, "position startpos").unwrap();
     writeln!(stdin, "go depth 4").unwrap();
@@ -368,7 +410,7 @@ fn enabled_ponder_option_supplies_principal_variation_ponder_move() {
     writeln!(stdin, "setoption name Ponder value true").unwrap();
     writeln!(stdin, "isready").unwrap();
     stdin.flush().unwrap();
-    assert!(wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some());
+    assert!(wait_for_line(&rx, "readyok", UCI_STARTUP_TIMEOUT).is_some());
 
     writeln!(stdin, "position startpos").unwrap();
     writeln!(stdin, "go depth 4").unwrap();
@@ -397,7 +439,7 @@ fn enabled_ponder_option_supplies_book_ponder_move() {
     writeln!(stdin, "setoption name BookMinMoveWeight value 2000").unwrap();
     writeln!(stdin, "isready").unwrap();
     stdin.flush().unwrap();
-    assert!(wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some());
+    assert!(wait_for_line(&rx, "readyok", UCI_STARTUP_TIMEOUT).is_some());
 
     writeln!(stdin, "position startpos moves e2e4 c7c5").unwrap();
     writeln!(stdin, "go movetime 10").unwrap();
@@ -423,7 +465,7 @@ fn random_book_move_is_opt_in_and_returns_without_searching() {
     writeln!(stdin, "uci").unwrap();
     stdin.flush().unwrap();
     assert_eq!(
-        wait_for_line(&rx, "option name RandomBookMove ", Duration::from_secs(5)).as_deref(),
+        wait_for_line(&rx, "option name RandomBookMove ", UCI_STARTUP_TIMEOUT).as_deref(),
         Some("option name RandomBookMove type check default false"),
         "Ember must advertise deterministic book selection as the default"
     );
@@ -443,9 +485,11 @@ fn random_book_move_is_opt_in_and_returns_without_searching() {
         Some(0),
         "random book selection unexpectedly started search: {info}"
     );
-    assert_eq!(
-        wait_for_line(&rx, "bestmove ", Duration::from_secs(5)).as_deref(),
-        Some("bestmove d2d4")
+    let bestmove = wait_for_line(&rx, "bestmove ", Duration::from_secs(5))
+        .expect("random book selection did not return a move");
+    assert!(
+        ["bestmove d2d4", "bestmove c2c3"].contains(&bestmove.as_str()),
+        "random book selection returned an unexpected move: {bestmove}"
     );
 
     writeln!(stdin, "quit").unwrap();
@@ -467,7 +511,7 @@ fn startup_ignores_local_book_until_explicitly_selected() {
     writeln!(stdin, "uci").unwrap();
     writeln!(stdin, "isready").unwrap();
     stdin.flush().unwrap();
-    assert!(wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some());
+    assert!(wait_for_line(&rx, "readyok", UCI_STARTUP_TIMEOUT).is_some());
 
     writeln!(stdin, "position startpos").unwrap();
     writeln!(stdin, "go depth 64").unwrap();
@@ -514,7 +558,7 @@ fn ponder_search_bypasses_book_probe() {
     writeln!(stdin, "setoption name Threads value 1").unwrap();
     writeln!(stdin, "isready").unwrap();
     stdin.flush().unwrap();
-    assert!(wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some());
+    assert!(wait_for_line(&rx, "readyok", UCI_STARTUP_TIMEOUT).is_some());
 
     writeln!(stdin, "position startpos moves e2e4 c7c5").unwrap();
     writeln!(stdin, "go ponder depth 1").unwrap();

@@ -58,22 +58,49 @@ export RUST_MIN_STACK=16777216
 cargo test --locked --all-features -- --test-threads=1
 ```
 
-Run the release move-fixture corpus:
+Run the release move-fixture gate. The in-process fixture suite (`--ignored`) enforces
+every active hard-layer case from `engine_regressions.tsv`; soft cases use the two-binary
+comparison against the previous release binary:
 
 ```bash
-ulimit -s 65536
-export RUST_MIN_STACK=16777216
-export EMBER_LICHESS_CORPUS_THREADS=<worker-count>
-cargo test --locked --release --all-features --test lichess_puzzle_corpus -- --ignored --test-threads=<worker-count>
+cargo test --locked --release --all-features \
+  --test lichess_puzzle_corpus ember_solves_hard_move_regressions \
+  -- --ignored --test-threads=1
+
+python3 tools/compare_fixture_corpus.py \
+  --fixtures tests/fixtures \
+  --baseline path/to/previous/ember \
+  --candidate path/to/candidate/ember \
+  --baseline-label "V1.1.2" \
+  --candidate-label "candidate" \
+  --workers 4 \
+  --hash-mb 256 \
+  --active-only \
+  --gate \
+  --gate-profile strict \
+  --gate-hard-fixtures engine_regressions.tsv \
+  --gate-net-tolerance-permille 10 \
+  --output-json results/fixture-gate/corpus.json \
+  --output-tsv results/fixture-gate/corpus.tsv
 ```
 
 Acceptance criteria:
 
 - formatting, check, clippy, and tests pass;
-- every active TSV move fixture passes;
-- if a fixture outcome differs from the previous release, the change is
-  understood and documented;
+- the fixture gate verdict is `PASS`, meaning:
+  - the candidate solves every active `engine_regressions.tsv` case, even if
+    the baseline already missed it;
+  - the net number of active solved cases lost versus the baseline is at most
+    `1%` of baseline solves under the default `strict` profile;
+- every pass->fail flip is understood, documented, and either fixed, updated as
+  an intentional improvement, or relaxed to an honest invariant; the gate report
+  lists them in `results/fixture-gate/corpus.json`;
 - no public move regression is hidden in a Rust-only test or an untracked note.
+
+For a predeclared large rearchitecture, use `--gate-profile rearchitecture`
+and set `--gate-floor-ratio-permille 800`. That profile replaces the strict net
+loss limit with an 80% proportional floor; the hard-layer and engine-error
+rules remain unchanged.
 
 ## 3. Native NPS comparison
 
@@ -351,7 +378,7 @@ Expected coverage:
 - Windows arm64;
 - macOS amd64;
 - macOS arm64;
-- native Windows MSVC amd64 build-smoke, if enabled in CI.
+- native Windows MSVC amd64 build and test run, if enabled in CI.
 
 Acceptance criteria:
 

@@ -1,4 +1,4 @@
-﻿use crate::backend::{nnue_backend_available, NnueBackendKind};
+use crate::backend::{nnue_backend_available, NnueBackendKind};
 use crate::board::BoardState;
 use crate::types::WHITE;
 use std::mem::MaybeUninit;
@@ -29,10 +29,10 @@ unsafe fn assume_init_slice<T>(values: &[MaybeUninit<T>]) -> &[T] {
 
 mod backend;
 mod classic;
+mod ember_v2_infer;
+mod ember_v2_net;
 mod features;
 mod loader;
-mod other_infer;
-mod other_nets;
 #[cfg(target_arch = "x86_64")]
 pub(crate) use self::backend::Avx512NnueBackend;
 pub(crate) use self::backend::{
@@ -41,12 +41,15 @@ pub(crate) use self::backend::{
 #[cfg(test)]
 pub(crate) use self::classic::synthetic_test_net_bytes;
 pub(crate) use self::classic::{ClassicHalfKpAccumulator, ClassicHalfKpNet};
+pub(crate) use self::ember_v2_infer::{
+    evaluate_ember_v2, evaluate_ember_v2_acc_with_backend, evaluate_ember_v2_with_backend,
+    EmberV2Accumulator, EmberV2Backend,
+};
+pub(crate) use self::ember_v2_net::{EmberV2Data, EmberV2Info};
 pub use self::features::{
     compute_king_buckets, threat_feature_count, KbLayout, NNUEThreatAccumulator,
 };
 use self::features::{halfka_idx, output_bucket};
-pub(crate) use self::other_infer::{evaluate_other_net, evaluate_other_net_acc, OtherAccumulator};
-pub(crate) use self::other_nets::{OtherNetData, OtherNetInfo};
 
 const COMPACT_ZERO_ROW: u16 = u16::MAX;
 
@@ -926,7 +929,8 @@ mod tests {
     use crate::backend::available_nnue_backends;
     use crate::Engine;
 
-    const COMPACT_NET: &[u8] = include_bytes!("../net.compact.nnue");
+    // Archived V1 network; the embedded src/net.nnue is now an Ember V2 container.
+    const COMPACT_NET: &[u8] = include_bytes!("../../networks/V1/1.1.1-1.3.0/net.compact.nnue");
 
     fn parse_uci_move(mv: &str) -> (usize, usize, usize, usize, u8) {
         let bytes = mv.as_bytes();

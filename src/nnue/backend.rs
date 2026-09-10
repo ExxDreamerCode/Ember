@@ -54,20 +54,20 @@ pub(crate) trait NnueBackend: Copy {
     ) -> f32;
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct ScalarNnueBackend;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct Simd128NnueBackend;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct SimdNnueBackend;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct Simd512NnueBackend;
 
 #[cfg(target_arch = "x86_64")]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct Avx512NnueBackend;
 
 impl NnueBackend for ScalarNnueBackend {

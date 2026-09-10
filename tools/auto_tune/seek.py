@@ -745,7 +745,10 @@ def write_match_report(results_root, run_id, record, summary):
     accepted = record["accepted"]
     verdict_label = {
         "engine_a_better": "accepted (candidate is better)",
-        "engine_b_better": "rejected (candidate improvement not established)",
+        "engine_a_improvement_not_established": (
+            "rejected (candidate improvement not established)"
+        ),
+        "engine_b_better": "rejected (incumbent is better)",
         "inconclusive": "inconclusive",
         "continue": "continuing",
     }.get(record["verdict"], record["verdict"])

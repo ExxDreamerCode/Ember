@@ -334,14 +334,20 @@ class AutoTuneTests(unittest.TestCase):
                 {"pairs": incumbent_advantage["pairs"], "sprt": incumbent_advantage},
                 head_to_head_cfg,
             ),
-            "engine_b_better",
+            "engine_a_improvement_not_established",
         )
 
         equality = pentanomial_sprt(
             [0, 0, 1000, 0, 0], 0, 3, alpha=0.10, beta=0.05
         )
         self.assertEqual(equality["state"], "accept_h0")
-        self.assertNotEqual(equality["state"], "accept_h1")
+        self.assertEqual(
+            decision(
+                {"pairs": equality["pairs"], "sprt": equality},
+                head_to_head_cfg,
+            ),
+            "engine_a_improvement_not_established",
+        )
 
     def test_only_candidate_positive_sprt_verdict_updates_best(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -383,11 +389,17 @@ class AutoTuneTests(unittest.TestCase):
                 patch(
                     "seek.run_single_match",
                     return_value=(
-                        {"verdict": "engine_b_better"},
+                        {
+                            "verdict": (
+                                "engine_a_improvement_not_established"
+                            )
+                        },
                         "run-b",
                         {
                             "run_id": "run-b",
-                            "verdict": "engine_b_better",
+                            "verdict": (
+                                "engine_a_improvement_not_established"
+                            ),
                             "accepted": False,
                         },
                     ),

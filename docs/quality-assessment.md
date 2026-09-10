@@ -4,6 +4,58 @@ This document collects the repository tooling used to assess Ember's playing str
 search behavior, and regression risk. Commands below assume they are run from the repository
 root.
 
+## Fixture gate
+
+CI enforces the two-binary fixture gate in the `lichess-puzzle-corpus` job. It builds
+the baseline revision (PR base or previous push) and the candidate, parses every
+active and disabled TSV row, then runs `tools/compare_fixture_corpus.py --gate`
+with `--active-only` over the active checks.
+
+The required gate only runs active, agreed invariants. Disabled rows remain a report-only
+triage corpus: omit `--active-only` for an explicit offline comparison with a suitable
+per-check timeout. They are not part of required CI because unresolved cases can request
+impractical depths (including depth 64). When disabled rows are explicitly run, an engine
+error still invalidates that comparison.
+
+- **Hard layer**: every active `engine_regressions.tsv` case must pass in the candidate,
+  even when the baseline also fails. These are book main lines, repetition, fifty-move,
+  castling, and tablebase invariants that encode a bug fix, not search taste.
+- **Execution validity**: an engine error, rejected setup history, truncated fixed-depth
+  search, searched depth-zero book case, or nonzero exit invalidates the comparison.
+- **Strict profile**: the candidate must not lose more than `1%` of the baseline's
+  active-case solves (a change that fixes five and breaks three is automatically
+  acceptable).
+- **Rearchitecture profile**: for a predeclared large intentional rearchitecture
+  (new NNUE or search restructuring), select this profile instead. It requires the
+  candidate to solve at least `80%` of the baseline's active solves. It replaces,
+  rather than combines with, the strict net-loss rule.
+
+The report (`results/fixture-gate/corpus.json`) lists every pass->fail and
+fail->pass flip with fixture, line, expected, baseline move, and candidate move.
+Its `skipped` section lists every parsed report-only row omitted from required execution.
+A merge that changes move choice should either fix or consciously update an active
+case. Unverified, disputed, or unresolved cases belong in the report-only disabled tier.
+
+To run the gate locally against the previous release:
+
+```bash
+python3 tools/compare_fixture_corpus.py \
+  --fixtures tests/fixtures \
+  --baseline path/to/previous/ember \
+  --candidate path/to/candidate/ember \
+  --baseline-label V1.1.2 \
+  --candidate-label candidate \
+  --workers 4 \
+  --hash-mb 256 \
+  --active-only \
+  --gate \
+  --gate-profile strict \
+  --gate-hard-fixtures engine_regressions.tsv \
+  --gate-net-tolerance-permille 10 \
+  --output-json results/fixture-gate/corpus.json \
+  --output-tsv results/fixture-gate/corpus.tsv
+```
+
 ## Elo measurement
 
 The repository includes a Nix environment and scripts for automated matches through Cute
@@ -124,7 +176,8 @@ starts. When Stockfish gets a large advantage immediately after an Ember move, t
 starts a second game from that position with colors swapped: Ember receives the advantaged
 side and Stockfish defends with more time. If Ember loses the advantage, the run records the
 first large evaluation drop, writes PGNs and JSON traces, classifies the case, and emits a
-disabled TSV row in `tests/fixtures/advantage_preservation.tsv`.
+disabled TSV file inside that run's result directory. Invalid candidate rows are preserved
+separately in `rejected-cases.json` instead of aborting the completed mining run.
 
 Example:
 
@@ -141,7 +194,11 @@ The generated TSV rows are deliberately disabled. Treat them as a triage queue, 
 green test suite to satisfy immediately. First inspect the bucket summary, pick the largest
 or most clearly causal class, and verify a representative sample with deeper analysis. Only
 uncomment a row in the same commit that fixes the underlying class or establishes a narrow
-invariant that Ember should already satisfy.
+invariant that Ember should already satisfy. The generator rejects cases without a distinct
+Stockfish move and positive evaluation-loss evidence instead of publishing contradictions.
+After review, merge useful rows into
+`tests/fixtures/advantage_preservation.tsv`. An explicit `--fixture-output` never replaces an
+existing file unless `--overwrite-fixture` is also passed.
 
 The run is diagnostic rather than statistical. Its value is the preserved artifact set:
 source PGNs, replay PGNs, raw UCI logs, per-move JSON, the generated fixture rows, the seed,

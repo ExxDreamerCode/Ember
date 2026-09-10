@@ -6,8 +6,10 @@ use ember_chess::nnue::{threat_feature_count, NNUEAccumulator, NNUENet, NNUEThre
 use ember_chess::types::{BLACK, WHITE};
 use ember_chess::Engine;
 
-const DENSE_NET: &[u8] = include_bytes!("../src/net.nnue");
-const COMPACT_NET: &[u8] = include_bytes!("../src/net.compact.nnue");
+// Archived V1 networks live under networks/V1; the embedded src/net.nnue is now an
+// Ember V2 container and can no longer be loaded as a native dense V1 network.
+const DENSE_NET: &[u8] = include_bytes!("../networks/V1/1.1.0-1.3.0/net.nnue");
+const COMPACT_NET: &[u8] = include_bytes!("../networks/V1/1.1.1-1.3.0/net.compact.nnue");
 
 fn parse_uci_move(mv: &str) -> (usize, usize, usize, usize, u8) {
     let bytes = mv.as_bytes();
@@ -236,11 +238,11 @@ fn threat_accumulator_uses_board_pawn_attack_direction() {
 }
 
 #[test]
-fn compact_embedded_nnue_matches_dense_scores() {
+fn archived_v1_compact_nnue_matches_dense_scores() {
     let dense =
         NNUENet::load_from_bytes(DENSE_NET, "<dense test>").expect("dense NNUE should load");
-    let compact = NNUENet::load_compact_from_bytes(COMPACT_NET, "<compact test>")
-        .expect("compact NNUE should load");
+    let compact = NNUENet::load_from_bytes(COMPACT_NET, "<compact test>")
+        .expect("general NNUE loader should detect the compact format");
 
     assert!(
         COMPACT_NET.len() + 3_000_000 < DENSE_NET.len(),

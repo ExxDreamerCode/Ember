@@ -86,27 +86,200 @@ jobs:
 
     env:
       RUST_BACKTRACE: 1
-      EMBER_LICHESS_CORPUS_THREADS: 4
 
     steps:
-      - name: Checkout
+      - name: Checkout with full history
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Nix
         uses: cachix/install-nix-action@v31
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run move regression fixtures
+      - name: Resolve baseline revision
+        run: |
+          set -euo pipefail
+          case "$GITHUB_EVENT_NAME" in
+            pull_request) baseline="${{ github.event.pull_request.base.sha }}" ;;
+            push) baseline="${{ github.event.before }}" ;;
+            *) baseline="" ;;
+          esac
+          if [ -n "$baseline" ] && \
+             [ "$baseline" != "0000000000000000000000000000000000000000" ] && \
+             git cat-file -e "$baseline^{commit}" 2>/dev/null; then
+            : # the pre-push tip is still part of the fetched history
+          else
+            # The event SHA is empty, or a force push replaced the pre-push
+            # tip so the runner's clone cannot resolve it; compare against
+            # the parent of the checked-out commit instead.
+            baseline="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
+          fi
+          echo "BASELINE_SHA=$baseline" >> "$GITHUB_ENV"
+          echo "Comparing HEAD ($GITHUB_SHA) against baseline $baseline"
+
+      - name: Build candidate binary
+        run: >
+          nix develop .#ci --command cargo build --locked
+          --release --bin ember
+
+      - name: Run in-process hard move regressions
         run: |
           nix develop .#ci --command bash -c "
             ulimit -s 65536
             export RUST_MIN_STACK=16777216
-            cargo test --locked --release --all-features --test lichess_puzzle_corpus -- --ignored --test-threads=4
+            cargo test --locked --release --all-features \
+              --test lichess_puzzle_corpus \
+              ember_solves_hard_move_regressions -- \
+              --ignored --test-threads=1
           "
 
+      - name: Restore baseline build cache
+        uses: actions/cache@v4
+        with:
+          path: target/baseline-target
+          key: ember-fixture-baseline-${{ env.BASELINE_SHA }}-${{ runner.os }}
+
+      - name: Build baseline binary
+        run: |
+          set -euo pipefail
+          rm -rf baseline-worktree
+          git worktree add -f --detach baseline-worktree "$BASELINE_SHA"
+          rm -f target/baseline-target/release/ember
+          cd baseline-worktree
+          nix develop .#ci --command cargo build --locked \
+            --release --bin ember --target-dir ../target/baseline-target
+          cd ..
+          cp target/baseline-target/release/ember baseline-worktree/ember-baseline
+
+      - name: Run two-binary fixture gate
+        run: |
+          set -euo pipefail
+          mkdir -p results/fixture-gate
+          nix develop .#ci --command python3 tools/compare_fixture_corpus.py \
+            --fixtures tests/fixtures \
+            --baseline baseline-worktree/ember-baseline \
+            --candidate target/release/ember \
+            --baseline-label "baseline $(git rev-parse --short "$BASELINE_SHA")" \
+            --candidate-label "head $(git rev-parse --short HEAD)" \
+            --workers 4 \
+            --timeout 300 \
+            --hash-mb 256 \
+            --active-only \
+            --gate \
+            --gate-profile strict \
+            --gate-hard-fixtures engine_regressions.tsv \
+            --gate-net-tolerance-permille 10 \
+            --output-json results/fixture-gate/corpus.json \
+            --output-tsv results/fixture-gate/corpus.tsv
+
+      - name: Write fixture gate summary
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report_path = Path("results/fixture-gate/corpus.json")
+          report = None
+          if report_path.exists():
+              try:
+                  with open(report_path, encoding="utf-8") as handle:
+                      data = json.load(handle)
+              except (OSError, json.JSONDecodeError) as error:
+                  report = f"Fixture gate report is unreadable: {error}"
+              gate = data.get("gate") if report is None else None
+              if gate is None and report is None:
+                  report = (
+                      "Fixture gate comparison did not complete: corpus.json has "
+                      "no gate verdict. Inspect the comparison logs and artifact."
+                  )
+              if gate is not None:
+                  metadata = data["metadata"]
+                  lines = [
+                      "## Fixture gate (two-binary comparison)",
+                      "",
+                      f"- Baseline: `{metadata['baseline_label']}` "
+                      f"(`{metadata['baseline_sha256'][:12]}`)",
+                      f"- Candidate: `{metadata['candidate_label']}` "
+                      f"(`{metadata['candidate_sha256'][:12]}`)",
+                      f"- Loaded fixture checks: `{metadata['loaded_checks']}`",
+                      f"- Executed active checks: `{metadata['executed_checks']}`",
+                      f"- Skipped report-only checks: "
+                      f"`{metadata['skipped_disabled_checks']}`",
+                      f"- Active checks: `{gate['active_checks']}`",
+                      f"- Baseline passes: `{gate['baseline_passes']}`",
+                      f"- Candidate passes: `{gate['candidate_passes']}`",
+                      f"- Net loss: `{gate['net_loss']}` "
+                      f"(tolerance `{gate['net_tolerance']}`)",
+                      f"- **Verdict: {('FAIL' if not gate['passed'] else 'PASS')}**",
+                      "",
+                  ]
+                  if gate["reasons"]:
+                      lines.append("Rejected because:")
+                      lines.extend(f"- {reason}" for reason in gate["reasons"])
+                      lines.append("")
+                  if gate["hard_failed"]:
+                      lines.append("Hard-layer candidate failures:")
+                      lines.extend(
+                          f"- `{item['fixture']}:{item['line']}` `{item['id']}` "
+                          f"expected=`{item['expected']}` "
+                          f"baseline=`{item['baseline_move']}` "
+                          f"candidate=`{item['candidate_move']}`"
+                          for item in gate["hard_failed"]
+                      )
+                      lines.append("")
+                  if gate["regressed"]:
+                      shown = gate["regressed"][:50]
+                      lines.append(
+                          f"Regressed (baseline-only): {len(gate['regressed'])} cases"
+                      )
+                      lines.extend(
+                          f"- `{item['fixture']}:{item['line']}` `{item['id']}` "
+                          f"expected=`{item['expected']}` "
+                          f"baseline=`{item['baseline_move']}` "
+                          f"candidate=`{item['candidate_move']}`"
+                          for item in shown
+                      )
+                      if len(gate["regressed"]) > len(shown):
+                          lines.append(
+                              f"- ... and {len(gate['regressed']) - len(shown)} more"
+                          )
+                      lines.append("")
+                  if gate["fixed"]:
+                      lines.append(
+                          f"Fixed (candidate-only): {len(gate['fixed'])} cases"
+                      )
+                  lines.append(
+                      "Full executed-case report: `corpus.tsv` and `corpus.json` in the "
+                      "`fixture-gate` artifact."
+                  )
+                  report = "\n".join(lines)
+          else:
+              report = (
+                  "Fixture gate report is unavailable: the comparison step did not "
+                  "produce corpus.json."
+              )
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as handle:
+                  handle.write(report + "\n")
+          print(report)
+          PY
+
+      - name: Upload fixture gate artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixture-gate
+          path: results/fixture-gate/
+          if-no-files-found: warn
+          retention-days: 14
+
   windows-msvc:
-    name: Windows MSVC build smoke
+    name: Windows MSVC build and tests
     runs-on: windows-2022
     needs:
       - rust
@@ -165,6 +338,29 @@ jobs:
           if ($imports -match "(?i)ucrtbase|vcruntime|msvcp[0-9]") {
             throw "$binary imports a dynamic MSVC runtime"
           }
+
+      - name: Install Python tool dependencies
+        shell: pwsh
+        run: python -m pip install --requirement requirements.txt
+
+      - name: Run Rust tests
+        shell: pwsh
+        run: cargo test --locked --all-features -- --test-threads=1
+        env:
+          RUST_MIN_STACK: 16777216
+          RUST_BACKTRACE: 1
+
+      - name: Run Python tool tests
+        shell: pwsh
+        run: >-
+          python -m unittest discover
+          -s tools/tests -p 'test_*.py'
+
+      - name: Run Windows runner tests
+        shell: pwsh
+        run: >-
+          python -m unittest discover
+          -s windows/tests -p 'test_*.py'
 
       - name: Upload native MSVC binary
         uses: actions/upload-artifact@v4
@@ -404,16 +600,6 @@ jobs:
         run: >
           nix develop .#ci --command python3 -m unittest discover
           -s windows/tests -p 'test_*.py'
-
-      - name: Run move regression fixtures
-        run: |
-          nix develop .#ci --command bash -c "
-            ulimit -s 65536
-            export RUST_MIN_STACK=16777216
-            fixture_threads=\"\$(sysctl -n hw.logicalcpu)\"
-            export EMBER_LICHESS_CORPUS_THREADS=\"\$fixture_threads\"
-            cargo test --locked --release --all-features --test lichess_puzzle_corpus -- --ignored --test-threads=\"\$fixture_threads\"
-          "
 
       - name: Build macOS binaries
         run: |

@@ -4,8 +4,8 @@ use crate::board::{
 };
 use crate::magic::{bishop_attacks, rook_attacks};
 use crate::nnue::{
-    evaluate_other_net, ClassicHalfKpNet, NNUEAccumulator, NNUENet, NNUEThreatAccumulator,
-    NnueBackend, OtherNetData, OtherNetInfo, ScalarNnueBackend,
+    evaluate_ember_v2, ClassicHalfKpNet, EmberV2Data, EmberV2Info, NNUEAccumulator, NNUENet,
+    NNUEThreatAccumulator, NnueBackend, ScalarNnueBackend,
 };
 use crate::types::{BLACK, WHITE};
 use std::sync::{Arc, RwLock};
@@ -334,75 +334,72 @@ fn king_safety(bb: &[u64; 12], white: bool, phase: i32) -> i32 {
 }
 
 static NNUE_NET: RwLock<Option<Arc<NNUENet>>> = RwLock::new(None);
-static OTHER_NNET: RwLock<Option<Arc<OtherNetData>>> = RwLock::new(None);
+static EMBER_V2_NNET: RwLock<Option<Arc<EmberV2Data>>> = RwLock::new(None);
 static CLASSIC_NNET: RwLock<Option<Arc<ClassicHalfKpNet>>> = RwLock::new(None);
 
-pub const EMBEDDED_NNUE: &[u8] = include_bytes!("net.compact.nnue");
+pub const EMBEDDED_NNUE: &[u8] = include_bytes!("net.nnue");
+
+fn install_nnue_selection(
+    native: Option<Arc<NNUENet>>,
+    ember_v2: Option<Arc<EmberV2Data>>,
+    classic: Option<Arc<ClassicHalfKpNet>>,
+) -> Result<(), String> {
+    // Acquire every slot in one order before changing any of them. In particular,
+    // an Ember V2 install must not hold EMBER_V2_NNET while reset or a native
+    // install holds NNUE_NET, because both operations then wait for each other.
+    let mut native_lock = NNUE_NET.write().map_err(|e| e.to_string())?;
+    let mut ember_v2_lock = EMBER_V2_NNET.write().map_err(|e| e.to_string())?;
+    let mut classic_lock = CLASSIC_NNET.write().map_err(|e| e.to_string())?;
+
+    *native_lock = native;
+    *ember_v2_lock = ember_v2;
+    *classic_lock = classic;
+    Ok(())
+}
+
+fn load_nnue_bytes(data: &[u8], name: &str) -> Result<(), String> {
+    if ClassicHalfKpNet::is_format(data) {
+        let net = ClassicHalfKpNet::parse(data)?;
+        println!(
+            "info string Loaded legacy HalfKP net {} ({})",
+            name,
+            net.overview()
+        );
+        return install_nnue_selection(None, None, Some(Arc::new(net)));
+    }
+    if EmberV2Info::is_format(data) {
+        let info = EmberV2Info::try_parse(data)?;
+        let desc = String::from_utf8_lossy(&info.description);
+        let v2 = info.decode(data)?;
+        println!(
+            "info string Loaded Ember V2 net {} (arch hash={:#x}, desc=\"{}\", {})",
+            name, info.hash, desc, v2.overview
+        );
+        return install_nnue_selection(None, Some(Arc::new(v2)), None);
+    }
+    let net = NNUENet::load_from_bytes(data, name)?;
+    install_nnue_selection(Some(Arc::new(net)), None, None)
+}
 
 pub fn init_nnue(path: &str) -> Result<(), String> {
     let data = std::fs::read(path).map_err(|e| format!("read {}: {}", path, e))?;
-    if ClassicHalfKpNet::is_format(&data) {
-        let net = ClassicHalfKpNet::parse(&data)?;
-        println!(
-            "info string Loaded legacy HalfKP net {} ({})",
-            path,
-            net.overview()
-        );
-        let mut lock = CLASSIC_NNET.write().map_err(|e| e.to_string())?;
-        *lock = Some(Arc::new(net));
-        *NNUE_NET.write().map_err(|e| e.to_string())? = None;
-        *OTHER_NNET.write().map_err(|e| e.to_string())? = None;
-        return Ok(());
-    }
-    if OtherNetInfo::is_format(&data) {
-        let info = OtherNetInfo::try_parse(&data)?;
-        let desc = String::from_utf8_lossy(&info.description);
-        let other = info.decode(&data)?;
-        println!(
-            "info string Loaded external net {} (arch hash={:#x}, desc=\"{}\", {})",
-            path, info.hash, desc, other.overview
-        );
-        let mut other_lock = OTHER_NNET.write().map_err(|e| e.to_string())?;
-        *other_lock = Some(Arc::new(other));
-        let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
-        *lock = None;
-        return Ok(());
-    }
-    let net = NNUENet::load_from_bytes(&data, path)?;
-    let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
-    *lock = Some(Arc::new(net));
-    let mut other_lock = OTHER_NNET.write().map_err(|e| e.to_string())?;
-    *other_lock = None;
-    Ok(())
+    load_nnue_bytes(&data, path)
 }
 
 pub fn reset_nnue() -> Result<(), String> {
-    let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
-    *lock = None;
-    let mut other_lock = OTHER_NNET.write().map_err(|e| e.to_string())?;
-    *other_lock = None;
-    let mut classic_lock = CLASSIC_NNET.write().map_err(|e| e.to_string())?;
-    *classic_lock = None;
-    Ok(())
+    install_nnue_selection(None, None, None)
 }
 
 pub fn init_embedded_nnue() -> Result<(), String> {
-    let net = NNUENet::load_compact_from_bytes(EMBEDDED_NNUE, "<embedded>")?;
-    let mut lock = NNUE_NET.write().map_err(|e| e.to_string())?;
-    *lock = Some(Arc::new(net));
-    let mut other_lock = OTHER_NNET.write().map_err(|e| e.to_string())?;
-    *other_lock = None;
-    let mut classic_lock = CLASSIC_NNET.write().map_err(|e| e.to_string())?;
-    *classic_lock = None;
-    Ok(())
+    load_nnue_bytes(EMBEDDED_NNUE, "<embedded>")
 }
 
 pub fn current_nnue_net() -> Option<Arc<NNUENet>> {
     NNUE_NET.read().ok()?.clone()
 }
 
-pub fn current_other_net() -> Option<Arc<OtherNetData>> {
-    OTHER_NNET.read().ok()?.clone()
+pub fn current_ember_v2() -> Option<Arc<EmberV2Data>> {
+    EMBER_V2_NNET.read().ok()?.clone()
 }
 
 pub fn current_classic_net() -> Option<Arc<ClassicHalfKpNet>> {
@@ -442,8 +439,8 @@ pub fn evaluate_nnue(st: &BoardState) -> i32 {
         let white_base = if st.w { stm_score } else { -stm_score };
         return crate::search::add_endgame_mopup_white(mopup_enabled, st, white_base);
     }
-    if let Some(other) = current_other_net() {
-        let base = evaluate_other_net(&other, st);
+    if let Some(v2) = current_ember_v2() {
+        let base = evaluate_ember_v2(&v2, st);
         let white_base = if st.w { base } else { -base };
         return crate::search::add_endgame_mopup_white(mopup_enabled, st, white_base);
     }
@@ -544,4 +541,44 @@ pub fn evaluate(st: &BoardState) -> i32 {
     }
 
     (mg_score * phase + eg_score * (TOTAL_PHASE - phase)) / TOTAL_PHASE
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nnue::synthetic_test_net_bytes;
+    use std::path::Path;
+    use std::sync::Mutex;
+
+    static NETWORK_STATE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    struct ResetNetworkState;
+
+    impl Drop for ResetNetworkState {
+        fn drop(&mut self) {
+            let _ = reset_nnue();
+        }
+    }
+
+    #[test]
+    fn loading_native_net_clears_stale_classic_net() {
+        // This observes the private mutually-exclusive global network slots. A
+        // public score assertion cannot prove that an inactive stale slot was cleared.
+        let _lock = NETWORK_STATE_TEST_LOCK.lock().unwrap();
+        reset_nnue().unwrap();
+        let _reset = ResetNetworkState;
+
+        let classic = ClassicHalfKpNet::parse(&synthetic_test_net_bytes(0)).unwrap();
+        *CLASSIC_NNET.write().unwrap() = Some(Arc::new(classic));
+
+        // The embedded src/net.nnue is now an Ember V2 container, so the native
+        // (dense V1) slot is exercised with the archived V1 network under networks/V1.
+        let native_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("networks/V1/1.1.0-1.3.0/net.nnue");
+        init_nnue(native_path.to_str().unwrap()).unwrap();
+
+        assert!(current_classic_net().is_none());
+        assert!(current_ember_v2().is_none());
+        assert!(current_nnue_net().is_some());
+    }
 }

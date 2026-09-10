@@ -1,4 +1,4 @@
-use super::*;
+﻿use super::*;
 
 const LMP_MOVE_COUNTS: [usize; 8] = [4, 7, 11, 17, 24, 33, 44, 57];
 const LMP_MOVE_COUNT_SCALE_PERMILLE: i64 = 1000;
@@ -58,6 +58,37 @@ pub(super) fn lmr_reduction(move_index: usize, actual_depth: i32, is_pv: bool) -
     } else {
         (reduction + non_pv_extra).clamp(1, max_reduction)
     }
+}
+
+/// History-scaled LMR: moves with strong history are reduced less (down to no
+/// reduction at all), moves with weak history are reduced more. The raw
+/// reduction stays within `[0, depth - 1]` so a zero result simply searches the
+/// move at full depth through the normal null-window branch.
+const LMR_HISTORY_CLAMP: i32 = 16384;
+const LMR_HISTORY_DIVISOR: i32 = 2048;
+
+#[inline(always)]
+pub(super) fn lmr_reduction_with_history(
+    move_index: usize,
+    actual_depth: i32,
+    is_pv: bool,
+    history: i32,
+) -> i32 {
+    let base = lmr_reduction(move_index, actual_depth, is_pv);
+    let history = history.clamp(-LMR_HISTORY_CLAMP, LMR_HISTORY_CLAMP);
+    let max_reduction = (actual_depth - 1).max(0);
+    (base - history / LMR_HISTORY_DIVISOR).clamp(0, max_reduction)
+}
+
+#[cfg(any(feature = "search-debug", test))]
+#[inline(always)]
+pub(super) fn lmr_reduction_is_saturated(unclamped_reduction: i32, max_reduction: i32) -> bool {
+    unclamped_reduction < 0 || unclamped_reduction > max_reduction
+}
+
+#[inline(always)]
+pub(super) fn lmr_needs_full_depth_research(reduction: i32, score: i32, alpha: i32) -> bool {
+    reduction > 0 && score > alpha
 }
 
 #[inline(always)]
@@ -1045,9 +1076,33 @@ macro_rules! negamax_mode_body {
                     $eval,
                 )
             } else if lmr_eligible {
-                let r = lmr_reduction(move_index, actual_depth, is_pv);
+                let (lmr_hfk, lmr_htk) =
+                    from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
+                let r = lmr_reduction_with_history(
+                    move_index,
+                    actual_depth,
+                    is_pv,
+                    $this.history[lmr_hfk][lmr_htk],
+                );
                 #[cfg(feature = "search-debug")]
                 {
+                    let base_reduction = lmr_reduction(move_index, actual_depth, is_pv);
+                    if r == base_reduction {
+                        $this.debug.stats.lmr_unchanged_reductions += 1;
+                    } else if r > base_reduction {
+                        $this.debug.stats.lmr_increased_reductions += 1;
+                    } else {
+                        $this.debug.stats.lmr_decreased_reductions += 1;
+                    }
+                    if r == 0 {
+                        $this.debug.stats.lmr_zero_reductions += 1;
+                    }
+                    let history = $this.history[lmr_hfk][lmr_htk]
+                        .clamp(-LMR_HISTORY_CLAMP, LMR_HISTORY_CLAMP);
+                    let unclamped_reduction = base_reduction - history / LMR_HISTORY_DIVISOR;
+                    if lmr_reduction_is_saturated(unclamped_reduction, (actual_depth - 1).max(0)) {
+                        $this.debug.stats.lmr_saturated_reductions += 1;
+                    }
                     $this.debug.stats.lmr_searches += 1;
                     $this.debug.stats.lmr_reduction_sum += r as u64;
                     $this.debug.stats.lmr_max_reduction =
@@ -1065,7 +1120,7 @@ macro_rules! negamax_mode_body {
                     $cnt,
                     $eval,
                 );
-                if s2 > $alpha {
+                let full_depth_score = if lmr_needs_full_depth_research(r, s2, $alpha) {
                     #[cfg(feature = "search-debug")]
                     {
                         $this.debug.stats.lmr_researches += 1;
@@ -1082,24 +1137,25 @@ macro_rules! negamax_mode_body {
                         $cnt,
                         $eval,
                     );
-                    if s3 > $alpha && is_pv {
-                        -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
-                            $st,
-                            new_depth,
-                            $ply + 1,
-                            -beta,
-                            -$alpha,
-                            true,
-                            $start,
-                            $tl,
-                            $cnt,
-                            $eval,
-                        )
-                    } else {
-                        s3
-                    }
+                    s3
                 } else {
                     s2
+                };
+                if full_depth_score > $alpha && is_pv {
+                    -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
+                        $st,
+                        new_depth,
+                        $ply + 1,
+                        -beta,
+                        -$alpha,
+                        true,
+                        $start,
+                        $tl,
+                        $cnt,
+                        $eval,
+                    )
+                } else {
+                    full_depth_score
                 }
             } else if is_pv {
                 let s2 = -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
@@ -1345,8 +1401,8 @@ impl Searcher {
         tl: f64,
         cnt: &mut u64,
     ) -> i32 {
-        let other_net = self.other_net.clone();
-        if let Some(net) = other_net.as_deref() {
+        let ember_v2_net = self.ember_v2_net.clone();
+        if let Some(net) = ember_v2_net.as_deref() {
             return if st.chess960 {
                 self.negamax_mode_scalar::<true, NODE_LIMITED, _>(
                     st,
@@ -1358,7 +1414,10 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
-                    OtherNnueEval { net },
+                    EmberV2Eval {
+                        net,
+                        _backend: ScalarNnueBackend,
+                    },
                 )
             } else {
                 self.negamax_mode_scalar::<false, NODE_LIMITED, _>(
@@ -1371,7 +1430,10 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
-                    OtherNnueEval { net },
+                    EmberV2Eval {
+                        net,
+                        _backend: ScalarNnueBackend,
+                    },
                 )
             };
         }
@@ -1517,8 +1579,8 @@ impl Searcher {
         tl: f64,
         cnt: &mut u64,
     ) -> i32 {
-        let other_net = self.other_net.clone();
-        if let Some(net) = other_net.as_deref() {
+        let ember_v2_net = self.ember_v2_net.clone();
+        if let Some(net) = ember_v2_net.as_deref() {
             return if st.chess960 {
                 self.negamax_mode_simd128::<true, NODE_LIMITED, _>(
                     st,
@@ -1530,7 +1592,10 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
-                    OtherNnueEval { net },
+                    EmberV2Eval {
+                        net,
+                        _backend: Simd128NnueBackend,
+                    },
                 )
             } else {
                 self.negamax_mode_simd128::<false, NODE_LIMITED, _>(
@@ -1543,7 +1608,10 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
-                    OtherNnueEval { net },
+                    EmberV2Eval {
+                        net,
+                        _backend: Simd128NnueBackend,
+                    },
                 )
             };
         }
@@ -1689,8 +1757,8 @@ impl Searcher {
         tl: f64,
         cnt: &mut u64,
     ) -> i32 {
-        let other_net = self.other_net.clone();
-        if let Some(net) = other_net.as_deref() {
+        let ember_v2_net = self.ember_v2_net.clone();
+        if let Some(net) = ember_v2_net.as_deref() {
             return if st.chess960 {
                 self.negamax_mode_simd256::<true, NODE_LIMITED, _>(
                     st,
@@ -1702,7 +1770,10 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
-                    OtherNnueEval { net },
+                    EmberV2Eval {
+                        net,
+                        _backend: SimdNnueBackend,
+                    },
                 )
             } else {
                 self.negamax_mode_simd256::<false, NODE_LIMITED, _>(
@@ -1715,7 +1786,10 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
-                    OtherNnueEval { net },
+                    EmberV2Eval {
+                        net,
+                        _backend: SimdNnueBackend,
+                    },
                 )
             };
         }
@@ -1861,8 +1935,8 @@ impl Searcher {
         tl: f64,
         cnt: &mut u64,
     ) -> i32 {
-        let other_net = self.other_net.clone();
-        if let Some(net) = other_net.as_deref() {
+        let ember_v2_net = self.ember_v2_net.clone();
+        if let Some(net) = ember_v2_net.as_deref() {
             return if st.chess960 {
                 self.negamax_mode_simd512::<true, NODE_LIMITED, _>(
                     st,
@@ -1874,7 +1948,10 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
-                    OtherNnueEval { net },
+                    EmberV2Eval {
+                        net,
+                        _backend: Simd512NnueBackend,
+                    },
                 )
             } else {
                 self.negamax_mode_simd512::<false, NODE_LIMITED, _>(
@@ -1887,7 +1964,10 @@ impl Searcher {
                     start,
                     tl,
                     cnt,
-                    OtherNnueEval { net },
+                    EmberV2Eval {
+                        net,
+                        _backend: Simd512NnueBackend,
+                    },
                 )
             };
         }
@@ -2035,11 +2115,11 @@ impl Searcher {
         tl: f64,
         cnt: &mut u64,
     ) -> i32 {
-        let other_net = self.other_net.clone();
+        let ember_v2_net = self.ember_v2_net.clone();
         let nnue_net = self.nnue_net.clone();
         let classic_net = self.classic_net.clone();
         unsafe {
-            if let Some(net) = other_net.as_deref() {
+            if let Some(net) = ember_v2_net.as_deref() {
                 return if st.chess960 {
                     self.negamax_mode_x86_v3::<true, NODE_LIMITED, _>(
                         st,
@@ -2051,7 +2131,10 @@ impl Searcher {
                         start,
                         tl,
                         cnt,
-                        OtherNnueEval { net },
+                        EmberV2Eval {
+                            net,
+                            _backend: SimdNnueBackend,
+                        },
                     )
                 } else {
                     self.negamax_mode_x86_v3::<false, NODE_LIMITED, _>(
@@ -2064,7 +2147,10 @@ impl Searcher {
                         start,
                         tl,
                         cnt,
-                        OtherNnueEval { net },
+                        EmberV2Eval {
+                            net,
+                            _backend: SimdNnueBackend,
+                        },
                     )
                 };
             }
@@ -2213,11 +2299,11 @@ impl Searcher {
         tl: f64,
         cnt: &mut u64,
     ) -> i32 {
-        let other_net = self.other_net.clone();
+        let ember_v2_net = self.ember_v2_net.clone();
         let nnue_net = self.nnue_net.clone();
         let classic_net = self.classic_net.clone();
         unsafe {
-            if let Some(net) = other_net.as_deref() {
+            if let Some(net) = ember_v2_net.as_deref() {
                 return if st.chess960 {
                     self.negamax_mode_x86_avx512::<true, NODE_LIMITED, _>(
                         st,
@@ -2229,7 +2315,10 @@ impl Searcher {
                         start,
                         tl,
                         cnt,
-                        OtherNnueEval { net },
+                        EmberV2Eval {
+                            net,
+                            _backend: Avx512NnueBackend,
+                        },
                     )
                 } else {
                     self.negamax_mode_x86_avx512::<false, NODE_LIMITED, _>(
@@ -2242,7 +2331,10 @@ impl Searcher {
                         start,
                         tl,
                         cnt,
-                        OtherNnueEval { net },
+                        EmberV2Eval {
+                            net,
+                            _backend: Avx512NnueBackend,
+                        },
                     )
                 };
             }

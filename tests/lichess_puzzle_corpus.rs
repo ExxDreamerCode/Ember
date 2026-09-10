@@ -8,6 +8,7 @@ use std::thread;
 use ember_chess::{book, evaluate, Engine, OpeningBook};
 
 const DEFAULT_CORPUS_WORKERS: usize = 4;
+const HARD_FIXTURE: &str = "engine_regressions.tsv";
 const EXPECTED_HEADER: &str =
     "id\tdepth\tfen_before_blunder\tsetup_move\texpected_move\tthemes\trating\tpopularity\tplays";
 
@@ -204,6 +205,13 @@ fn regression_cases() -> Vec<RegressionCase> {
         .collect()
 }
 
+fn hard_regression_cases() -> Vec<RegressionCase> {
+    regression_cases()
+        .into_iter()
+        .filter(|case| case.fixture == HARD_FIXTURE)
+        .collect()
+}
+
 fn parse_uci_move(mv: &str) -> (usize, usize, usize, usize, u8) {
     let bytes = mv.as_bytes();
     assert!(matches!(bytes.len(), 4 | 5), "invalid UCI move: {mv}");
@@ -314,14 +322,18 @@ fn solve_case(case: &RegressionCase) -> Result<(), String> {
 #[test]
 fn regression_fixture_files_are_well_formed() {
     assert!(!regression_cases().is_empty(), "no regression cases found");
+    assert!(
+        !hard_regression_cases().is_empty(),
+        "no hard-layer regression cases found"
+    );
 }
 
 #[test]
-#[ignore = "runs every move regression fixture in a dedicated CI job"]
-fn ember_solves_move_regression_fixtures() {
+#[ignore = "runs every hard-layer move regression in a dedicated release gate"]
+fn ember_solves_hard_move_regressions() {
     init_nnue();
 
-    let cases = regression_cases();
+    let cases = hard_regression_cases();
     let workers = corpus_worker_count(cases.len());
     let next_case = AtomicUsize::new(0);
     let failures = Mutex::new(Vec::new());

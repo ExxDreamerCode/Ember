@@ -17,6 +17,12 @@ cargo build --release --locked --bin backend_bench
   --json=/tmp/backend-bench.json
 ```
 
+Pass an external native, compact `ECN1`, or Ember V2 network through the same
+loader used by UCI with `--nnue=/path/to/network.nnue`. The `search` results then
+compare every available backend against that network. Low-level refresh and
+incremental timings are emitted only for native Ember networks because those
+measure the native `NNUENet` accumulator directly.
+
 Benchmark host classes used for the backend dispatch checks:
 
 | Provider | Machine type | Arch | vCPU | Memory | CPU model | Relevant CPU features |

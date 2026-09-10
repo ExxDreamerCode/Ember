@@ -1,4 +1,4 @@
-use super::*;
+﻿use super::*;
 use crate::board::encode_move;
 use crate::engine::Engine;
 
@@ -25,7 +25,7 @@ fn classic_halfkp_net_is_selected_over_classic_eval() {
     let shared_tt = Arc::new(SharedTT::new(1));
     let mut searcher = Searcher::new(shared_tt, stopped);
     searcher.nnue_net = None;
-    searcher.other_net = None;
+    searcher.ember_v2_net = None;
     searcher.classic_net = Some(Arc::new(net.clone()));
     searcher.init_nnue_stack(&st);
 
@@ -265,6 +265,75 @@ fn lmr_controls_preserve_default_boundaries_and_reductions() {
     assert_eq!(lmr_reduction(10, 4, true), 1);
     assert_eq!(lmr_reduction(10, 4, false), 1);
     tune::reset();
+}
+
+#[test]
+fn lmr_history_adjustment_stays_within_depth_bounds() {
+    // Private contract: history scales the raw LMR reduction in both
+    // directions, but the result never leaves [0, depth - 1]. A zero
+    // reduction means the move is searched at full depth; the raw
+    // lmr_reduction floor of 1 does not survive the history adjustment.
+    tune::reset();
+    assert_eq!(lmr_reduction_with_history(10, 4, true, 16384), 0);
+    assert!(lmr_reduction_with_history(10, 4, true, -16384) > lmr_reduction(10, 4, true));
+    assert!(lmr_reduction_with_history(10, 4, true, 0) == lmr_reduction(10, 4, true));
+    for history in [-100_000, -4096, 0, 4096, 100_000] {
+        for depth in [0, 1, 2, 4, 6, 20] {
+            for is_pv in [true, false] {
+                let r = lmr_reduction_with_history(10, depth, is_pv, history);
+                assert!((0..=(depth - 1).max(0)).contains(&r));
+            }
+        }
+    }
+
+    for is_pv in [true, false] {
+        let histories = [-16384, -4096, -2048, -2047, 0, 2047, 2048, 4096, 16384];
+        let reductions = histories.map(|history| lmr_reduction_with_history(10, 6, is_pv, history));
+        assert!(reductions.windows(2).all(|pair| pair[0] >= pair[1]));
+        assert_eq!(
+            lmr_reduction_with_history(10, 6, is_pv, -100_000),
+            lmr_reduction_with_history(10, 6, is_pv, -16384)
+        );
+        assert_eq!(
+            lmr_reduction_with_history(10, 6, is_pv, 100_000),
+            lmr_reduction_with_history(10, 6, is_pv, 16384)
+        );
+        assert_eq!(
+            lmr_reduction_with_history(10, 6, is_pv, -2047),
+            lmr_reduction_with_history(10, 6, is_pv, 2047)
+        );
+        assert_eq!(
+            lmr_reduction_with_history(10, 6, is_pv, -2048),
+            lmr_reduction_with_history(10, 6, is_pv, 0) + 1
+        );
+        assert_eq!(
+            lmr_reduction_with_history(10, 6, is_pv, 2048),
+            lmr_reduction_with_history(10, 6, is_pv, 0) - 1
+        );
+    }
+    tune::reset();
+}
+
+#[test]
+fn lmr_saturation_covers_both_clamp_boundaries() {
+    // Private contract: debug saturation counts only adjustments changed by
+    // either clamp. Values already on a boundary are not saturated.
+    assert!(lmr_reduction_is_saturated(-1, 4));
+    assert!(lmr_reduction_is_saturated(5, 4));
+    assert!(!lmr_reduction_is_saturated(0, 4));
+    assert!(!lmr_reduction_is_saturated(4, 4));
+}
+
+#[test]
+fn lmr_researches_only_after_a_reduced_search_improves_alpha() {
+    // Private contract: a zero reduction has already searched the move at
+    // full depth, so repeating the same null-window search is redundant. A PV
+    // full-window search remains a separate decision after this predicate.
+    assert!(!lmr_needs_full_depth_research(0, 11, 10));
+    assert!(lmr_needs_full_depth_research(1, 11, 10));
+    assert!(lmr_needs_full_depth_research(3, 11, 10));
+    assert!(!lmr_needs_full_depth_research(1, 10, 10));
+    assert!(!lmr_needs_full_depth_research(1, 9, 10));
 }
 
 #[test]

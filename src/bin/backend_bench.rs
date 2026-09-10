@@ -2,7 +2,7 @@ use ember_chess::backend::{
     available_nnue_backends, available_search_backends, default_search_backend, NnueBackendKind,
 };
 use ember_chess::board::{move_ec, move_er, move_promotion, move_sc, move_sr, BoardState};
-use ember_chess::evaluate::{self, EMBEDDED_NNUE};
+use ember_chess::evaluate;
 use ember_chess::movegen::{apply_move, generate_moves};
 use ember_chess::nnue::{NNUEAccumulator, NNUENet};
 use ember_chess::search::set_search_backend_override;
@@ -24,6 +24,7 @@ const FENS: &[&str] = &[
 
 #[derive(Debug)]
 struct Args {
+    nnue_path: Option<String>,
     refresh_loops: usize,
     update_loops: usize,
     search_depth: i32,
@@ -95,10 +96,16 @@ fn parse_usize_list(name: &str, default: &[usize]) -> Vec<usize> {
 }
 
 fn parse_args() -> Args {
-    let json_path = std::env::args()
-        .skip(1)
-        .find_map(|arg| arg.strip_prefix("--json=").map(str::to_owned));
+    let string_arg = |name: &str| {
+        let prefix = format!("{name}=");
+        std::env::args()
+            .skip(1)
+            .find_map(|arg| arg.strip_prefix(&prefix).map(str::to_owned))
+    };
+    let nnue_path = string_arg("--nnue");
+    let json_path = string_arg("--json");
     Args {
+        nnue_path,
         refresh_loops: parse_arg("--refresh-loops", 2000),
         update_loops: parse_arg("--update-loops", 200),
         search_depth: parse_arg("--search-depth", 11),
@@ -399,6 +406,10 @@ fn write_json(
         json_escape(default_search_backend().name())
     ));
     json.push_str(&format!(
+        "  \"network\": \"{}\",\n",
+        json_escape(args.nnue_path.as_deref().unwrap_or("<embedded>"))
+    ));
+    json.push_str(&format!(
         "  \"refresh_loops\": {},\n  \"update_loops\": {},\n  \"search_depth\": {},\n  \"search_repeats\": {},\n  \"search_threads\": {:?},\n  \"hash_mb\": {},\n",
         args.refresh_loops,
         args.update_loops,
@@ -466,16 +477,20 @@ fn write_json(
 }
 
 fn print_summary(nnue: &[NnueResult], search: &[SearchResult]) {
-    eprintln!("NNUE backends:");
-    for result in nnue {
-        eprintln!(
-            "  {} refresh {:.2} ns/call checksum {} incremental {:.2} ns/call checksum {}",
-            result.backend,
-            ns_per_call(result.refresh_ns, result.refresh_calls),
-            result.refresh_checksum,
-            ns_per_call(result.update_ns, result.update_calls),
-            result.update_checksum
-        );
+    if nnue.is_empty() {
+        eprintln!("Native NNUE primitive backends: not applicable to the selected network");
+    } else {
+        eprintln!("Native NNUE primitive backends:");
+        for result in nnue {
+            eprintln!(
+                "  {} refresh {:.2} ns/call checksum {} incremental {:.2} ns/call checksum {}",
+                result.backend,
+                ns_per_call(result.refresh_ns, result.refresh_calls),
+                result.refresh_checksum,
+                ns_per_call(result.update_ns, result.update_calls),
+                result.update_checksum
+            );
+        }
     }
 
     eprintln!("Search backends:");
@@ -495,9 +510,11 @@ fn print_summary(nnue: &[NnueResult], search: &[SearchResult]) {
 
 fn main() {
     let args = parse_args();
-    evaluate::init_embedded_nnue().expect("embedded NNUE should load");
-    let net = NNUENet::load_compact_from_bytes(EMBEDDED_NNUE, "<backend-bench>")
-        .expect("embedded NNUE should load directly");
+    if let Some(path) = args.nnue_path.as_deref() {
+        evaluate::init_nnue(path).unwrap_or_else(|error| panic!("load {path}: {error}"));
+    } else {
+        evaluate::init_embedded_nnue().expect("embedded NNUE should load");
+    }
     let states = states();
 
     eprintln!(
@@ -523,8 +540,14 @@ fn main() {
             .join(",")
     );
     eprintln!("default_search_backend={}", default_search_backend().name());
+    eprintln!(
+        "network={}",
+        args.nnue_path.as_deref().unwrap_or("<embedded>")
+    );
 
-    let nnue = bench_nnue(&args, &net, &states);
+    let nnue = evaluate::current_nnue_net()
+        .map(|net| bench_nnue(&args, &net, &states))
+        .unwrap_or_default();
     let search = bench_search(&args);
     print_summary(&nnue, &search);
 

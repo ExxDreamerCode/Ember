@@ -1,4 +1,4 @@
-use super::*;
+﻿use super::*;
 
 #[derive(Clone)]
 pub struct SearchLearning {
@@ -30,7 +30,7 @@ pub(super) struct LazySmpRootContext {
     pub(super) rep_stack: Vec<u64>,
     pub(super) rep_stack_len: usize,
     pub(super) nnue_net: Option<Arc<NNUENet>>,
-    pub(super) other_net: Option<Arc<OtherNetData>>,
+    pub(super) ember_v2_net: Option<Arc<EmberV2Data>>,
     pub(super) classic_net: Option<Arc<ClassicHalfKpNet>>,
     pub(super) search_backend: SearchBackendKind,
     pub(super) syzygy: SyzygyTables,
@@ -45,7 +45,7 @@ impl LazySmpRootContext {
             rep_stack: searcher.rep_stack.clone(),
             rep_stack_len: searcher.rep_stack_len,
             nnue_net: searcher.nnue_net.clone(),
-            other_net: searcher.other_net.clone(),
+            ember_v2_net: searcher.ember_v2_net.clone(),
             classic_net: searcher.classic_net.clone(),
             search_backend: searcher.search_backend,
             syzygy: searcher.syzygy.clone(),
@@ -83,7 +83,7 @@ impl LazySmpRootContext {
             searcher.nnue_stack.clear();
         }
         searcher.nnue_net = self.nnue_net.clone();
-        searcher.other_net = self.other_net.clone();
+        searcher.ember_v2_net = self.ember_v2_net.clone();
         searcher.classic_net = self.classic_net.clone();
         searcher.init_nnue_stack(st);
     }
