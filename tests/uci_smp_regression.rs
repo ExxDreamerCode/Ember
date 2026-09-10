@@ -601,3 +601,110 @@ fn ponder_search_bypasses_book_probe() {
     drop(stdin);
     assert!(child.wait().expect("wait for Ember").success());
 }
+
+#[test]
+fn multipv_reports_ranked_root_lines_and_promotes_line_one_to_bestmove() {
+    let (mut child, rx) = spawn_ember();
+    let mut stdin = child.stdin.take().expect("capture Ember stdin");
+    writeln!(stdin, "uci").unwrap();
+    assert!(
+        wait_for_line(
+            &rx,
+            "option name MultiPV type spin default 1 min 1 max 256",
+            UCI_STARTUP_TIMEOUT
+        )
+        .is_some(),
+        "uci must advertise the MultiPV option"
+    );
+    writeln!(stdin, "setoption name Hash value 16").unwrap();
+    writeln!(stdin, "setoption name Threads value 2").unwrap();
+    writeln!(stdin, "setoption name MultiPV value 3").unwrap();
+    writeln!(stdin, "setoption name Book value").unwrap();
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(
+        wait_for_line(&rx, "readyok", UCI_STARTUP_TIMEOUT).is_some(),
+        "Ember did not finish UCI initialization"
+    );
+
+    writeln!(stdin, "position startpos").unwrap();
+    writeln!(stdin, "go depth 8").unwrap();
+    stdin.flush().unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut multipv_lines: Vec<String> = Vec::new();
+    let bestmove = loop {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            panic!("MultiPV search did not finish in time");
+        };
+        match rx.recv_timeout(remaining) {
+            Ok(line) if line.starts_with("info ") && line.contains(" multipv ") => {
+                multipv_lines.push(line);
+            }
+            Ok(line) if line.starts_with("bestmove ") => break line,
+            Ok(_) => {}
+            Err(_) => panic!("Ember stopped answering during the MultiPV search"),
+        }
+    };
+
+    let final_depth = multipv_lines
+        .iter()
+        .filter_map(|line| info_number(line, "depth"))
+        .max()
+        .expect("MultiPV search must report at least one info line");
+    let mut final_pvs: Vec<(u64, String)> = Vec::new();
+    for line in &multipv_lines {
+        if info_number(line, "depth") != Some(final_depth) {
+            continue;
+        }
+        let Some(index) = info_number(line, "multipv") else {
+            panic!("info line without multipv index: {line}");
+        };
+        let pv = line
+            .split(" pv ")
+            .nth(1)
+            .unwrap_or_default()
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        assert!(!pv.is_empty(), "multipv line must carry a pv move: {line}");
+        final_pvs.push((index, pv));
+    }
+
+    let multipv_count = 3;
+    assert_eq!(
+        final_pvs.len(),
+        multipv_count,
+        "final depth must report exactly {multipv_count} lines: {multipv_lines:?}"
+    );
+    for (expected_index, reported) in final_pvs.iter().enumerate() {
+        assert_eq!(
+            reported.0,
+            (expected_index + 1) as u64,
+            "multipv indices must be 1..={multipv_count} without gaps"
+        );
+    }
+    let mut moves = final_pvs
+        .iter()
+        .map(|(_, mv)| mv.clone())
+        .collect::<Vec<_>>();
+    moves.sort();
+    moves.dedup();
+    assert_eq!(
+        moves.len(),
+        multipv_count,
+        "reported root lines must be distinct moves"
+    );
+
+    let top_move = final_pvs[0].1.clone();
+    assert!(
+        bestmove.contains(&format!("bestmove {top_move}")),
+        "bestmove must be the multipv 1 line: bestmove={bestmove}, multipv 1 pv={top_move}"
+    );
+
+    writeln!(stdin, "quit").unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+    assert!(child.wait().expect("wait for Ember").success());
+}

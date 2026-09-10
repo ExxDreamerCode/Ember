@@ -31,6 +31,7 @@ const MIN_HASH_MB: usize = 1;
 const MAX_HASH_MB: usize = 4096;
 const MIN_THREADS: usize = 1;
 const MAX_THREADS: usize = 256;
+const MAX_MULTI_PV: usize = 256;
 const SHORT_SYNC_SEARCH_LIMIT_SECONDS: f64 = 0.050;
 const STARTPOS_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
@@ -235,6 +236,10 @@ fn run_uci_loop() {
                 println!(
                     "option name Threads type spin default 1 min {} max {}",
                     MIN_THREADS, MAX_THREADS
+                );
+                println!(
+                    "option name MultiPV type spin default 1 min 1 max {}",
+                    MAX_MULTI_PV
                 );
                 println!("option name Move Overhead type spin default 7 min 0 max 5000");
                 println!("option name Ponder type check default false");
@@ -441,6 +446,7 @@ fn run_uci_loop() {
                 let stopped = Arc::new(AtomicBool::new(false));
                 let pondering = Arc::new(AtomicBool::new(limits.ponder));
                 let num_threads = engine.num_threads;
+                let multi_pv = engine.multi_pv;
                 let book = if limits.ponder {
                     None
                 } else {
@@ -480,6 +486,7 @@ fn run_uci_loop() {
                             stopped_for_search,
                             book_config,
                         );
+                        search_engine.multi_pv = multi_pv;
                         #[cfg(feature = "decision-trace")]
                         if let Some(tp) = trace_path {
                             search_engine.set_trace_file(&tp);
@@ -704,6 +711,16 @@ fn parse_setoption(engine: &mut Engine, name: &str, val: &str) {
                 }
             }
         }
+        "multipv" => {
+            if let Ok(n) = val.parse::<usize>() {
+                if (1..=MAX_MULTI_PV).contains(&n) {
+                    engine.multi_pv = n;
+                    eprintln!("info string Set MultiPV to {}", engine.multi_pv);
+                } else {
+                    eprintln!("info string Ignoring out-of-range MultiPV value: {}", n);
+                }
+            }
+        }
         "randombookmove" | "random book move" => match parse_check_value(val) {
             Some(enabled) => {
                 engine.random_book_move = enabled;
@@ -767,6 +784,7 @@ fn set_chess960_mode(engine: &mut Engine, enable: bool) {
 fn reset_engine(engine: &mut Engine) {
     let book = engine.book.take();
     let num_threads = engine.num_threads;
+    let multi_pv = engine.multi_pv;
     let search_pool = Arc::clone(&engine.search_pool);
     let chess960 = engine.st.chess960;
     let syzygy = engine.searcher.syzygy.clone();
@@ -784,6 +802,7 @@ fn reset_engine(engine: &mut Engine) {
     engine.book_min_move_weight_permille = book_min_move_weight_permille;
     engine.search_pool = search_pool;
     engine.num_threads = num_threads;
+    engine.multi_pv = multi_pv;
     engine.searcher.syzygy = syzygy;
     set_chess960_mode(engine, chess960);
     #[cfg(feature = "decision-trace")]
@@ -1105,6 +1124,33 @@ mod tests {
 
         parse_setoption(&mut engine, "randombookmove", "false");
         assert!(!engine.random_book_move);
+    }
+
+    #[test]
+    fn multipv_option_is_parsed_clamped_and_preserved_on_reset() {
+        let mut engine = Engine::new();
+        assert_eq!(engine.multi_pv, 1, "MultiPV must default to 1");
+
+        parse_setoption(&mut engine, "multipv", "4");
+        assert_eq!(engine.multi_pv, 4);
+
+        parse_setoption(&mut engine, "multipv", "0");
+        assert_eq!(engine.multi_pv, 4, "out-of-range MultiPV must be rejected");
+
+        parse_setoption(&mut engine, "multipv", "1000000");
+        assert_eq!(
+            engine.multi_pv, 4,
+            "MultiPV above the advertised maximum must be rejected"
+        );
+
+        reset_engine(&mut engine);
+        assert_eq!(
+            engine.multi_pv, 4,
+            "ucinewgame must preserve the configured MultiPV value"
+        );
+
+        parse_setoption(&mut engine, "multipv", "1");
+        assert_eq!(engine.multi_pv, 1);
     }
 
     #[test]

@@ -31,6 +31,20 @@ const FIFTY_MOVE_ROOT_MIN_SCORE: i32 = 500;
 const FIFTY_MOVE_ROOT_STATIC_MARGIN_CP: i32 = 350;
 const FIFTY_MOVE_ROOT_MATERIAL_MARGIN_CP: i32 = 150;
 const FIFTY_MOVE_ROOT_VERIFY_NODE_LIMIT: u32 = 1_000;
+const MATE_SCORE_TEXT_THRESHOLD: i32 = 90_000;
+
+fn format_uci_score(score: i32) -> String {
+    if score.abs() > MATE_SCORE_TEXT_THRESHOLD {
+        let mate_in = (MATE - score.abs()) / 2 + 1;
+        if score > 0 {
+            format!("mate {mate_in}")
+        } else {
+            format!("mate -{mate_in}")
+        }
+    } else {
+        format!("cp {score}")
+    }
+}
 
 #[derive(Clone, Copy)]
 enum SearchTimerStart {
@@ -44,6 +58,7 @@ pub struct Engine {
     pub shared_tt: Arc<SharedTT>,
     pub search_pool: Arc<LazySmpPool>,
     pub num_threads: usize,
+    pub multi_pv: usize,
     pub stopped: Arc<AtomicBool>,
     pub book: Option<OpeningBook>,
     pub random_book_move: bool,
@@ -139,6 +154,7 @@ impl Engine {
             shared_tt,
             search_pool,
             num_threads: 1,
+            multi_pv: 1,
             stopped,
             book: None,
             random_book_move: false,
@@ -228,6 +244,7 @@ impl Engine {
             shared_tt,
             search_pool,
             num_threads,
+            multi_pv: 1,
             stopped,
             book: book_config.book,
             random_book_move: book_config.random_book_move,
@@ -734,7 +751,11 @@ impl Engine {
             }
         }
 
-        let search_threads = threads_for_time_budget(self.num_threads, soft_time_limit);
+        let search_threads = if self.multi_pv > 1 {
+            1
+        } else {
+            threads_for_time_budget(self.num_threads, soft_time_limit)
+        };
         self.ensure_hash_ready();
         self.shared_tt.advance_generation();
         let preferred = tt_root_move(&self.searcher, &self.st, &moves);
@@ -778,6 +799,15 @@ impl Engine {
             SearchTimerStart::BeforeSetup(start) => start,
             SearchTimerStart::AfterSetup => Instant::now(),
         };
+        if self.multi_pv > 1 {
+            return self.find_best_move_multipv(
+                &ordered_moves,
+                soft_time_limit,
+                time_limit,
+                depth_limit,
+                start,
+            );
+        }
         let mut best_move = ordered_moves[0];
         let mut best_score = 0i32;
         let mut total_nodes = 0u64;
@@ -1080,6 +1110,269 @@ impl Engine {
             elapsed_ms: (elapsed * 1000.0) as u128,
             depth_infos: &depth_infos,
         });
+        (mv_str, best_score, total_nodes, elapsed)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn find_best_move_multipv(
+        &mut self,
+        ordered_moves: &[Move],
+        soft_time_limit: f64,
+        time_limit: f64,
+        depth_limit: i32,
+        start: Instant,
+    ) -> (String, i32, u64, f64) {
+        let multipv = self.multi_pv.max(1).min(ordered_moves.len());
+        let mut best_move = ordered_moves[0];
+        let mut best_score = 0i32;
+        let mut total_nodes = 0u64;
+        let mut best_depth = 0;
+        let mut prev_score = self.searcher.corrected_eval(&self.st);
+        let mut stable_iterations = 0u32;
+        let mut previous_iteration_seconds = 0.0;
+        let mut previous_completed_elapsed = 0.0;
+        #[cfg(feature = "decision-trace")]
+        let mut depth_infos = Vec::new();
+
+        for depth in 1..=depth_limit {
+            if !self.searcher.pondering.load(Ordering::Relaxed)
+                && start.elapsed().as_secs_f64() > time_limit
+            {
+                break;
+            }
+
+            let mut nd = 0u64;
+            let mut pv_lines: Vec<(Move, i32, u64)> = Vec::with_capacity(multipv);
+
+            for &mv in ordered_moves {
+                if !self.searcher.pondering.load(Ordering::Relaxed)
+                    && start.elapsed().as_secs_f64() > time_limit
+                {
+                    break;
+                }
+                let old = self.st;
+                self.searcher.enter_root_path(mv);
+                apply_move(
+                    &mut self.st,
+                    move_sr(mv),
+                    move_sc(mv),
+                    move_er(mv),
+                    move_ec(mv),
+                    move_promotion(mv),
+                );
+                self.searcher.refresh_nnue_stack_at(1, &self.st);
+                let h = self.st.hash;
+                self.searcher.rep_stack.push(h);
+                self.searcher.rep_stack_len += 1;
+                let root_ext = root_depth_extension(&old, mv);
+                let move_nodes_before = nd;
+
+                let score = if pv_lines.len() < multipv {
+                    let alpha = pv_lines.last().map_or(-INF, |&(_, s, _)| s);
+                    if alpha == -INF {
+                        -self.searcher.negamax(
+                            &mut self.st,
+                            depth - 1 + root_ext,
+                            1,
+                            -INF,
+                            INF,
+                            true,
+                            start,
+                            time_limit,
+                            &mut nd,
+                        )
+                    } else {
+                        let probe_alpha = (-alpha).saturating_sub(1);
+                        let s = -self.searcher.negamax(
+                            &mut self.st,
+                            depth - 1 + root_ext,
+                            1,
+                            probe_alpha,
+                            -alpha,
+                            true,
+                            start,
+                            time_limit,
+                            &mut nd,
+                        );
+                        if s > alpha {
+                            -self.searcher.negamax(
+                                &mut self.st,
+                                depth - 1 + root_ext,
+                                1,
+                                -INF,
+                                -alpha,
+                                true,
+                                start,
+                                time_limit,
+                                &mut nd,
+                            )
+                        } else {
+                            s
+                        }
+                    }
+                } else {
+                    let alpha = pv_lines[multipv - 1].1;
+                    let probe_alpha = (-alpha).saturating_sub(1);
+                    let s = -self.searcher.negamax(
+                        &mut self.st,
+                        depth - 1 + root_ext,
+                        1,
+                        probe_alpha,
+                        -alpha,
+                        true,
+                        start,
+                        time_limit,
+                        &mut nd,
+                    );
+                    if s > alpha {
+                        -self.searcher.negamax(
+                            &mut self.st,
+                            depth - 1 + root_ext,
+                            1,
+                            -INF,
+                            -alpha,
+                            true,
+                            start,
+                            time_limit,
+                            &mut nd,
+                        )
+                    } else {
+                        s
+                    }
+                };
+                let move_nodes = nd.saturating_sub(move_nodes_before);
+
+                self.searcher.rep_stack.pop();
+                self.searcher.rep_stack_len -= 1;
+                self.st = old;
+                self.searcher.leave_root_path();
+
+                if self.searcher.stopped.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                if pv_lines.len() < multipv {
+                    pv_lines.push((mv, score, move_nodes));
+                    pv_lines.sort_by_key(|line| std::cmp::Reverse(line.1));
+                } else if score > pv_lines[multipv - 1].1 {
+                    pv_lines[multipv - 1] = (mv, score, move_nodes);
+                    pv_lines.sort_by_key(|line| std::cmp::Reverse(line.1));
+                }
+            }
+
+            total_nodes += nd;
+            if self.searcher.stopped.load(Ordering::Relaxed) || pv_lines.is_empty() {
+                break;
+            }
+            let elapsed = start.elapsed().as_secs_f64();
+
+            if elapsed <= time_limit || self.searcher.pondering.load(Ordering::Relaxed) {
+                let (depth_best_move, depth_best_score, depth_best_nodes) = pv_lines[0];
+                let score_change_cp = depth_best_score.saturating_sub(prev_score).abs();
+                if best_depth == 0 || depth_best_move != best_move {
+                    stable_iterations = 0;
+                } else {
+                    stable_iterations = stable_iterations.saturating_add(1);
+                }
+                let iteration_seconds = (elapsed - previous_completed_elapsed).max(0.0);
+                let timing = IterationTiming {
+                    elapsed_seconds: elapsed,
+                    iteration_seconds,
+                    previous_iteration_seconds,
+                    score_change_cp,
+                    stable_iterations,
+                    best_move_effort: depth_best_nodes as f64 / nd.max(1) as f64,
+                    worker_disagreement: 0.0,
+                };
+                let time_decision = iteration_time_decision(
+                    soft_time_limit,
+                    time_limit,
+                    ordered_moves.len(),
+                    timing,
+                );
+                best_move = depth_best_move;
+                best_score = depth_best_score;
+                best_depth = depth;
+                prev_score = best_score;
+                previous_iteration_seconds = iteration_seconds;
+                previous_completed_elapsed = elapsed;
+                self.searcher.shared_tt.store_with_pv(
+                    self.st.hash,
+                    depth,
+                    best_score,
+                    crate::tt::TT_EXACT,
+                    Some(best_move),
+                    true,
+                );
+                let nps = if elapsed > 0.0 {
+                    (total_nodes as f64 / elapsed) as i64
+                } else {
+                    0
+                };
+                let time_ms = (elapsed * 1000.0) as u64;
+                let mut best_pv_str = String::new();
+                for (line_index, &(mv, score, _)) in pv_lines.iter().enumerate() {
+                    let pv_line =
+                        crate::search::extract_pv_line(&self.searcher.shared_tt, &self.st, mv);
+                    let pv_str = format_pv_line_uci(&self.st, &pv_line);
+                    if line_index == 0 {
+                        best_pv_str = pv_str.clone();
+                    }
+                    println!(
+                        "info depth {} multipv {} score {} nodes {} nps {} time {} pv {}",
+                        depth,
+                        line_index + 1,
+                        format_uci_score(score),
+                        total_nodes,
+                        nps,
+                        time_ms,
+                        pv_str
+                    );
+                }
+                #[cfg(feature = "decision-trace")]
+                depth_infos.push(DepthInfo {
+                    depth,
+                    score_cp: best_score,
+                    nodes: total_nodes,
+                    elapsed_ms: (elapsed * 1000.0) as u128,
+                    pv: best_pv_str,
+                });
+                if !self.searcher.pondering.load(Ordering::Relaxed) && time_decision.stop {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        let best_move =
+            self.root_fifty_move_conversion_choice(ordered_moves, best_move, best_score);
+        let mv_str = move_to_uci(&self.st, best_move);
+        let elapsed = start.elapsed().as_secs_f64();
+        self.searcher
+            .update_correction_history(&self.st, best_score, best_depth);
+        self.searcher.clear_node_limit();
+        #[cfg(feature = "decision-trace")]
+        {
+            let root_fen = board_to_fen(&self.st);
+            let side = if self.st.w { "white" } else { "black" };
+            let legal_moves: Vec<String> = ordered_moves
+                .iter()
+                .map(|mv| move_to_uci(&self.st, *mv))
+                .collect();
+            self.trace.emit_decision(DecisionTrace {
+                fen: &root_fen,
+                side,
+                legal_moves: &legal_moves,
+                chosen_move: &mv_str,
+                source: "search",
+                depth_reached: depth_infos.last().map(|d| d.depth).unwrap_or(0),
+                score_cp: best_score,
+                nodes: total_nodes,
+                elapsed_ms: (elapsed * 1000.0) as u128,
+                depth_infos: &depth_infos,
+            });
+        }
         (mv_str, best_score, total_nodes, elapsed)
     }
 
