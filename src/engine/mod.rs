@@ -1307,14 +1307,10 @@ impl Engine {
                     0
                 };
                 let time_ms = (elapsed * 1000.0) as u64;
-                let mut best_pv_str = String::new();
                 for (line_index, &(mv, score, _)) in pv_lines.iter().enumerate() {
                     let pv_line =
                         crate::search::extract_pv_line(&self.searcher.shared_tt, &self.st, mv);
                     let pv_str = format_pv_line_uci(&self.st, &pv_line);
-                    if line_index == 0 {
-                        best_pv_str = pv_str.clone();
-                    }
                     println!(
                         "info depth {} multipv {} score {} nodes {} nps {} time {} pv {}",
                         depth,
@@ -1332,7 +1328,14 @@ impl Engine {
                     score_cp: best_score,
                     nodes: total_nodes,
                     elapsed_ms: (elapsed * 1000.0) as u128,
-                    pv: best_pv_str,
+                    pv: format_pv_line_uci(
+                        &self.st,
+                        &crate::search::extract_pv_line(
+                            &self.searcher.shared_tt,
+                            &self.st,
+                            best_move,
+                        ),
+                    ),
                 });
                 if !self.searcher.pondering.load(Ordering::Relaxed) && time_decision.stop {
                     break;
