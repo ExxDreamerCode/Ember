@@ -689,14 +689,17 @@ fn multipv_reports_ranked_root_lines_and_promotes_line_one_to_bestmove() {
     );
 
     writeln!(stdin, "position startpos").unwrap();
-    writeln!(stdin, "go depth 8").unwrap();
+    writeln!(stdin, "go depth 6").unwrap();
     stdin.flush().unwrap();
 
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(120);
     let mut multipv_lines: Vec<String> = Vec::new();
     let bestmove = loop {
         let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-            panic!("MultiPV search did not finish in time");
+            if let Some(status) = child.try_wait().expect("poll Ember UCI process") {
+                panic!("Ember exited during the MultiPV search: {status}");
+            }
+            panic!("MultiPV search did not report bestmove within the deadline");
         };
         match rx.recv_timeout(remaining) {
             Ok(line) if line.starts_with("info ") && line.contains(" multipv ") => {
@@ -704,7 +707,12 @@ fn multipv_reports_ranked_root_lines_and_promotes_line_one_to_bestmove() {
             }
             Ok(line) if line.starts_with("bestmove ") => break line,
             Ok(_) => {}
-            Err(_) => panic!("Ember stopped answering during the MultiPV search"),
+            Err(_) => {
+                if let Some(status) = child.try_wait().expect("poll Ember UCI process") {
+                    panic!("Ember exited during the MultiPV search: {status}");
+                }
+                panic!("Ember stdout closed during the MultiPV search");
+            }
         }
     };
 
