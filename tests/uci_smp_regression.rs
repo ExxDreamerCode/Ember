@@ -603,6 +603,67 @@ fn ponder_search_bypasses_book_probe() {
 }
 
 #[test]
+fn embedded_book_move_reports_zeroed_telemetry_with_string_tag() {
+    let (mut child, rx) = spawn_ember();
+    let mut stdin = child.stdin.take().expect("capture Ember stdin");
+    writeln!(stdin, "uci").unwrap();
+    writeln!(stdin, "setoption name Hash value 16").unwrap();
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(
+        wait_for_line(&rx, "readyok", UCI_STARTUP_TIMEOUT).is_some(),
+        "Ember did not finish UCI initialization"
+    );
+
+    writeln!(stdin, "position startpos").unwrap();
+    writeln!(stdin, "go depth 1").unwrap();
+    stdin.flush().unwrap();
+
+    const BOOK_INFO_PREFIX: &str = "info depth 0 score cp 0 nodes 0 nps 0 time 0 pv ";
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut book_info = None;
+    let bestmove = loop {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            panic!("book move search did not finish in time");
+        };
+        match rx.recv_timeout(remaining) {
+            Ok(line) if line.starts_with(BOOK_INFO_PREFIX) => {
+                assert!(
+                    line.ends_with(" string book move"),
+                    "book info line must be tagged with the book-move string: {line}"
+                );
+                book_info = Some(line);
+            }
+            Ok(line) if line.starts_with("bestmove ") => break line,
+            Ok(_) => {}
+            Err(_) => panic!("Ember stopped answering during the book move search"),
+        }
+    };
+    let book_info =
+        book_info.unwrap_or_else(|| panic!("embedded book move must report the telemetry line"));
+
+    let book_move = book_info
+        .trim_start_matches(BOOK_INFO_PREFIX)
+        .split(" string ")
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        !book_move.is_empty(),
+        "book info line must carry the chosen pv move: {book_info}"
+    );
+    assert!(
+        bestmove.contains(&format!("bestmove {book_move}")),
+        "bestmove must match the book pv: bestmove={bestmove}, pv={book_move}"
+    );
+
+    writeln!(stdin, "quit").unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+    assert!(child.wait().expect("wait for Ember").success());
+}
+
+#[test]
 fn multipv_reports_ranked_root_lines_and_promotes_line_one_to_bestmove() {
     let (mut child, rx) = spawn_ember();
     let mut stdin = child.stdin.take().expect("capture Ember stdin");

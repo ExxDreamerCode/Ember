@@ -728,10 +728,7 @@ impl Engine {
                         SearchTimerStart::AfterSetup => 0.0,
                     };
                     println!(
-                        "info depth 1 score cp {} nodes 0 nps 0 time {} pv {}",
-                        eval_score,
-                        (elapsed * 1000.0) as u64,
-                        mv_str
+                        "info depth 0 score cp 0 nodes 0 nps 0 time 0 pv {mv_str} string book move"
                     );
                     #[cfg(feature = "decision-trace")]
                     self.trace.emit_decision(DecisionTrace {
