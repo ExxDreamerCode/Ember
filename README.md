@@ -198,6 +198,19 @@ setoption name Book value book.bin
 setoption name TraceFile value Trace.jsonl
 ```
 
+The engine also understands the built-in UCI `bench` command: a fixed-depth search over a
+small embedded position corpus that reports nodes, NPS, and a reproducible node-count
+signature per run:
+
+```text
+bench              # full corpus at depth 10
+bench 12           # full corpus at depth 12
+bench depth 12 positions 4   # first 4 corpus positions at depth 12
+```
+
+It is meant for quick in-process comparisons and release-build smoke tests; the full
+search-shape benchmark is described in [docs/quality-assessment.md](docs/quality-assessment.md).
+
 ## 📊 Quality assessment
 
 Elo measurement, paired version comparisons, and search-shape benchmarks are documented in

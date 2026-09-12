@@ -34,6 +34,39 @@ const MAX_THREADS: usize = 256;
 const MAX_MULTI_PV: usize = 256;
 const SHORT_SYNC_SEARCH_LIMIT_SECONDS: f64 = 0.050;
 const STARTPOS_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+const BENCH_DEFAULT_DEPTH: i32 = 10;
+const BENCH_MAX_DEPTH: i32 = 64;
+const BENCH_TIME_LIMIT_SECONDS: f64 = 1_000_000_000.0;
+const BENCH_POSITIONS: &[(&str, &str)] = &[
+    ("startpos", "startpos"),
+    (
+        "kiwipete",
+        "fen r3k2r/p1ppqpb1/bn2pnp1/2P5/1p2P3/2N2N2/PP1PBPPP/R2QKB1R w KQkq - 0 1",
+    ),
+    (
+        "sicilian",
+        "fen r1bq1rk1/pp2bppp/2n1pn2/2pp4/3P4/2PBPN2/PP3PPP/RNBQ1RK1 w - - 0 8",
+    ),
+    (
+        "queenless-middlegame",
+        "fen 2r2rk1/1b2bppp/p3pn2/1p1p4/3P4/1BN1PN2/PP3PPP/2R2RK1 w - - 0 14",
+    ),
+    (
+        "tactical",
+        "fen r2q1rk1/ppp2ppp/2n1bn2/3pp3/1b2P3/2NP1N2/PPPBBPPP/R2Q1RK1 w - - 0 8",
+    ),
+    (
+        "endgame-rooks",
+        "fen 8/2p2pk1/1p4p1/p2Pp3/P1P1P1P1/1P3K2/8/8 w - - 0 40",
+    ),
+    (
+        "minor-piece-endgame",
+        "fen 8/5pk1/6p1/3N4/3P4/5P2/6PK/8 w - - 0 45",
+    ),
+    ("promotion-race", "fen 8/1P6/8/8/8/8/6p1/6Kk w - - 0 1"),
+];
+const FNV1A_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 struct SearchTask {
     id: u64,
@@ -541,6 +574,11 @@ fn run_uci_loop() {
                     apply_search_completion(&mut engine, &mut task, true, ponder_enabled);
                 }
             }
+            "bench" => {
+                cancel_search(&mut engine, &mut search_task, false, ponder_enabled);
+                let (depth, count) = parse_bench_params(&parts);
+                run_bench(&engine, depth, count);
+            }
             "stop" => {
                 cancel_search(&mut engine, &mut search_task, true, ponder_enabled);
             }
@@ -971,6 +1009,138 @@ fn parse_go_params(
     }
 }
 
+fn parse_bench_params(parts: &[&str]) -> (i32, Option<usize>) {
+    let mut depth = BENCH_DEFAULT_DEPTH;
+    let mut count: Option<usize> = None;
+    let mut positional = 0usize;
+
+    let mut i = 1;
+    while i < parts.len() {
+        match parts[i] {
+            "depth" if i + 1 < parts.len() => {
+                match parts[i + 1].parse::<i32>() {
+                    Ok(value) => depth = value,
+                    Err(_) => {
+                        eprintln!("info string Ignoring invalid bench depth: {}", parts[i + 1])
+                    }
+                }
+                positional = positional.max(1);
+                i += 1;
+            }
+            "positions" if i + 1 < parts.len() => {
+                match parts[i + 1].parse::<usize>() {
+                    Ok(value) => count = Some(value),
+                    Err(_) => eprintln!(
+                        "info string Ignoring invalid bench position count: {}",
+                        parts[i + 1]
+                    ),
+                }
+                positional = positional.max(2);
+                i += 1;
+            }
+            token if positional == 0 => {
+                if let Ok(value) = token.parse::<i32>() {
+                    depth = value;
+                    positional += 1;
+                }
+            }
+            token if positional == 1 => {
+                if let Ok(value) = token.parse::<usize>() {
+                    count = Some(value);
+                    positional += 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    (
+        depth.clamp(1, BENCH_MAX_DEPTH),
+        count.map(|count| count.min(BENCH_POSITIONS.len())),
+    )
+}
+
+fn bench_signature_update(signature: u64, nodes: u64) -> u64 {
+    let mut hash = signature;
+    for byte in nodes.to_le_bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(FNV1A_PRIME);
+    }
+    hash
+}
+
+fn run_bench(engine: &Engine, depth: i32, count: Option<usize>) {
+    let selected_count = count
+        .filter(|count| *count > 0)
+        .map(|count| count.min(BENCH_POSITIONS.len()))
+        .unwrap_or(BENCH_POSITIONS.len());
+
+    engine.search_pool.clear_learning();
+    println!(
+        "info string bench: {} positions, depth {}, threads {}, hash {} MB",
+        selected_count, depth, engine.num_threads, engine.searcher.tt_mb
+    );
+
+    let mut total_nodes = 0u64;
+    let mut signature = FNV1A_BASIS;
+    let total_start = Instant::now();
+
+    for (index, (label, command)) in BENCH_POSITIONS.iter().take(selected_count).enumerate() {
+        let mut bench_engine = Engine::new();
+        bench_engine.num_threads = engine.num_threads;
+        bench_engine.searcher.tt_mb = engine.searcher.tt_mb;
+        bench_engine.st.chess960 = engine.st.chess960;
+
+        let mut parts = vec!["position"];
+        parts.extend(command.split_whitespace());
+        parse_position(&mut bench_engine, &parts);
+
+        let start = Instant::now();
+        let (_, _, nodes, _) = bench_engine
+            .find_best_move_with_time_limits_prepared_with_node_limit(
+                BENCH_TIME_LIMIT_SECONDS,
+                BENCH_TIME_LIMIT_SECONDS,
+                depth,
+                None,
+            );
+        let elapsed = start.elapsed().as_secs_f64();
+        let nps = if elapsed > 0.0 {
+            (nodes as f64 / elapsed) as u64
+        } else {
+            0
+        };
+        total_nodes += nodes;
+        signature = bench_signature_update(signature, nodes);
+        println!(
+            "info string bench {}/{} {} depth {} nodes {} time {}ms nps {}",
+            index + 1,
+            selected_count,
+            label,
+            depth,
+            nodes,
+            (elapsed * 1000.0) as u64,
+            nps
+        );
+    }
+
+    let total_elapsed = total_start.elapsed().as_secs_f64();
+    let total_nps = if total_elapsed > 0.0 {
+        (total_nodes as f64 / total_elapsed) as u64
+    } else {
+        0
+    };
+    println!(
+        "info string bench total: {} positions, depth {}, nodes {}, time {}ms, nps {}, signature {:016x}",
+        selected_count,
+        depth,
+        total_nodes,
+        (total_elapsed * 1000.0) as u64,
+        total_nps,
+        signature
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1186,5 +1356,74 @@ mod tests {
             engine.searcher.syzygy.is_loaded(),
             "ucinewgame must preserve the configured SyzygyPath"
         );
+    }
+
+    #[test]
+    fn bench_params_accept_defaults_positional_and_named_forms() {
+        assert_eq!(
+            parse_bench_params(&["bench"]),
+            (BENCH_DEFAULT_DEPTH, None),
+            "bench without arguments must use the default depth and the full corpus"
+        );
+        assert_eq!(parse_bench_params(&["bench", "12"]), (12, None));
+        assert_eq!(parse_bench_params(&["bench", "8", "3"]), (8, Some(3)));
+        assert_eq!(
+            parse_bench_params(&["bench", "depth", "5", "positions", "2"]),
+            (5, Some(2))
+        );
+        assert_eq!(parse_bench_params(&["bench", "depth", "7"]), (7, None));
+        assert_eq!(
+            parse_bench_params(&["bench", "positions", "4"]),
+            (BENCH_DEFAULT_DEPTH, Some(4))
+        );
+        assert_eq!(
+            parse_bench_params(&["bench", "depth", "5", "3"]),
+            (5, Some(3))
+        );
+    }
+
+    #[test]
+    fn bench_params_clamp_out_of_range_values() {
+        assert_eq!(
+            parse_bench_params(&["bench", "0"]),
+            (1, None),
+            "bench depth must stay within 1..=64"
+        );
+        assert_eq!(parse_bench_params(&["bench", "-5"]), (1, None));
+        assert_eq!(
+            parse_bench_params(&["bench", "999"]),
+            (BENCH_MAX_DEPTH, None)
+        );
+        assert_eq!(
+            parse_bench_params(&["bench", "10", "999"]),
+            (10, Some(BENCH_POSITIONS.len())),
+            "position count must be capped at the embedded corpus size"
+        );
+        assert_eq!(
+            parse_bench_params(&["bench", "10", "0"]),
+            (10, Some(0)),
+            "count 0 keeps the full corpus (filtered at run time)"
+        );
+        assert_eq!(
+            parse_bench_params(&["bench", "abc", "def"]),
+            (BENCH_DEFAULT_DEPTH, None),
+            "non-numeric tokens must fall back to the defaults"
+        );
+    }
+
+    #[test]
+    fn bench_signature_folds_node_counts_deterministically() {
+        let basis = FNV1A_BASIS;
+        let first = bench_signature_update(basis, 100);
+        assert_eq!(first, bench_signature_update(basis, 100));
+        assert_ne!(first, bench_signature_update(basis, 101));
+        assert_ne!(
+            bench_signature_update(first, 1),
+            bench_signature_update(first, 2)
+        );
+
+        let forward = bench_signature_update(bench_signature_update(basis, 10), 20);
+        let backward = bench_signature_update(bench_signature_update(basis, 20), 10);
+        assert_ne!(forward, backward);
     }
 }

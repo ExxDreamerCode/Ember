@@ -138,6 +138,40 @@ By default the script disables the opening book with `setoption name Book value`
 starting position, `Hash=64`, and `Threads=1`. A custom position set can be passed as JSON
 through `--positions`.
 
+## Embedded bench command
+
+The engine includes a built-in UCI `bench` command that runs a fixed-depth search over a
+small embedded position corpus — the same starting position and seven test positions the
+`tools/benchmark_search.py` default set uses:
+
+```bash
+# Full corpus at the default depth 10
+echo "uci
+bench
+quit" | cargo run --release
+
+# Depth 12, first 4 corpus positions
+bench depth 12 positions 4
+
+# Positional form: depth 12, full corpus
+bench 12
+```
+
+Per position it reports nodes, time, and NPS; the total line ends with a
+`signature`, an FNV-1a fold of the per-position node counts. With `Threads=1` the search
+is deterministic, so two bench runs of the same binary produce identical signatures, and a
+signature change across revisions indicates a change in search behavior — not just
+different throughput.
+
+Every position is searched through a fresh engine with an empty transposition table,
+cleared learned state, no opening book, no Syzygy, and single PV. The current position,
+options, and search state of the running engine are left untouched, so a normal `go`
+after `bench` behaves exactly as it would without it. `Hash` and `Threads` are honored.
+
+Bench complements, but does not replace, the external search-shape benchmark: the corpus
+is smaller, the report is lighter, and it is most useful for quick in-process comparisons
+during development and as a quick release-build smoke test.
+
 ## Advantage-defense matches
 
 When a suspicious move occurs in a position where Ember already has a large advantage,
