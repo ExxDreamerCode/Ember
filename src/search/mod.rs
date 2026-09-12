@@ -117,6 +117,7 @@ pub struct Searcher {
     pub history: [[i32; 64]; 64],
     pub counter_move: [[Option<Move>; 64]; 13],
     pub corr_hist: [i32; CORR_HIST_SIZE * 2],
+    pub eval_history: [i32; MAX_PLY],
     pub rep_stack: Vec<u64>,
     pub rep_stack_len: usize,
     rep_root_len: usize,

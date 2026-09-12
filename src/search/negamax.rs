@@ -1,4 +1,4 @@
-﻿use super::*;
+use super::*;
 
 const LMP_MOVE_COUNTS: [usize; 8] = [4, 7, 11, 17, 24, 33, 44, 57];
 const LMP_MOVE_COUNT_SCALE_PERMILLE: i64 = 1000;
@@ -8,6 +8,26 @@ const LMR_MIN_MOVE_INDEX: i64 = 2;
 const LMR_MIN_DEPTH: i64 = 2;
 const LMR_NON_PV_EXTRA: i64 = 1;
 const TACTICAL_CHECK_EXTENSION_MAX_DEPTH: i64 = 2;
+const IMPROVING_MARGIN_NUMERATOR: i64 = 3;
+const IMPROVING_MARGIN_DENOMINATOR: i64 = 4;
+
+#[inline(always)]
+fn improving_margin(margin: i32, improving: bool) -> i32 {
+    if improving {
+        ((i64::from(margin) * IMPROVING_MARGIN_NUMERATOR) / IMPROVING_MARGIN_DENOMINATOR) as i32
+    } else {
+        margin
+    }
+}
+
+#[inline(always)]
+fn improving_lmp_count(base: usize, improving: bool) -> usize {
+    if improving {
+        ((base as i64 * IMPROVING_MARGIN_NUMERATOR) / IMPROVING_MARGIN_DENOMINATOR).max(1) as usize
+    } else {
+        base
+    }
+}
 
 #[inline(always)]
 pub(super) fn lmp_move_count(depth: i32) -> Option<usize> {
@@ -229,6 +249,8 @@ macro_rules! negamax_mode_body {
         };
 
         let eval_score = $eval.static_eval::<CHESS960>($this, $st, $ply);
+        let improving = $ply < 2 || eval_score > $this.eval_history[$ply - 2];
+        $this.eval_history[$ply] = eval_score;
         #[cfg(feature = "search-debug")]
         $this.record_debug_dag_eval(h, eval_score);
 
@@ -247,7 +269,7 @@ macro_rules! negamax_mode_body {
             && actual_depth <= rfp_max_depth
             && $ply > 0
         {
-            let margin = rfp_base + rfp_per_depth * actual_depth;
+            let margin = improving_margin(rfp_base + rfp_per_depth * actual_depth, improving);
             if eval_score - margin >= beta {
                 #[cfg(feature = "search-debug")]
                 {
@@ -265,7 +287,7 @@ macro_rules! negamax_mode_body {
             && actual_depth <= futility_max_depth
             && $ply > 0
         {
-            let margin = futility_margin * actual_depth;
+            let margin = improving_margin(futility_margin * actual_depth, improving);
             if eval_score + margin <= $alpha {
                 let q = $this.$qsearch_mode::<CHESS960, NODE_LIMITED, E>(
                     $st,
@@ -659,6 +681,7 @@ macro_rules! negamax_mode_body {
                 let nodes_before = *$cnt;
                 let previous = $this.excluded_moves[$ply].replace(candidate.mv);
                 let previous_restricted = $this.set_restricted_verification(true);
+                let previous_eval_entry = $this.eval_history[$ply];
                 let alternative_score = $this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
                     $st,
                     candidate.depth,
@@ -725,6 +748,7 @@ macro_rules! negamax_mode_body {
                 }
                 $this.excluded_moves[$ply] = previous;
                 $this.set_restricted_verification(previous_restricted);
+                $this.eval_history[$ply] = previous_eval_entry;
                 #[cfg(feature = "search-debug")]
                 let verification_nodes = (*$cnt).saturating_sub(nodes_before);
                 #[cfg(feature = "search-debug")]
@@ -926,7 +950,9 @@ macro_rules! negamax_mode_body {
             && !in_check
             && actual_depth <= lmp_max_depth
         {
-            lmp_move_count(actual_depth).unwrap_or(usize::MAX)
+            lmp_move_count(actual_depth)
+                .map(|base| improving_lmp_count(base, improving))
+                .unwrap_or(usize::MAX)
         } else {
             usize::MAX
         };

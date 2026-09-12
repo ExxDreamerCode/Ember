@@ -117,6 +117,7 @@ impl Searcher {
             history: [[0i32; 64]; 64],
             counter_move: [[None; 64]; 13],
             corr_hist: [0i32; CORR_HIST_SIZE * 2],
+            eval_history: [i32::MIN; MAX_PLY],
             rep_stack: Vec::with_capacity(512),
             rep_stack_len: 0,
             rep_root_len: 0,
