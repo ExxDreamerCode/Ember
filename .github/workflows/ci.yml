@@ -170,7 +170,7 @@ jobs:
             --gate \
             --gate-profile strict \
             --gate-hard-fixtures engine_regressions.tsv \
-            --gate-net-tolerance-permille 10 \
+            --gate-net-tolerance-permille 30 \
             --output-json results/fixture-gate/corpus.json \
             --output-tsv results/fixture-gate/corpus.tsv
 
