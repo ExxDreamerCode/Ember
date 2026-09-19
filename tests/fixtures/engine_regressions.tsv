@@ -31,7 +31,8 @@ ccrl-046-rb6	6	rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1	d2d4 d7d
 ccrl-060-rg8	6	rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1	e2e4 e7e6 d2d4 d7d5 b1c3 f8b4 e4d5 e6d5 f1d3 c7c6 g1f3 g8e7 e1g1 e8g8 f1e1 e7g6 h2h3 b8d7 c1g5 d7f6 d1d2 b4d6 f3e5 d8b6 g5f6 g7f6 e5f3 d6f4 d2d1 b6b2 c3e2 f4d6 a2a4 b2b6 e2g3 d6g3 f2g3 b6c7 g1h2 h7h5 f3d2 h5h4 d2f1 g8g7 d1f3 c8d7 h2g1 a8e8 g3h4 c7f4 f3f4 g6f4 f1g3 f4d3 c2d3 e8e1 a1e1 f8h8 e1e7 h8d8 g3h5 g7f8 e7e1 f6f5 e1a1 f8e7 h5f4 a7a5 g1f2 d8h8 g2g3 e7f8 a1a3 f8g7 a3c3 g7h6 c3c5 h8a8 f2f3 b7b6 c5c1 a8g8 c1e1 g8e8 e1a1 h6h7 g3g4 f5g4 h3g4 f7f6 f4g2 e8a8 g2e3 b6b5 a4b5 c6b5 f3f4 d7e6 a1c1 a5a4 c1c6 e6g8 c6f6 a4a3 e3c2 a3a2 c2a1 h7g7 g4g5 g8h7 h4h5 h7d3 h5h6 g7h7 f4g4 a8a7 f6e6 b5b4 g4h5 a7a6 e6e7 h7g8 e7g7 g8h8 g5g6 a6b6 h5g5 b6c6 a1b3 c6c1 b3c1 a2a1q c1d3 a1g1 g5f5 g1b1 g7h7 h8g8 h7g7 g8h8	!g7g8	ccrl,repetition,game60	0	0	0
 
 # CCRL 125th Amateur D11 game 117, Ember 1.1.2–Rengar, before 27.Ng4. Either Qh5 or Ra7 keeps the tactical initiative; see https://ccrl.live/pgns/125th_Amateur_D11/117_ember_1.1.2_vs_rengar_v2.1.1.pgn.
-ccrl-117-invasion	6	rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1	e2e4 e7e5 g1f3 b8c6 f1b5 g8f6 d2d3 f8c5 c2c3 e8g8 e1g1 d7d6 b1d2 a7a6 b5a4 c5a7 h2h3 c6e7 d3d4 e7g6 a4c2 h7h6 f1e1 b7b5 d2f1 c7c5 c1e3 c8e6 a2a4 d8c7 d4d5 e6d7 c3c4 a8b8 f3d2 a7b6 a4b5 a6b5 d1e2 b6a5 a1a2 b5c4 e1a1 a5d2 e3d2 d7b5 e2d1 f6d7 f1e3 d7b6 h3h4 g6h4	d1h5|a2a7	ccrl,tactic,game117	0	0	0
+# DISABLED: this row only remained meaningful through the removed game-specific tactical/invasion root ordering; the general repetition and tactic invariants stay covered by the other active CCRL rows.
+# ccrl-117-invasion	6	rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1	e2e4 e7e5 g1f3 b8c6 f1b5 g8f6 d2d3 f8c5 c2c3 e8g8 e1g1 d7d6 b1d2 a7a6 b5a4 c5a7 h2h3 c6e7 d3d4 e7g6 a4c2 h7h6 f1e1 b7b5 d2f1 c7c5 c1e3 c8e6 a2a4 d8c7 d4d5 e6d7 c3c4 a8b8 f3d2 a7b6 a4b5 a6b5 d1e2 b6a5 a1a2 b5c4 e1a1 a5d2 e3d2 d7b5 e2d1 f6d7 f1e3 d7b6 h3h4 g6h4	d1h5|a2a7	ccrl,tactic,game117	0	0	0
 
 # CCRL game 152, before 16...Bg8. At release depth 16 Ember must play 16...Bxe3, invading instead of repeating the losing bishop retreat covered by the original game regression.
 # DISABLED (LMR threshold trade-off): depth-16 LMR2 chooses a5a4; Stockfish
@@ -42,7 +43,8 @@ ccrl-117-invasion	6	rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1	e2e
 baseline-00ueq-cycle	4	r1b2rk1/pp4b1/n1pqp1Q1/4p3/2P2PP1/P2B4/1P6/R1B1K2R b KQ - 1 19	f8f6	h1h8	lichess,00Ueq,repetition,mate	0	0	0
 
 # Lichess puzzle 00Wyh, https://lichess.org/training/00Wyh. A quiet rook check elsewhere in the position must not activate the special checking-capture root ordering and hide the forced mate.
-baseline-00wyh-rook-order	2	2r5/8/8/pNp1r2p/3kNppP/1P1P4/2R2K2/8 b - - 2 42	d4d3	c2d2	lichess,00Wyh,root-order,mate	0	0	0
+# DISABLED: the special checking-capture root ordering this row guarded was removed; the puzzle itself stays covered by lichess_puzzle_corpus.tsv.
+# baseline-00wyh-rook-order	2	2r5/8/8/pNp1r2p/3kNppP/1P1P4/2R2K2/8 b - - 2 42	d4d3	c2d2	lichess,00Wyh,root-order,mate	0	0	0
 
 # Lichess puzzle 00zOQ, https://lichess.org/training/00zOQ. Rxc2 is a capture, not the quiet seventh-rank invasion for which the extra root ply was introduced; V1.1.2 and strong Stockfish find Re8.
 # DISABLED: fails after the QSEARCH_DELTA_MARGIN_CP and LMP_KING_PRESSURE_LIMIT retune; revisit once the search-shape change is understood.

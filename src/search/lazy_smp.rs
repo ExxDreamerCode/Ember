@@ -1,4 +1,4 @@
-﻿use super::*;
+use super::*;
 
 #[derive(Clone)]
 pub struct SearchLearning {
@@ -97,7 +97,6 @@ pub(super) struct LazySmpSearchJob {
     pub(super) st: BoardState,
     pub(super) root_moves: Arc<Vec<Move>>,
     pub(super) num_threads: usize,
-    pub(super) root_depth_extension: fn(&BoardState, Move) -> i32,
     pub(super) limits: LazySmpSearchLimits,
     pub(super) root_context: Arc<LazySmpRootContext>,
     pub(super) start: Instant,
@@ -242,7 +241,6 @@ impl LazySmpPool {
         shared_tt: Arc<SharedTT>,
         st: &BoardState,
         root_moves: &[Move],
-        root_depth_extension: fn(&BoardState, Move) -> i32,
         limits: LazySmpSearchLimits,
         num_threads: usize,
         root_searcher: &mut Searcher,
@@ -269,7 +267,6 @@ impl LazySmpPool {
             st: *st,
             root_moves: Arc::new(root_moves.to_vec()),
             num_threads,
-            root_depth_extension,
             limits,
             root_context: Arc::new(LazySmpRootContext::from_searcher(root_searcher)),
             start: limits.start,
@@ -523,7 +520,6 @@ pub fn lazy_smp_search(
     shared_tt: Arc<SharedTT>,
     st: &BoardState,
     root_moves: &[Move],
-    root_depth_extension: fn(&BoardState, Move) -> i32,
     limits: LazySmpSearchLimits,
     num_threads: usize,
     root_searcher: &mut Searcher,
@@ -532,7 +528,6 @@ pub fn lazy_smp_search(
         shared_tt,
         st,
         root_moves,
-        root_depth_extension,
         limits,
         num_threads,
         root_searcher,
@@ -702,13 +697,12 @@ fn run_lazy_smp_worker(
                 let h = s.hash;
                 searcher.rep_stack.push(h);
                 searcher.rep_stack_len += 1;
-                let root_ext = (job.root_depth_extension)(&st, mv);
                 let move_nodes_before = nd;
 
                 let score = if cur_score == -INF {
                     -searcher.negamax(
                         &mut s,
-                        depth - 1 + root_ext,
+                        depth - 1,
                         1,
                         -beta,
                         -loop_alpha,
@@ -720,7 +714,7 @@ fn run_lazy_smp_worker(
                 } else {
                     let sc = -searcher.negamax(
                         &mut s,
-                        depth - 1 + root_ext,
+                        depth - 1,
                         1,
                         -loop_alpha - 1,
                         -loop_alpha,
@@ -732,7 +726,7 @@ fn run_lazy_smp_worker(
                     if sc > loop_alpha && sc < beta {
                         -searcher.negamax(
                             &mut s,
-                            depth - 1 + root_ext,
+                            depth - 1,
                             1,
                             -beta,
                             -loop_alpha,

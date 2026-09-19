@@ -133,8 +133,8 @@ mod root;
 use self::root::*;
 #[cfg(not(test))]
 use self::root::{
-    root_child_after, root_depth_extension, root_move_preserves_fifty_move_conversion,
-    root_total_piece_count, sort_root_moves, tt_root_move,
+    root_child_after, root_move_preserves_fifty_move_conversion, root_total_piece_count,
+    sort_root_moves, tt_root_move,
 };
 
 impl Default for Engine {
@@ -756,7 +756,7 @@ impl Engine {
         self.ensure_hash_ready();
         self.shared_tt.advance_generation();
         let preferred = tt_root_move(&self.searcher, &self.st, &moves);
-        let ordered_moves = sort_root_moves(&self.st, &moves, preferred);
+        let ordered_moves = sort_root_moves(&moves, preferred);
         if search_threads > 1 {
             let start = match timer_start {
                 SearchTimerStart::BeforeSetup(start) => start,
@@ -767,7 +767,6 @@ impl Engine {
                 Arc::clone(&self.shared_tt),
                 &self.st,
                 &ordered_moves,
-                root_depth_extension,
                 LazySmpSearchLimits {
                     soft_time: soft_time_limit,
                     hard_time: time_limit,
@@ -839,7 +838,7 @@ impl Engine {
             let mut asp_best_nodes = 0u64;
 
             'asp: loop {
-                let sorted = sort_root_moves(&self.st, &ordered_moves, asp_best);
+                let sorted = sort_root_moves(&ordered_moves, asp_best);
                 let repetition_tie_scope = root_repetition_tie_scope(&self.st);
 
                 let mut cur_best = sorted[0];
@@ -869,7 +868,6 @@ impl Engine {
                     let h = self.st.hash;
                     self.searcher.rep_stack.push(h);
                     self.searcher.rep_stack_len += 1;
-                    let root_ext = root_depth_extension(&old, mv);
                     let move_nodes_before = nd;
                     #[cfg(feature = "search-debug")]
                     {
@@ -881,7 +879,7 @@ impl Engine {
                     let score = if cur_score == -INF {
                         -self.searcher.negamax(
                             &mut self.st,
-                            depth - 1 + root_ext,
+                            depth - 1,
                             1,
                             -beta,
                             -loop_alpha,
@@ -893,7 +891,7 @@ impl Engine {
                     } else {
                         let s = -self.searcher.negamax(
                             &mut self.st,
-                            depth - 1 + root_ext,
+                            depth - 1,
                             1,
                             -loop_alpha - 1,
                             -loop_alpha,
@@ -905,7 +903,7 @@ impl Engine {
                         if s > loop_alpha && s < beta {
                             -self.searcher.negamax(
                                 &mut self.st,
-                                depth - 1 + root_ext,
+                                depth - 1,
                                 1,
                                 -beta,
                                 -loop_alpha,
@@ -1161,7 +1159,6 @@ impl Engine {
                 let h = self.st.hash;
                 self.searcher.rep_stack.push(h);
                 self.searcher.rep_stack_len += 1;
-                let root_ext = root_depth_extension(&old, mv);
                 let move_nodes_before = nd;
 
                 let score = if pv_lines.len() < multipv {
@@ -1169,7 +1166,7 @@ impl Engine {
                     if alpha == -INF {
                         -self.searcher.negamax(
                             &mut self.st,
-                            depth - 1 + root_ext,
+                            depth - 1,
                             1,
                             -INF,
                             INF,
@@ -1182,7 +1179,7 @@ impl Engine {
                         let probe_alpha = (-alpha).saturating_sub(1);
                         let s = -self.searcher.negamax(
                             &mut self.st,
-                            depth - 1 + root_ext,
+                            depth - 1,
                             1,
                             probe_alpha,
                             -alpha,
@@ -1194,7 +1191,7 @@ impl Engine {
                         if s > alpha {
                             -self.searcher.negamax(
                                 &mut self.st,
-                                depth - 1 + root_ext,
+                                depth - 1,
                                 1,
                                 -INF,
                                 -alpha,
@@ -1212,7 +1209,7 @@ impl Engine {
                     let probe_alpha = (-alpha).saturating_sub(1);
                     let s = -self.searcher.negamax(
                         &mut self.st,
-                        depth - 1 + root_ext,
+                        depth - 1,
                         1,
                         probe_alpha,
                         -alpha,
@@ -1224,7 +1221,7 @@ impl Engine {
                     if s > alpha {
                         -self.searcher.negamax(
                             &mut self.st,
-                            depth - 1 + root_ext,
+                            depth - 1,
                             1,
                             -INF,
                             -alpha,

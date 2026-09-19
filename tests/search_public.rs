@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -199,7 +199,6 @@ fn lazy_smp_honors_the_root_searcher_stop_token() {
         shared_tt,
         &st,
         &root_moves,
-        |_, _| 0,
         LazySmpSearchLimits {
             soft_time: 10.0,
             hard_time: 10.0,
@@ -228,7 +227,6 @@ fn lazy_smp_uses_the_caller_start_time() {
         shared_tt,
         &st,
         &root_moves,
-        |_, _| 0,
         LazySmpSearchLimits {
             soft_time: 0.010,
             hard_time: 0.010,
@@ -246,62 +244,6 @@ fn lazy_smp_uses_the_caller_start_time() {
 }
 
 #[test]
-fn lazy_smp_counts_work_from_an_interrupted_iteration() {
-    static DEEP_ROOT_SEARCH_STARTED: AtomicBool = AtomicBool::new(false);
-
-    fn start_a_deep_root_search(_: &BoardState, _: Move) -> i32 {
-        DEEP_ROOT_SEARCH_STARTED.store(true, Ordering::SeqCst);
-        12
-    }
-
-    let st = state_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-    let stopped = Arc::new(AtomicBool::new(false));
-    let shared_tt = Arc::new(SharedTT::new(128));
-    let mut root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
-    let root_moves = generate_moves(&st, st.w, &st.cr, st.ep);
-    DEEP_ROOT_SEARCH_STARTED.store(false, Ordering::SeqCst);
-
-    let stop_token = Arc::clone(&stopped);
-    let stopper = std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while !DEEP_ROOT_SEARCH_STARTED.load(Ordering::SeqCst) && Instant::now() < deadline {
-            std::thread::yield_now();
-        }
-        let search_started = DEEP_ROOT_SEARCH_STARTED.load(Ordering::SeqCst);
-        std::thread::sleep(Duration::from_millis(5));
-        stop_token.store(true, Ordering::SeqCst);
-        search_started
-    });
-
-    let (_, _, depth, nodes) = lazy_smp_search(
-        &LazySmpPool::new(),
-        shared_tt,
-        &st,
-        &root_moves,
-        start_a_deep_root_search,
-        LazySmpSearchLimits {
-            soft_time: 10.0,
-            hard_time: 10.0,
-            depth: 1,
-            node_limit: None,
-            start: Instant::now(),
-        },
-        1,
-        &mut root,
-    );
-
-    assert!(
-        stopper.join().expect("stopper thread completed"),
-        "the root search did not start"
-    );
-    assert_eq!(depth, 0, "the interrupted iteration was not completed");
-    assert!(
-        nodes > 0,
-        "interrupted search work disappeared from the total"
-    );
-}
-
-#[test]
 fn lazy_smp_soft_completion_signals_the_root_searcher() {
     let st = state_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1");
     let stopped = Arc::new(AtomicBool::new(false));
@@ -314,7 +256,6 @@ fn lazy_smp_soft_completion_signals_the_root_searcher() {
         shared_tt,
         &st,
         &root_moves,
-        |_, _| 0,
         LazySmpSearchLimits {
             soft_time: 0.0,
             hard_time: 10.0,
@@ -330,105 +271,6 @@ fn lazy_smp_soft_completion_signals_the_root_searcher() {
     assert!(
         stopped.load(Ordering::Relaxed),
         "the first crossing iteration did not stop sibling workers"
-    );
-}
-
-#[test]
-fn immature_lazy_smp_helper_cannot_end_the_leader_iteration_at_soft_time() {
-    static EXPECTED_ROOT_MOVES: AtomicUsize = AtomicUsize::new(0);
-    static HELPER_ROOT_VISITS: AtomicUsize = AtomicUsize::new(0);
-    static LEADER_ROOT_VISITS: AtomicUsize = AtomicUsize::new(0);
-
-    fn delay_leader_until_the_helper_finishes(_: &BoardState, _: Move) -> i32 {
-        if std::thread::current().name() == Some("rts-0") {
-            let deadline = Instant::now() + Duration::from_secs(1);
-            let expected = EXPECTED_ROOT_MOVES.load(Ordering::SeqCst);
-            while HELPER_ROOT_VISITS.load(Ordering::SeqCst) < expected && Instant::now() < deadline
-            {
-                std::thread::yield_now();
-            }
-            LEADER_ROOT_VISITS.fetch_add(1, Ordering::SeqCst);
-            std::thread::sleep(Duration::from_millis(5));
-        } else {
-            HELPER_ROOT_VISITS.fetch_add(1, Ordering::SeqCst);
-        }
-        0
-    }
-
-    let st = state_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1");
-    let stopped = Arc::new(AtomicBool::new(false));
-    let shared_tt = Arc::new(SharedTT::new(128));
-    let mut root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
-    let root_moves = generate_moves(&st, st.w, &st.cr, st.ep);
-
-    EXPECTED_ROOT_MOVES.store(root_moves.len(), Ordering::SeqCst);
-    HELPER_ROOT_VISITS.store(0, Ordering::SeqCst);
-    LEADER_ROOT_VISITS.store(0, Ordering::SeqCst);
-    let (_, _, depth, _) = lazy_smp_search(
-        &LazySmpPool::new(),
-        shared_tt,
-        &st,
-        &root_moves,
-        delay_leader_until_the_helper_finishes,
-        LazySmpSearchLimits {
-            soft_time: 0.0,
-            hard_time: 10.0,
-            depth: 1,
-            node_limit: None,
-            start: Instant::now(),
-        },
-        2,
-        &mut root,
-    );
-
-    assert_eq!(depth, 1);
-    assert!(stopped.load(Ordering::Relaxed));
-    assert_eq!(HELPER_ROOT_VISITS.load(Ordering::SeqCst), root_moves.len());
-    assert_eq!(
-        LEADER_ROOT_VISITS.load(Ordering::SeqCst),
-        root_moves.len(),
-        "a helper stopped the leader before its crossing iteration completed"
-    );
-}
-
-#[test]
-fn lazy_smp_applies_root_depth_extension_policy() {
-    static EXTENSION_CALLS: AtomicUsize = AtomicUsize::new(0);
-
-    fn count_extension_calls(_: &BoardState, _: Move) -> i32 {
-        EXTENSION_CALLS.fetch_add(1, Ordering::SeqCst);
-        0
-    }
-
-    let st = state_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1");
-    let stopped = Arc::new(AtomicBool::new(false));
-    let shared_tt = Arc::new(SharedTT::new(128));
-    let mut root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
-    let root_moves = generate_moves(&st, st.w, &st.cr, st.ep);
-
-    EXTENSION_CALLS.store(0, Ordering::SeqCst);
-    let (_, _, depth, _) = lazy_smp_search(
-        &LazySmpPool::new(),
-        shared_tt,
-        &st,
-        &root_moves,
-        count_extension_calls,
-        LazySmpSearchLimits {
-            soft_time: 10.0,
-            hard_time: 10.0,
-            depth: 1,
-            node_limit: None,
-            start: Instant::now(),
-        },
-        1,
-        &mut root,
-    );
-
-    assert_eq!(depth, 1);
-    assert_eq!(
-        EXTENSION_CALLS.load(Ordering::SeqCst),
-        root_moves.len(),
-        "Lazy SMP did not consult the root extension policy for every root move"
     );
 }
 

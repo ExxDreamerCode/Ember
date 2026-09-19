@@ -1340,7 +1340,6 @@ fn lazy_smp_pool_reuses_workers_with_a_fresh_stop_token() {
         first_tt,
         &st,
         &root_moves,
-        |_, _| 0,
         LazySmpSearchLimits {
             soft_time: 0.0,
             hard_time: 10.0,
@@ -1366,7 +1365,6 @@ fn lazy_smp_pool_reuses_workers_with_a_fresh_stop_token() {
         second_tt,
         &st,
         &root_moves,
-        |_, _| 0,
         LazySmpSearchLimits {
             soft_time: 10.0,
             hard_time: 10.0,
@@ -1464,7 +1462,6 @@ fn lazy_smp_tactical_verifier_does_not_inflate_worker_disagreement() {
         st,
         root_moves,
         num_threads: 3,
-        root_depth_extension: |_, _| 0,
         limits: LazySmpSearchLimits {
             soft_time: 1.0,
             hard_time: 2.0,
