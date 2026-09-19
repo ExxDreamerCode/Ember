@@ -1,7 +1,7 @@
 use crate::board::{
     all_occ, attacked_by, bit, has_non_pawn, is_dead_position, move_ec, move_er, move_from,
-    move_promotion, move_sc, move_sr, move_to, piece_type, see, BoardState, Move, BP, EMPTY_SQ,
-    INF, KING_ATTACKS, MATE, MAX_HALF_MOVE_CLOCK, MAX_PLY, NO_MOVE, QS_DEPTH, WP,
+    move_promotion, move_sc, move_sr, move_to, piece_type, BoardState, Move, BP, EMPTY_SQ, INF,
+    KING_ATTACKS, MATE, MAX_HALF_MOVE_CLOCK, MAX_PLY, NO_MOVE, QS_DEPTH, WP,
 };
 use crate::evaluate::{
     current_classic_net, current_ember_v2, current_nnue_net, evaluate,
@@ -51,14 +51,11 @@ mod lazy_smp;
 pub use self::debug::{SearchDebug, SearchDebugStats};
 #[cfg(test)]
 use self::lazy_smp::{
-    lazy_smp_root_moves, lazy_smp_worker_can_coordinate_stop, lazy_smp_worker_disagreement,
-    lazy_smp_worker_root_moves, select_lazy_smp_result, should_print_final_info, LazySmpAgreement,
-    LazySmpRootContext, LazySmpSearchJob, ThreadResult,
+    lazy_smp_root_moves, lazy_smp_worker_can_coordinate_stop, select_lazy_smp_result,
+    should_print_final_info, LazySmpAgreement, ThreadResult,
 };
 pub use self::lazy_smp::{lazy_smp_search, LazySmpPool, LazySmpSearchLimits, SearchLearning};
 
-const LAZY_SMP_VERIFICATION_MARGIN_CP: i32 = 25;
-const LAZY_SMP_VERIFICATION_TT_MB: usize = 4;
 const ASPIRATION_MIN_DEPTH: i64 = 5;
 const ASPIRATION_DELTA_CP: i64 = 25;
 

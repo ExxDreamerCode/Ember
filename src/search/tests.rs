@@ -1267,11 +1267,10 @@ fn settled_lazy_smp_helper_can_coordinate_the_shared_soft_stop() {
     };
 
     assert!(lazy_smp_worker_can_coordinate_stop(
-        2, None, 1.0, timing, agreement, true,
+        2, 1.0, timing, agreement, true,
     ));
     assert!(!lazy_smp_worker_can_coordinate_stop(
         2,
-        None,
         1.0,
         timing,
         LazySmpAgreement {
@@ -1282,16 +1281,7 @@ fn settled_lazy_smp_helper_can_coordinate_the_shared_soft_stop() {
         true,
     ));
     assert!(!lazy_smp_worker_can_coordinate_stop(
-        1,
-        Some(1),
-        1.0,
-        timing,
-        agreement,
-        true,
-    ));
-    assert!(!lazy_smp_worker_can_coordinate_stop(
         2,
-        None,
         1.0,
         IterationTiming {
             elapsed_seconds: 0.9,
@@ -1302,7 +1292,6 @@ fn settled_lazy_smp_helper_can_coordinate_the_shared_soft_stop() {
     ));
     assert!(!lazy_smp_worker_can_coordinate_stop(
         2,
-        None,
         1.0,
         timing,
         LazySmpAgreement {
@@ -1314,7 +1303,6 @@ fn settled_lazy_smp_helper_can_coordinate_the_shared_soft_stop() {
     ));
     assert!(!lazy_smp_worker_can_coordinate_stop(
         2,
-        None,
         1.0,
         timing,
         LazySmpAgreement {
@@ -1424,72 +1412,6 @@ fn lazy_smp_many_helpers_keep_rotated_root_order() {
     assert_eq!(lazy_smp_root_moves(&original, 1, 12), expected);
 }
 
-// These positions test helper-lane assignment and disagreement accounting directly;
-// a final TSV move cannot reveal which worker searched a move or how its vote counted.
-#[test]
-fn lazy_smp_assigns_a_helper_to_verify_game_ffzk_y782_recapture() {
-    let st = state_from_fen("4r1k1/q3nppp/2p1p2P/1p2B3/pP1rn3/3N2P1/P4PB1/2QR2K1 w - - 0 31");
-    let bxe4 = legal_move(&st, "g2e4");
-    let qb2 = legal_move(&st, "c1b2");
-    let re1 = legal_move(&st, "d1e1");
-    let root_moves = [bxe4, qb2, re1];
-
-    assert_eq!(
-        lazy_smp_worker_root_moves(&st, &root_moves, 1, 12),
-        vec![bxe4]
-    );
-    assert_eq!(
-        lazy_smp_worker_root_moves(&st, &root_moves, 0, 12),
-        root_moves
-    );
-}
-
-#[test]
-fn lazy_smp_tactical_verifier_does_not_inflate_worker_disagreement() {
-    let st = state_from_fen("4r1k1/q3nppp/2p1p2P/1p2B3/pP1rn3/3N2P1/P4PB1/2QR2K1 w - - 0 31");
-    let bxe4 = legal_move(&st, "g2e4");
-    let qe3 = legal_move(&st, "c1e3");
-    let root_moves = Arc::new(vec![bxe4, qe3]);
-    let stopped = Arc::new(AtomicBool::new(false));
-    let shared_tt = Arc::new(SharedTT::new(1));
-    let verification_tt = Arc::new(SharedTT::new(1));
-    let root_searcher = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
-    let job = LazySmpSearchJob {
-        shared_tt,
-        verification_move: Some(bxe4),
-        verification_tt: Some(verification_tt),
-        stopped,
-        st,
-        root_moves,
-        num_threads: 3,
-        limits: LazySmpSearchLimits {
-            soft_time: 1.0,
-            hard_time: 2.0,
-            depth: 20,
-            node_limit: None,
-            start: Instant::now(),
-        },
-        root_context: Arc::new(LazySmpRootContext::from_searcher(&root_searcher)),
-        start: Instant::now(),
-        global_best_depth: Arc::new(AtomicI32::new(0)),
-        printed_depth: Arc::new(AtomicI32::new(0)),
-        global_nodes: Arc::new(AtomicU64::new(0)),
-        node_limit_counter: None,
-        worker_best_moves: (0..3).map(|_| AtomicU64::new(0)).collect(),
-        worker_depths: (0..3).map(|_| AtomicI32::new(0)).collect(),
-    };
-    job.worker_best_moves[1].store(u64::from(bxe4), Ordering::Relaxed);
-    job.worker_depths[1].store(22, Ordering::Release);
-    job.worker_best_moves[2].store(u64::from(qe3), Ordering::Relaxed);
-    job.worker_depths[2].store(17, Ordering::Release);
-
-    assert_eq!(lazy_smp_worker_disagreement(&job, 0, qe3, 17), 0.0);
-    assert!(!Arc::ptr_eq(
-        &job.shared_tt,
-        job.verification_tt.as_ref().unwrap()
-    ));
-}
-
 fn completed_thread(thread_id: usize, best_move: Move, score: i32, depth: i32) -> ThreadResult {
     ThreadResult {
         thread_id,
@@ -1537,12 +1459,7 @@ fn lazy_smp_does_not_let_deepest_outlier_repeat_draw_game_kh7() {
         completed_thread(2, kh7, -61, 15),
     ];
 
-    assert_eq!(
-        select_lazy_smp_result(&results, &st, &[bg7, kh7])
-            .unwrap()
-            .best_move,
-        bg7
-    );
+    assert_eq!(select_lazy_smp_result(&results).unwrap().best_move, bg7);
 }
 
 #[test]
@@ -1559,12 +1476,7 @@ fn lazy_smp_does_not_let_deepest_outlier_repeat_loss_game_kf7() {
         completed_thread(2, kf7, -20, 13),
     ];
 
-    assert_eq!(
-        select_lazy_smp_result(&results, &st, &[ne7, kf7])
-            .unwrap()
-            .best_move,
-        ne7
-    );
+    assert_eq!(select_lazy_smp_result(&results).unwrap().best_move, ne7);
 }
 
 #[test]
@@ -1582,12 +1494,7 @@ fn lazy_smp_does_not_let_deepest_outlier_repeat_loss_game_g4() {
         completed_thread(2, g4, -187, 14),
     ];
 
-    assert_eq!(
-        select_lazy_smp_result(&results, &st, &[kh6, g4])
-            .unwrap()
-            .best_move,
-        kh6
-    );
+    assert_eq!(select_lazy_smp_result(&results).unwrap().best_move, kh6);
 }
 
 #[test]
@@ -1615,54 +1522,7 @@ fn lazy_smp_keeps_principal_recapture_from_game_ffzk_y782() {
         completed_thread(0, bxe4, -126, 19),
     ];
 
-    assert_eq!(
-        select_lazy_smp_result(&results, &st, &[bxe4, qe3, qb2])
-            .unwrap()
-            .best_move,
-        bxe4
-    );
-}
-
-#[test]
-fn lazy_smp_keeps_deeper_root_recapture_from_game_ffzk_y782() {
-    // A dedicated helper can search Bxe4 more deeply than workers that
-    // compare every root move. Keep its better score over the principal
-    // worker's losing quiet alternative.
-    let st = state_from_fen("4r1k1/q3nppp/2p1p2P/1p2B3/pP1rn3/3N2P1/P4PB1/2QR2K1 w - - 0 31");
-    let bxe4 = legal_move(&st, "g2e4");
-    let qb2 = legal_move(&st, "c1b2");
-    let re1 = legal_move(&st, "d1e1");
-    let results = [
-        completed_thread(0, qb2, -128, 17),
-        completed_thread(1, bxe4, -65, 18),
-        completed_thread(2, re1, -124, 17),
-    ];
-
-    assert!(see(&st.bb, move_from(bxe4), move_to(bxe4)) >= -25);
-    assert_eq!(
-        select_lazy_smp_result(&results, &st, &[bxe4, qb2, re1])
-            .unwrap()
-            .best_move,
-        bxe4
-    );
-}
-
-#[test]
-fn lazy_smp_rejects_a_worse_tactical_verification() {
-    let st = state_from_fen("4r1k1/q3nppp/2p1p2P/1p2B3/pP1rn3/3N2P1/P4PB1/2QR2K1 w - - 0 31");
-    let bxe4 = legal_move(&st, "g2e4");
-    let qe3 = legal_move(&st, "c1e3");
-    let results = [
-        completed_thread(0, qe3, -20, 17),
-        completed_thread(1, bxe4, -125, 18),
-    ];
-
-    assert_eq!(
-        select_lazy_smp_result(&results, &st, &[bxe4, qe3])
-            .unwrap()
-            .best_move,
-        qe3
-    );
+    assert_eq!(select_lazy_smp_result(&results).unwrap().best_move, bxe4);
 }
 
 #[test]
@@ -1676,12 +1536,7 @@ fn lazy_smp_uses_consensus_when_principal_has_no_result() {
         completed_thread(3, kh7, -61, 15),
     ];
 
-    assert_eq!(
-        select_lazy_smp_result(&results, &st, &[bg7, kh7])
-            .unwrap()
-            .best_move,
-        bg7
-    );
+    assert_eq!(select_lazy_smp_result(&results).unwrap().best_move, bg7);
 }
 
 #[test]
