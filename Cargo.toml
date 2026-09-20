@@ -20,6 +20,9 @@ shakmaty-syzygy = { version = "0.28", features = ["mmap"] }
 [target.'cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "windows")))'.dependencies]
 mimalloc = { version = "0.1.52", optional = true }
 
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
+
 [features]
 default = ["mimalloc"]
 decision-trace = []
