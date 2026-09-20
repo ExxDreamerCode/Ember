@@ -402,6 +402,19 @@ Include an extreme increment control such as `1+0.01`, a representative short co
 as `8+0.08`, and a less compressed control when practical. Inspect time forfeits separately
 from chess losses.
 
+Give hard-deadline expiration one owner. Recursive search should consume a shared stop token
+without reading the wall clock or implementing a second polling schedule. Validate the owner
+with stale-registration, replacement, disarm, already-expired, and shutdown races, and cover
+fresh tokens for reused searchers and persistent SMP workers. Exercise short synchronous UCI
+searches, longer asynchronous searches, `stop`, immediate restart, and ponder transitions.
+
+Measure timer wake lateness separately from time to return `bestmove`. A watchdog can request
+search cancellation while another thread runs, but it cannot make a descheduled search thread
+or process execute. Keep an evidence-based low-clock reserve for scheduler and protocol tails,
+and preserve the games and per-move times that justified it. Characterize watchdog latency on
+each shipped platform under idle and controlled-load conditions; do not replace missing native
+platform measurements with cross-build success.
+
 For selected games, record time spent and time remaining per move. Check that search stops
 within its hard budget, workers become idle promptly after `bestmove`, ponder transitions do
 not leak work, and obvious forced replies do not receive pathological budgets. Opponent time
