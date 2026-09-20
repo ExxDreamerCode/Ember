@@ -3,12 +3,14 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import os
 import queue
 import re
 import statistics
 import subprocess
 import threading
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 
@@ -25,6 +27,7 @@ DEFAULT_POSITIONS = [
 
 
 INFO_RE = re.compile(r"^info .*?\bdepth\s+(\d+).*?\bnodes\s+(\d+).*?\bnps\s+(\d+)\b")
+BACKEND_ACK_PREFIX = "info string NNUE backend set to "
 
 
 def now_id():
@@ -39,7 +42,73 @@ def sha256_file(path):
     return h.hexdigest()
 
 
-def run_engine(binary, input_text, timeout):
+def safe_component(value):
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-") or "sample"
+
+
+def save_result(path, result):
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def accepted_backend_acknowledgements(value):
+    # Match src/backend.rs aliases and main.rs's auto/default handling. Dynamic
+    # aliases resolve on the engine's CPU, which need not match the harness CPU.
+    aliases = {
+        "scalar": ("scalar", "portable"),
+        "x86-v3": ("x86-v3", "x86-64-v3", "v3", "avx2"),
+        "x86-avx512": ("x86-avx512", "avx512", "x86-v4", "x86-64-v4", "v4"),
+        "aarch64-simd128": ("aarch64-simd128", "arm64-simd128", "arm-simd128", "neon128"),
+        "aarch64-simd256": ("aarch64-simd", "arm64-simd", "arm-simd", "neon",
+                            "aarch64-simd256", "arm64-simd256", "arm-simd256", "neon256"),
+        "aarch64-simd512": ("aarch64-simd512", "arm64-simd512", "arm-simd512", "neon512"),
+    }
+    value = value.strip().lower().replace("_", "-")
+    if value in ("", "auto", "default"):
+        return {f"auto ({backend})" for backend in aliases}
+    if value == "simd":
+        return {"scalar", "x86-v3", "x86-avx512", "aarch64-simd256"}
+    if value == "simd256":
+        return {"scalar", "x86-v3", "aarch64-simd256"}
+    return {backend for backend, names in aliases.items() if value in names}
+
+
+def validate_option_transcript(output, options):
+    lines = output.splitlines()
+    for line in lines:
+        if line.startswith("info string Unknown NNUE backend:") or (
+            line.startswith("info string NNUE backend ")
+            and " is not available on this CPU" in line
+        ):
+            raise RuntimeError(f"engine rejected benchmark option: {line}")
+
+    requested_backend = next(
+        (
+            value
+            for name, value in reversed(options or [])
+            if name.casefold() == "nnuebackend"
+        ),
+        None,
+    )
+    if requested_backend is None:
+        return {}
+    acknowledgements = [
+        line[len(BACKEND_ACK_PREFIX) :]
+        for line in lines
+        if line.startswith(BACKEND_ACK_PREFIX)
+    ]
+    if not acknowledgements:
+        raise RuntimeError("engine did not acknowledge the requested NNUEBackend option")
+    if acknowledgements[-1] not in accepted_backend_acknowledgements(requested_backend):
+        raise RuntimeError(
+            f"NNUE backend mismatch: requested {requested_backend!r}, "
+            f"acknowledged {acknowledgements[-1]!r}"
+        )
+    return {"NNUEBackend": acknowledgements[-1]}
+
+
+def run_engine(binary, input_text, timeout, raw_output=None):
     start = time.perf_counter()
     proc = subprocess.Popen(
         [str(binary)],
@@ -84,23 +153,25 @@ def run_engine(binary, input_text, timeout):
             proc.stdin.write("quit\n")
             proc.stdin.flush()
             proc.wait(timeout=max(1.0, deadline - time.monotonic()))
-        reader.join(timeout=1.0)
-        while not lines.empty():
-            output.append(lines.get_nowait())
-    except Exception:
+    finally:
+        # Reap and drain on success, timeout, broken pipe, and interruption.
+        # In particular, a timeout during quit has no captured stdout of its own.
         if proc.poll() is None:
             proc.kill()
             proc.wait()
+        reader.join(timeout=1.0)
+        while not lines.empty():
+            output.append(lines.get_nowait())
+        wall = time.perf_counter() - start
+        if raw_output is not None:
+            raw_output.write("".join(output))
         proc.stdin.close()
         proc.stdout.close()
-        raise
 
-    proc.stdin.close()
-    proc.stdout.close()
     completed = subprocess.CompletedProcess(
         [str(binary)], proc.returncode, stdout="".join(output)
     )
-    return completed, time.perf_counter() - start
+    return completed, wall
 
 
 def parse_last_info(output):
@@ -185,22 +256,38 @@ def uci_input(position_command, depth, hash_mb, threads, disable_book, options=N
     return "\n".join(commands)
 
 
-def bench_once(binary, position, depth, hash_mb, threads, timeout, disable_book, options=None):
+def bench_once(
+    binary,
+    position,
+    depth,
+    hash_mb,
+    threads,
+    timeout,
+    disable_book,
+    options=None,
+    raw_output_path=None,
+):
     label, command = position
-    proc, wall = run_engine(
-        binary,
-        uci_input(command, depth, hash_mb, threads, disable_book, options),
-        timeout,
-    )
+    # Reserve the path before launching the engine; never overwrite evidence.
+    with (raw_output_path.open("x", encoding="utf-8")
+          if raw_output_path is not None else nullcontext()) as raw_output:
+        proc, wall = run_engine(
+            binary,
+            uci_input(command, depth, hash_mb, threads, disable_book, options),
+            timeout,
+            raw_output,
+        )
     parsed = parse_last_info(proc.stdout)
     if proc.returncode != 0 or parsed is None or "bestmove " not in proc.stdout:
         raise RuntimeError(f"benchmark failed for {binary} on {label}\n{proc.stdout}")
+    effective_options = validate_option_transcript(proc.stdout, options)
     return {
         "position": label,
         "reported_depth": parsed["depth"],
         "nodes": parsed["nodes"],
         "nps": parsed["nps"],
         "wall_seconds": wall,
+        "effective_options": effective_options,
     }
 
 
@@ -320,6 +407,12 @@ def main():
     parser.add_argument("--keep-book", action="store_true", help="Do not send an empty Book option before searching.")
     args = parser.parse_args()
 
+    if os.environ.get("EMBER_SEARCH_BACKEND", "").strip():
+        raise SystemExit(
+            "unset EMBER_SEARCH_BACKEND and use --option LABEL:NNUEBackend=VALUE; "
+            "inherited backend overrides make default-backend comparisons ambiguous"
+        )
+
     labels = [label for label, _ in args.binary]
     if len(labels) != len(set(labels)):
         raise SystemExit("binary labels must be unique")
@@ -340,16 +433,23 @@ def main():
         options[label].append((name, value))
 
     positions = load_positions(args.positions)
+    if len({label for label, _ in positions}) != len(positions):
+        raise SystemExit("position labels must be unique")
     run_id = args.run_id or now_id()
     out_dir = Path(args.out_dir) / run_id
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=False)
+    raw_output_dir = out_dir / "raw"
+    raw_output_dir.mkdir(exist_ok=True)
 
     result = {
         "run_id": run_id,
+        "status": "running",
         "depth": args.depth,
         "repeats": args.repeats,
         "hash_mb": args.hash_mb,
         "threads": args.threads,
+        "timeout": args.timeout,
+        "interleave": args.interleave,
         "disable_book": not args.keep_book,
         "options": {
             label: [{"name": name, "value": value} for name, value in values]
@@ -371,7 +471,14 @@ def main():
             "sha256": sha256_file(resolved),
         })
 
+    # Preserve the exact configuration before the first subprocess starts.
+    # Incremental atomic snapshots retain completed samples if a later one fails.
+    (out_dir / "invocation.json").write_text(
+        json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    result_path = out_dir / "result.json"
     result["summaries"] = {label: {} for label in labels}
+    save_result(result_path, result)
     if args.interleave:
         schedule = []
         for repeat in range(1, args.repeats + 1):
@@ -380,8 +487,12 @@ def main():
                 if (repeat + pos_index) % 2 == 0:
                     order.reverse()
                 for label, path in order:
-                    schedule.append((label, path, position, repeat))
-        for label, path, position, repeat in schedule:
+                    schedule.append((label, path, position, pos_index, repeat))
+        for label, path, position, pos_index, repeat in schedule:
+            raw_output_path = raw_output_dir / (
+                f"b{labels.index(label):03d}-p{pos_index:03d}-{safe_component(label)}-r{repeat:02d}-"
+                f"{safe_component(position[0])}.log"
+            )
             sample = bench_once(
                 path.resolve(),
                 position,
@@ -391,10 +502,13 @@ def main():
                 args.timeout,
                 not args.keep_book,
                 options[label],
+                raw_output_path,
             )
             sample["label"] = label
             sample["repeat"] = repeat
+            sample["raw_output"] = str(raw_output_path.resolve())
             result["samples"].append(sample)
+            save_result(result_path, result)
             print(
                 f"{label} repeat={repeat} {sample['position']} "
                 f"depth={sample['reported_depth']} nps={sample['nps']}",
@@ -405,7 +519,11 @@ def main():
             resolved = path.resolve()
             print(f"benchmarking {label} ({resolved})...", flush=True)
             for repeat in range(1, args.repeats + 1):
-                for position in positions:
+                for pos_index, position in enumerate(positions):
+                    raw_output_path = raw_output_dir / (
+                        f"b{labels.index(label):03d}-p{pos_index:03d}-{safe_component(label)}-r{repeat:02d}-"
+                        f"{safe_component(position[0])}.log"
+                    )
                     sample = bench_once(
                         resolved,
                         position,
@@ -415,10 +533,13 @@ def main():
                         args.timeout,
                         not args.keep_book,
                         options[label],
+                        raw_output_path,
                     )
                     sample["label"] = label
                     sample["repeat"] = repeat
+                    sample["raw_output"] = str(raw_output_path.resolve())
                     result["samples"].append(sample)
+                    save_result(result_path, result)
                     print(
                         f"{label} repeat={repeat} {sample['position']} "
                         f"depth={sample['reported_depth']} nps={sample['nps']}",
@@ -428,7 +549,8 @@ def main():
     for label, _ in args.binary:
         result["summaries"][label] = summarize([row for row in result["samples"] if row["label"] == label])
 
-    (out_dir / "result.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    result["status"] = "complete"
+    save_result(result_path, result)
     write_report(out_dir / "summary.md", result)
     print(out_dir / "summary.md")
 
