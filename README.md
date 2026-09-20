@@ -160,6 +160,9 @@ setoption name NNUEBackend value auto
 ```
 
 A backend that is not available on the current CPU will be ignored.
+On AArch64, `auto` selects `aarch64-simd256`; its V2 dense layers use
+runtime-detected DOTPROD instructions when the CPU provides them and baseline
+NEON otherwise.
 
 When an external network is loaded, the engine prints its version and architecture:
 
