@@ -46,6 +46,9 @@ jobs:
         env:
           RUST_BACKTRACE: 1
 
+      - name: Check default-feature test compilation
+        run: nix develop .#ci --command cargo test --locked --no-run
+
       - name: Run Python tool tests
         run: >
           nix develop .#ci --command python3 -m unittest discover

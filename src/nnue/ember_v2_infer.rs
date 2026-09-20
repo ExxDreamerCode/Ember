@@ -1760,11 +1760,14 @@ mod tests {
     use super::{collect_active_threat_indices, halfka_index, threat_lut, THREAT_DIMS};
     use crate::Engine;
 
-    fn v2_chain_games(seed: u64, games: usize, plies: usize) -> (usize, usize) {
+    fn v2_chain_games<B: super::EmberV2Backend>(
+        seed: u64,
+        games: usize,
+        plies: usize,
+    ) -> (usize, usize) {
         use super::EmberV2Accumulator;
         use crate::board::{move_ec, move_er, move_promotion, move_sc, move_sr};
         use crate::movegen::{apply_move, generate_moves};
-        use crate::nnue::SimdNnueBackend;
         use rand::rngs::SmallRng;
         use rand::seq::SliceRandom;
         use rand::SeedableRng;
@@ -1782,7 +1785,7 @@ mod tests {
             engine.set_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
             let mut st = engine.st;
             let mut true_acc = EmberV2Accumulator::new();
-            true_acc.refresh_with_backend::<SimdNnueBackend>(&net, &st);
+            true_acc.refresh_with_backend::<B>(&net, &st);
 
             for ply in 0..plies {
                 let moves = generate_moves(&st, st.w, &st.cr, st.ep);
@@ -1802,7 +1805,7 @@ mod tests {
                 );
 
                 let mut incremental = EmberV2Accumulator::new();
-                incremental.update_from_parent_with_backend::<SimdNnueBackend>(
+                incremental.update_from_parent_with_backend::<B>(
                     &true_acc,
                     &net,
                     &before,
@@ -1810,11 +1813,24 @@ mod tests {
                     &mut scratch,
                 );
                 let mut refreshed = EmberV2Accumulator::new();
-                refreshed.refresh_with_backend::<SimdNnueBackend>(&net, &after);
+                // Independent full-refresh and dense-inference oracle: using B
+                // on both sides would let a shared backend error pass unnoticed.
+                refreshed.refresh_with_backend::<super::ScalarNnueBackend>(&net, &after);
 
                 checked += 1;
+                let mut incremental_threats = incremental.threat_indices.clone();
+                let mut refreshed_threats = refreshed.threat_indices.clone();
+                for side in 0..2 {
+                    incremental_threats[side].sort_unstable();
+                    refreshed_threats[side].sort_unstable();
+                }
                 if incremental.accumulation != refreshed.accumulation
                     || incremental.psqt != refreshed.psqt
+                    || incremental_threats != refreshed_threats
+                    || super::evaluate_ember_v2_acc_with_backend::<B>(&net, &incremental, &after)
+                        != super::evaluate_ember_v2_acc_with_backend::<super::ScalarNnueBackend>(
+                            &net, &refreshed, &after,
+                        )
                 {
                     mismatches += 1;
                     if mismatches <= 3 {
@@ -1828,23 +1844,97 @@ mod tests {
                         );
                     }
                 }
-                true_acc = refreshed;
+                // Keep the actual incremental result as the next parent. Using the
+                // refreshed oracle here would only check isolated one-ply updates and
+                // could hide drift that appears after several chained moves.
+                true_acc = incremental;
                 st = after;
             }
         }
         (checked, mismatches)
     }
 
-    #[test]
-    fn v2_chain_parity_random_games() {
-        crate::evaluate::init_embedded_nnue().expect("embedded NNUE should load");
+    fn assert_v2_chain_parity<B: super::EmberV2Backend>(backend: &str) {
         for seed in [1u64, 7, 12345] {
-            let (checked, mismatches) = v2_chain_games(seed, 4, 80);
-            assert_eq!(mismatches, 0, "v2 chain parity seed {seed}");
+            let (checked, mismatches) = v2_chain_games::<B>(seed, 4, 80);
+            assert_eq!(mismatches, 0, "v2 {backend} chain parity seed {seed}");
             assert!(
                 checked >= 240,
-                "expected a full game sample, checked {checked}"
+                "expected a full {backend} game sample, checked {checked}"
             );
+        }
+    }
+
+    #[test]
+    fn v2_chain_parity_random_games() {
+        // Checks private accumulator state and backend-specialized inference;
+        // a UCI move fixture cannot observe either contract independently.
+        crate::evaluate::init_embedded_nnue().expect("embedded NNUE should load");
+        #[cfg(target_arch = "aarch64")]
+        {
+            assert_v2_chain_parity::<crate::nnue::Simd128NnueBackend>("simd128");
+            assert_v2_chain_parity::<crate::nnue::SimdNnueBackend>("simd256");
+            assert_v2_chain_parity::<crate::nnue::Simd512NnueBackend>("simd512");
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        assert_v2_chain_parity::<crate::nnue::SimdNnueBackend>("simd256");
+    }
+
+    fn assert_v2_material_bucket_parity<B: super::EmberV2Backend>() {
+        let net = crate::evaluate::current_ember_v2().expect("embedded V2 network");
+        // Four pieces per step exercises every PSQT/dense bucket, including
+        // sparse positions that short random games from startpos rarely reach.
+        let boards = [
+            "4k3/p7/8/8/8/8/P7/4K3",
+            "r3k3/pp6/8/8/8/8/PP6/R3K3",
+            "r3k2r/ppp5/8/8/8/8/PPP5/R3K2R",
+            "r2qk2r/pppp4/8/8/8/8/PPPP4/R2QK2R",
+            "r1bqkb1r/pppp4/8/8/8/8/PPPP4/R1BQKB1R",
+            "rnbqkbnr/pppp4/8/8/8/8/PPPP4/RNBQKBNR",
+            "rnbqkbnr/pppp4/8/8/8/8/PPPPPPPP/RNBQKBNR",
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR",
+        ];
+        for (bucket, board) in boards.iter().enumerate() {
+            for side in ["w", "b"] {
+                let mut engine = Engine::new();
+                engine.set_fen(&format!("{board} {side} - - 0 1"));
+                let state = &engine.st;
+                let count: u32 = state.bb.iter().map(|bb| bb.count_ones()).sum();
+                assert_eq!((count as usize - 1) / 4, bucket);
+                let mut native = super::EmberV2Accumulator::new();
+                native.refresh_with_backend::<B>(&net, state);
+                let mut scalar = super::EmberV2Accumulator::new();
+                scalar.refresh_with_backend::<super::ScalarNnueBackend>(&net, state);
+                assert_eq!(native.accumulation, scalar.accumulation);
+                assert_eq!(native.psqt, scalar.psqt);
+                assert_eq!(
+                    super::evaluate_ember_v2_acc_components::<B>(&net, &native, state),
+                    super::evaluate_ember_v2_acc_components::<super::ScalarNnueBackend>(
+                        &net, &scalar, state,
+                    ),
+                    "bucket {bucket}, side {side}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn v2_real_network_material_buckets_match_scalar() {
+        // Observes private accumulator and PSQT/dense components separately so
+        // compensating score errors cannot hide behind one final evaluation.
+        crate::evaluate::init_embedded_nnue().expect("embedded NNUE should load");
+        assert_v2_material_bucket_parity::<crate::nnue::Simd128NnueBackend>();
+        assert_v2_material_bucket_parity::<crate::nnue::Simd512NnueBackend>();
+        #[cfg(target_arch = "aarch64")]
+        assert_v2_material_bucket_parity::<crate::nnue::SimdNnueBackend>();
+        #[cfg(target_arch = "x86_64")]
+        {
+            if crate::backend::x86_v3_available() {
+                assert_v2_material_bucket_parity::<crate::nnue::SimdNnueBackend>();
+            }
+            if crate::backend::x86_avx512_available() {
+                assert_v2_material_bucket_parity::<crate::nnue::Avx512NnueBackend>();
+            }
         }
     }
 
@@ -2074,6 +2164,8 @@ mod tests {
     fn portable_ember_v2_backends_match_scalar_kernels() {
         assert_backend_kernels_match_scalar::<crate::nnue::Simd128NnueBackend>();
         assert_backend_kernels_match_scalar::<crate::nnue::Simd512NnueBackend>();
+        #[cfg(target_arch = "aarch64")]
+        assert_backend_kernels_match_scalar::<crate::nnue::SimdNnueBackend>();
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -2103,6 +2195,10 @@ mod tests {
             &net, &before, &after,
         );
         assert_accumulator_backend_matches_scalar::<crate::nnue::Simd512NnueBackend>(
+            &net, &before, &after,
+        );
+        #[cfg(target_arch = "aarch64")]
+        assert_accumulator_backend_matches_scalar::<crate::nnue::SimdNnueBackend>(
             &net, &before, &after,
         );
         #[cfg(target_arch = "x86_64")]

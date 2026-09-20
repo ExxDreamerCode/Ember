@@ -1627,11 +1627,10 @@ fn draw_status_terminates_cycles_only_after_the_search_root() {
 }
 
 #[test]
-#[ignore = "search-perf attribution report; run with --features search-perf -- --ignored --nocapture"]
+#[cfg(feature = "search-perf")]
+#[ignore = "search-perf attribution report; run with --features search-perf -- --ignored --nocapture --test-threads=1"]
 fn perf_counter_report() {
-    if !cfg!(feature = "search-perf") {
-        return;
-    }
+    // Observes private per-search and NNUE instrumentation counters.
     crate::evaluate::init_embedded_nnue().expect("embedded NNUE should load");
 
     const FENS: &[&str] = &[
