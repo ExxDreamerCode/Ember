@@ -5,6 +5,10 @@ const SINGLE_THREAD_BUDGET_MS: f64 = 25.0;
 const REDUCED_SMP_BUDGET_MS: f64 = 100.0;
 const EARLY_PREDICTION_BUDGET_MS: f64 = 500.0;
 const REDUCED_SMP_THREADS: usize = 4;
+// A hard deadline can stop search work, but it cannot make a descheduled
+// process return bestmove. Keep enough clock to absorb a short scheduler stall
+// once an extreme-increment game reaches its low-clock tail.
+const SHORT_INCREMENT_CLOCK_RESERVE_MS: f64 = 200.0;
 
 #[derive(Clone, Copy, Debug)]
 pub struct TimeBudget {
@@ -206,7 +210,12 @@ impl TimeManager {
 
         // The GUI cannot grant the next increment before this move returns.
         // Keep both limits inside the current clock after communication slack.
-        let spendable_ms = (time_ms - overhead_ms).max(1.0);
+        let clock_reserve_ms = if time_ms <= 1_000.0 && increment_ms <= 10.0 {
+            overhead_ms.max(SHORT_INCREMENT_CLOCK_RESERVE_MS)
+        } else {
+            overhead_ms
+        };
+        let spendable_ms = (time_ms - clock_reserve_ms).max(1.0);
         // Start protecting several future increments while there is still
         // enough clock to recover; waiting until the last few moves permits
         // one unstable iteration to consume most of an otherwise safe clock.

@@ -30,6 +30,18 @@ fn hard_limit_never_borrows_the_next_increment() {
 }
 
 #[test]
+fn one_second_bullet_keeps_a_scheduler_tail_reserve() {
+    let mut manager = TimeManager::default();
+    let budget = manager.clock_budget(205.0, 10.0, 0, 200);
+
+    assert!(budget.soft_seconds <= budget.hard_seconds);
+    assert!(
+        budget.hard_seconds <= 0.005,
+        "low-clock hard budget consumed the scheduler reserve: {budget:?}"
+    );
+}
+
+#[test]
 fn testcorr_late_game_budget_falls_below_the_increment() {
     let mut manager = TimeManager::default();
     let _initial = manager.clock_budget(8_000.0, 80.0, 0, 0);
