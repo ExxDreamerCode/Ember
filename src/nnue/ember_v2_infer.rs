@@ -964,6 +964,10 @@ impl EmberV2Accumulator {
                     let __perf_dt = crate::search::perf::rdtsc().wrapping_sub(__perf_t0);
                     crate::search::perf::ACC_THREATDIFF_CYCLES
                         .fetch_add(__perf_dt, std::sync::atomic::Ordering::Relaxed);
+                    crate::search::perf::ACC_REFRESH_UPDATE_CYCLES
+                        .fetch_add(__perf_dt, std::sync::atomic::Ordering::Relaxed);
+                    crate::search::perf::ACC_REFRESH_UPDATE_CALLS
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
                 #[cfg(not(feature = "search-perf"))]
                 {
@@ -971,8 +975,6 @@ impl EmberV2Accumulator {
                 }
                 return;
             }
-            #[cfg(feature = "search-perf")]
-            let __perf_t_slot = crate::search::perf::rdtsc();
             threat_row_ops += apply_incremental_threat_update::<B>(
                 self,
                 parent,
@@ -983,14 +985,6 @@ impl EmberV2Accumulator {
                 [list_white, list_black],
                 scratch,
             );
-            #[cfg(feature = "search-perf")]
-            {
-                let __perf_dt = crate::search::perf::rdtsc().wrapping_sub(__perf_t_slot);
-                crate::search::perf::THREAT_SLOT_CYCLES
-                    .fetch_add(__perf_dt, std::sync::atomic::Ordering::Relaxed);
-                crate::search::perf::THREAT_SLOT_CALLS
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
             for perspective in 0..2u32 {
                 #[cfg(feature = "search-perf")]
                 let __perf_t_diff = crate::search::perf::rdtsc();
@@ -1044,6 +1038,10 @@ impl EmberV2Accumulator {
                 let __perf_dt = crate::search::perf::rdtsc().wrapping_sub(__perf_t0);
                 crate::search::perf::ACC_THREATDIFF_CYCLES
                     .fetch_add(__perf_dt, std::sync::atomic::Ordering::Relaxed);
+                crate::search::perf::ACC_SLOT_UPDATE_CYCLES
+                    .fetch_add(__perf_dt, std::sync::atomic::Ordering::Relaxed);
+                crate::search::perf::ACC_SLOT_UPDATE_CALLS
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             #[cfg(not(feature = "search-perf"))]
             {
@@ -1131,6 +1129,7 @@ impl EmberV2Accumulator {
                 diff_threat_rows::<B>(self, parent, net, side, &threat_lists[side], scratch);
             }
         }
+        self.threat_indices = threat_lists;
         #[cfg(feature = "search-perf")]
         {
             crate::search::perf::ACC_THREAT_ROWS
@@ -1138,8 +1137,11 @@ impl EmberV2Accumulator {
             let __perf_dt = crate::search::perf::rdtsc().wrapping_sub(__perf_t0);
             crate::search::perf::ACC_THREATDIFF_CYCLES
                 .fetch_add(__perf_dt, std::sync::atomic::Ordering::Relaxed);
+            crate::search::perf::ACC_SCAN_UPDATE_CYCLES
+                .fetch_add(__perf_dt, std::sync::atomic::Ordering::Relaxed);
+            crate::search::perf::ACC_SCAN_UPDATE_CALLS
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        self.threat_indices = threat_lists;
     }
 }
 
@@ -1934,6 +1936,288 @@ mod tests {
             }
             if crate::backend::x86_avx512_available() {
                 assert_v2_material_bucket_parity::<crate::nnue::Avx512NnueBackend>();
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "search-perf")]
+    fn v2_update_strategy_counters_cover_each_complete_update() {
+        use crate::search::perf;
+        use std::sync::atomic::Ordering;
+
+        // Observes private instrumentation and the empty-threat fallback state;
+        // neither is reachable as an assertion through a move fixture.
+        crate::evaluate::init_embedded_nnue().expect("embedded NNUE should load");
+        let net = crate::evaluate::current_ember_v2().expect("embedded V2 network");
+        let counts = || {
+            [
+                perf::ACC_SLOT_UPDATE_CALLS.load(Ordering::Relaxed),
+                perf::ACC_SCAN_UPDATE_CALLS.load(Ordering::Relaxed),
+                perf::ACC_REFRESH_UPDATE_CALLS.load(Ordering::Relaxed),
+            ]
+        };
+        let (before, after) = v2_bench_move(
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            6,
+            4,
+            4,
+            4,
+        );
+        let (sparse_before, sparse_after) =
+            v2_bench_move("4k3/8/8/8/8/8/P7/4K3 w - - 0 1", 6, 0, 5, 0);
+        for (index, (before, after)) in [
+            (before, after),
+            (sparse_before, sparse_after),
+            (before, after),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut parent = super::EmberV2Accumulator::new();
+            parent.refresh_with_backend::<super::ScalarNnueBackend>(&net, &before);
+            if index == 2 {
+                parent.threat_indices.iter_mut().for_each(Vec::clear);
+            }
+            let mut child = super::EmberV2Accumulator::new();
+            let mut scratch = super::EmberV2ThreatDiffScratch::new();
+            let previous = counts();
+            child.update_from_parent_with_backend::<super::ScalarNnueBackend>(
+                &parent,
+                &net,
+                &before,
+                &after,
+                &mut scratch,
+            );
+            let current = counts();
+            let mut expected = [0; 3];
+            expected[index] = 1;
+            assert_eq!(
+                std::array::from_fn::<_, 3, _>(|i| current[i] - previous[i]),
+                expected
+            );
+            let mut oracle = super::EmberV2Accumulator::new();
+            oracle.refresh_with_backend::<super::ScalarNnueBackend>(&net, &after);
+            assert_eq!(child.accumulation, oracle.accumulation);
+            assert_eq!(child.psqt, oracle.psqt);
+        }
+    }
+
+    fn v2_bench_move(
+        fen: &str,
+        sr: usize,
+        sc: usize,
+        er: usize,
+        ec: usize,
+    ) -> (crate::board::BoardState, crate::board::BoardState) {
+        let mut engine = Engine::new();
+        engine.book = None;
+        engine.set_fen(fen);
+        let before = engine.st;
+        assert!(engine.make_move_uci(sr, sc, er, ec, 0));
+        (before, engine.st)
+    }
+
+    fn v2_microbench_backend<B: super::EmberV2Backend>(
+        name: &str,
+        net: &super::EmberV2Data,
+        states: &[crate::board::BoardState],
+        loops: usize,
+    ) {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        let refresh_rounds = (loops / 100).max(1);
+        let update_rounds = (loops / 10).max(1);
+        let mut checksum = 0i64;
+
+        let mut refreshed = super::EmberV2Accumulator::new();
+        let start = Instant::now();
+        for _ in 0..refresh_rounds {
+            for state in states {
+                refreshed.refresh_with_backend::<B>(black_box(net), black_box(state));
+                black_box(&refreshed);
+                checksum = checksum.wrapping_add(i64::from(refreshed.accumulation[0][0]));
+            }
+        }
+        let refresh_calls = refresh_rounds * states.len();
+        let refresh_ns = start.elapsed().as_nanos() as f64 / refresh_calls as f64;
+
+        let mut prepared = super::EmberV2Accumulator::new();
+        prepared.refresh_with_backend::<B>(net, &states[0]);
+        let mut copied = super::EmberV2Accumulator::new();
+        let start = Instant::now();
+        for index in 0..loops {
+            copied.accumulation = black_box(prepared.accumulation);
+            copied.psqt = black_box(prepared.psqt);
+            checksum = checksum.wrapping_add(i64::from(copied.accumulation[index & 1][0]));
+            black_box(&copied);
+        }
+        let copy_ns = start.elapsed().as_nanos() as f64 / loops as f64;
+
+        let mut transformed = [0u8; super::HIDDEN_SIZE];
+        let start = Instant::now();
+        for _ in 0..loops {
+            B::transform(
+                black_box(&prepared.accumulation[0]),
+                &mut transformed[..512],
+            );
+            B::transform(
+                black_box(&prepared.accumulation[1]),
+                &mut transformed[512..],
+            );
+            checksum = checksum.wrapping_add(i64::from(transformed[black_box(0)]));
+            black_box(&mut transformed);
+        }
+        let transform_ns = start.elapsed().as_nanos() as f64 / loops as f64;
+
+        let stack = &net.stacks[0];
+        let mut fc0 = [0i32; 32];
+        let start = Instant::now();
+        for index in 0..loops {
+            B::fc0(
+                black_box(&transformed),
+                black_box(&stack.fc0_weights),
+                black_box(&stack.fc0_bias),
+                &mut fc0,
+            );
+            checksum = checksum.wrapping_add(i64::from(fc0[index & 31]));
+            black_box(&mut fc0);
+        }
+        let fc0_ns = start.elapsed().as_nanos() as f64 / loops as f64;
+
+        let start = Instant::now();
+        for _ in 0..loops {
+            checksum = checksum.wrapping_add(i64::from(B::dot(
+                black_box(&transformed[..64]),
+                black_box(&stack.fc1_weights[..64]),
+            )));
+        }
+        let dot64_ns = start.elapsed().as_nanos() as f64 / loops as f64;
+
+        let start = Instant::now();
+        for _ in 0..loops {
+            checksum = checksum.wrapping_add(i64::from(B::dot(
+                black_box(&transformed[..128]),
+                black_box(&stack.fc2_weights),
+            )));
+        }
+        let dot128_ns = start.elapsed().as_nanos() as f64 / loops as f64;
+
+        let start = Instant::now();
+        for _ in 0..loops {
+            checksum =
+                checksum.wrapping_add(i64::from(super::evaluate_ember_v2_acc_with_backend::<B>(
+                    black_box(net),
+                    black_box(&prepared),
+                    black_box(&states[0]),
+                )));
+        }
+        let eval_ns = start.elapsed().as_nanos() as f64 / loops as f64;
+
+        let (ordinary_before, ordinary_after) = v2_bench_move(
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            6,
+            4,
+            4,
+            4,
+        );
+        let (king_before, king_after) =
+            v2_bench_move("4k3/pppppppp/8/8/8/8/PPPPPPPP/3K4 w - - 0 1", 7, 3, 7, 4);
+        let (sparse_before, sparse_after) =
+            v2_bench_move("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1", 6, 4, 5, 4);
+
+        let bench_update = |before: &crate::board::BoardState,
+                            after: &crate::board::BoardState|
+         -> (f64, i64) {
+            let mut parent = super::EmberV2Accumulator::new();
+            parent.refresh_with_backend::<B>(net, before);
+            let mut child = super::EmberV2Accumulator::new();
+            let mut scratch = super::EmberV2ThreatDiffScratch::new();
+            let mut local_checksum = 0i64;
+            let start = Instant::now();
+            for _ in 0..update_rounds {
+                child.update_from_parent_with_backend::<B>(
+                    black_box(&parent),
+                    black_box(net),
+                    black_box(before),
+                    black_box(after),
+                    &mut scratch,
+                );
+                local_checksum = local_checksum.wrapping_add(i64::from(child.accumulation[0][0]));
+                black_box(&mut child);
+            }
+            (
+                start.elapsed().as_nanos() as f64 / update_rounds as f64,
+                local_checksum,
+            )
+        };
+        let (ordinary_update_ns, ordinary_checksum) =
+            bench_update(&ordinary_before, &ordinary_after);
+        let (king_update_ns, king_checksum) = bench_update(&king_before, &king_after);
+        let (sparse_update_ns, sparse_checksum) = bench_update(&sparse_before, &sparse_after);
+        checksum = checksum
+            .wrapping_add(ordinary_checksum)
+            .wrapping_add(king_checksum)
+            .wrapping_add(sparse_checksum);
+
+        eprintln!(
+            "v2_microbench backend={name} loops={loops} refresh_calls={refresh_calls} \
+             refresh_ns={refresh_ns:.2} copy_ns={copy_ns:.2} transform_ns={transform_ns:.2} \
+             fc0_ns={fc0_ns:.2} dot64_ns={dot64_ns:.2} dot128_ns={dot128_ns:.2} \
+             eval_ns={eval_ns:.2} update_ns={ordinary_update_ns:.2} \
+             king_update_ns={king_update_ns:.2} sparse_update_ns={sparse_update_ns:.2} \
+             checksum={checksum}"
+        );
+    }
+
+    #[test]
+    #[ignore = "release-only Ember V2 kernel and accumulator microbenchmark"]
+    fn ember_v2_kernel_microbench() {
+        // This exercises private kernel and accumulator phases that a public UCI
+        // benchmark cannot isolate. Run it serially in release mode and preserve
+        // the emitted line with the exact revision and machine metadata.
+        crate::evaluate::init_embedded_nnue().expect("embedded Ember V2 net must load");
+        let net = crate::evaluate::current_ember_v2().expect("embedded Ember V2 net must exist");
+        let states = [
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/2P5/1p2P3/2N2N2/PP1PBPPP/R2QK2R w KQkq - 0 1",
+            "r1bq1rk1/pp2bppp/2n1pn2/2pp4/3P4/2PBPN2/PP3PPP/RNBQ1RK1 w - - 0 8",
+            "2r2rk1/1b2bppp/p3pn2/1p1p4/3P4/1BN1PN2/PP3PPP/2R2RK1 w - - 0 14",
+            "8/2p2pk1/1p4p1/p2Pp3/P1P1P1P1/1P3K2/8/8 w - - 0 40",
+            "8/5pk1/6p1/3N4/3P4/5P2/6PK/8 w - - 0 45",
+        ]
+        .map(|fen| {
+            let mut engine = Engine::new();
+            engine.book = None;
+            engine.set_fen(fen);
+            engine.st
+        });
+        let loops = std::env::var("EMBER_V2_BENCH_LOOPS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(10_000usize)
+            .max(1);
+
+        v2_microbench_backend::<crate::nnue::ScalarNnueBackend>("scalar", &net, &states, loops);
+        v2_microbench_backend::<crate::nnue::Simd128NnueBackend>("simd128", &net, &states, loops);
+        #[cfg(target_arch = "aarch64")]
+        v2_microbench_backend::<crate::nnue::SimdNnueBackend>("simd256", &net, &states, loops);
+        v2_microbench_backend::<crate::nnue::Simd512NnueBackend>("simd512", &net, &states, loops);
+        #[cfg(target_arch = "x86_64")]
+        {
+            if crate::backend::x86_v3_available() {
+                v2_microbench_backend::<crate::nnue::SimdNnueBackend>(
+                    "x86-v3", &net, &states, loops,
+                );
+            }
+            if crate::backend::x86_avx512_available() {
+                v2_microbench_backend::<crate::nnue::Avx512NnueBackend>(
+                    "x86-avx512",
+                    &net,
+                    &states,
+                    loops,
+                );
             }
         }
     }

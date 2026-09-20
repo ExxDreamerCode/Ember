@@ -937,8 +937,8 @@ macro_rules! negamax_mode_body {
                         0
                     };
                     let see_sc = perf_time!(
-                        see_cycles,
-                        see_calls,
+                        scoring_see_cycles,
+                        scoring_see_calls,
                         $this,
                         move_see::<CHESS960>($st, mv, from, to, fpi, tpi)
                     );

@@ -285,6 +285,13 @@ relevant ones; do not use one as a proxy for another.
   effects can push part of the savings there, so pair counter deltas with at least one
   idle-machine NPS run before reporting a final number.
 - Save the complete result directory, not just a summary copied into chat or a PR.
+- Keep nested phase timings separate from top-level attributed totals. Compare
+  strategies over the same scope of work, and distinguish architectural timer
+  ticks from CPU cycles. Instrumentation overhead and different sampled position
+  populations can affect phase averages; they are not a replacement for paired NPS.
+- Report process-global profiling counters as deltas over each measured workload.
+  Exclude earlier tests and setup, and run measurement windows serially so unrelated
+  concurrent work cannot enter the same counters.
 
 ### NPS and search shape
 
