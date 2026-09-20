@@ -382,7 +382,7 @@ macro_rules! negamax_mode_body {
                 }
                 $st.w = ow;
                 $st.ep = oe;
-                if $this.time_up($start, $tl) {
+                if $this.time_up_gated($start, $tl) {
                     return 0;
                 }
                 if s >= beta {
@@ -506,7 +506,7 @@ macro_rules! negamax_mode_body {
                 while cap_idx < caps.len() {
                     let mv = caps[cap_idx];
                     cap_idx += 1;
-                    if $this.time_up($start, $tl) {
+                    if $this.time_up_gated($start, $tl) {
                         Self::return_buf(&mut $this.caps_bufs, $ply, caps);
                         Self::return_buf(&mut $this.move_bufs, $ply, moves_buf);
                         return 0;
@@ -997,7 +997,7 @@ macro_rules! negamax_mode_body {
         quiets_tried.clear();
 
         for &(_, mv) in scored.iter() {
-            if $this.time_up($start, $tl) {
+            if $this.time_up_gated($start, $tl) {
                 return 0;
             }
             if Some(mv) == excluded_move {

@@ -607,6 +607,7 @@ impl Engine {
         let soft_time_limit = soft_time_limit.min(time_limit);
         self.searcher.refresh_nnue_net();
         self.searcher.refresh_search_backend();
+        self.searcher.time_check_counter.set(0);
         let legal_root_moves = generate_moves(&self.st, self.st.w, &self.st.cr, self.st.ep);
         #[cfg(feature = "decision-trace")]
         let root_fen = board_to_fen(&self.st);

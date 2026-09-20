@@ -132,6 +132,7 @@ impl Searcher {
             tt_mb: 128,
             stopped,
             pondering: Arc::new(AtomicBool::new(false)),
+            time_check_counter: Cell::new(0),
             node_limit: None,
             shared_node_counter: None,
             nnue_stack: Vec::new(),
@@ -299,6 +300,49 @@ impl Searcher {
         }
     }
 
+    const TIME_CHECK_INTERVAL_NODES: u64 = 1024;
+
+    #[inline]
+    pub(super) fn check_time_gated(&self, start: Instant, tl: f64) -> bool {
+        let next = self.time_check_counter.get().wrapping_add(1);
+        self.time_check_counter.set(next);
+        if next & (Self::TIME_CHECK_INTERVAL_NODES - 1) == 0 {
+            self.check_time_now(start, tl)
+        } else {
+            false
+        }
+    }
+
+    #[inline]
+    pub(super) fn check_time_now(&self, start: Instant, tl: f64) -> bool {
+        if self.pondering.load(Ordering::Relaxed) {
+            return false;
+        }
+        if start.elapsed().as_secs_f64() > tl {
+            self.set_stopped();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Gated per-node time check. Call this from per-move/per-node sites;
+    /// iteration-boundary callers use `time_up` so a fresh iteration never
+    /// starts without a full clock consultation.
+    #[inline]
+    pub(super) fn time_up_gated(&self, start: Instant, tl: f64) -> bool {
+        perf_region_start!(__perf_t0_time);
+        let result = {
+            if self.stopped.load(Ordering::Relaxed) {
+                true
+            } else {
+                self.check_time_gated(start, tl)
+            }
+        };
+        perf_region_end!(time_cycles, time_calls, self, __perf_t0_time);
+        result
+    }
+
     #[inline]
     pub(super) fn time_up(&self, start: Instant, tl: f64) -> bool {
         perf_region_start!(__perf_t0_time);
@@ -326,35 +370,26 @@ impl Searcher {
         local_nodes: u64,
     ) -> bool {
         perf_region_start!(__perf_t0_time);
-        let result = {
-            if self.stopped.load(Ordering::Relaxed) {
-                true
+        if self.stopped.load(Ordering::Relaxed) {
+            perf_region_end!(time_cycles, time_calls, self, __perf_t0_time);
+            return true;
+        }
+        if NODE_LIMITED {
+            let limit = self
+                .node_limit
+                .expect("node-limited search was started without a node limit");
+            let searched_nodes = if let Some(counter) = &self.shared_node_counter {
+                counter.fetch_add(1, Ordering::Relaxed).saturating_add(1)
             } else {
-                if NODE_LIMITED {
-                    let limit = self
-                        .node_limit
-                        .expect("node-limited search was started without a node limit");
-                    let searched_nodes = if let Some(counter) = &self.shared_node_counter {
-                        counter.fetch_add(1, Ordering::Relaxed).saturating_add(1)
-                    } else {
-                        local_nodes
-                    };
-                    if searched_nodes >= limit {
-                        self.set_stopped();
-                        perf_region_end!(time_cycles, time_calls, self, __perf_t0_time);
-                        return true;
-                    }
-                }
-                if self.pondering.load(Ordering::Relaxed) {
-                    false
-                } else if start.elapsed().as_secs_f64() > tl {
-                    self.set_stopped();
-                    true
-                } else {
-                    false
-                }
+                local_nodes
+            };
+            if searched_nodes >= limit {
+                self.set_stopped();
+                perf_region_end!(time_cycles, time_calls, self, __perf_t0_time);
+                return true;
             }
-        };
+        }
+        let result = self.check_time_gated(start, tl);
         perf_region_end!(time_cycles, time_calls, self, __perf_t0_time);
         result
     }

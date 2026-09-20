@@ -161,7 +161,7 @@ macro_rules! qsearch_mode_body {
         while cap_idx < caps.len() {
             let mv = caps[cap_idx];
             cap_idx += 1;
-            if $this.time_up($start, $tl) {
+            if $this.time_up_gated($start, $tl) {
                 return 0;
             }
             if Some(mv) == excluded_move {
