@@ -18,6 +18,12 @@ use std::arch::x86_64::{
     _mm256_storeu_si256,
 };
 
+#[cfg(target_arch = "aarch64")]
+use std::arch::aarch64::{
+    int32x4_t, vaddvq_s32, vdotq_s32, vdupq_n_s32, vget_high_s8, vget_low_s8, vld1q_s8, vld1q_u8,
+    vmull_s8, vpadalq_s16, vreinterpretq_s8_u8,
+};
+
 const PSQ_DIMS: usize = 22_528;
 const THREAT_DIMS: usize = 60_720;
 const HIDDEN_SIZE: usize = 1024;
@@ -1439,6 +1445,154 @@ fn fc0_forward_scalar(
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn accumulate_dot_neon(
+    sum: int32x4_t,
+    input: std::arch::aarch64::int8x16_t,
+    weights: std::arch::aarch64::int8x16_t,
+) -> int32x4_t {
+    let sum = vpadalq_s16(sum, vmull_s8(vget_low_s8(input), vget_low_s8(weights)));
+    vpadalq_s16(sum, vmull_s8(vget_high_s8(input), vget_high_s8(weights)))
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn dot_product_aarch64_neon(input: &[u8], weights: &[i8]) -> i32 {
+    debug_assert_eq!(input.len(), weights.len());
+    let vector_len = input.len() / 16 * 16;
+    let mut sum = vdupq_n_s32(0);
+    for offset in (0..vector_len).step_by(16) {
+        let input_bytes = vreinterpretq_s8_u8(vld1q_u8(input.as_ptr().add(offset)));
+        let weight_bytes = vld1q_s8(weights.as_ptr().add(offset));
+        sum = accumulate_dot_neon(sum, input_bytes, weight_bytes);
+    }
+    input[vector_len..]
+        .iter()
+        .zip(&weights[vector_len..])
+        .fold(vaddvq_s32(sum), |sum, (&input, &weight)| {
+            sum.wrapping_add(i32::from(input) * i32::from(weight))
+        })
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "dotprod")]
+unsafe fn dot_product_aarch64_dotprod(input: &[u8], weights: &[i8]) -> i32 {
+    debug_assert_eq!(input.len(), weights.len());
+    let vector_len = input.len() / 16 * 16;
+    let mut sum = vdupq_n_s32(0);
+    for offset in (0..vector_len).step_by(16) {
+        let input_bytes = vreinterpretq_s8_u8(vld1q_u8(input.as_ptr().add(offset)));
+        let weight_bytes = vld1q_s8(weights.as_ptr().add(offset));
+        sum = vdotq_s32(sum, input_bytes, weight_bytes);
+    }
+    input[vector_len..]
+        .iter()
+        .zip(&weights[vector_len..])
+        .fold(vaddvq_s32(sum), |sum, (&input, &weight)| {
+            sum.wrapping_add(i32::from(input) * i32::from(weight))
+        })
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn fc0_forward_aarch64_neon(
+    transformed: &[u8; HIDDEN_SIZE],
+    weights: &[i8],
+    biases: &[i32],
+    output: &mut [i32; 32],
+) {
+    debug_assert_eq!(weights.len(), 32 * HIDDEN_SIZE);
+    debug_assert_eq!(biases.len(), 32);
+    for group in 0..4 {
+        let mut sums = [vdupq_n_s32(0); 8];
+        for offset in (0..HIDDEN_SIZE).step_by(16) {
+            let input_bytes = vreinterpretq_s8_u8(vld1q_u8(transformed.as_ptr().add(offset)));
+            for (lane, sum) in sums.iter_mut().enumerate() {
+                let weight_bytes = vld1q_s8(
+                    weights
+                        .as_ptr()
+                        .add((group * 8 + lane) * HIDDEN_SIZE + offset),
+                );
+                *sum = accumulate_dot_neon(*sum, input_bytes, weight_bytes);
+            }
+        }
+        for (lane, sum) in sums.into_iter().enumerate() {
+            let index = group * 8 + lane;
+            output[index] = biases[index].wrapping_add(vaddvq_s32(sum));
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "dotprod")]
+unsafe fn fc0_forward_aarch64_dotprod(
+    transformed: &[u8; HIDDEN_SIZE],
+    weights: &[i8],
+    biases: &[i32],
+    output: &mut [i32; 32],
+) {
+    debug_assert_eq!(weights.len(), 32 * HIDDEN_SIZE);
+    debug_assert_eq!(biases.len(), 32);
+    for group in 0..4 {
+        let mut sums = [vdupq_n_s32(0); 8];
+        for offset in (0..HIDDEN_SIZE).step_by(16) {
+            let input_bytes = vreinterpretq_s8_u8(vld1q_u8(transformed.as_ptr().add(offset)));
+            for (lane, sum) in sums.iter_mut().enumerate() {
+                let weight_bytes = vld1q_s8(
+                    weights
+                        .as_ptr()
+                        .add((group * 8 + lane) * HIDDEN_SIZE + offset),
+                );
+                *sum = vdotq_s32(*sum, input_bytes, weight_bytes);
+            }
+        }
+        for (lane, sum) in sums.into_iter().enumerate() {
+            let index = group * 8 + lane;
+            output[index] = biases[index].wrapping_add(vaddvq_s32(sum));
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+type Aarch64DotKernel = unsafe fn(&[u8], &[i8]) -> i32;
+
+#[cfg(target_arch = "aarch64")]
+fn dot_product_aarch64(input: &[u8], weights: &[i8]) -> i32 {
+    static KERNEL: OnceLock<Aarch64DotKernel> = OnceLock::new();
+    let kernel = *KERNEL.get_or_init(|| {
+        if std::arch::is_aarch64_feature_detected!("dotprod") {
+            dot_product_aarch64_dotprod
+        } else {
+            dot_product_aarch64_neon
+        }
+    });
+    // SAFETY: runtime detection guards the DOTPROD implementation, while the
+    // baseline implementation uses ASIMD, which is mandatory on AArch64.
+    unsafe { kernel(input, weights) }
+}
+
+#[cfg(target_arch = "aarch64")]
+type Aarch64Fc0Kernel = unsafe fn(&[u8; HIDDEN_SIZE], &[i8], &[i32], &mut [i32; 32]);
+
+#[cfg(target_arch = "aarch64")]
+fn fc0_forward_aarch64(
+    transformed: &[u8; HIDDEN_SIZE],
+    weights: &[i8],
+    biases: &[i32],
+    output: &mut [i32; 32],
+) {
+    static KERNEL: OnceLock<Aarch64Fc0Kernel> = OnceLock::new();
+    let kernel = *KERNEL.get_or_init(|| {
+        if std::arch::is_aarch64_feature_detected!("dotprod") {
+            fc0_forward_aarch64_dotprod
+        } else {
+            fc0_forward_aarch64_neon
+        }
+    });
+    // SAFETY: runtime detection guards the DOTPROD implementation, while the
+    // baseline implementation uses ASIMD, which is mandatory on AArch64.
+    unsafe { kernel(transformed, weights, biases, output) }
+}
+
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
 unsafe fn add_i8_row_x86_v3(accumulator: &mut [i16], row: &[i8]) {
@@ -1590,7 +1744,9 @@ impl EmberV2Backend for SimdNnueBackend {
         unsafe {
             transformed_features_avx2(accumulator, output);
         }
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(target_arch = "aarch64")]
+        transformed_features_scalar(accumulator, output);
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         transformed_features_simd256(accumulator, output);
     }
 
@@ -1600,7 +1756,11 @@ impl EmberV2Backend for SimdNnueBackend {
         unsafe {
             dot_product_avx2(input, weights)
         }
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(target_arch = "aarch64")]
+        {
+            dot_product_aarch64(input, weights)
+        }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         dot_product_simd256(input, weights)
     }
 
@@ -1615,7 +1775,11 @@ impl EmberV2Backend for SimdNnueBackend {
         unsafe {
             fc0_forward_avx2(transformed, weights, biases, output);
         }
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(target_arch = "aarch64")]
+        {
+            fc0_forward_aarch64(transformed, weights, biases, output);
+        }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         fc0_forward_simd256(transformed, weights, biases, output);
     }
 }
@@ -2171,6 +2335,84 @@ mod tests {
         );
     }
 
+    #[cfg(target_arch = "aarch64")]
+    fn v2_microbench_aarch64_dense(
+        net: &super::EmberV2Data,
+        state: &crate::board::BoardState,
+        loops: usize,
+    ) {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        let mut accumulator = super::EmberV2Accumulator::new();
+        accumulator.refresh_with_backend::<crate::nnue::ScalarNnueBackend>(net, state);
+        let mut transformed = [0u8; super::HIDDEN_SIZE];
+        super::transformed_features_scalar(&accumulator.accumulation[0], &mut transformed[..512]);
+        super::transformed_features_scalar(&accumulator.accumulation[1], &mut transformed[512..]);
+        let stack = &net.stacks[0];
+
+        let bench =
+            |name: &str, dot: super::Aarch64DotKernel, fc0_kernel: super::Aarch64Fc0Kernel| {
+                let mut checksum = 0i64;
+                let start = Instant::now();
+                for _ in 0..loops {
+                    checksum = checksum.wrapping_add(i64::from(unsafe {
+                        dot(
+                            black_box(&transformed[..64]),
+                            black_box(&stack.fc1_weights[..64]),
+                        )
+                    }));
+                }
+                let dot64_ns = start.elapsed().as_nanos() as f64 / loops as f64;
+
+                let start = Instant::now();
+                for _ in 0..loops {
+                    checksum = checksum.wrapping_add(i64::from(unsafe {
+                        dot(
+                            black_box(&transformed[..128]),
+                            black_box(&stack.fc2_weights),
+                        )
+                    }));
+                }
+                let dot128_ns = start.elapsed().as_nanos() as f64 / loops as f64;
+
+                let mut fc0 = [0i32; 32];
+                let start = Instant::now();
+                for index in 0..loops {
+                    unsafe {
+                        fc0_kernel(
+                            black_box(&transformed),
+                            black_box(&stack.fc0_weights),
+                            black_box(&stack.fc0_bias),
+                            &mut fc0,
+                        );
+                    }
+                    checksum = checksum.wrapping_add(i64::from(fc0[index & 31]));
+                    black_box(&mut fc0);
+                }
+                let fc0_ns = start.elapsed().as_nanos() as f64 / loops as f64;
+
+                eprintln!(
+                    "v2_aarch64_dense_microbench kernel={name} loops={loops} \
+                 fc0_ns={fc0_ns:.2} dot64_ns={dot64_ns:.2} dot128_ns={dot128_ns:.2} \
+                 checksum={checksum}"
+                );
+            };
+
+        bench(
+            "neon",
+            super::dot_product_aarch64_neon,
+            super::fc0_forward_aarch64_neon,
+        );
+        if std::arch::is_aarch64_feature_detected!("dotprod") {
+            bench(
+                "dotprod",
+                super::dot_product_aarch64_dotprod,
+                super::fc0_forward_aarch64_dotprod,
+            );
+        }
+    }
+
     #[test]
     #[ignore = "release-only Ember V2 kernel and accumulator microbenchmark"]
     fn ember_v2_kernel_microbench() {
@@ -2202,7 +2444,10 @@ mod tests {
         v2_microbench_backend::<crate::nnue::ScalarNnueBackend>("scalar", &net, &states, loops);
         v2_microbench_backend::<crate::nnue::Simd128NnueBackend>("simd128", &net, &states, loops);
         #[cfg(target_arch = "aarch64")]
-        v2_microbench_backend::<crate::nnue::SimdNnueBackend>("simd256", &net, &states, loops);
+        {
+            v2_microbench_backend::<crate::nnue::SimdNnueBackend>("simd256", &net, &states, loops);
+            v2_microbench_aarch64_dense(&net, &states[0], loops);
+        }
         v2_microbench_backend::<crate::nnue::Simd512NnueBackend>("simd512", &net, &states, loops);
         #[cfg(target_arch = "x86_64")]
         {
@@ -2450,6 +2695,62 @@ mod tests {
         assert_backend_kernels_match_scalar::<crate::nnue::Simd512NnueBackend>();
         #[cfg(target_arch = "aarch64")]
         assert_backend_kernels_match_scalar::<crate::nnue::SimdNnueBackend>();
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn aarch64_native_dense_kernels_match_scalar() {
+        let mut input = [0u8; super::HIDDEN_SIZE];
+        let mut weights = [0i8; super::HIDDEN_SIZE];
+        for (index, value) in input.iter_mut().enumerate() {
+            *value = ((index * 37 + 11) % 128) as u8;
+        }
+        for (index, weight) in weights.iter_mut().enumerate() {
+            *weight = ((index * 53 + 19) % 256) as u8 as i8;
+        }
+        input[..4].fill(127);
+        weights[..4].copy_from_slice(&[127, 127, -128, -128]);
+        for width in [64, 128, super::HIDDEN_SIZE] {
+            let expected = super::dot_product_scalar(&input[..width], &weights[..width]);
+            assert_eq!(
+                unsafe { super::dot_product_aarch64_neon(&input[..width], &weights[..width]) },
+                expected,
+                "baseline NEON dot-product mismatch at width {width}"
+            );
+            if std::arch::is_aarch64_feature_detected!("dotprod") {
+                assert_eq!(
+                    unsafe {
+                        super::dot_product_aarch64_dotprod(&input[..width], &weights[..width])
+                    },
+                    expected,
+                    "DOTPROD dot-product mismatch at width {width}"
+                );
+            }
+        }
+
+        let mut fc0_weights = vec![0i8; 32 * super::HIDDEN_SIZE];
+        for (index, weight) in fc0_weights.iter_mut().enumerate() {
+            *weight = ((index * 29 + index / super::HIDDEN_SIZE * 17 + 7) % 256) as u8 as i8;
+        }
+        let biases: [i32; 32] = std::array::from_fn(|index| match index {
+            0 => i32::MAX,
+            1 => i32::MIN,
+            _ => (index as i32 * 104_729).wrapping_sub(700_001),
+        });
+        let mut expected = [0i32; 32];
+        super::fc0_forward_scalar(&input, &fc0_weights, &biases, &mut expected);
+        let mut actual = [0i32; 32];
+        unsafe {
+            super::fc0_forward_aarch64_neon(&input, &fc0_weights, &biases, &mut actual);
+        }
+        assert_eq!(actual, expected, "baseline NEON FC0 mismatch");
+        if std::arch::is_aarch64_feature_detected!("dotprod") {
+            actual.fill(0);
+            unsafe {
+                super::fc0_forward_aarch64_dotprod(&input, &fc0_weights, &biases, &mut actual);
+            }
+            assert_eq!(actual, expected, "DOTPROD FC0 mismatch");
+        }
     }
 
     #[cfg(target_arch = "x86_64")]
