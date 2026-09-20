@@ -149,6 +149,41 @@ fn go_nodes_returns_promptly_in_lazy_smp_search() {
 }
 
 #[test]
+fn repeated_short_movetime_searches_each_return_one_move() {
+    let (mut child, rx) = spawn_ember();
+    let mut stdin = child.stdin.take().expect("capture Ember stdin");
+    writeln!(stdin, "uci").unwrap();
+    writeln!(stdin, "setoption name Hash value 16").unwrap();
+    writeln!(stdin, "setoption name Threads value 2").unwrap();
+    writeln!(stdin, "setoption name Book value").unwrap();
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(wait_for_line(&rx, "readyok", UCI_STARTUP_TIMEOUT).is_some());
+
+    for search_number in 1..=3 {
+        writeln!(stdin, "position startpos").unwrap();
+        writeln!(stdin, "go movetime 25").unwrap();
+        stdin.flush().unwrap();
+        let bestmove = wait_for_line(&rx, "bestmove ", Duration::from_secs(5))
+            .unwrap_or_else(|| panic!("short search {search_number} did not return"));
+        assert_ne!(
+            bestmove.split_whitespace().nth(1),
+            Some("0000"),
+            "short search {search_number} returned no legal move"
+        );
+    }
+
+    assert!(
+        wait_for_line(&rx, "bestmove ", Duration::from_millis(100)).is_none(),
+        "a short search emitted more than one bestmove"
+    );
+    writeln!(stdin, "quit").unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+    assert!(child.wait().expect("wait for Ember").success());
+}
+
+#[test]
 fn malformed_uci_input_is_rejected_without_crashing() {
     let (mut child, rx) = spawn_ember();
     let mut stdin = child.stdin.take().expect("capture Ember stdin");

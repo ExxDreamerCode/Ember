@@ -10,6 +10,7 @@ use crate::board::{
 use crate::book::{
     OpeningBook, DEFAULT_BOOK_MIN_MOVE_WEIGHT, DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE,
 };
+use crate::deadline::{DeadlineRegistration, DeadlineWatchdog};
 use crate::movegen::{apply_move, generate_moves};
 use crate::search::{
     aspiration_window_delta, format_pv_line_uci, lazy_smp_search, prefer_non_repeating_root_on_tie,
@@ -22,7 +23,7 @@ use crate::tt::SharedTT;
 use crate::zobrist::compute_hash;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const DEFAULT_HASH_MB: usize = 256;
 const FIFTY_MOVE_ROOT_MIN_CLOCK: u8 = 80;
@@ -50,6 +51,7 @@ fn format_uci_score(score: i32) -> String {
 enum SearchTimerStart {
     BeforeSetup(Instant),
     AfterSetup,
+    Untimed,
 }
 
 pub struct Engine {
@@ -57,6 +59,7 @@ pub struct Engine {
     pub searcher: Searcher,
     pub shared_tt: Arc<SharedTT>,
     pub search_pool: Arc<LazySmpPool>,
+    pub deadline_watchdog: Arc<DeadlineWatchdog>,
     pub num_threads: usize,
     pub multi_pv: usize,
     pub stopped: Arc<AtomicBool>,
@@ -145,6 +148,15 @@ impl Default for Engine {
 
 impl Engine {
     pub fn new() -> Self {
+        Self::try_new().expect("failed to create the hard-deadline watchdog")
+    }
+
+    pub fn try_new() -> std::io::Result<Self> {
+        let deadline_watchdog = Arc::new(DeadlineWatchdog::new()?);
+        Ok(Self::new_with_deadline_watchdog(deadline_watchdog))
+    }
+
+    pub fn new_with_deadline_watchdog(deadline_watchdog: Arc<DeadlineWatchdog>) -> Self {
         let stopped = Arc::new(AtomicBool::new(false));
         let shared_tt = Arc::new(SharedTT::placeholder());
         let search_pool = Arc::new(LazySmpPool::new());
@@ -153,6 +165,7 @@ impl Engine {
             searcher: Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped)),
             shared_tt,
             search_pool,
+            deadline_watchdog,
             num_threads: 1,
             multi_pv: 1,
             stopped,
@@ -229,11 +242,13 @@ impl Engine {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with(
         st: BoardState,
         searcher: Searcher,
         shared_tt: Arc<SharedTT>,
         search_pool: Arc<LazySmpPool>,
+        deadline_watchdog: Arc<DeadlineWatchdog>,
         num_threads: usize,
         stopped: Arc<AtomicBool>,
         book_config: EngineBookConfig,
@@ -243,6 +258,7 @@ impl Engine {
             searcher,
             shared_tt,
             search_pool,
+            deadline_watchdog,
             num_threads,
             multi_pv: 1,
             stopped,
@@ -518,14 +534,38 @@ impl Engine {
         self.find_best_move_with_time_limits(time_limit, time_limit, depth_limit)
     }
 
+    fn begin_search_with_fresh_stop_token(&mut self) {
+        let stopped = Arc::new(AtomicBool::new(false));
+        self.searcher.stopped = Arc::clone(&stopped);
+        self.stopped = stopped;
+        self.searcher.pondering.store(false, Ordering::SeqCst);
+    }
+
+    fn arm_hard_deadline(&self, start: Instant, time_limit: f64) -> Option<DeadlineRegistration> {
+        if self.searcher.pondering.load(Ordering::Relaxed) || !time_limit.is_finite() {
+            return None;
+        }
+        let duration = Duration::from_secs_f64(time_limit.max(0.0));
+        let deadline = start.checked_add(duration).unwrap_or(start);
+        match self
+            .deadline_watchdog
+            .arm(deadline, Arc::clone(&self.searcher.stopped))
+        {
+            Ok(registration) => Some(registration),
+            Err(error) => {
+                eprintln!("info string deadline watchdog arm failed: {error}");
+                None
+            }
+        }
+    }
+
     pub fn find_best_move_with_time_limits(
         &mut self,
         soft_time_limit: f64,
         time_limit: f64,
         depth_limit: i32,
     ) -> (String, i32, u64, f64) {
-        self.searcher.stopped.store(false, Ordering::SeqCst);
-        self.searcher.pondering.store(false, Ordering::SeqCst);
+        self.begin_search_with_fresh_stop_token();
         self.find_best_move_with_time_limits_prepared(soft_time_limit, time_limit, depth_limit)
     }
 
@@ -537,8 +577,7 @@ impl Engine {
         node_limit: Option<u64>,
         start: Instant,
     ) -> (String, i32, u64, f64) {
-        self.searcher.stopped.store(false, Ordering::SeqCst);
-        self.searcher.pondering.store(false, Ordering::SeqCst);
+        self.begin_search_with_fresh_stop_token();
         self.find_best_move_with_time_limits_prepared_started_at(
             soft_time_limit,
             time_limit,
@@ -579,6 +618,20 @@ impl Engine {
         )
     }
 
+    pub fn find_best_move_prepared_untimed(
+        &mut self,
+        depth_limit: i32,
+        node_limit: Option<u64>,
+    ) -> (String, i32, u64, f64) {
+        self.find_best_move_with_time_limits_prepared_with_timer(
+            f64::INFINITY,
+            f64::INFINITY,
+            depth_limit,
+            node_limit,
+            SearchTimerStart::Untimed,
+        )
+    }
+
     pub fn find_best_move_with_time_limits_prepared_started_at(
         &mut self,
         soft_time_limit: f64,
@@ -605,9 +658,12 @@ impl Engine {
         timer_start: SearchTimerStart,
     ) -> (String, i32, u64, f64) {
         let soft_time_limit = soft_time_limit.min(time_limit);
+        let deadline_registration = match timer_start {
+            SearchTimerStart::BeforeSetup(start) => self.arm_hard_deadline(start, time_limit),
+            SearchTimerStart::AfterSetup | SearchTimerStart::Untimed => None,
+        };
         self.searcher.refresh_nnue_net();
         self.searcher.refresh_search_backend();
-        self.searcher.time_check_counter.set(0);
         let legal_root_moves = generate_moves(&self.st, self.st.w, &self.st.cr, self.st.ep);
         #[cfg(feature = "decision-trace")]
         let root_fen = board_to_fen(&self.st);
@@ -658,7 +714,7 @@ impl Engine {
 
         let tablebase_start = match timer_start {
             SearchTimerStart::BeforeSetup(start) => start,
-            SearchTimerStart::AfterSetup => Instant::now(),
+            SearchTimerStart::AfterSetup | SearchTimerStart::Untimed => Instant::now(),
         };
         if let Some(best_move) = self
             .searcher
@@ -726,7 +782,7 @@ impl Engine {
                     let eval_score = self.searcher.corrected_eval(&self.st);
                     let elapsed = match timer_start {
                         SearchTimerStart::BeforeSetup(start) => start.elapsed().as_secs_f64(),
-                        SearchTimerStart::AfterSetup => 0.0,
+                        SearchTimerStart::AfterSetup | SearchTimerStart::Untimed => 0.0,
                     };
                     println!(
                         "info depth 0 score cp 0 nodes 0 nps 0 time 0 pv {mv_str} string book move"
@@ -761,8 +817,14 @@ impl Engine {
         if search_threads > 1 {
             let start = match timer_start {
                 SearchTimerStart::BeforeSetup(start) => start,
-                SearchTimerStart::AfterSetup => Instant::now(),
+                SearchTimerStart::AfterSetup | SearchTimerStart::Untimed => Instant::now(),
             };
+            let _deadline_registration = deadline_registration.or_else(|| match timer_start {
+                SearchTimerStart::Untimed => None,
+                SearchTimerStart::BeforeSetup(_) | SearchTimerStart::AfterSetup => {
+                    self.arm_hard_deadline(start, time_limit)
+                }
+            });
             let (best_move, best_score, best_depth, total_nodes) = lazy_smp_search(
                 &self.search_pool,
                 Arc::clone(&self.shared_tt),
@@ -794,8 +856,14 @@ impl Engine {
 
         let start = match timer_start {
             SearchTimerStart::BeforeSetup(start) => start,
-            SearchTimerStart::AfterSetup => Instant::now(),
+            SearchTimerStart::AfterSetup | SearchTimerStart::Untimed => Instant::now(),
         };
+        let _deadline_registration = deadline_registration.or_else(|| match timer_start {
+            SearchTimerStart::Untimed => None,
+            SearchTimerStart::BeforeSetup(_) | SearchTimerStart::AfterSetup => {
+                self.arm_hard_deadline(start, time_limit)
+            }
+        });
         if self.multi_pv > 1 {
             return self.find_best_move_multipv(
                 &ordered_moves,
@@ -819,9 +887,7 @@ impl Engine {
         let mut depth_infos = Vec::new();
 
         for depth in 1..=depth_limit {
-            if !self.searcher.pondering.load(Ordering::Relaxed)
-                && start.elapsed().as_secs_f64() > time_limit
-            {
+            if self.searcher.stopped.load(Ordering::Relaxed) {
                 break;
             }
 
@@ -850,9 +916,7 @@ impl Engine {
 
                 #[allow(unused)]
                 for (root_index, &mv) in sorted.iter().enumerate() {
-                    if !self.searcher.pondering.load(Ordering::Relaxed)
-                        && start.elapsed().as_secs_f64() > time_limit
-                    {
+                    if self.searcher.stopped.load(Ordering::Relaxed) {
                         break;
                     }
                     let old = self.st;
@@ -885,8 +949,6 @@ impl Engine {
                             -beta,
                             -loop_alpha,
                             true,
-                            start,
-                            time_limit,
                             &mut nd,
                         )
                     } else {
@@ -897,8 +959,6 @@ impl Engine {
                             -loop_alpha - 1,
                             -loop_alpha,
                             true,
-                            start,
-                            time_limit,
                             &mut nd,
                         );
                         if s > loop_alpha && s < beta {
@@ -909,8 +969,6 @@ impl Engine {
                                 -beta,
                                 -loop_alpha,
                                 true,
-                                start,
-                                time_limit,
                                 &mut nd,
                             )
                         } else {
@@ -969,10 +1027,7 @@ impl Engine {
                     }
                 }
 
-                if self.searcher.stopped.load(Ordering::Relaxed)
-                    || (!self.searcher.pondering.load(Ordering::Relaxed)
-                        && start.elapsed().as_secs_f64() > time_limit)
-                {
+                if self.searcher.stopped.load(Ordering::Relaxed) {
                     break 'asp;
                 }
 
@@ -1014,7 +1069,7 @@ impl Engine {
             }
             let elapsed = start.elapsed().as_secs_f64();
 
-            if elapsed <= time_limit || self.searcher.pondering.load(Ordering::Relaxed) {
+            if !self.searcher.stopped.load(Ordering::Relaxed) {
                 let score_change_cp = asp_score.saturating_sub(prev_score).abs();
                 if best_depth == 0 || asp_best != best_move {
                     stable_iterations = 0;
@@ -1131,9 +1186,7 @@ impl Engine {
         let mut depth_infos = Vec::new();
 
         for depth in 1..=depth_limit {
-            if !self.searcher.pondering.load(Ordering::Relaxed)
-                && start.elapsed().as_secs_f64() > time_limit
-            {
+            if self.searcher.stopped.load(Ordering::Relaxed) {
                 break;
             }
 
@@ -1141,9 +1194,7 @@ impl Engine {
             let mut pv_lines: Vec<(Move, i32, u64)> = Vec::with_capacity(multipv);
 
             for &mv in ordered_moves {
-                if !self.searcher.pondering.load(Ordering::Relaxed)
-                    && start.elapsed().as_secs_f64() > time_limit
-                {
+                if self.searcher.stopped.load(Ordering::Relaxed) {
                     break;
                 }
                 let old = self.st;
@@ -1165,17 +1216,9 @@ impl Engine {
                 let score = if pv_lines.len() < multipv {
                     let alpha = pv_lines.last().map_or(-INF, |&(_, s, _)| s);
                     if alpha == -INF {
-                        -self.searcher.negamax(
-                            &mut self.st,
-                            depth - 1,
-                            1,
-                            -INF,
-                            INF,
-                            true,
-                            start,
-                            time_limit,
-                            &mut nd,
-                        )
+                        -self
+                            .searcher
+                            .negamax(&mut self.st, depth - 1, 1, -INF, INF, true, &mut nd)
                     } else {
                         let probe_alpha = (-alpha).saturating_sub(1);
                         let s = -self.searcher.negamax(
@@ -1185,8 +1228,6 @@ impl Engine {
                             probe_alpha,
                             -alpha,
                             true,
-                            start,
-                            time_limit,
                             &mut nd,
                         );
                         if s > alpha {
@@ -1197,8 +1238,6 @@ impl Engine {
                                 -INF,
                                 -alpha,
                                 true,
-                                start,
-                                time_limit,
                                 &mut nd,
                             )
                         } else {
@@ -1215,8 +1254,6 @@ impl Engine {
                         probe_alpha,
                         -alpha,
                         true,
-                        start,
-                        time_limit,
                         &mut nd,
                     );
                     if s > alpha {
@@ -1227,8 +1264,6 @@ impl Engine {
                             -INF,
                             -alpha,
                             true,
-                            start,
-                            time_limit,
                             &mut nd,
                         )
                     } else {
@@ -1261,7 +1296,7 @@ impl Engine {
             }
             let elapsed = start.elapsed().as_secs_f64();
 
-            if elapsed <= time_limit || self.searcher.pondering.load(Ordering::Relaxed) {
+            if !self.searcher.stopped.load(Ordering::Relaxed) {
                 let (depth_best_move, depth_best_score, depth_best_nodes) = pv_lines[0];
                 let score_change_cp = depth_best_score.saturating_sub(prev_score).abs();
                 if best_depth == 0 || depth_best_move != best_move {

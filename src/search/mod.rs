@@ -26,7 +26,6 @@ use crate::tt::{SharedTT, TT_ALPHA, TT_BETA, TT_EXACT};
 use crate::tune::{self, TuneParam};
 use crate::types::{BLACK, WHITE};
 use crate::zobrist::{compute_pawn_hash, ep_hash_square, zobrist};
-use std::cell::Cell;
 #[cfg(feature = "search-debug")]
 use std::collections::BTreeMap;
 #[cfg(feature = "search-debug")]
@@ -130,7 +129,6 @@ pub struct Searcher {
     pub tt_mb: usize,
     pub stopped: Arc<AtomicBool>,
     pub pondering: Arc<AtomicBool>,
-    pub(crate) time_check_counter: Cell<u64>,
     node_limit: Option<u64>,
     shared_node_counter: Option<Arc<AtomicU64>>,
     pub nnue_stack: Vec<NNUEAccumulator>,

@@ -88,13 +88,11 @@ fn negamax_excluding_move(
     ply: usize,
     alpha: i32,
     beta: i32,
-    start: Instant,
-    tl: f64,
     nodes: &mut u64,
 ) -> i32 {
     let previous = searcher.excluded_moves[ply].replace(excluded_move);
     let previous_restricted = searcher.set_restricted_verification(true);
-    let score = searcher.negamax(st, depth, ply, alpha, beta, false, start, tl, nodes);
+    let score = searcher.negamax(st, depth, ply, alpha, beta, false, nodes);
     searcher.set_restricted_verification(previous_restricted);
     searcher.excluded_moves[ply] = previous;
     score
@@ -157,16 +155,7 @@ fn qsearch_searches_en_passant_captures() {
     let stand_pat = searcher.corrected_eval(&st);
     let mut nodes = 0u64;
 
-    let score = searcher.qsearch(
-        &mut st,
-        -INF,
-        INF,
-        QS_DEPTH,
-        Instant::now(),
-        10.0,
-        &mut nodes,
-        0,
-    );
+    let score = searcher.qsearch(&mut st, -INF, INF, QS_DEPTH, &mut nodes, 0);
 
     assert!(
             score > stand_pat + 50,
@@ -183,16 +172,7 @@ fn qsearch_checkmate_score_uses_the_actual_ply() {
     let mut nodes = 0u64;
     let ply = 17;
 
-    let score = searcher.qsearch(
-        &mut st,
-        -INF,
-        INF,
-        -3,
-        Instant::now(),
-        10.0,
-        &mut nodes,
-        ply,
-    );
+    let score = searcher.qsearch(&mut st, -INF, INF, -3, &mut nodes, ply);
 
     assert_eq!(score, -MATE + ply as i32);
 }
@@ -399,8 +379,6 @@ fn restricted_search_ignores_unrestricted_tt_cutoffs() {
             ply,
             -200,
             -199,
-            Instant::now(),
-            10.0,
             &mut nodes,
         );
 
@@ -436,8 +414,6 @@ fn restricted_search_with_no_alternative_fails_low_without_storing_tt() {
         1,
         -300,
         -299,
-        Instant::now(),
-        10.0,
         &mut nodes,
     );
 
@@ -466,8 +442,6 @@ fn stopped_restricted_search_restores_the_excluded_move() {
         1,
         -300,
         -299,
-        Instant::now(),
-        10.0,
         &mut nodes,
     );
 
@@ -518,8 +492,6 @@ fn restricted_search_uses_descendant_tt_without_learning_from_its_root() {
         1,
         9,
         10,
-        Instant::now(),
-        10.0,
         &mut nodes,
     );
 
@@ -570,8 +542,6 @@ fn restricted_verification_does_not_write_descendant_tt_or_learning() {
         -INF,
         INF,
         false,
-        Instant::now(),
-        10.0,
         &mut control_nodes,
     );
     control.excluded_moves[1] = None;
@@ -595,8 +565,6 @@ fn restricted_verification_does_not_write_descendant_tt_or_learning() {
         1,
         -INF,
         INF,
-        Instant::now(),
-        10.0,
         &mut isolated_nodes,
     );
 
@@ -821,8 +789,6 @@ fn singular_margin_rejects_a_competitive_alternative() {
         1,
         singular_beta - 1,
         singular_beta,
-        Instant::now(),
-        10.0,
         &mut nodes,
     );
 
@@ -945,17 +911,7 @@ fn singular_search_extends_a_synthetic_only_move_tt_result() {
     );
     let mut nodes = 0;
 
-    searcher.negamax(
-        &mut st,
-        SINGULAR_MIN_DEPTH,
-        1,
-        -INF,
-        INF,
-        true,
-        Instant::now(),
-        10.0,
-        &mut nodes,
-    );
+    searcher.negamax(&mut st, SINGULAR_MIN_DEPTH, 1, -INF, INF, true, &mut nodes);
 
     let stats = searcher.debug_stats();
     assert_eq!(stats.singular_candidates, 1);
@@ -1188,17 +1144,7 @@ fn probcut_stores_only_the_reduced_verified_depth() {
     let key = st.hash;
     let mut nodes = 0;
 
-    let score = searcher.negamax(
-        &mut st,
-        PROBCUT_MIN_DEPTH,
-        1,
-        -1,
-        0,
-        true,
-        Instant::now(),
-        10.0,
-        &mut nodes,
-    );
+    let score = searcher.negamax(&mut st, PROBCUT_MIN_DEPTH, 1, -1, 0, true, &mut nodes);
 
     assert_eq!(score, 0);
     let stats = searcher.debug_stats();
@@ -1229,16 +1175,7 @@ fn search_debug_stats_are_reset_between_root_moves() {
     let mut searcher = Searcher::new(shared_tt, stopped);
     let mut nodes = 0u64;
 
-    searcher.qsearch(
-        &mut st,
-        -INF,
-        INF,
-        QS_DEPTH,
-        Instant::now(),
-        10.0,
-        &mut nodes,
-        0,
-    );
+    searcher.qsearch(&mut st, -INF, INF, QS_DEPTH, &mut nodes, 0);
 
     let stats = searcher.debug_stats();
     assert!(stats.qnodes > 1);
@@ -1700,9 +1637,9 @@ fn perf_counter_report() {
                 load(&counters.draw_calls),
             ),
             (
-                "time",
-                load(&counters.time_cycles),
-                load(&counters.time_calls),
+                "stop",
+                load(&counters.stop_cycles),
+                load(&counters.stop_calls),
             ),
             (
                 "score",

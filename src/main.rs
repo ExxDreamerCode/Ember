@@ -3,6 +3,7 @@ use ember_chess::backend::{
 };
 use ember_chess::board::{piece_on, piece_type, EMPTY_SQ};
 use ember_chess::book::{DEFAULT_BOOK_MIN_MOVE_WEIGHT, DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE};
+use ember_chess::deadline::{DeadlineRegistration, DeadlineWatchdog};
 use ember_chess::evaluate;
 use ember_chess::search::{
     active_search_backend, set_search_backend_override, SearchLearning, SEARCH_THREAD_STACK_SIZE,
@@ -17,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[cfg(all(
     feature = "mimalloc",
@@ -37,7 +38,6 @@ const SHORT_SYNC_SEARCH_LIMIT_SECONDS: f64 = 0.050;
 const STARTPOS_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const BENCH_DEFAULT_DEPTH: i32 = 10;
 const BENCH_MAX_DEPTH: i32 = 64;
-const BENCH_TIME_LIMIT_SECONDS: f64 = 1_000_000_000.0;
 const BENCH_POSITIONS: &[(&str, &str)] = &[
     ("startpos", "startpos"),
     (
@@ -74,6 +74,9 @@ struct SearchTask {
     handle: Option<thread::JoinHandle<()>>,
     stopped: Arc<AtomicBool>,
     pondering: Arc<AtomicBool>,
+    deadline_watchdog: Arc<DeadlineWatchdog>,
+    hard_deadline: Option<Instant>,
+    deadline_registration: Option<DeadlineRegistration>,
     rx: mpsc::Receiver<SearchCompletion>,
     completion: Option<SearchCompletion>,
 }
@@ -81,7 +84,7 @@ struct SearchTask {
 impl SearchTask {
     fn request_stop(&self) {
         self.pondering.store(false, Ordering::SeqCst);
-        self.stopped.store(true, Ordering::SeqCst);
+        self.stopped.store(true, Ordering::Relaxed);
     }
 
     fn collect_completion(&mut self) {
@@ -185,7 +188,13 @@ fn main() {
 }
 
 fn run_uci_loop() {
-    let mut engine = Engine::new();
+    let mut engine = match Engine::try_new() {
+        Ok(engine) => engine,
+        Err(error) => {
+            eprintln!("info string Failed to initialize deadline watchdog: {error}");
+            return;
+        }
+    };
     let mut time_manager = TimeManager::default();
     let mut search_task: Option<SearchTask> = None;
     let mut next_search_id = 0u64;
@@ -477,6 +486,8 @@ fn run_uci_loop() {
                 let st = engine.st;
                 let shared_tt = Arc::clone(&engine.shared_tt);
                 let search_pool = Arc::clone(&engine.search_pool);
+                let deadline_watchdog = Arc::clone(&engine.deadline_watchdog);
+                let task_deadline_watchdog = Arc::clone(&deadline_watchdog);
                 let stopped = Arc::new(AtomicBool::new(false));
                 let pondering = Arc::new(AtomicBool::new(limits.ponder));
                 let num_threads = engine.num_threads;
@@ -516,6 +527,7 @@ fn run_uci_loop() {
                             search_searcher,
                             shared_tt,
                             search_pool,
+                            deadline_watchdog,
                             num_threads,
                             stopped_for_search,
                             book_config,
@@ -534,12 +546,8 @@ fn run_uci_loop() {
                                 search_start,
                             )
                         } else {
-                            search_engine.find_best_move_with_time_limits_prepared_with_node_limit(
-                                limits.soft_seconds,
-                                limits.hard_seconds,
-                                limits.depth,
-                                limits.node_limit,
-                            )
+                            search_engine
+                                .find_best_move_prepared_untimed(limits.depth, limits.node_limit)
                         };
                         let learning = search_engine.searcher.export_learning();
                         tx.send(SearchCompletion { result, learning }).ok();
@@ -554,6 +562,13 @@ fn run_uci_loop() {
                     handle: Some(handle),
                     stopped,
                     pondering,
+                    deadline_watchdog: task_deadline_watchdog,
+                    hard_deadline: (limits.clock_managed && limits.ponder).then(|| {
+                        search_start
+                            .checked_add(Duration::from_secs_f64(limits.hard_seconds.max(0.0)))
+                            .unwrap_or(search_start)
+                    }),
+                    deadline_registration: None,
                     rx,
                     completion: None,
                 });
@@ -565,6 +580,19 @@ fn run_uci_loop() {
                         task.collect_completion();
                         true
                     } else {
+                        if let Some(deadline) = task.hard_deadline.take() {
+                            match task
+                                .deadline_watchdog
+                                .arm(deadline, Arc::clone(&task.stopped))
+                            {
+                                Ok(registration) => {
+                                    task.deadline_registration = Some(registration)
+                                }
+                                Err(error) => eprintln!(
+                                    "info string deadline watchdog arm failed after ponderhit: {error}"
+                                ),
+                            }
+                        }
                         false
                     }
                 } else {
@@ -825,6 +853,7 @@ fn reset_engine(engine: &mut Engine) {
     let num_threads = engine.num_threads;
     let multi_pv = engine.multi_pv;
     let search_pool = Arc::clone(&engine.search_pool);
+    let deadline_watchdog = Arc::clone(&engine.deadline_watchdog);
     let chess960 = engine.st.chess960;
     let syzygy = engine.searcher.syzygy.clone();
     let random_book_move = engine.random_book_move;
@@ -834,7 +863,7 @@ fn reset_engine(engine: &mut Engine) {
     let trace = std::mem::take(&mut engine.trace);
     let tt_mb = engine.searcher.tt_mb;
     search_pool.clear_learning();
-    *engine = Engine::new();
+    *engine = Engine::new_with_deadline_watchdog(deadline_watchdog);
     engine.book = book;
     engine.random_book_move = random_book_move;
     engine.book_min_move_weight = book_min_move_weight;
@@ -1088,7 +1117,8 @@ fn run_bench(engine: &Engine, depth: i32, count: Option<usize>) {
     let total_start = Instant::now();
 
     for (index, (label, command)) in BENCH_POSITIONS.iter().take(selected_count).enumerate() {
-        let mut bench_engine = Engine::new();
+        let mut bench_engine =
+            Engine::new_with_deadline_watchdog(Arc::clone(&engine.deadline_watchdog));
         bench_engine.num_threads = engine.num_threads;
         bench_engine.searcher.tt_mb = engine.searcher.tt_mb;
         bench_engine.st.chess960 = engine.st.chess960;
@@ -1098,13 +1128,7 @@ fn run_bench(engine: &Engine, depth: i32, count: Option<usize>) {
         parse_position(&mut bench_engine, &parts);
 
         let start = Instant::now();
-        let (_, _, nodes, _) = bench_engine
-            .find_best_move_with_time_limits_prepared_with_node_limit(
-                BENCH_TIME_LIMIT_SECONDS,
-                BENCH_TIME_LIMIT_SECONDS,
-                depth,
-                None,
-            );
+        let (_, _, nodes, _) = bench_engine.find_best_move_prepared_untimed(depth, None);
         let elapsed = start.elapsed().as_secs_f64();
         let nps = if elapsed > 0.0 {
             (nodes as f64 / elapsed) as u64

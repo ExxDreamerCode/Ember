@@ -6,6 +6,7 @@ use ember_chess::board::{
     encode_move, move_ec, move_er, move_promotion, move_sc, move_sr, move_to_uci, BoardState, Move,
     INF,
 };
+use ember_chess::deadline::DeadlineWatchdog;
 use ember_chess::movegen::{apply_move, generate_moves};
 use ember_chess::search::{
     extract_pv_line, format_pv_line_uci, lazy_smp_search, LazySmpPool, LazySmpSearchLimits,
@@ -51,17 +52,7 @@ fn negamax_handles_stalemate_with_only_pseudo_king_moves() {
     let root_key = compute_hash(&st);
     let mut nodes = 0u64;
 
-    let score = searcher.negamax(
-        &mut st,
-        2,
-        0,
-        -INF,
-        INF,
-        true,
-        Instant::now(),
-        10.0,
-        &mut nodes,
-    );
+    let score = searcher.negamax(&mut st, 2, 0, -INF, INF, true, &mut nodes);
 
     assert_eq!(score, 0);
     assert!(
@@ -86,17 +77,7 @@ fn negamax_prefers_en_passant_discovered_check() {
     let root_key = compute_hash(&st);
     let mut nodes = 0u64;
 
-    let score = searcher.negamax(
-        &mut st,
-        2,
-        0,
-        -INF,
-        INF,
-        true,
-        Instant::now(),
-        10.0,
-        &mut nodes,
-    );
+    let score = searcher.negamax(&mut st, 2, 0, -INF, INF, true, &mut nodes);
 
     let best_move = shared_tt
         .get_depth(root_key)
@@ -110,29 +91,52 @@ fn negamax_prefers_en_passant_discovered_check() {
 }
 
 #[test]
-fn negamax_timeout_sets_stopped_without_storing_tt() {
+fn negamax_honors_a_preset_stop_without_storing_tt() {
     let mut st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
-    let stopped = Arc::new(AtomicBool::new(false));
+    let stopped = Arc::new(AtomicBool::new(true));
     let shared_tt = Arc::new(SharedTT::new(128));
     let mut searcher = Searcher::new(shared_tt.clone(), stopped);
     let key = compute_hash(&st);
     let mut nodes = 0u64;
 
-    let score = searcher.negamax(
-        &mut st,
-        4,
-        0,
-        -INF,
-        INF,
-        true,
-        Instant::now() - Duration::from_secs(1),
-        0.0,
-        &mut nodes,
-    );
+    let score = searcher.negamax(&mut st, 4, 0, -INF, INF, true, &mut nodes);
 
     assert_eq!(score, 0);
     assert!(searcher.stopped.load(Ordering::Relaxed));
     assert!(searcher.shared_tt.get_depth(key).is_none());
+}
+
+#[test]
+fn reused_searcher_honors_a_watchdog_stop_before_a_cached_result() {
+    let mut st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
+    let stopped = Arc::new(AtomicBool::new(false));
+    let shared_tt = Arc::new(SharedTT::new(128));
+    let mut searcher = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
+    searcher.init_nnue_stack(&st);
+    let root_key = compute_hash(&st);
+    let mut warmup_nodes = 0u64;
+
+    let warmup_score = searcher.negamax(&mut st, 4, 0, -INF, INF, true, &mut warmup_nodes);
+    assert!(warmup_nodes > 0);
+    assert!(shared_tt.get_depth(root_key).is_some());
+
+    let watchdog = DeadlineWatchdog::new().unwrap();
+    let _deadline = watchdog
+        .arm(
+            Instant::now() - Duration::from_millis(1),
+            Arc::clone(&stopped),
+        )
+        .unwrap();
+    let mut stopped_nodes = 0u64;
+    let stopped_score = searcher.negamax(&mut st, 4, 0, -INF, INF, true, &mut stopped_nodes);
+
+    assert_ne!(
+        warmup_score, 0,
+        "warmup should populate a non-neutral cached score"
+    );
+    assert_eq!(stopped_score, 0, "cached TT data bypassed cancellation");
+    assert_eq!(stopped_nodes, 0, "search counted nodes after cancellation");
+    assert!(stopped.load(Ordering::Relaxed));
 }
 
 #[test]
@@ -215,12 +219,19 @@ fn lazy_smp_honors_the_root_searcher_stop_token() {
 }
 
 #[test]
-fn lazy_smp_uses_the_caller_start_time() {
+fn lazy_smp_honors_an_expired_watchdog_token() {
     let st = state_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1");
     let stopped = Arc::new(AtomicBool::new(false));
     let shared_tt = Arc::new(SharedTT::new(128));
     let mut root = Searcher::new(Arc::clone(&shared_tt), Arc::clone(&stopped));
     let root_moves = generate_moves(&st, st.w, &st.cr, st.ep);
+    let watchdog = DeadlineWatchdog::new().unwrap();
+    let _deadline = watchdog
+        .arm(
+            Instant::now() - Duration::from_secs(1),
+            Arc::clone(&stopped),
+        )
+        .unwrap();
 
     let (_, _, depth, nodes) = lazy_smp_search(
         &LazySmpPool::new(),
@@ -238,8 +249,8 @@ fn lazy_smp_uses_the_caller_start_time() {
         &mut root,
     );
 
-    assert_eq!(depth, 0, "workers ignored the expired caller clock");
-    assert_eq!(nodes, 0, "workers searched after the caller clock expired");
+    assert_eq!(depth, 0, "workers ignored the expired stop token");
+    assert_eq!(nodes, 0, "workers searched after the watchdog expired");
     assert!(stopped.load(Ordering::Relaxed));
 }
 

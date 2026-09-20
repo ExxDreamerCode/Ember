@@ -139,18 +139,19 @@ macro_rules! negamax_mode_body {
         $alpha:ident,
         $beta:ident,
         $can_null:ident,
-        $start:ident,
-        $tl:ident,
         $cnt:ident,
         $eval:ident
     ) => {{
+        if $this.stop_requested() {
+            return 0;
+        }
         *$cnt += 1;
         #[cfg(feature = "search-debug")]
         {
             $this.debug.stats.max_ply = $this.debug.stats.max_ply.max($ply);
             $this.record_debug_dag_node($st, $ply, $depth, $alpha, $beta, false);
         }
-        if $this.search_limit_reached::<NODE_LIMITED>($start, $tl, *$cnt) {
+        if $this.node_limit_reached::<NODE_LIMITED>(*$cnt) {
             return 0;
         }
         if $ply >= MAX_PLY {
@@ -266,7 +267,7 @@ macro_rules! negamax_mode_body {
 
         if actual_depth <= 0 {
             return $this.$qsearch_mode::<CHESS960, NODE_LIMITED, E>(
-                $st, $alpha, beta, QS_DEPTH, $start, $tl, $cnt, $ply, $eval,
+                $st, $alpha, beta, QS_DEPTH, $cnt, $ply, $eval,
             );
         }
 
@@ -304,8 +305,6 @@ macro_rules! negamax_mode_body {
                     $alpha - margin,
                     beta - margin,
                     QS_DEPTH,
-                    $start,
-                    $tl,
                     $cnt,
                     $ply,
                     $eval,
@@ -368,8 +367,6 @@ macro_rules! negamax_mode_body {
                     -beta,
                     -beta + 1,
                     false,
-                    $start,
-                    $tl,
                     $cnt,
                     $eval,
                 );
@@ -382,7 +379,7 @@ macro_rules! negamax_mode_body {
                 }
                 $st.w = ow;
                 $st.ep = oe;
-                if $this.time_up_gated($start, $tl) {
+                if $this.stop_requested() {
                     return 0;
                 }
                 if s >= beta {
@@ -506,7 +503,7 @@ macro_rules! negamax_mode_body {
                 while cap_idx < caps.len() {
                     let mv = caps[cap_idx];
                     cap_idx += 1;
-                    if $this.time_up_gated($start, $tl) {
+                    if $this.stop_requested() {
                         Self::return_buf(&mut $this.caps_bufs, $ply, caps);
                         Self::return_buf(&mut $this.move_bufs, $ply, moves_buf);
                         return 0;
@@ -555,8 +552,6 @@ macro_rules! negamax_mode_body {
                         -candidate.beta,
                         -candidate.beta + 1,
                         QS_DEPTH,
-                        $start,
-                        $tl,
                         $cnt,
                         $ply + 1,
                         $eval,
@@ -580,8 +575,6 @@ macro_rules! negamax_mode_body {
                                 -candidate.beta,
                                 -candidate.beta + 1,
                                 false,
-                                $start,
-                                $tl,
                                 $cnt,
                                 $eval,
                             ));
@@ -714,8 +707,6 @@ macro_rules! negamax_mode_body {
                     candidate.beta - 1,
                     candidate.beta,
                     false,
-                    $start,
-                    $tl,
                     $cnt,
                     $eval,
                 );
@@ -741,8 +732,6 @@ macro_rules! negamax_mode_body {
                             threshold - 1,
                             threshold,
                             false,
-                            $start,
-                            $tl,
                             $cnt,
                             $eval,
                         ));
@@ -764,8 +753,6 @@ macro_rules! negamax_mode_body {
                                 threshold - 1,
                                 threshold,
                                 false,
-                                $start,
-                                $tl,
                                 $cnt,
                                 $eval,
                             ));
@@ -997,7 +984,7 @@ macro_rules! negamax_mode_body {
         quiets_tried.clear();
 
         for &(_, mv) in scored.iter() {
-            if $this.time_up_gated($start, $tl) {
+            if $this.stop_requested() {
                 return 0;
             }
             if Some(mv) == excluded_move {
@@ -1138,8 +1125,6 @@ macro_rules! negamax_mode_body {
                     -beta,
                     -$alpha,
                     true,
-                    $start,
-                    $tl,
                     $cnt,
                     $eval,
                 )
@@ -1183,8 +1168,6 @@ macro_rules! negamax_mode_body {
                     -$alpha - 1,
                     -$alpha,
                     true,
-                    $start,
-                    $tl,
                     $cnt,
                     $eval,
                 );
@@ -1200,8 +1183,6 @@ macro_rules! negamax_mode_body {
                         -$alpha - 1,
                         -$alpha,
                         true,
-                        $start,
-                        $tl,
                         $cnt,
                         $eval,
                     );
@@ -1217,8 +1198,6 @@ macro_rules! negamax_mode_body {
                         -beta,
                         -$alpha,
                         true,
-                        $start,
-                        $tl,
                         $cnt,
                         $eval,
                     )
@@ -1233,8 +1212,6 @@ macro_rules! negamax_mode_body {
                     -$alpha - 1,
                     -$alpha,
                     true,
-                    $start,
-                    $tl,
                     $cnt,
                     $eval,
                 );
@@ -1246,8 +1223,6 @@ macro_rules! negamax_mode_body {
                         -beta,
                         -$alpha,
                         true,
-                        $start,
-                        $tl,
                         $cnt,
                         $eval,
                     )
@@ -1262,8 +1237,6 @@ macro_rules! negamax_mode_body {
                     -beta,
                     -$alpha,
                     true,
-                    $start,
-                    $tl,
                     $cnt,
                     $eval,
                 )
@@ -1393,14 +1366,12 @@ impl Searcher {
         alpha: i32,
         beta: i32,
         can_null: bool,
-        start: Instant,
-        tl: f64,
         cnt: &mut u64,
     ) -> i32 {
         if self.node_limit.is_some() {
-            self.negamax_with_limits::<true>(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
+            self.negamax_with_limits::<true>(st, depth, ply, alpha, beta, can_null, cnt)
         } else {
-            self.negamax_with_limits::<false>(st, depth, ply, alpha, beta, can_null, start, tl, cnt)
+            self.negamax_with_limits::<false>(st, depth, ply, alpha, beta, can_null, cnt)
         }
     }
 
@@ -1413,8 +1384,6 @@ impl Searcher {
         alpha: i32,
         beta: i32,
         can_null: bool,
-        start: Instant,
-        tl: f64,
         cnt: &mut u64,
     ) -> i32 {
         match self.search_backend {
@@ -1423,41 +1392,35 @@ impl Searcher {
                 {
                     return unsafe {
                         self.negamax_x86_avx512::<NODE_LIMITED>(
-                            st, depth, ply, alpha, beta, can_null, start, tl, cnt,
+                            st, depth, ply, alpha, beta, can_null, cnt,
                         )
                     };
                 }
                 #[allow(unreachable_code)]
-                self.negamax_scalar::<NODE_LIMITED>(
-                    st, depth, ply, alpha, beta, can_null, start, tl, cnt,
-                )
+                self.negamax_scalar::<NODE_LIMITED>(st, depth, ply, alpha, beta, can_null, cnt)
             }
             SearchBackendKind::X86V3 => {
                 #[cfg(target_arch = "x86_64")]
                 {
                     return unsafe {
                         self.negamax_x86_v3::<NODE_LIMITED>(
-                            st, depth, ply, alpha, beta, can_null, start, tl, cnt,
+                            st, depth, ply, alpha, beta, can_null, cnt,
                         )
                     };
                 }
                 #[allow(unreachable_code)]
-                self.negamax_scalar::<NODE_LIMITED>(
-                    st, depth, ply, alpha, beta, can_null, start, tl, cnt,
-                )
+                self.negamax_scalar::<NODE_LIMITED>(st, depth, ply, alpha, beta, can_null, cnt)
             }
-            SearchBackendKind::Aarch64Simd128 => self.negamax_simd128::<NODE_LIMITED>(
-                st, depth, ply, alpha, beta, can_null, start, tl, cnt,
-            ),
-            SearchBackendKind::Aarch64Simd256 => self.negamax_simd256::<NODE_LIMITED>(
-                st, depth, ply, alpha, beta, can_null, start, tl, cnt,
-            ),
-            SearchBackendKind::Aarch64Simd512 => self.negamax_simd512::<NODE_LIMITED>(
-                st, depth, ply, alpha, beta, can_null, start, tl, cnt,
-            ),
-            _ => self.negamax_scalar::<NODE_LIMITED>(
-                st, depth, ply, alpha, beta, can_null, start, tl, cnt,
-            ),
+            SearchBackendKind::Aarch64Simd128 => {
+                self.negamax_simd128::<NODE_LIMITED>(st, depth, ply, alpha, beta, can_null, cnt)
+            }
+            SearchBackendKind::Aarch64Simd256 => {
+                self.negamax_simd256::<NODE_LIMITED>(st, depth, ply, alpha, beta, can_null, cnt)
+            }
+            SearchBackendKind::Aarch64Simd512 => {
+                self.negamax_simd512::<NODE_LIMITED>(st, depth, ply, alpha, beta, can_null, cnt)
+            }
+            _ => self.negamax_scalar::<NODE_LIMITED>(st, depth, ply, alpha, beta, can_null, cnt),
         }
     }
 
@@ -1470,8 +1433,6 @@ impl Searcher {
         alpha: i32,
         beta: i32,
         can_null: bool,
-        start: Instant,
-        tl: f64,
         cnt: &mut u64,
     ) -> i32 {
         let ember_v2_net = self.ember_v2_net.clone();
@@ -1484,8 +1445,6 @@ impl Searcher {
                     alpha,
                     beta,
                     can_null,
-                    start,
-                    tl,
                     cnt,
                     EmberV2Eval {
                         net,
@@ -1500,8 +1459,6 @@ impl Searcher {
                     alpha,
                     beta,
                     can_null,
-                    start,
-                    tl,
                     cnt,
                     EmberV2Eval {
                         net,
@@ -1520,8 +1477,6 @@ impl Searcher {
                     alpha,
                     beta,
                     can_null,
-                    start,
-                    tl,
                     cnt,
                     ClassicHalfKpEval { net },
                 )
@@ -1533,8 +1488,6 @@ impl Searcher {
                     alpha,
                     beta,
                     can_null,
-                    start,
-                    tl,
                     cnt,
                     ClassicHalfKpEval { net },
                 )
@@ -1551,8 +1504,6 @@ impl Searcher {
                         alpha,
                         beta,
                         can_null,
-                        start,
-                        tl,
                         cnt,
                         ThreatNnueEval {
                             net,
@@ -1567,8 +1518,6 @@ impl Searcher {
                         alpha,
                         beta,
                         can_null,
-                        start,
-                        tl,
                         cnt,
                         NnueEval {
                             net,
@@ -1584,8 +1533,6 @@ impl Searcher {
                 alpha,
                 beta,
                 can_null,
-                start,
-                tl,
                 cnt,
                 ClassicEval,
             ),
@@ -1598,8 +1545,6 @@ impl Searcher {
                         alpha,
                         beta,
                         can_null,
-                        start,
-                        tl,
                         cnt,
                         ThreatNnueEval {
                             net,
@@ -1614,8 +1559,6 @@ impl Searcher {
                         alpha,
                         beta,
                         can_null,
-                        start,
-                        tl,
                         cnt,
                         NnueEval {
                             net,
@@ -1631,8 +1574,6 @@ impl Searcher {
                 alpha,
                 beta,
                 can_null,
-                start,
-                tl,
                 cnt,
                 ClassicEval,
             ),
@@ -1648,8 +1589,6 @@ impl Searcher {
         alpha: i32,
         beta: i32,
         can_null: bool,
-        start: Instant,
-        tl: f64,
         cnt: &mut u64,
     ) -> i32 {
         let ember_v2_net = self.ember_v2_net.clone();
@@ -1662,8 +1601,6 @@ impl Searcher {
                     alpha,
                     beta,
                     can_null,
-                    start,
-                    tl,
                     cnt,
                     EmberV2Eval {
                         net,
@@ -1678,8 +1615,6 @@ impl Searcher {
                     alpha,
                     beta,
                     can_null,
-                    start,
-                    tl,
                     cnt,
                     EmberV2Eval {
                         net,
@@ -1698,8 +1633,6 @@ impl Searcher {
                     alpha,
                     beta,
                     can_null,
-                    start,
-                    tl,
                     cnt,
                     ClassicHalfKpEval { net },
                 )
@@ -1711,8 +1644,6 @@ impl Searcher {
                     alpha,
                     beta,
                     can_null,
-                    start,
-                    tl,
                     cnt,
                     ClassicHalfKpEval { net },
                 )
@@ -1729,8 +1660,6 @@ impl Searcher {
                         alpha,
                         beta,
                         can_null,
-                        start,
-                        tl,
                         cnt,
                         ThreatNnueEval {
                             net,
@@ -1745,8 +1674,6 @@ impl Searcher {
                         alpha,
                         beta,
                         can_null,
-                        start,
-                        tl,
                         cnt,
                         NnueEval {
                             net,
@@ -1762,8 +1689,6 @@ impl Searcher {
                 alpha,
                 beta,
                 can_null,
-                start,
-                tl,
                 cnt,
                 ClassicEval,
             ),
@@ -1776,8 +1701,6 @@ impl Searcher {
                         alpha,
                         beta,
                         can_null,
-                        start,
-                        tl,
                         cnt,
                         ThreatNnueEval {
                             net,
@@ -1792,8 +1715,6 @@ impl Searcher {
                         alpha,
                         beta,
                         can_null,
-                        start,
-                        tl,
                         cnt,
                         NnueEval {
                             net,
@@ -1809,8 +1730,6 @@ impl Searcher {
                 alpha,
                 beta,
                 can_null,
-                start,
-                tl,
                 cnt,
                 ClassicEval,
             ),
@@ -1826,8 +1745,6 @@ impl Searcher {
         alpha: i32,
         beta: i32,
         can_null: bool,
-        start: Instant,
-        tl: f64,
         cnt: &mut u64,
     ) -> i32 {
         let ember_v2_net = self.ember_v2_net.clone();
@@ -1840,8 +1757,6 @@ impl Searcher {
                     alpha,
                     beta,
                     can_null,
-                    start,
-                    tl,
                     cnt,
                     EmberV2Eval {
                         net,
@@ -1856,8 +1771,6 @@ impl Searcher {
                     alpha,
                     beta,
                     can_null,
-                    start,
-                    tl,
                     cnt,
                     EmberV2Eval {
                         net,
@@ -1876,8 +1789,6 @@ impl Searcher {
                     alpha,
                     beta,
                     can_null,
-                    start,
-                    tl,
                     cnt,
                     ClassicHalfKpEval { net },
                 )
@@ -1889,8 +1800,6 @@ impl Searcher {
                     alpha,
                     beta,
                     can_null,
-                    start,
-                    tl,
                     cnt,
                     ClassicHalfKpEval { net },
                 )
@@ -1907,8 +1816,6 @@ impl Searcher {
                         alpha,
                         beta,
                         can_null,
-                        start,
-                        tl,
                         cnt,
                         ThreatNnueEval {
                             net,
@@ -1923,8 +1830,6 @@ impl Searcher {
                         alpha,
                         beta,
                         can_null,
-                        start,
-                        tl,
                         cnt,
                         NnueEval {
                             net,
@@ -1940,8 +1845,6 @@ impl Searcher {
                 alpha,
                 beta,
                 can_null,
-                start,
-                tl,
                 cnt,
                 ClassicEval,
             ),
@@ -1954,8 +1857,6 @@ impl Searcher {
                         alpha,
                         beta,
                         can_null,
-                        start,
-                        tl,
                         cnt,
                         ThreatNnueEval {
                             net,
@@ -1970,8 +1871,6 @@ impl Searcher {
                         alpha,
                         beta,
                         can_null,
-                        start,
-                        tl,
                         cnt,
                         NnueEval {
                             net,
@@ -1987,8 +1886,6 @@ impl Searcher {
                 alpha,
                 beta,
                 can_null,
-                start,
-                tl,
                 cnt,
                 ClassicEval,
             ),
@@ -2004,8 +1901,6 @@ impl Searcher {
         alpha: i32,
         beta: i32,
         can_null: bool,
-        start: Instant,
-        tl: f64,
         cnt: &mut u64,
     ) -> i32 {
         let ember_v2_net = self.ember_v2_net.clone();
@@ -2018,8 +1913,6 @@ impl Searcher {
                     alpha,
                     beta,
                     can_null,
-                    start,
-                    tl,
                     cnt,
                     EmberV2Eval {
                         net,
@@ -2034,8 +1927,6 @@ impl Searcher {
                     alpha,
                     beta,
                     can_null,
-                    start,
-                    tl,
                     cnt,
                     EmberV2Eval {
                         net,
@@ -2054,8 +1945,6 @@ impl Searcher {
                     alpha,
                     beta,
                     can_null,
-                    start,
-                    tl,
                     cnt,
                     ClassicHalfKpEval { net },
                 )
@@ -2067,8 +1956,6 @@ impl Searcher {
                     alpha,
                     beta,
                     can_null,
-                    start,
-                    tl,
                     cnt,
                     ClassicHalfKpEval { net },
                 )
@@ -2085,8 +1972,6 @@ impl Searcher {
                         alpha,
                         beta,
                         can_null,
-                        start,
-                        tl,
                         cnt,
                         ThreatNnueEval {
                             net,
@@ -2101,8 +1986,6 @@ impl Searcher {
                         alpha,
                         beta,
                         can_null,
-                        start,
-                        tl,
                         cnt,
                         NnueEval {
                             net,
@@ -2118,8 +2001,6 @@ impl Searcher {
                 alpha,
                 beta,
                 can_null,
-                start,
-                tl,
                 cnt,
                 ClassicEval,
             ),
@@ -2132,8 +2013,6 @@ impl Searcher {
                         alpha,
                         beta,
                         can_null,
-                        start,
-                        tl,
                         cnt,
                         ThreatNnueEval {
                             net,
@@ -2148,8 +2027,6 @@ impl Searcher {
                         alpha,
                         beta,
                         can_null,
-                        start,
-                        tl,
                         cnt,
                         NnueEval {
                             net,
@@ -2165,8 +2042,6 @@ impl Searcher {
                 alpha,
                 beta,
                 can_null,
-                start,
-                tl,
                 cnt,
                 ClassicEval,
             ),
@@ -2184,8 +2059,6 @@ impl Searcher {
         alpha: i32,
         beta: i32,
         can_null: bool,
-        start: Instant,
-        tl: f64,
         cnt: &mut u64,
     ) -> i32 {
         let ember_v2_net = self.ember_v2_net.clone();
@@ -2201,8 +2074,6 @@ impl Searcher {
                         alpha,
                         beta,
                         can_null,
-                        start,
-                        tl,
                         cnt,
                         EmberV2Eval {
                             net,
@@ -2217,8 +2088,6 @@ impl Searcher {
                         alpha,
                         beta,
                         can_null,
-                        start,
-                        tl,
                         cnt,
                         EmberV2Eval {
                             net,
@@ -2236,8 +2105,6 @@ impl Searcher {
                         alpha,
                         beta,
                         can_null,
-                        start,
-                        tl,
                         cnt,
                         ClassicHalfKpEval { net },
                     )
@@ -2249,8 +2116,6 @@ impl Searcher {
                         alpha,
                         beta,
                         can_null,
-                        start,
-                        tl,
                         cnt,
                         ClassicHalfKpEval { net },
                     )
@@ -2266,8 +2131,6 @@ impl Searcher {
                             alpha,
                             beta,
                             can_null,
-                            start,
-                            tl,
                             cnt,
                             ThreatNnueEval {
                                 net,
@@ -2282,8 +2145,6 @@ impl Searcher {
                             alpha,
                             beta,
                             can_null,
-                            start,
-                            tl,
                             cnt,
                             NnueEval {
                                 net,
@@ -2299,8 +2160,6 @@ impl Searcher {
                     alpha,
                     beta,
                     can_null,
-                    start,
-                    tl,
                     cnt,
                     ClassicEval,
                 ),
@@ -2313,8 +2172,6 @@ impl Searcher {
                             alpha,
                             beta,
                             can_null,
-                            start,
-                            tl,
                             cnt,
                             ThreatNnueEval {
                                 net,
@@ -2329,8 +2186,6 @@ impl Searcher {
                             alpha,
                             beta,
                             can_null,
-                            start,
-                            tl,
                             cnt,
                             NnueEval {
                                 net,
@@ -2346,8 +2201,6 @@ impl Searcher {
                     alpha,
                     beta,
                     can_null,
-                    start,
-                    tl,
                     cnt,
                     ClassicEval,
                 ),
@@ -2368,8 +2221,6 @@ impl Searcher {
         alpha: i32,
         beta: i32,
         can_null: bool,
-        start: Instant,
-        tl: f64,
         cnt: &mut u64,
     ) -> i32 {
         let ember_v2_net = self.ember_v2_net.clone();
@@ -2385,8 +2236,6 @@ impl Searcher {
                         alpha,
                         beta,
                         can_null,
-                        start,
-                        tl,
                         cnt,
                         EmberV2Eval {
                             net,
@@ -2401,8 +2250,6 @@ impl Searcher {
                         alpha,
                         beta,
                         can_null,
-                        start,
-                        tl,
                         cnt,
                         EmberV2Eval {
                             net,
@@ -2420,8 +2267,6 @@ impl Searcher {
                         alpha,
                         beta,
                         can_null,
-                        start,
-                        tl,
                         cnt,
                         ClassicHalfKpEval { net },
                     )
@@ -2433,8 +2278,6 @@ impl Searcher {
                         alpha,
                         beta,
                         can_null,
-                        start,
-                        tl,
                         cnt,
                         ClassicHalfKpEval { net },
                     )
@@ -2450,8 +2293,6 @@ impl Searcher {
                             alpha,
                             beta,
                             can_null,
-                            start,
-                            tl,
                             cnt,
                             ThreatNnueEval {
                                 net,
@@ -2466,8 +2307,6 @@ impl Searcher {
                             alpha,
                             beta,
                             can_null,
-                            start,
-                            tl,
                             cnt,
                             NnueEval {
                                 net,
@@ -2483,8 +2322,6 @@ impl Searcher {
                     alpha,
                     beta,
                     can_null,
-                    start,
-                    tl,
                     cnt,
                     ClassicEval,
                 ),
@@ -2497,8 +2334,6 @@ impl Searcher {
                             alpha,
                             beta,
                             can_null,
-                            start,
-                            tl,
                             cnt,
                             ThreatNnueEval {
                                 net,
@@ -2513,8 +2348,6 @@ impl Searcher {
                             alpha,
                             beta,
                             can_null,
-                            start,
-                            tl,
                             cnt,
                             NnueEval {
                                 net,
@@ -2530,8 +2363,6 @@ impl Searcher {
                     alpha,
                     beta,
                     can_null,
-                    start,
-                    tl,
                     cnt,
                     ClassicEval,
                 ),
@@ -2552,8 +2383,6 @@ impl Searcher {
         mut alpha: i32,
         beta: i32,
         can_null: bool,
-        start: Instant,
-        tl: f64,
         cnt: &mut u64,
         eval: E,
     ) -> i32 {
@@ -2567,8 +2396,6 @@ impl Searcher {
             alpha,
             beta,
             can_null,
-            start,
-            tl,
             cnt,
             eval
         )
@@ -2587,8 +2414,6 @@ impl Searcher {
         mut alpha: i32,
         beta: i32,
         can_null: bool,
-        start: Instant,
-        tl: f64,
         cnt: &mut u64,
         eval: E,
     ) -> i32 {
@@ -2602,8 +2427,6 @@ impl Searcher {
             alpha,
             beta,
             can_null,
-            start,
-            tl,
             cnt,
             eval
         )
@@ -2622,8 +2445,6 @@ impl Searcher {
         mut alpha: i32,
         beta: i32,
         can_null: bool,
-        start: Instant,
-        tl: f64,
         cnt: &mut u64,
         eval: E,
     ) -> i32 {
@@ -2637,8 +2458,6 @@ impl Searcher {
             alpha,
             beta,
             can_null,
-            start,
-            tl,
             cnt,
             eval
         )
@@ -2657,8 +2476,6 @@ impl Searcher {
         mut alpha: i32,
         beta: i32,
         can_null: bool,
-        start: Instant,
-        tl: f64,
         cnt: &mut u64,
         eval: E,
     ) -> i32 {
@@ -2672,8 +2489,6 @@ impl Searcher {
             alpha,
             beta,
             can_null,
-            start,
-            tl,
             cnt,
             eval
         )
@@ -2694,8 +2509,6 @@ impl Searcher {
         mut alpha: i32,
         beta: i32,
         can_null: bool,
-        start: Instant,
-        tl: f64,
         cnt: &mut u64,
         eval: E,
     ) -> i32 {
@@ -2710,8 +2523,6 @@ impl Searcher {
                 alpha,
                 beta,
                 can_null,
-                start,
-                tl,
                 cnt,
                 eval
             )
@@ -2735,8 +2546,6 @@ impl Searcher {
         mut alpha: i32,
         beta: i32,
         can_null: bool,
-        start: Instant,
-        tl: f64,
         cnt: &mut u64,
         eval: E,
     ) -> i32 {
@@ -2751,8 +2560,6 @@ impl Searcher {
                 alpha,
                 beta,
                 can_null,
-                start,
-                tl,
                 cnt,
                 eval
             )

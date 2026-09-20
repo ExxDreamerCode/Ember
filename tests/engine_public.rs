@@ -2,6 +2,20 @@ use std::time::{Duration, Instant};
 
 use ember_chess::{book, Engine, OpeningBook};
 
+fn wait_for_disarms(engine: &Engine, expected: u64) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if engine.deadline_watchdog.stats().disarms >= expected {
+            return;
+        }
+        std::thread::yield_now();
+    }
+    assert!(
+        engine.deadline_watchdog.stats().disarms >= expected,
+        "deadline registration was not disarmed"
+    );
+}
+
 fn play_uci(engine: &mut Engine, uci: &str) {
     let bytes = uci.as_bytes();
     assert!(bytes.len() >= 4, "invalid UCI move: {uci}");
@@ -108,4 +122,47 @@ fn caller_supplied_start_time_is_used_for_clock_search() {
         elapsed >= 0.050,
         "reported elapsed time must include the caller's start point: {elapsed}"
     );
+}
+
+#[test]
+fn explicit_untimed_search_does_not_arm_the_deadline_watchdog() {
+    let mut engine = Engine::new();
+    engine.book = None;
+    let arms_before = engine.deadline_watchdog.stats().arms;
+
+    let (best_move, _, nodes, _) = engine.find_best_move_prepared_untimed(1, None);
+
+    assert_ne!(best_move, "0000");
+    assert!(nodes > 0);
+    assert_eq!(engine.deadline_watchdog.stats().arms, arms_before);
+}
+
+#[test]
+fn terminal_result_disarms_a_before_setup_deadline() {
+    let mut engine = Engine::new();
+    engine.book = None;
+    engine.set_fen("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1");
+    let before = engine.deadline_watchdog.stats();
+
+    let (best_move, _, nodes, _) =
+        engine.find_best_move_with_time_limits_started_at(1.0, 1.0, 64, None, Instant::now());
+
+    assert_eq!(best_move, "0000");
+    assert_eq!(nodes, 0);
+    assert_eq!(engine.deadline_watchdog.stats().arms, before.arms + 1);
+    wait_for_disarms(&engine, before.disarms + 1);
+}
+
+#[test]
+fn book_result_disarms_a_before_setup_deadline() {
+    let mut engine = Engine::new();
+    engine.book = Some(OpeningBook::load_from_bytes(book::BOOK_DATA, "<embedded>").unwrap());
+    let before = engine.deadline_watchdog.stats();
+
+    let (_, _, nodes, _) =
+        engine.find_best_move_with_time_limits_started_at(1.0, 1.0, 64, None, Instant::now());
+
+    assert_eq!(nodes, 0);
+    assert_eq!(engine.deadline_watchdog.stats().arms, before.arms + 1);
+    wait_for_disarms(&engine, before.disarms + 1);
 }

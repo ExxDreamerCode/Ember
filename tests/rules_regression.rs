@@ -1,6 +1,5 @@
 use std::collections::BTreeSet;
 use std::mem::size_of;
-use std::time::Instant;
 
 use ember_chess::board::{
     bit, board_to_fen, is_dead_position, move_ec, move_er, move_promotion, move_sc, move_sr,
@@ -24,17 +23,9 @@ fn engine_from_fen(fen: &str, chess960: bool) -> Engine {
 fn search_score(engine: &mut Engine, depth: i32, ply: usize, alpha: i32, beta: i32) -> i32 {
     let mut st = engine.st;
     let mut nodes = 0;
-    engine.searcher.negamax(
-        &mut st,
-        depth,
-        ply,
-        alpha,
-        beta,
-        true,
-        Instant::now(),
-        30.0,
-        &mut nodes,
-    )
+    engine
+        .searcher
+        .negamax(&mut st, depth, ply, alpha, beta, true, &mut nodes)
 }
 
 fn ember_legal_moves(fen: &str, chess960: bool) -> BTreeSet<String> {

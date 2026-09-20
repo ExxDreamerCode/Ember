@@ -556,7 +556,7 @@ fn run_lazy_smp_worker(
     let mut previous_completed_elapsed = 0.0;
 
     for depth in 1..=limits.depth {
-        if searcher.time_up(start, limits.hard_time) {
+        if searcher.stop_requested() {
             break;
         }
 
@@ -589,7 +589,7 @@ fn run_lazy_smp_worker(
             let mut loop_alpha = alpha;
 
             for &mv in &sorted {
-                if searcher.time_up(start, limits.hard_time) {
+                if searcher.stop_requested() {
                     break;
                 }
                 let mut s = st;
@@ -609,17 +609,7 @@ fn run_lazy_smp_worker(
                 let move_nodes_before = nd;
 
                 let score = if cur_score == -INF {
-                    -searcher.negamax(
-                        &mut s,
-                        depth - 1,
-                        1,
-                        -beta,
-                        -loop_alpha,
-                        true,
-                        start,
-                        limits.hard_time,
-                        &mut nd,
-                    )
+                    -searcher.negamax(&mut s, depth - 1, 1, -beta, -loop_alpha, true, &mut nd)
                 } else {
                     let sc = -searcher.negamax(
                         &mut s,
@@ -628,22 +618,10 @@ fn run_lazy_smp_worker(
                         -loop_alpha - 1,
                         -loop_alpha,
                         true,
-                        start,
-                        limits.hard_time,
                         &mut nd,
                     );
                     if sc > loop_alpha && sc < beta {
-                        -searcher.negamax(
-                            &mut s,
-                            depth - 1,
-                            1,
-                            -beta,
-                            -loop_alpha,
-                            true,
-                            start,
-                            limits.hard_time,
-                            &mut nd,
-                        )
+                        -searcher.negamax(&mut s, depth - 1, 1, -beta, -loop_alpha, true, &mut nd)
                     } else {
                         sc
                     }
@@ -681,10 +659,7 @@ fn run_lazy_smp_worker(
                 }
             }
 
-            if stopped.load(Ordering::Relaxed)
-                || (!searcher.pondering.load(Ordering::Relaxed)
-                    && start.elapsed().as_secs_f64() > limits.hard_time)
-            {
+            if stopped.load(Ordering::Relaxed) {
                 break 'asp;
             }
 
@@ -713,7 +688,7 @@ fn run_lazy_smp_worker(
         }
         let elapsed = start.elapsed().as_secs_f64();
 
-        if elapsed <= limits.hard_time || searcher.pondering.load(Ordering::Relaxed) {
+        if !stopped.load(Ordering::Relaxed) {
             let score_change_cp = asp_score.saturating_sub(prev_score).abs();
             if best_depth == 0 || asp_best != best_move {
                 stable_iterations = 0;
@@ -771,7 +746,7 @@ fn run_lazy_smp_worker(
                     time_decision.stop,
                 )
             {
-                stopped.store(true, Ordering::SeqCst);
+                stopped.store(true, Ordering::Relaxed);
                 break;
             }
         } else {

@@ -43,12 +43,13 @@ macro_rules! qsearch_mode_body {
         $alpha:ident,
         $beta:ident,
         $depth:ident,
-        $start:ident,
-        $tl:ident,
         $cnt:ident,
         $ply:ident,
         $eval:ident
     ) => {{
+        if $this.stop_requested() {
+            return 0;
+        }
         *$cnt += 1;
         #[cfg(feature = "search-debug")]
         {
@@ -56,7 +57,7 @@ macro_rules! qsearch_mode_body {
             $this.debug.stats.max_ply = $this.debug.stats.max_ply.max($ply);
             $this.record_debug_dag_node($st, $ply, $depth, $alpha, $beta, true);
         }
-        if $this.search_limit_reached::<NODE_LIMITED>($start, $tl, *$cnt) {
+        if $this.node_limit_reached::<NODE_LIMITED>(*$cnt) {
             return 0;
         }
         let excluded_move = $this.excluded_moves.get($ply).copied().flatten();
@@ -161,7 +162,7 @@ macro_rules! qsearch_mode_body {
         while cap_idx < caps.len() {
             let mv = caps[cap_idx];
             cap_idx += 1;
-            if $this.time_up_gated($start, $tl) {
+            if $this.stop_requested() {
                 return 0;
             }
             if Some(mv) == excluded_move {
@@ -236,8 +237,6 @@ macro_rules! qsearch_mode_body {
                 -$beta,
                 -$alpha,
                 $depth - 1,
-                $start,
-                $tl,
                 $cnt,
                 $ply + 1,
                 $eval,
@@ -270,12 +269,10 @@ impl Searcher {
         alpha: i32,
         beta: i32,
         depth: i32,
-        start: Instant,
-        tl: f64,
         cnt: &mut u64,
         ply: usize,
     ) -> i32 {
-        self.qsearch_scalar(st, alpha, beta, depth, start, tl, cnt, ply)
+        self.qsearch_scalar(st, alpha, beta, depth, cnt, ply)
     }
 
     #[cfg(test)]
@@ -286,8 +283,6 @@ impl Searcher {
         alpha: i32,
         beta: i32,
         depth: i32,
-        start: Instant,
-        tl: f64,
         cnt: &mut u64,
         ply: usize,
     ) -> i32 {
@@ -299,8 +294,6 @@ impl Searcher {
                     alpha,
                     beta,
                     depth,
-                    start,
-                    tl,
                     cnt,
                     ply,
                     EmberV2Eval {
@@ -314,8 +307,6 @@ impl Searcher {
                     alpha,
                     beta,
                     depth,
-                    start,
-                    tl,
                     cnt,
                     ply,
                     EmberV2Eval {
@@ -333,8 +324,6 @@ impl Searcher {
                     alpha,
                     beta,
                     depth,
-                    start,
-                    tl,
                     cnt,
                     ply,
                     ClassicHalfKpEval { net },
@@ -345,8 +334,6 @@ impl Searcher {
                     alpha,
                     beta,
                     depth,
-                    start,
-                    tl,
                     cnt,
                     ply,
                     ClassicHalfKpEval { net },
@@ -362,8 +349,6 @@ impl Searcher {
                         alpha,
                         beta,
                         depth,
-                        start,
-                        tl,
                         cnt,
                         ply,
                         ThreatNnueEval {
@@ -377,8 +362,6 @@ impl Searcher {
                         alpha,
                         beta,
                         depth,
-                        start,
-                        tl,
                         cnt,
                         ply,
                         NnueEval {
@@ -393,8 +376,6 @@ impl Searcher {
                 alpha,
                 beta,
                 depth,
-                start,
-                tl,
                 cnt,
                 ply,
                 ClassicEval,
@@ -406,8 +387,6 @@ impl Searcher {
                         alpha,
                         beta,
                         depth,
-                        start,
-                        tl,
                         cnt,
                         ply,
                         ThreatNnueEval {
@@ -421,8 +400,6 @@ impl Searcher {
                         alpha,
                         beta,
                         depth,
-                        start,
-                        tl,
                         cnt,
                         ply,
                         NnueEval {
@@ -437,8 +414,6 @@ impl Searcher {
                 alpha,
                 beta,
                 depth,
-                start,
-                tl,
                 cnt,
                 ply,
                 ClassicEval,
@@ -457,8 +432,6 @@ impl Searcher {
         mut alpha: i32,
         beta: i32,
         depth: i32,
-        start: Instant,
-        tl: f64,
         cnt: &mut u64,
         ply: usize,
         eval: E,
@@ -470,8 +443,6 @@ impl Searcher {
             alpha,
             beta,
             depth,
-            start,
-            tl,
             cnt,
             ply,
             eval
@@ -489,8 +460,6 @@ impl Searcher {
         mut alpha: i32,
         beta: i32,
         depth: i32,
-        start: Instant,
-        tl: f64,
         cnt: &mut u64,
         ply: usize,
         eval: E,
@@ -502,8 +471,6 @@ impl Searcher {
             alpha,
             beta,
             depth,
-            start,
-            tl,
             cnt,
             ply,
             eval
@@ -521,8 +488,6 @@ impl Searcher {
         mut alpha: i32,
         beta: i32,
         depth: i32,
-        start: Instant,
-        tl: f64,
         cnt: &mut u64,
         ply: usize,
         eval: E,
@@ -534,8 +499,6 @@ impl Searcher {
             alpha,
             beta,
             depth,
-            start,
-            tl,
             cnt,
             ply,
             eval
@@ -553,8 +516,6 @@ impl Searcher {
         mut alpha: i32,
         beta: i32,
         depth: i32,
-        start: Instant,
-        tl: f64,
         cnt: &mut u64,
         ply: usize,
         eval: E,
@@ -566,8 +527,6 @@ impl Searcher {
             alpha,
             beta,
             depth,
-            start,
-            tl,
             cnt,
             ply,
             eval
@@ -587,8 +546,6 @@ impl Searcher {
         mut alpha: i32,
         beta: i32,
         depth: i32,
-        start: Instant,
-        tl: f64,
         cnt: &mut u64,
         ply: usize,
         eval: E,
@@ -601,8 +558,6 @@ impl Searcher {
                 alpha,
                 beta,
                 depth,
-                start,
-                tl,
                 cnt,
                 ply,
                 eval
@@ -625,8 +580,6 @@ impl Searcher {
         mut alpha: i32,
         beta: i32,
         depth: i32,
-        start: Instant,
-        tl: f64,
         cnt: &mut u64,
         ply: usize,
         eval: E,
@@ -639,8 +592,6 @@ impl Searcher {
                 alpha,
                 beta,
                 depth,
-                start,
-                tl,
                 cnt,
                 ply,
                 eval
