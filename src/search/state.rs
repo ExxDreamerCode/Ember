@@ -306,7 +306,7 @@ impl Searcher {
     pub(super) fn check_time_gated(&self, start: Instant, tl: f64) -> bool {
         let next = self.time_check_counter.get().wrapping_add(1);
         self.time_check_counter.set(next);
-        if next & (Self::TIME_CHECK_INTERVAL_NODES - 1) == 0 {
+        if next == 1 || next & (Self::TIME_CHECK_INTERVAL_NODES - 1) == 0 {
             self.check_time_now(start, tl)
         } else {
             false
