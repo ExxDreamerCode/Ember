@@ -63,6 +63,9 @@ convenient result.
   alone does not identify a dirty tree.
 - Preserve raw logs, PGNs, JSON summaries, engine traces, and benchmark output needed to
   audit a conclusion.
+- Propagate background output-reader and transcript-write failures to validation callers.
+  Keep draining subprocess pipes after a logging failure, reap the process, and reject
+  incomplete captures even when the subprocess exits successfully.
 - Long-running adaptive tools must persist the exact invocation and active work item before
   launching it. Keep result application idempotent, replace state files atomically, and test
   interruption between each durable write so a restart can reconcile rather than repeat or
@@ -351,6 +354,10 @@ counts exactly, and adoption still needs the standard paired NPS comparison.
 - The Nix `ci` shell, plain CI test builds, and the fixture-gate baseline stay plain
   (no PGO) and act as the portability and correctness gate.
 - Verify with the paired-NPS workflow above on the same machine before and after.
+- For runtime-dispatched kernels, train and verify each reachable feature path in
+  a fresh process. Check actual profile execution counts, not just the presence of
+  the functions. Explicit QEMU CPU models can verify fallback correctness and
+  collect profiles, but cannot supply native performance evidence.
 
 ### Elo and game comparisons
 

@@ -289,6 +289,12 @@
               arch = "arm64";
               pgoProfile = pgoProfiles.arm64 or null;
             };
+            # Same target/toolchain as the PGO release, for signature parity.
+            ember-linux-arm64-plain = import ./nix/linux-ember.nix {
+              inherit pkgs;
+              lib = pkgs.lib;
+              arch = "arm64";
+            };
             ember-windows-amd64 = windowsEmberAmd64.package;
             ember-windows-arm64 = windowsEmberArm64.package;
           };
