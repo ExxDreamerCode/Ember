@@ -277,6 +277,7 @@ fn run_uci_loop() {
                 );
                 println!("option name Move Overhead type spin default 7 min 0 max 5000");
                 println!("option name Ponder type check default false");
+                println!("option name OwnBook type check default false");
                 println!("option name Book type string default <embedded>");
                 println!("option name RandomBookMove type check default false");
                 println!(
@@ -481,7 +482,8 @@ fn run_uci_loop() {
                 let pondering = Arc::new(AtomicBool::new(limits.ponder));
                 let num_threads = engine.num_threads;
                 let multi_pv = engine.multi_pv;
-                let book = if limits.ponder {
+                let own_book = engine.own_book;
+                let book = if limits.ponder || !engine.own_book {
                     None
                 } else {
                     engine.book.clone()
@@ -520,6 +522,7 @@ fn run_uci_loop() {
                             stopped_for_search,
                             book_config,
                         );
+                        search_engine.own_book = own_book;
                         search_engine.multi_pv = multi_pv;
                         #[cfg(feature = "decision-trace")]
                         if let Some(tp) = trace_path {
@@ -760,6 +763,13 @@ fn parse_setoption(engine: &mut Engine, name: &str, val: &str) {
                 }
             }
         }
+        "ownbook" | "own book" => match parse_check_value(val) {
+            Some(enabled) => {
+                engine.own_book = enabled;
+                eprintln!("info string Set OwnBook to {}", enabled);
+            }
+            None => eprintln!("info string Ignoring invalid OwnBook value: {}", val),
+        },
         "randombookmove" | "random book move" => match parse_check_value(val) {
             Some(enabled) => {
                 engine.random_book_move = enabled;
@@ -828,6 +838,7 @@ fn reset_engine(engine: &mut Engine) {
     let chess960 = engine.st.chess960;
     let syzygy = engine.searcher.syzygy.clone();
     let random_book_move = engine.random_book_move;
+    let own_book = engine.own_book;
     let book_min_move_weight = engine.book_min_move_weight;
     let book_min_move_weight_permille = engine.book_min_move_weight_permille;
     #[cfg(feature = "decision-trace")]
@@ -837,6 +848,7 @@ fn reset_engine(engine: &mut Engine) {
     *engine = Engine::new();
     engine.book = book;
     engine.random_book_move = random_book_move;
+    engine.own_book = own_book;
     engine.book_min_move_weight = book_min_move_weight;
     engine.book_min_move_weight_permille = book_min_move_weight_permille;
     engine.search_pool = search_pool;
@@ -1295,6 +1307,24 @@ mod tests {
 
         parse_setoption(&mut engine, "randombookmove", "false");
         assert!(!engine.random_book_move);
+    }
+
+    #[test]
+    fn own_book_option_is_parsed_and_preserved_on_reset() {
+        let mut engine = Engine::new();
+        assert!(!engine.own_book, "OwnBook must default to false");
+
+        parse_setoption(&mut engine, "ownbook", "true");
+        assert!(engine.own_book);
+
+        reset_engine(&mut engine);
+        assert!(
+            engine.own_book,
+            "ucinewgame must preserve the configured OwnBook value"
+        );
+
+        parse_setoption(&mut engine, "own book", "false");
+        assert!(!engine.own_book);
     }
 
     #[test]

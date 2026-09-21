@@ -61,6 +61,7 @@ pub struct Engine {
     pub multi_pv: usize,
     pub stopped: Arc<AtomicBool>,
     pub book: Option<OpeningBook>,
+    pub own_book: bool,
     pub random_book_move: bool,
     pub book_min_move_weight: u16,
     pub book_min_move_weight_permille: u16,
@@ -157,6 +158,7 @@ impl Engine {
             multi_pv: 1,
             stopped,
             book: None,
+            own_book: false,
             random_book_move: false,
             book_min_move_weight: DEFAULT_BOOK_MIN_MOVE_WEIGHT,
             book_min_move_weight_permille: DEFAULT_BOOK_MIN_MOVE_WEIGHT_PERMILLE,
@@ -247,6 +249,7 @@ impl Engine {
             multi_pv: 1,
             stopped,
             book: book_config.book,
+            own_book: false,
             random_book_move: book_config.random_book_move,
             book_min_move_weight: book_config.min_move_weight,
             book_min_move_weight_permille: book_config.min_move_weight_permille,
@@ -691,7 +694,7 @@ impl Engine {
         }
         let moves = legal_root_moves;
 
-        if !self.st.chess960 {
+        if self.own_book && !self.st.chess960 {
             if let Some(ref book) = self.book {
                 let choice = if self.random_book_move {
                     book.pick_move_with_quality(
@@ -1421,7 +1424,7 @@ impl Engine {
             }
         }
 
-        if !child.chess960 {
+        if self.own_book && !child.chess960 {
             if let Some(ref book) = self.book {
                 if let Some(choice) = book.best_move_with_confidence(
                     &child,
