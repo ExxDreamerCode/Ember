@@ -85,6 +85,8 @@ pub fn default_search_backend() -> SearchBackendKind {
             SearchBackendKind::X86Avx512
         } else if x86_v3_available() {
             SearchBackendKind::X86V3
+        } else if aarch64_simd_available() {
+            SearchBackendKind::Aarch64Simd256
         } else {
             SearchBackendKind::Scalar
         }

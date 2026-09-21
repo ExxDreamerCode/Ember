@@ -7,12 +7,13 @@
 # Builds an instrumented static Linux ember, runs a deterministic fixed-depth
 # bench workload, and installs the merged LLVM profile. PGO data is
 # function-level execution counting over target-independent IR, so the
-# same-arch profile is reused by the Linux, Windows, and macOS release
-# packages of that architecture.
+# same-arch profile is reused by the Linux and Windows release packages.
+# macOS collects its own target-specific profile separately.
 #
-# amd64 runs the workload natively on x86_64 builders; arm64 runs it under
-# qemu-aarch64 (counters are exact under user-mode emulation, only wall time
-# grows). On non-x86_64 Linux hosts amd64 runs under qemu-x86_64 as well.
+# amd64 runs natively on x86_64 builders. Generic arm64 always trains under
+# QEMU with and without DOTPROD, including on native builders. This keeps
+# profile coverage independent of the builder's CPU. These are execution
+# counts, not performance measurements.
 let
   target =
     {
@@ -72,7 +73,8 @@ rustPlatform.buildRustPackage {
     crossCc
     pkgs.buildPackages.binutils
     pkgs.llvmPackages.llvm
-  ] ++ pkgs.lib.optionals (emulator != "") [ pkgs.qemu-user ];
+  ]
+  ++ pkgs.lib.optionals (emulator != "" || arch == "arm64") [ pkgs.qemu-user ];
 
   buildPhase = ''
     runHook preBuild
@@ -87,14 +89,45 @@ rustPlatform.buildRustPackage {
 
   installPhase = ''
     runHook preInstall
-    printf 'bench depth 12\nbench depth 14\nquit\n' \
-      | ${emulator}target/${target}/release/ember >/dev/null
+    mkdir -p "$out/training"
+    ${
+      if arch == "arm64" then
+        ''
+          for cpu in cortex-a53 max; do
+            printf 'bench depth 12\nbench depth 14\nquit\n' \
+              | LLVM_PROFILE_FILE="$PWD/profraw/$cpu-%p.profraw" \
+                ${pkgs.qemu-user}/bin/qemu-aarch64 -cpu "$cpu" \
+                target/${target}/release/ember >"$out/training/$cpu.log" 2>&1
+          done
+        ''
+      else
+        ''
+          printf 'bench depth 12\nbench depth 14\nquit\n' \
+            | ${emulator}target/${target}/release/ember >"$out/training/bench.log" 2>&1
+        ''
+    }
     ${pkgs.llvmPackages.llvm}/bin/llvm-profdata merge \
       -o merged.profdata profraw/*.profraw
     test -s merged.profdata || {
       echo "PGO profile merge produced no data" >&2
       exit 1
     }
+    ${lib.optionalString (arch == "arm64") ''
+      # --covered lists names with nonzero counters (for both IR and frontend
+      # profiles). It ignores --function, so filter its complete name list here.
+      ${pkgs.llvmPackages.llvm}/bin/llvm-profdata show --covered merged.profdata \
+        >"$out/training/covered-functions.txt"
+      for kernel in fc0_forward_aarch64_neon fc0_forward_aarch64_dotprod \
+        dot_product_aarch64_neon dot_product_aarch64_dotprod; do
+        ${pkgs.llvmPackages.llvm}/bin/llvm-profdata show --counts --function="$kernel" \
+          merged.profdata >"$out/training/$kernel.counts"
+        grep -Fq "$kernel" "$out/training/covered-functions.txt" || {
+          echo "PGO workload did not execute $kernel" >&2
+          cat "$out/training/$kernel.counts" >&2
+          exit 1
+        }
+      done
+    ''}
     mkdir -p "$out"
     cp merged.profdata "$out/merged.profdata"
     runHook postInstall
@@ -106,6 +139,14 @@ rustPlatform.buildRustPackage {
   passthru = {
     inherit arch target;
     workload = "bench depth 12; bench depth 14";
+    cpuModels =
+      if arch == "arm64" then
+        [
+          "cortex-a53"
+          "max"
+        ]
+      else
+        [ ];
   };
 
   meta = {

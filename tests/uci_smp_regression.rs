@@ -481,6 +481,7 @@ fn enabled_ponder_option_supplies_book_ponder_move() {
     writeln!(stdin, "setoption name Hash value 16").unwrap();
     writeln!(stdin, "setoption name Threads value 1").unwrap();
     writeln!(stdin, "setoption name Ponder value true").unwrap();
+    writeln!(stdin, "setoption name OwnBook value true").unwrap();
     writeln!(stdin, "setoption name BookMinMoveWeight value 2000").unwrap();
     writeln!(stdin, "isready").unwrap();
     stdin.flush().unwrap();
@@ -516,6 +517,7 @@ fn random_book_move_is_opt_in_and_returns_without_searching() {
     );
 
     writeln!(stdin, "setoption name RandomBookMove value true").unwrap();
+    writeln!(stdin, "setoption name OwnBook value true").unwrap();
     writeln!(stdin, "isready").unwrap();
     stdin.flush().unwrap();
     assert!(wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some());
@@ -554,6 +556,7 @@ fn startup_ignores_local_book_until_explicitly_selected() {
     let (mut child, rx) = spawn_ember_in_dir(Some(&dir));
     let mut stdin = child.stdin.take().expect("capture Ember stdin");
     writeln!(stdin, "uci").unwrap();
+    writeln!(stdin, "setoption name OwnBook value true").unwrap();
     writeln!(stdin, "isready").unwrap();
     stdin.flush().unwrap();
     assert!(wait_for_line(&rx, "readyok", UCI_STARTUP_TIMEOUT).is_some());
@@ -601,6 +604,7 @@ fn ponder_search_bypasses_book_probe() {
     writeln!(stdin, "uci").unwrap();
     writeln!(stdin, "setoption name Hash value 16").unwrap();
     writeln!(stdin, "setoption name Threads value 1").unwrap();
+    writeln!(stdin, "setoption name OwnBook value true").unwrap();
     writeln!(stdin, "isready").unwrap();
     stdin.flush().unwrap();
     assert!(wait_for_line(&rx, "readyok", UCI_STARTUP_TIMEOUT).is_some());
@@ -653,6 +657,7 @@ fn embedded_book_move_reports_zeroed_telemetry_with_string_tag() {
     let mut stdin = child.stdin.take().expect("capture Ember stdin");
     writeln!(stdin, "uci").unwrap();
     writeln!(stdin, "setoption name Hash value 16").unwrap();
+    writeln!(stdin, "setoption name OwnBook value true").unwrap();
     writeln!(stdin, "isready").unwrap();
     stdin.flush().unwrap();
     assert!(
@@ -815,6 +820,114 @@ fn multipv_reports_ranked_root_lines_and_promotes_line_one_to_bestmove() {
     assert!(
         bestmove.contains(&format!("bestmove {top_move}")),
         "bestmove must be the multipv 1 line: bestmove={bestmove}, multipv 1 pv={top_move}"
+    );
+
+    writeln!(stdin, "quit").unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+    assert!(child.wait().expect("wait for Ember").success());
+}
+
+#[test]
+fn uci_advertises_ownbook_disabled_by_default() {
+    let (mut child, rx) = spawn_ember();
+    let mut stdin = child.stdin.take().expect("capture Ember stdin");
+    writeln!(stdin, "uci").unwrap();
+    stdin.flush().unwrap();
+
+    let deadline = Instant::now() + UCI_STARTUP_TIMEOUT;
+    let mut advertised = false;
+    loop {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            panic!("Ember did not answer uci with uciok in time");
+        };
+        match rx.recv_timeout(remaining) {
+            Ok(line) if line.starts_with("option name OwnBook ") => {
+                assert_eq!(
+                    line, "option name OwnBook type check default false",
+                    "OwnBook must be advertised as a check option defaulting to false"
+                );
+                advertised = true;
+            }
+            Ok(line) if line == "uciok" => break,
+            Ok(_) => {}
+            Err(_) => panic!("Ember stdout closed before uciok"),
+        }
+    }
+    assert!(
+        advertised,
+        "uci must advertise option name OwnBook type check default false"
+    );
+
+    writeln!(stdin, "quit").unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+    assert!(child.wait().expect("wait for Ember").success());
+}
+
+fn collect_until_bestmove(rx: &Receiver<String>, timeout: Duration) -> Vec<String> {
+    let deadline = Instant::now() + timeout;
+    let mut output = Vec::new();
+    loop {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            panic!("short search did not report bestmove in time");
+        };
+        match rx.recv_timeout(remaining) {
+            Ok(line) if line.starts_with("bestmove ") => return output,
+            Ok(line) => output.push(line),
+            Err(_) => panic!("short search did not report bestmove in time"),
+        }
+    }
+}
+
+#[test]
+fn ownbook_and_empty_book_option_both_gate_the_embedded_book() {
+    let (mut child, rx) = spawn_ember();
+    let mut stdin = child.stdin.take().expect("capture Ember stdin");
+    writeln!(stdin, "uci").unwrap();
+    assert!(
+        wait_for_line(&rx, "uciok", UCI_STARTUP_TIMEOUT).is_some(),
+        "Ember did not answer uci"
+    );
+    writeln!(stdin, "setoption name Hash value 16").unwrap();
+    writeln!(stdin, "setoption name Threads value 1").unwrap();
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(wait_for_line(&rx, "readyok", UCI_STARTUP_TIMEOUT).is_some());
+
+    writeln!(stdin, "position startpos moves e2e4").unwrap();
+    writeln!(stdin, "go movetime 25").unwrap();
+    stdin.flush().unwrap();
+    let output = collect_until_bestmove(&rx, Duration::from_secs(5));
+    assert!(
+        !output.iter().any(|line| line.contains("book move")),
+        "default OwnBook=false must not play an embedded-book move: {output:?}"
+    );
+
+    writeln!(stdin, "setoption name OwnBook value true").unwrap();
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(wait_for_line(&rx, "readyok", UCI_STARTUP_TIMEOUT).is_some());
+    writeln!(stdin, "position startpos moves e2e4").unwrap();
+    writeln!(stdin, "go movetime 25").unwrap();
+    stdin.flush().unwrap();
+    let output = collect_until_bestmove(&rx, Duration::from_secs(5));
+    assert!(
+        output.iter().any(|line| line.contains("book move")),
+        "OwnBook=true must return the embedded-book move, output: {output:?}"
+    );
+
+    writeln!(stdin, "setoption name Book value").unwrap();
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(wait_for_line(&rx, "readyok", UCI_STARTUP_TIMEOUT).is_some());
+    writeln!(stdin, "position startpos moves e2e4").unwrap();
+    writeln!(stdin, "go movetime 25").unwrap();
+    stdin.flush().unwrap();
+    let output = collect_until_bestmove(&rx, Duration::from_secs(5));
+    assert!(
+        !output.iter().any(|line| line.contains("book move")),
+        "Book=\"\" must disable the book even when OwnBook=true: {output:?}"
     );
 
     writeln!(stdin, "quit").unwrap();

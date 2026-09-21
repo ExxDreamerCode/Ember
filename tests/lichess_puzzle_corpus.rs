@@ -269,6 +269,7 @@ fn solve_case(case: &RegressionCase) -> Result<(), String> {
             OpeningBook::load_from_bytes(book::BOOK_DATA, "<embedded>")
                 .map_err(|error| format!("failed to load embedded book: {error}"))?,
         );
+        engine.own_book = true;
     }
     engine.num_threads = 1;
     engine.st.chess960 = matches!(case.variant, FixtureVariant::Chess960);

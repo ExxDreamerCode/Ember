@@ -36,6 +36,7 @@ fn play_uci(engine: &mut Engine, uci: &str) {
 fn embedded_book_ponder_fallback_uses_book_reply_without_tt() {
     let mut engine = Engine::new();
     engine.book = Some(OpeningBook::load_from_bytes(book::BOOK_DATA, "<embedded>").unwrap());
+    engine.own_book = true;
 
     let ponder = engine
         .ponder_move_after("e2e4")
@@ -51,6 +52,7 @@ fn embedded_book_ponder_fallback_uses_book_reply_without_tt() {
 fn ponder_book_reply_can_relax_normal_book_confidence() {
     let mut engine = Engine::new();
     engine.book = Some(OpeningBook::load_from_bytes(book::BOOK_DATA, "<embedded>").unwrap());
+    engine.own_book = true;
     engine.book_min_move_weight = u16::MAX;
 
     let ponder = engine
@@ -64,6 +66,7 @@ fn ponder_book_reply_can_relax_normal_book_confidence() {
 fn book_confidence_cutoff_rejects_weight_one_tail_move() {
     let mut engine = Engine::new();
     engine.book = Some(OpeningBook::load_from_bytes(book::BOOK_DATA, "<embedded>").unwrap());
+    engine.own_book = true;
     for mv in [
         "e2e4", "e7e6", "d2d4", "d7d5", "e4e5", "c7c5", "c2c3", "c5d4", "c3d4", "b8c6", "g1f3",
         "g8e7", "f1d3", "e7f5", "d3f5", "e6f5", "b1c3", "f8e7",
@@ -84,6 +87,7 @@ fn book_confidence_cutoff_rejects_weight_one_tail_move() {
 fn random_book_move_returns_before_search_when_a_good_move_exists() {
     let mut engine = Engine::new();
     engine.book = Some(OpeningBook::load_from_bytes(book::BOOK_DATA, "<embedded>").unwrap());
+    engine.own_book = true;
     engine.random_book_move = true;
     for mv in ["g1f3", "c7c5", "e2e4", "a7a6"] {
         play_uci(&mut engine, mv);
@@ -157,6 +161,7 @@ fn terminal_result_disarms_a_before_setup_deadline() {
 fn book_result_disarms_a_before_setup_deadline() {
     let mut engine = Engine::new();
     engine.book = Some(OpeningBook::load_from_bytes(book::BOOK_DATA, "<embedded>").unwrap());
+    engine.own_book = true;
     let before = engine.deadline_watchdog.stats();
 
     let (_, _, nodes, _) =
@@ -165,4 +170,42 @@ fn book_result_disarms_a_before_setup_deadline() {
     assert_eq!(nodes, 0);
     assert_eq!(engine.deadline_watchdog.stats().arms, before.arms + 1);
     wait_for_disarms(&engine, before.disarms + 1);
+}
+
+#[test]
+fn own_book_is_disabled_by_default_and_gates_the_embedded_book() {
+    let mut engine = Engine::new();
+    engine.book = Some(OpeningBook::load_from_bytes(book::BOOK_DATA, "<embedded>").unwrap());
+    assert!(!engine.own_book, "OwnBook must default to false");
+
+    play_uci(&mut engine, "e2e4");
+    let (_, _, nodes, _) = engine.find_best_move_with_time_limits(0.05, 0.05, 1);
+    assert!(
+        nodes > 0,
+        "search must run when OwnBook is disabled, even with a loaded book"
+    );
+
+    engine.own_book = true;
+    let (_, _, nodes, _) = engine.find_best_move_with_time_limits(0.05, 0.05, 1);
+    assert_eq!(
+        nodes, 0,
+        "enabling OwnBook must consult the embedded book without searching"
+    );
+}
+
+#[test]
+fn ponder_move_after_ignores_the_book_when_own_book_is_disabled() {
+    let mut engine = Engine::new();
+    engine.book = Some(OpeningBook::load_from_bytes(book::BOOK_DATA, "<embedded>").unwrap());
+
+    assert!(
+        engine.ponder_move_after("e2e4").is_none(),
+        "a disabled OwnBook must not reveal book replies as ponder hints"
+    );
+
+    engine.own_book = true;
+    assert!(
+        engine.ponder_move_after("e2e4").is_some(),
+        "an enabled OwnBook must provide the book ponder reply"
+    );
 }

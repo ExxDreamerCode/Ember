@@ -7,7 +7,28 @@ pub(crate) fn rdtsc() -> u64 {
     {
         unsafe { std::arch::x86_64::_rdtsc() }
     }
-    #[cfg(any(not(feature = "search-perf"), not(target_arch = "x86_64")))]
+    #[cfg(all(feature = "search-perf", target_arch = "aarch64"))]
+    {
+        let counter: u64;
+        // SAFETY: Linux and Android expose the architectural virtual counter
+        // to EL0. It is a fixed-frequency tick source rather than a core-cycle
+        // counter. ISB on both sides orders the read against the measured code;
+        // omitting `nomem` also prevents compiler motion of memory accesses.
+        unsafe {
+            std::arch::asm!(
+                "isb",
+                "mrs {counter}, cntvct_el0",
+                "isb",
+                counter = out(reg) counter,
+                options(nostack, preserves_flags)
+            );
+        }
+        counter
+    }
+    #[cfg(any(
+        not(feature = "search-perf"),
+        not(any(target_arch = "x86_64", target_arch = "aarch64"))
+    ))]
     {
         0
     }
@@ -28,6 +49,12 @@ pub(crate) struct PerfCounters {
     pub ttput_calls: AtomicU64,
     pub see_cycles: AtomicU64,
     pub see_calls: AtomicU64,
+    // SEE inside move scoring is already included in score_cycles. Keep it
+    // separate from quiescence SEE so top-level attribution remains disjoint.
+    #[cfg(feature = "search-perf")]
+    pub scoring_see_cycles: AtomicU64,
+    #[cfg(feature = "search-perf")]
+    pub scoring_see_calls: AtomicU64,
     pub apply_cycles: AtomicU64,
     pub apply_calls: AtomicU64,
     pub draw_cycles: AtomicU64,
@@ -47,9 +74,17 @@ pub(crate) static THREAT_SCAN_CYCLES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "search-perf")]
 pub(crate) static THREAT_SCAN_CALLS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "search-perf")]
-pub(crate) static THREAT_SLOT_CYCLES: AtomicU64 = AtomicU64::new(0);
+pub(crate) static ACC_SLOT_UPDATE_CYCLES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "search-perf")]
-pub(crate) static THREAT_SLOT_CALLS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static ACC_SLOT_UPDATE_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "search-perf")]
+pub(crate) static ACC_SCAN_UPDATE_CYCLES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "search-perf")]
+pub(crate) static ACC_SCAN_UPDATE_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "search-perf")]
+pub(crate) static ACC_REFRESH_UPDATE_CYCLES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "search-perf")]
+pub(crate) static ACC_REFRESH_UPDATE_CALLS: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(feature = "search-perf")]
 pub(crate) static ACC_COPY_CYCLES: AtomicU64 = AtomicU64::new(0);

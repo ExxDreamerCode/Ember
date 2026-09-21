@@ -20,6 +20,7 @@ book = "<embedded>"
 book_name = "embedded-mini-polyglot"
 
 [ember.options]
+OwnBook = "true"
 Hash = "64"
 Threads = "1"
 Book = "<embedded>"
