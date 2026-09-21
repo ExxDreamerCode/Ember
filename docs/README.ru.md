@@ -51,7 +51,8 @@ echo -e "uci\nisready\nquit" | cargo run --release
 | `Hash`      | spin   | 256          | 1–4096   | Размер TT в мегабайтах            |
 | `Threads`   | spin   | 1            | 1-256        | Количество потоков     |
 | `MultiPV`   | spin   | 1            | 1-256        | Количество корневых ходов, анализируемых и выдаваемых независимо на каждой глубине |
-| `Book`      | string | `<embedded>` | —        | Путь к дебютной книге .bin        |
+| `OwnBook`   | check  | false        | —        | Разрешить движку пользоваться собственной дебютной книгой; при false ходы из книги даёт GUI |
+| `Book`      | string | `<embedded>` | —        | Путь к дебютной книге .bin, используемой при включённом `OwnBook`; пустое значение отключает книгу |
 | `RandomBookMove` | check | false | — | Равновероятно выбирать среди надёжных ходов из книги в пределах 5 сантипешек от лучшей статической оценки |
 | `BookMinMoveWeight` | spin | 2 | 1-65535 | Минимальный абсолютный вес хода из книги |
 | `BookMinMoveWeightPermille` | spin | 10 | 0-1000 | Минимальная доля веса хода в промилле |
@@ -99,11 +100,20 @@ setoption name SyzygyPath value ./result/share/syzygy/3-4-5-6
 ### Дебютная книга
 
 Движок поддерживает Polyglot-формат дебютных книг (.bin). В бинарник
-**встроена** книга по умолчанию — она загружается автоматически при запуске.
+**встроена** книга по умолчанию — она загружается автоматически при запуске,
+но используется только после включения стандартной UCI-опции `OwnBook`:
+
+```
+setoption name OwnBook value true
+```
+
+`OwnBook` по умолчанию **false**, чтобы тестирование рейтинговыми листами и
+GUI велось предсказуемо: ходы из книги и стартовые позиции даёт GUI.
+Включение `OwnBook` выбирает книгу, заданную опцией `Book` (по умолчанию `<embedded>`).
 
 Ember не ищет `book.bin` рядом с исполняемым файлом или в текущей рабочей
 папке без команды. Внешняя книга используется только после явной настройки UCI
-`Book`.
+`Book` вместе с `OwnBook = true`.
 
 Можно указать путь к книге через UCI:
 
@@ -117,7 +127,8 @@ setoption name Book value C:\путь\к\book.bin
 setoption name Book value book.bin
 ```
 
-Чтобы **отключить** книгу — передать пустое значение:
+Чтобы **отключить** книгу — передать пустое значение (это действует и при
+включённом `OwnBook`):
 
 ```
 setoption name Book value
@@ -219,6 +230,7 @@ info string Loaded NNUE v6 my-net.nnue SCReLU (FT=1024 L1=0 L2=0)
 
 ```
 setoption name Hash value 256
+setoption name OwnBook value true
 setoption name Book value book.bin
 setoption option name TraceFile value Trace.jsonl
 ```

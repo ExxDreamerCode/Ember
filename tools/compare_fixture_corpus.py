@@ -254,6 +254,8 @@ def uci_setup_commands(hash_mb, use_embedded_book=False, chess960=False, options
         "setoption name Threads value 1",
         f"setoption name Hash value {hash_mb}",
         "setoption name UCI_Chess960 value true" if chess960 else None,
+        "setoption name OwnBook value true" if use_embedded_book else
+        "setoption name OwnBook value false",
         "setoption name Book value <embedded>"
         if use_embedded_book
         else "setoption name Book value",

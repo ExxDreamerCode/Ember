@@ -274,6 +274,11 @@ def smoke(config_path, run_id):
         "isready",
         f"setoption name Hash value {cfg['ember']['options'].get('Hash', '64')}",
         f"setoption name Threads value {cfg['ember']['options'].get('Threads', '1')}",
+        # OwnBook=false is the engine default; the smoke search must exercise
+        # the configured book the same way a real match would.
+        "setoption name OwnBook value {}".format(
+            "true" if cfg['ember'].get('book', '<embedded>') else "false"
+        ),
         f"setoption name Book value {cfg['ember'].get('book', '<embedded>')}",
         "ucinewgame",
         "position startpos",

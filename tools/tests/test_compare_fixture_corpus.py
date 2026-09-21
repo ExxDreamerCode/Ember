@@ -264,8 +264,16 @@ bad-rank\t4\t8/8/8/8/8/7/8/K6k w - - 0 1\t-\ta1a2\ttheme\t0\t0\t0
             uci_setup_commands(DEFAULT_HASH_MB),
         )
         self.assertIn(
+            "setoption name OwnBook value false",
+            uci_setup_commands(DEFAULT_HASH_MB),
+        )
+        self.assertIn(
             "setoption name Book value",
             uci_setup_commands(DEFAULT_HASH_MB),
+        )
+        self.assertIn(
+            "setoption name OwnBook value true",
+            uci_setup_commands(DEFAULT_HASH_MB, use_embedded_book=True),
         )
         self.assertIn(
             "setoption name Book value <embedded>",

@@ -52,7 +52,8 @@ echo -e "uci\nisready\nquit" | cargo run --release
 | `Hash` | spin | 256 | 1–4096 | Transposition table size in megabytes |
 | `Threads` | spin | 1 | 1–256 | Number of search threads |
 | `MultiPV` | spin | 1 | 1–256 | Number of root moves analyzed and reported independently per depth |
-| `Book` | string | `<embedded>` | — | Path to a `.bin` opening book |
+| `OwnBook` | check | false | — | Let the engine use its own opening book; when false the GUI provides book moves |
+| `Book` | string | `<embedded>` | — | Path to a `.bin` opening book used when `OwnBook` is enabled; an empty value disables the book |
 | `RandomBookMove` | check | false | — | Pick uniformly among safe book moves within 5 centipawns of the best static evaluation |
 | `BookMinMoveWeight` | spin | 2 | 1–65535 | Minimum absolute book move weight |
 | `BookMinMoveWeightPermille` | spin | 10 | 0–1000 | Minimum move weight share in permille |
@@ -91,11 +92,20 @@ setoption name SyzygyPath value ./result/share/syzygy/3-4-5-6
 ### Opening book
 
 The engine supports opening books in Polyglot `.bin` format. A default book is
-**embedded** in the binary and is loaded automatically at startup.
+**embedded** in the binary and is loaded automatically at startup, but it is
+only consulted after the standard UCI `OwnBook` option is enabled:
+
+```text
+setoption name OwnBook value true
+```
+
+`OwnBook` defaults to **false** so rating-list and GUI testing behaves
+predictably: the GUI provides book moves and start positions. 
+Enabling `OwnBook` selects the book chosen by the `Book` option (`<embedded>` by default).
 
 Ember does not auto-discover `book.bin` next to the executable or in the current
 working directory. External books are used only after an explicit UCI `Book`
-option.
+option combined with `OwnBook = true`.
 
 You can set a book path through UCI:
 
@@ -109,7 +119,8 @@ If the book is in the same directory as the engine, the file name is enough:
 setoption name Book value book.bin
 ```
 
-To **disable** the book, pass an empty value:
+To **disable** the book, pass an empty value (this overrides an enabled
+`OwnBook` as well):
 
 ```text
 setoption name Book value
@@ -207,6 +218,7 @@ Engine parameters are changed through the UCI `setoption` command:
 
 ```text
 setoption name Hash value 256
+setoption name OwnBook value true
 setoption name Book value book.bin
 setoption name TraceFile value Trace.jsonl
 ```
