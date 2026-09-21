@@ -1627,11 +1627,128 @@ fn draw_status_terminates_cycles_only_after_the_search_root() {
 }
 
 #[test]
-#[ignore = "search-perf attribution report; run with --features search-perf -- --ignored --nocapture"]
-fn perf_counter_report() {
-    if !cfg!(feature = "search-perf") {
-        return;
+#[cfg(feature = "search-perf")]
+fn profiling_separates_scoring_see_from_quiescence_see() {
+    // Private accounting contract: the single en-passant capture is examined
+    // by SEE in both search modes, but only main-search SEE is nested in score.
+    // A root-move fixture cannot observe these instrumentation counters.
+    let mut st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
+    let mut searcher = Searcher::new(Arc::new(SharedTT::new(1)), Arc::new(AtomicBool::new(false)));
+    searcher.nnue_net = None;
+    searcher.ember_v2_net = None;
+    searcher.classic_net = None;
+    let mut nodes = 0;
+    searcher.qsearch(
+        &mut st,
+        -INF,
+        INF,
+        QS_DEPTH,
+        Instant::now(),
+        10.0,
+        &mut nodes,
+        0,
+    );
+    assert_eq!(searcher.perf.see_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(searcher.perf.scoring_see_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(searcher.perf.score_calls.load(Ordering::Relaxed), 0);
+
+    searcher.perf = perf::PerfCounters::default();
+    searcher.negamax(
+        &mut st,
+        1,
+        0,
+        -INF,
+        INF,
+        false,
+        Instant::now(),
+        10.0,
+        &mut nodes,
+    );
+    assert_eq!(searcher.perf.scoring_see_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(searcher.perf.score_calls.load(Ordering::Relaxed), 1);
+}
+
+#[cfg(feature = "search-perf")]
+macro_rules! nnue_report_counters {
+    ($($field:ident => $counter:ident),+ $(,)?) => {
+        #[derive(Debug, Default, PartialEq, Eq)]
+        struct NnueReportCounters {
+            $($field: u64,)+
+        }
+
+        impl NnueReportCounters {
+            // These process-global counters also observe microbenchmarks and
+            // engine setup. Accumulate only the requested measurement windows.
+            // Run serially: snapshots cannot exclude concurrent NNUE work.
+            fn measure<T>(&mut self, work: impl FnOnce() -> T) -> T {
+                let before = Self {
+                    $($field: perf::$counter.load(Ordering::Relaxed),)+
+                };
+                let value = work();
+                $(self.$field = self.$field.wrapping_add(
+                    perf::$counter.load(Ordering::Relaxed).wrapping_sub(before.$field)
+                );)+
+                value
+            }
+        }
+    };
+}
+
+#[cfg(feature = "search-perf")]
+nnue_report_counters! {
+    copy => ACC_COPY_CYCLES,
+    diff => ACC_DIFF_CYCLES,
+    piece_rows => ACC_PIECE_ROWS,
+    rebuild => ACC_REBUILD_CYCLES,
+    rebuild_calls => ACC_REBUILD_CALLS,
+    threat_diff => ACC_THREATSORT_CYCLES,
+    threat_rows => ACC_THREAT_ROWS,
+    refresh => ACC_REFRESH_CYCLES,
+    refresh_calls => ACC_REFRESH_CALLS,
+    threat_scan => THREAT_SCAN_CYCLES,
+    threat_scan_calls => THREAT_SCAN_CALLS,
+    scan_update => ACC_SCAN_UPDATE_CYCLES,
+    scan_update_calls => ACC_SCAN_UPDATE_CALLS,
+    slot_update => ACC_SLOT_UPDATE_CYCLES,
+    slot_update_calls => ACC_SLOT_UPDATE_CALLS,
+    refresh_update => ACC_REFRESH_UPDATE_CYCLES,
+    refresh_update_calls => ACC_REFRESH_UPDATE_CALLS,
+}
+
+#[test]
+#[cfg(feature = "search-perf")]
+fn nnue_report_excludes_work_outside_measurement_windows() {
+    // Private profiling contract: prior NNUE work must not enter this report.
+    // A public move fixture cannot inspect the process-global counter deltas.
+    crate::evaluate::init_embedded_nnue().expect("embedded NNUE should load");
+    let net = crate::evaluate::current_ember_v2().expect("embedded V2 network");
+    let state = Engine::new().st;
+    let mut accumulator = EmberV2Accumulator::new();
+    let mut refresh = || accumulator.refresh_with_backend::<ScalarNnueBackend>(&net, &state);
+    let mut totals = NnueReportCounters::default();
+    for measured in 1..=2 {
+        // Simulate earlier microbenchmarks, then setup between corpus positions.
+        for _ in 0..3 {
+            refresh();
+        }
+        let mut empty = NnueReportCounters::default();
+        assert_eq!(empty.measure(|| 42), 42);
+        assert_eq!(empty, NnueReportCounters::default());
+
+        totals.measure(&mut refresh);
+        assert_eq!(totals.refresh_calls, measured);
+        assert_eq!(totals.threat_scan_calls, measured);
+        assert_eq!(totals.slot_update_calls, 0);
+        assert_eq!(totals.scan_update_calls, 0);
+        assert_eq!(totals.refresh_update_calls, 0);
     }
+}
+
+#[test]
+#[cfg(feature = "search-perf")]
+#[ignore = "search-perf attribution report; run with --features search-perf -- --ignored --nocapture --test-threads=1"]
+fn perf_counter_report() {
+    // Observes private per-search and NNUE instrumentation counters.
     crate::evaluate::init_embedded_nnue().expect("embedded NNUE should load");
 
     const FENS: &[&str] = &[
@@ -1728,6 +1845,9 @@ fn perf_counter_report() {
         .collect();
     let mut total_nodes = 0u64;
     let mut total_elapsed = 0f64;
+    let mut scoring_see_ticks = 0u64;
+    let mut scoring_see_calls = 0u64;
+    let mut nnue = NnueReportCounters::default();
 
     for fen in FENS {
         let mut engine = Engine::new();
@@ -1735,8 +1855,10 @@ fn perf_counter_report() {
         engine.num_threads = 1;
         engine.searcher.resize_tt(64);
         engine.set_fen(fen);
-        let (_, _, nodes, elapsed) = engine.find_best_move(60.0, DEPTH);
+        let (_, _, nodes, elapsed) = nnue.measure(|| engine.find_best_move(60.0, DEPTH));
         let counters = snapshot(&engine.searcher.perf);
+        scoring_see_ticks += load(&engine.searcher.perf.scoring_see_cycles);
+        scoring_see_calls += load(&engine.searcher.perf.scoring_see_calls);
         for (index, (_, cycles, calls)) in counters.iter().enumerate() {
             totals[index].1 += cycles;
             totals[index].2 += calls;
@@ -1750,24 +1872,18 @@ fn perf_counter_report() {
     }
 
     let wall_cycles = (total_elapsed * tsc_hz) as u64;
-    #[cfg(feature = "search-perf")]
-    totals.insert(
-        0,
-        (
-            "threat",
-            perf::THREAT_SCAN_CYCLES.load(Ordering::Relaxed),
-            perf::THREAT_SCAN_CALLS.load(Ordering::Relaxed),
-        ),
-    );
+    // Threat enumeration and scoring SEE are nested. Keep their diagnostics
+    // below, rather than counting them twice in this total. Top-level SEE
+    // contains only quiescence calls outside the move-scoring region.
     let attributed: u64 = totals.iter().map(|(_, cycles, _)| cycles).sum();
     totals.sort_by_key(|&(_, cycles, _)| std::cmp::Reverse(cycles));
     println!(
-        "perf_report total nodes={total_nodes} elapsed={total_elapsed:.3}s nps={:.0} tsc_hz={tsc_hz:.0}",
+        "perf_report total nodes={total_nodes} elapsed={total_elapsed:.3}s nps={:.0} counter_hz={tsc_hz:.0}",
         total_nodes as f64 / total_elapsed.max(1e-9)
     );
     println!(
         "perf_report {:<9} {:>12} {:>8} {:>12} {:>8}",
-        "phase", "cycles_M", "share%", "calls", "cyc/call"
+        "phase", "ticks_M", "share%", "calls", "ticks/call"
     );
     for (name, cycles, calls) in &totals {
         println!(
@@ -1791,25 +1907,45 @@ fn perf_counter_report() {
         .find(|(name, _, _)| *name == "accupd")
         .map(|(_, cycles, _)| *cycles)
         .unwrap_or(0);
-    let copy = perf::ACC_COPY_CYCLES.load(Ordering::Relaxed);
-    let diff = perf::ACC_DIFF_CYCLES.load(Ordering::Relaxed);
-    let piece_rows = perf::ACC_PIECE_ROWS.load(Ordering::Relaxed);
-    let rebuild = perf::ACC_REBUILD_CYCLES.load(Ordering::Relaxed);
-    let rebuild_calls = perf::ACC_REBUILD_CALLS.load(Ordering::Relaxed);
-    let tdiff = perf::ACC_THREATSORT_CYCLES.load(Ordering::Relaxed);
-    let threat_rows = perf::ACC_THREAT_ROWS.load(Ordering::Relaxed);
-    let refresh = perf::ACC_REFRESH_CYCLES.load(Ordering::Relaxed);
-    let refresh_calls = perf::ACC_REFRESH_CALLS.load(Ordering::Relaxed);
     println!(
         "perf_report accupd detail: copy={:.2}% diff={:.2}% piece_rows={} rebuild={:.2}% rebuild_calls={} threat_diff={:.2}% threat_rows={} refresh={:.2}% refresh_calls={}",
-        detail(copy, accupd_total),
-        detail(diff, accupd_total),
-        piece_rows,
-        detail(rebuild, accupd_total),
-        rebuild_calls,
-        detail(tdiff, accupd_total),
-        threat_rows,
-        detail(refresh, accupd_total),
-        refresh_calls,
+        detail(nnue.copy, accupd_total),
+        detail(nnue.diff, accupd_total),
+        nnue.piece_rows,
+        detail(nnue.rebuild, accupd_total),
+        nnue.rebuild_calls,
+        detail(nnue.threat_diff, accupd_total),
+        nnue.threat_rows,
+        detail(nnue.refresh, accupd_total),
+        nnue.refresh_calls,
     );
+    println!(
+        "perf_report nested scoring SEE: ticks={} calls={} ticks_per_call={}",
+        scoring_see_ticks,
+        scoring_see_calls,
+        scoring_see_ticks / scoring_see_calls.max(1),
+    );
+    println!(
+        "perf_report nested threat enumeration: ticks={} calls={} ticks_per_call={}",
+        nnue.threat_scan,
+        nnue.threat_scan_calls,
+        nnue.threat_scan / nnue.threat_scan_calls.max(1),
+    );
+    // Every strategy spans the complete accumulator update: copy, piece and
+    // threat rows, and list maintenance. Different strategies see different
+    // position populations, so these means alone do not establish a crossover.
+    for (strategy, ticks, calls) in [
+        ("scan/rebuild", nnue.scan_update, nnue.scan_update_calls),
+        ("slot", nnue.slot_update, nnue.slot_update_calls),
+        (
+            "empty-parent refresh",
+            nnue.refresh_update,
+            nnue.refresh_update_calls,
+        ),
+    ] {
+        println!(
+            "perf_report complete accumulator update: strategy={strategy} ticks={ticks} calls={calls} ticks_per_call={}",
+            ticks / calls.max(1),
+        );
+    }
 }

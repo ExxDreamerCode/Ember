@@ -6,10 +6,12 @@ from __future__ import annotations
 import argparse
 import queue
 import subprocess
-import threading
 import time
 import tomllib
 from pathlib import Path
+from typing import TextIO
+
+from stress_test_uci import start_process
 
 
 COMMANDS = "\n".join(
@@ -47,29 +49,12 @@ def validate_uci_output(output: str, expected_version: str) -> None:
         raise ValueError("UCI smoke output has no legal best move")
 
 
-def run_smoke(command: list[str], cargo_toml: Path, timeout: float) -> str:
-    if not command:
-        raise ValueError("no Ember command was provided")
-    process = subprocess.Popen(
-        command,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
+def run_smoke(command: list[str], cargo_toml: Path, timeout: float,
+              transcript: TextIO | None = None) -> str:
+    process, lines, reader = start_process(command, transcript)
     assert process.stdin is not None
     assert process.stdout is not None
 
-    lines: queue.Queue[str] = queue.Queue()
-
-    def collect_stdout() -> None:
-        assert process.stdout is not None
-        for line in process.stdout:
-            lines.put(line)
-
-    reader = threading.Thread(target=collect_stdout, daemon=True)
-    reader.start()
     process.stdin.write(COMMANDS)
     process.stdin.flush()
 
@@ -108,6 +93,7 @@ def run_smoke(command: list[str], cargo_toml: Path, timeout: float) -> str:
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait()
+        reader.join(timeout=1.0)
         process.stdin.close()
         process.stdout.close()
         raise TimeoutError("UCI smoke process did not exit after quit") from None
@@ -116,6 +102,7 @@ def run_smoke(command: list[str], cargo_toml: Path, timeout: float) -> str:
         captured.append(lines.get_nowait())
     process.stdin.close()
     process.stdout.close()
+    reader.check_capture()
 
     output = "".join(captured)
     if process.returncode != 0:

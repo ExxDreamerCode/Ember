@@ -46,6 +46,9 @@ jobs:
         env:
           RUST_BACKTRACE: 1
 
+      - name: Check default-feature test compilation
+        run: nix develop .#ci --command cargo test --locked --no-run
+
       - name: Run Python tool tests
         run: >
           nix develop .#ci --command python3 -m unittest discover
@@ -487,6 +490,22 @@ jobs:
           nix develop .#release-ci --command \
             python3 tools/stress_test_uci.py --timeout 60 \
             -- qemu-aarch64 result-linux-arm64/bin/ember
+
+      - name: Verify ARM64 fallback and same-target PGO parity
+        run: |
+          nix build .#ember-linux-arm64-plain --out-link result-linux-arm64-plain
+          nix develop .#release-ci --command python3 tools/verify_arm64_release.py \
+            --plain result-linux-arm64-plain/bin/ember \
+            --pgo result-linux-arm64/bin/ember \
+            --out-dir results/arm64-release-parity
+
+      - name: Upload ARM64 parity transcripts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-release-parity
+          path: results/arm64-release-parity
+          if-no-files-found: ignore
 
       - name: Quick no-book NPS smoke benchmark
         run: |

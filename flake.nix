@@ -190,7 +190,7 @@
             ];
             text = ''
               export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="${crossAarch64}/bin/aarch64-unknown-linux-gnu-gcc"
-              export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER="${pkgs.qemu}/bin/qemu-aarch64 -L ${crossAarch64Libc}"
+              export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER="${pkgs.qemu}/bin/qemu-aarch64 -cpu ''${EMBER_QEMU_CPU:-cortex-a53} -L ${crossAarch64Libc}"
               export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C target-cpu=generic"
               unset RUSTFLAGS
 
@@ -288,6 +288,12 @@
               lib = pkgs.lib;
               arch = "arm64";
               pgoProfile = pgoProfiles.arm64 or null;
+            };
+            # Same target/toolchain as the PGO release, for signature parity.
+            ember-linux-arm64-plain = import ./nix/linux-ember.nix {
+              inherit pkgs;
+              lib = pkgs.lib;
+              arch = "arm64";
             };
             ember-windows-amd64 = windowsEmberAmd64.package;
             ember-windows-arm64 = windowsEmberArm64.package;

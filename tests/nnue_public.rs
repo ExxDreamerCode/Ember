@@ -2,6 +2,8 @@ use ember_chess::backend::{
     aarch64_simd_available, available_nnue_backends, nnue_backend_available, x86_v3_available,
     NnueBackendKind,
 };
+#[cfg(target_arch = "aarch64")]
+use ember_chess::backend::{default_search_backend, SearchBackendKind};
 use ember_chess::nnue::{threat_feature_count, NNUEAccumulator, NNUENet, NNUEThreatAccumulator};
 use ember_chess::types::{BLACK, WHITE};
 use ember_chess::Engine;
@@ -335,6 +337,12 @@ fn portable_simd_nnue_backends_available_when_vector_instructions_exist() {
         assert!(backends.contains(&NnueBackendKind::Simd256));
         assert!(backends.contains(&NnueBackendKind::Simd512));
     }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn aarch64_defaults_to_the_native_simd256_backend() {
+    assert_eq!(default_search_backend(), SearchBackendKind::Aarch64Simd256);
 }
 
 #[test]
