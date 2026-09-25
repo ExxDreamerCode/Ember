@@ -253,6 +253,12 @@ macro_rules! negamax_mode_body {
             }
         }
 
+        if actual_depth <= 0 {
+            return $this.$qsearch_mode::<CHESS960, NODE_LIMITED, E>(
+                $st, $alpha, beta, QS_DEPTH, $cnt, $ply, $eval,
+            );
+        }
+
         let king_pressure = if in_check {
             8
         } else {
@@ -264,12 +270,6 @@ macro_rules! negamax_mode_body {
         $this.eval_history[$ply] = eval_score;
         #[cfg(feature = "search-debug")]
         $this.record_debug_dag_eval(h, eval_score);
-
-        if actual_depth <= 0 {
-            return $this.$qsearch_mode::<CHESS960, NODE_LIMITED, E>(
-                $st, $alpha, beta, QS_DEPTH, $cnt, $ply, $eval,
-            );
-        }
 
         let rfp_max_depth = tune::get_int(TuneParam::ReverseFutilityMaxDepth, 8) as i32;
         let rfp_base = tune::get_int(TuneParam::ReverseFutilityBaseCp, 80) as i32;
