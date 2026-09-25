@@ -400,53 +400,31 @@ pub(crate) trait EmberV2Backend: NnueBackend {
     fn transform(accumulator: &[i16; HIDDEN_SIZE], output: &mut [u8]);
     fn dot(input: &[u8], weights: &[i8]) -> i32;
     fn fc0(transformed: &[u8; HIDDEN_SIZE], weights: &[i8], biases: &[i32], output: &mut [i32; 32]);
-}
 
-fn add_psq_row<B: EmberV2Backend>(
-    accumulator: &mut [i16; HIDDEN_SIZE],
-    psqt: &mut [i32; PSQT_BUCKETS],
-    row: &[i16],
-    psqt_row: &[i32],
-) {
-    B::add_row(accumulator, row);
-    for (value, weight) in psqt.iter_mut().zip(psqt_row.iter()) {
-        *value = value.wrapping_add(*weight);
-    }
-}
-
-fn add_threat_row<B: EmberV2Backend>(
-    accumulator: &mut [i16; HIDDEN_SIZE],
-    psqt: &mut [i32; PSQT_BUCKETS],
-    row: &[i8],
-    psqt_row: &[i32],
-) {
-    B::add_i8_row(accumulator, row);
-    for (value, weight) in psqt.iter_mut().zip(psqt_row.iter()) {
-        *value = value.wrapping_add(*weight);
-    }
-}
-
-fn remove_psq_row<B: EmberV2Backend>(
-    accumulator: &mut [i16; HIDDEN_SIZE],
-    psqt: &mut [i32; PSQT_BUCKETS],
-    row: &[i16],
-    psqt_row: &[i32],
-) {
-    B::sub_row(accumulator, row);
-    for (value, weight) in psqt.iter_mut().zip(psqt_row.iter()) {
-        *value = value.wrapping_sub(*weight);
-    }
-}
-
-fn remove_threat_row<B: EmberV2Backend>(
-    accumulator: &mut [i16; HIDDEN_SIZE],
-    psqt: &mut [i32; PSQT_BUCKETS],
-    row: &[i8],
-    psqt_row: &[i32],
-) {
-    B::sub_i8_row(accumulator, row);
-    for (value, weight) in psqt.iter_mut().zip(psqt_row.iter()) {
-        *value = value.wrapping_sub(*weight);
+    fn apply_row_ops(
+        accumulator: &mut [i16; HIDDEN_SIZE],
+        psq_ops: &[u32],
+        threat_ops: &[u32],
+        net: &EmberV2Data,
+    ) {
+        for &op in psq_ops.iter() {
+            let index = (op & !PSQ_REMOVE_BIT) as usize;
+            let row = &net.psq_weights[index * HIDDEN_SIZE..(index + 1) * HIDDEN_SIZE];
+            if op & PSQ_REMOVE_BIT != 0 {
+                Self::sub_row(accumulator, row);
+            } else {
+                Self::add_row(accumulator, row);
+            }
+        }
+        for &op in threat_ops.iter() {
+            let index = (op & !THREAT_REMOVE_BIT) as usize;
+            let row = &net.threat_weights[index * HIDDEN_SIZE..(index + 1) * HIDDEN_SIZE];
+            if op & THREAT_REMOVE_BIT != 0 {
+                Self::sub_i8_row(accumulator, row);
+            } else {
+                Self::add_i8_row(accumulator, row);
+            }
+        }
     }
 }
 
@@ -461,6 +439,8 @@ pub(crate) struct EmberV2ThreatDiffScratch {
     slot_add: [Vec<u16>; 2],
     slot_rem_bits: Vec<u64>,
     slot_add_bits: Vec<u64>,
+    pending_psq: [Vec<u32>; 2],
+    pending_threat: [Vec<u32>; 2],
 }
 
 impl EmberV2ThreatDiffScratch {
@@ -472,7 +452,133 @@ impl EmberV2ThreatDiffScratch {
             slot_add: [Vec::with_capacity(64), Vec::with_capacity(64)],
             slot_rem_bits: vec![0; THREAT_BITSET_WORDS * 2],
             slot_add_bits: vec![0; THREAT_BITSET_WORDS * 2],
+            pending_psq: [Vec::with_capacity(64), Vec::with_capacity(64)],
+            pending_threat: [Vec::with_capacity(64), Vec::with_capacity(64)],
         }
+    }
+}
+
+const PSQ_REMOVE_BIT: u32 = 1 << 31;
+const THREAT_REMOVE_BIT: u32 = 1 << 31;
+
+fn push_psq_row_op(
+    psqt: &mut [i32; PSQT_BUCKETS],
+    ops: &mut Vec<u32>,
+    net: &EmberV2Data,
+    index: usize,
+    remove: bool,
+) {
+    let psqt_row = &net.psqt[index * PSQT_BUCKETS..(index + 1) * PSQT_BUCKETS];
+    if remove {
+        for (value, weight) in psqt.iter_mut().zip(psqt_row.iter()) {
+            *value = value.wrapping_sub(*weight);
+        }
+        ops.push(index as u32 | PSQ_REMOVE_BIT);
+    } else {
+        for (value, weight) in psqt.iter_mut().zip(psqt_row.iter()) {
+            *value = value.wrapping_add(*weight);
+        }
+        ops.push(index as u32);
+    }
+}
+
+fn push_threat_row_op(
+    psqt: &mut [i32; PSQT_BUCKETS],
+    ops: &mut Vec<u32>,
+    net: &EmberV2Data,
+    index: usize,
+    remove: bool,
+) {
+    let psqt_row = &net.threat_psqt[index * PSQT_BUCKETS..(index + 1) * PSQT_BUCKETS];
+    if remove {
+        for (value, weight) in psqt.iter_mut().zip(psqt_row.iter()) {
+            *value = value.wrapping_sub(*weight);
+        }
+        ops.push(index as u32 | THREAT_REMOVE_BIT);
+    } else {
+        for (value, weight) in psqt.iter_mut().zip(psqt_row.iter()) {
+            *value = value.wrapping_add(*weight);
+        }
+        ops.push(index as u32);
+    }
+}
+
+fn flush_row_ops<B: EmberV2Backend>(
+    accumulator: &mut [i16; HIDDEN_SIZE],
+    psq_ops: &mut Vec<u32>,
+    threat_ops: &mut Vec<u32>,
+    net: &EmberV2Data,
+) {
+    B::apply_row_ops(accumulator, psq_ops, threat_ops, net);
+    psq_ops.clear();
+    threat_ops.clear();
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
+unsafe fn apply_row_ops_x86_v3(
+    accumulator: &mut [i16; HIDDEN_SIZE],
+    psq_ops: &[u32],
+    threat_ops: &[u32],
+    net: &EmberV2Data,
+) {
+    use std::arch::x86_64::*;
+
+    const LANES: usize = 16;
+    const VECTORS: usize = 4;
+    const BLOCK: usize = LANES * VECTORS;
+
+    let psq_rows = net.psq_weights.as_ptr();
+    let threat_rows = net.threat_weights.as_ptr();
+    let accumulator_ptr = accumulator.as_mut_ptr();
+
+    let mut block = 0usize;
+    while block < HIDDEN_SIZE {
+        let mut lanes = [_mm256_setzero_si256(); VECTORS];
+        for (slot, lane) in lanes.iter_mut().enumerate() {
+            *lane = _mm256_loadu_si256(accumulator_ptr.add(block + slot * LANES).cast::<__m256i>());
+        }
+
+        for &op in psq_ops {
+            let remove = op & PSQ_REMOVE_BIT != 0;
+            let row = psq_rows.add(((op & !PSQ_REMOVE_BIT) as usize) * HIDDEN_SIZE + block);
+            for (slot, lane) in lanes.iter_mut().enumerate() {
+                let value = _mm256_loadu_si256(row.add(slot * LANES).cast::<__m256i>());
+                *lane = if remove {
+                    _mm256_sub_epi16(*lane, value)
+                } else {
+                    _mm256_add_epi16(*lane, value)
+                };
+            }
+        }
+
+        for &op in threat_ops {
+            let remove = op & THREAT_REMOVE_BIT != 0;
+            let row = threat_rows.add(((op & !THREAT_REMOVE_BIT) as usize) * HIDDEN_SIZE + block);
+            let low = _mm256_loadu_si256(row.cast::<__m256i>());
+            let high = _mm256_loadu_si256(row.add(32).cast::<__m256i>());
+            let widened = [
+                _mm256_cvtepi8_epi16(_mm256_castsi256_si128(low)),
+                _mm256_cvtepi8_epi16(_mm256_extracti128_si256(low, 1)),
+                _mm256_cvtepi8_epi16(_mm256_castsi256_si128(high)),
+                _mm256_cvtepi8_epi16(_mm256_extracti128_si256(high, 1)),
+            ];
+            for (slot, lane) in lanes.iter_mut().enumerate() {
+                *lane = if remove {
+                    _mm256_sub_epi16(*lane, widened[slot])
+                } else {
+                    _mm256_add_epi16(*lane, widened[slot])
+                };
+            }
+        }
+
+        for (slot, lane) in lanes.iter().enumerate() {
+            _mm256_storeu_si256(
+                accumulator_ptr.add(block + slot * LANES).cast::<__m256i>(),
+                *lane,
+            );
+        }
+        block += BLOCK;
     }
 }
 
@@ -499,26 +605,24 @@ fn diff_threat_rows<B: EmberV2Backend>(
     let mut ops = 0usize;
     for &index in old_list {
         if new_bits[(index >> 6) as usize] & (1u64 << (index & 63)) == 0 {
-            remove_threat_row::<B>(
-                &mut accumulator.accumulation[side],
+            push_threat_row_op(
                 &mut accumulator.psqt[side],
-                &net.threat_weights
-                    [index as usize * HIDDEN_SIZE..(index as usize + 1) * HIDDEN_SIZE],
-                &net.threat_psqt
-                    [index as usize * PSQT_BUCKETS..(index as usize + 1) * PSQT_BUCKETS],
+                &mut scratch.pending_threat[side],
+                net,
+                index as usize,
+                true,
             );
             ops += 1;
         }
     }
     for &index in new_list {
         if old_bits[(index >> 6) as usize] & (1u64 << (index & 63)) == 0 {
-            add_threat_row::<B>(
-                &mut accumulator.accumulation[side],
+            push_threat_row_op(
                 &mut accumulator.psqt[side],
-                &net.threat_weights
-                    [index as usize * HIDDEN_SIZE..(index as usize + 1) * HIDDEN_SIZE],
-                &net.threat_psqt
-                    [index as usize * PSQT_BUCKETS..(index as usize + 1) * PSQT_BUCKETS],
+                &mut scratch.pending_threat[side],
+                net,
+                index as usize,
+                false,
             );
             ops += 1;
         }
@@ -530,6 +634,12 @@ fn diff_threat_rows<B: EmberV2Backend>(
     for &index in new_list {
         new_bits[(index >> 6) as usize] &= !(1u64 << (index & 63));
     }
+    flush_row_ops::<B>(
+        &mut accumulator.accumulation[side],
+        &mut scratch.pending_psq[side],
+        &mut scratch.pending_threat[side],
+        net,
+    );
     ops
 }
 
@@ -786,12 +896,12 @@ fn apply_incremental_threat_update<B: EmberV2Backend>(
         let word_base = side * THREAT_BITSET_WORDS;
 
         for &index in &rem[side] {
-            let index = index as usize;
-            remove_threat_row::<B>(
-                &mut accumulator.accumulation[side],
+            push_threat_row_op(
                 &mut accumulator.psqt[side],
-                &net.threat_weights[index * HIDDEN_SIZE..(index + 1) * HIDDEN_SIZE],
-                &net.threat_psqt[index * PSQT_BUCKETS..(index + 1) * PSQT_BUCKETS],
+                &mut scratch.pending_threat[side],
+                net,
+                index as usize,
+                true,
             );
         }
 
@@ -817,12 +927,12 @@ fn apply_incremental_threat_update<B: EmberV2Backend>(
         list.extend_from_slice(&add[side]);
 
         for &index in &add[side] {
-            let index = index as usize;
-            add_threat_row::<B>(
-                &mut accumulator.accumulation[side],
+            push_threat_row_op(
                 &mut accumulator.psqt[side],
-                &net.threat_weights[index * HIDDEN_SIZE..(index + 1) * HIDDEN_SIZE],
-                &net.threat_psqt[index * PSQT_BUCKETS..(index + 1) * PSQT_BUCKETS],
+                &mut scratch.pending_threat[side],
+                net,
+                index as usize,
+                false,
             );
         }
 
@@ -832,6 +942,12 @@ fn apply_incremental_threat_update<B: EmberV2Backend>(
         for &index in &add[side] {
             scratch.slot_add_bits[word_base + (index >> 6) as usize] &= !(1u64 << (index & 63));
         }
+        flush_row_ops::<B>(
+            &mut accumulator.accumulation[side],
+            &mut scratch.pending_psq[side],
+            &mut scratch.pending_threat[side],
+            net,
+        );
         total_rows += rem[side].len() + add[side].len();
     }
     total_rows
@@ -866,9 +982,18 @@ impl EmberV2Accumulator {
         ];
         let [list_white, list_black] = &mut threat_lists;
         collect_active_threat_indices_both(state, [list_white, list_black]);
+        let mut psq_ops = Vec::with_capacity(64);
+        let mut threat_ops = Vec::with_capacity(64);
         for perspective in 0..2u32 {
             let side = perspective as usize;
-            self.rebuild_perspective::<B>(net, state, perspective, &threat_lists[side]);
+            self.rebuild_perspective::<B>(
+                net,
+                state,
+                perspective,
+                &threat_lists[side],
+                &mut psq_ops,
+                &mut threat_ops,
+            );
         }
         self.threat_indices = threat_lists;
         #[cfg(feature = "search-perf")]
@@ -887,6 +1012,8 @@ impl EmberV2Accumulator {
         state: &BoardState,
         perspective: u32,
         threat_list: &[u16],
+        psq_ops: &mut Vec<u32>,
+        threat_ops: &mut Vec<u32>,
     ) {
         let side = perspective as usize;
         for (value, bias) in self.accumulation[side].iter_mut().zip(net.ft_bias.iter()) {
@@ -902,24 +1029,15 @@ impl EmberV2Accumulator {
                 pieces &= pieces - 1;
                 let index = halfka_index(perspective, square, piece, king_square);
                 debug_assert!(index < PSQ_DIMS);
-                add_psq_row::<B>(
-                    &mut self.accumulation[side],
-                    &mut self.psqt[side],
-                    &net.psq_weights[index * HIDDEN_SIZE..(index + 1) * HIDDEN_SIZE],
-                    &net.psqt[index * PSQT_BUCKETS..(index + 1) * PSQT_BUCKETS],
-                );
+                push_psq_row_op(&mut self.psqt[side], psq_ops, net, index, false);
             }
         }
 
         for &index in threat_list {
-            let index = index as usize;
-            add_threat_row::<B>(
-                &mut self.accumulation[side],
-                &mut self.psqt[side],
-                &net.threat_weights[index * HIDDEN_SIZE..(index + 1) * HIDDEN_SIZE],
-                &net.threat_psqt[index * PSQT_BUCKETS..(index + 1) * PSQT_BUCKETS],
-            );
+            push_threat_row_op(&mut self.psqt[side], threat_ops, net, index as usize, false);
         }
+
+        flush_row_ops::<B>(&mut self.accumulation[side], psq_ops, threat_ops, net);
     }
 
     pub(crate) fn update_from_parent_with_backend<B: EmberV2Backend>(
@@ -1011,24 +1129,32 @@ impl EmberV2Accumulator {
                     if before_piece != EMPTY_SQ {
                         let index =
                             halfka_index(perspective, square, u32::from(before_piece), king_square);
-                        remove_psq_row::<B>(
-                            &mut self.accumulation[side],
+                        push_psq_row_op(
                             &mut self.psqt[side],
-                            &net.psq_weights[index * HIDDEN_SIZE..(index + 1) * HIDDEN_SIZE],
-                            &net.psqt[index * PSQT_BUCKETS..(index + 1) * PSQT_BUCKETS],
+                            &mut scratch.pending_psq[side],
+                            net,
+                            index,
+                            true,
                         );
                     }
                     if after_piece != EMPTY_SQ {
                         let index =
                             halfka_index(perspective, square, u32::from(after_piece), king_square);
-                        add_psq_row::<B>(
-                            &mut self.accumulation[side],
+                        push_psq_row_op(
                             &mut self.psqt[side],
-                            &net.psq_weights[index * HIDDEN_SIZE..(index + 1) * HIDDEN_SIZE],
-                            &net.psqt[index * PSQT_BUCKETS..(index + 1) * PSQT_BUCKETS],
+                            &mut scratch.pending_psq[side],
+                            net,
+                            index,
+                            false,
                         );
                     }
                 }
+                flush_row_ops::<B>(
+                    &mut self.accumulation[side],
+                    &mut scratch.pending_psq[side],
+                    &mut scratch.pending_threat[side],
+                    net,
+                );
                 #[cfg(feature = "search-perf")]
                 {
                     let __perf_dt = crate::search::perf::rdtsc().wrapping_sub(__perf_t_diff);
@@ -1065,7 +1191,14 @@ impl EmberV2Accumulator {
             if kings_before[perspective as usize] != kings_after[perspective as usize] {
                 #[cfg(feature = "search-perf")]
                 let __perf_t_rebuild = crate::search::perf::rdtsc();
-                self.rebuild_perspective::<B>(net, after, perspective, &threat_lists[side]);
+                self.rebuild_perspective::<B>(
+                    net,
+                    after,
+                    perspective,
+                    &threat_lists[side],
+                    &mut scratch.pending_psq[side],
+                    &mut scratch.pending_threat[side],
+                );
                 #[cfg(feature = "search-perf")]
                 {
                     let __perf_dt = crate::search::perf::rdtsc().wrapping_sub(__perf_t_rebuild);
@@ -1095,21 +1228,23 @@ impl EmberV2Accumulator {
                 if before_piece != EMPTY_SQ {
                     let index =
                         halfka_index(perspective, square, u32::from(before_piece), king_square);
-                    remove_psq_row::<B>(
-                        &mut self.accumulation[side],
+                    push_psq_row_op(
                         &mut self.psqt[side],
-                        &net.psq_weights[index * HIDDEN_SIZE..(index + 1) * HIDDEN_SIZE],
-                        &net.psqt[index * PSQT_BUCKETS..(index + 1) * PSQT_BUCKETS],
+                        &mut scratch.pending_psq[side],
+                        net,
+                        index,
+                        true,
                     );
                 }
                 if after_piece != EMPTY_SQ {
                     let index =
                         halfka_index(perspective, square, u32::from(after_piece), king_square);
-                    add_psq_row::<B>(
-                        &mut self.accumulation[side],
+                    push_psq_row_op(
                         &mut self.psqt[side],
-                        &net.psq_weights[index * HIDDEN_SIZE..(index + 1) * HIDDEN_SIZE],
-                        &net.psqt[index * PSQT_BUCKETS..(index + 1) * PSQT_BUCKETS],
+                        &mut scratch.pending_psq[side],
+                        net,
+                        index,
+                        false,
                     );
                 }
             }
@@ -1782,6 +1917,17 @@ impl EmberV2Backend for SimdNnueBackend {
         #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         fc0_forward_simd256(transformed, weights, biases, output);
     }
+
+    #[cfg(target_arch = "x86_64")]
+    #[inline(always)]
+    fn apply_row_ops(
+        accumulator: &mut [i16; HIDDEN_SIZE],
+        psq_ops: &[u32],
+        threat_ops: &[u32],
+        net: &EmberV2Data,
+    ) {
+        unsafe { apply_row_ops_x86_v3(accumulator, psq_ops, threat_ops, net) }
+    }
 }
 
 impl_portable_ember_v2_backend!(
@@ -1923,7 +2069,9 @@ pub(crate) fn evaluate_ember_v2_with_backend<B: EmberV2Backend>(
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_active_threat_indices, halfka_index, threat_lut, THREAT_DIMS};
+    use super::{
+        collect_active_threat_indices, halfka_index, threat_lut, THREAT_DIMS, THREAT_REMOVE_BIT,
+    };
     use crate::Engine;
 
     fn v2_chain_games<B: super::EmberV2Backend>(
@@ -2591,6 +2739,104 @@ mod tests {
             refreshed_sorted[side].sort_unstable();
         }
         assert_eq!(incremental_sorted, refreshed_sorted);
+    }
+
+    fn synthetic_row_net(psq_rows: usize, threat_rows: usize) -> super::EmberV2Data {
+        super::EmberV2Data {
+            hidden_size: super::HIDDEN_SIZE,
+            psq_dims: super::PSQ_DIMS,
+            threat_dims: super::THREAT_DIMS,
+            num_stacks: super::PSQT_BUCKETS,
+            ft_bias: vec![0i16; super::HIDDEN_SIZE],
+            threat_weights: (0..threat_rows * super::HIDDEN_SIZE)
+                .map(|index| ((index * 43 + 7) % 256) as u8 as i8)
+                .collect(),
+            threat_psqt: (0..threat_rows * super::PSQT_BUCKETS)
+                .map(|index| (index as i32 * 71).wrapping_sub(1_003))
+                .collect(),
+            psq_weights: (0..psq_rows * super::HIDDEN_SIZE)
+                .map(|index| ((index * 7_919) % 4_001) as i16 - 2_000)
+                .collect(),
+            psqt: (0..psq_rows * super::PSQT_BUCKETS)
+                .map(|index| (index as i32 * 97).wrapping_sub(101))
+                .collect(),
+            stacks: Vec::new(),
+            overview: "synthetic row-op parity net".into(),
+        }
+    }
+
+    #[test]
+    fn blocked_row_ops_match_the_row_fold_reference() {
+        let net = synthetic_row_net(8, 5);
+        let mut base = [0i16; super::HIDDEN_SIZE];
+        for (index, value) in base.iter_mut().enumerate() {
+            *value = ((index as i32 * 7_919) % 997 - 498) as i16;
+        }
+        base[..6].copy_from_slice(&[i16::MIN, i16::MAX, 0, -1, 1, 255]);
+
+        let psq_ops = [
+            0u32,
+            3,
+            5 | super::PSQ_REMOVE_BIT,
+            7,
+            2 | super::PSQ_REMOVE_BIT,
+        ];
+        let threat_ops = [
+            1u32,
+            4,
+            4,
+            2 | super::THREAT_REMOVE_BIT,
+            super::THREAT_REMOVE_BIT,
+        ];
+
+        let mut expected = base;
+        for &op in psq_ops.iter() {
+            let index = (op & !super::PSQ_REMOVE_BIT) as usize;
+            let row =
+                &net.psq_weights[index * super::HIDDEN_SIZE..(index + 1) * super::HIDDEN_SIZE];
+            for (value, weight) in expected.iter_mut().zip(row.iter()) {
+                *value = if op & super::PSQ_REMOVE_BIT != 0 {
+                    value.wrapping_sub(*weight)
+                } else {
+                    value.wrapping_add(*weight)
+                };
+            }
+        }
+        for &op in threat_ops.iter() {
+            let index = (op & !THREAT_REMOVE_BIT) as usize;
+            let row =
+                &net.threat_weights[index * super::HIDDEN_SIZE..(index + 1) * super::HIDDEN_SIZE];
+            for (value, weight) in expected.iter_mut().zip(row.iter()) {
+                *value = if op & THREAT_REMOVE_BIT != 0 {
+                    value.wrapping_sub(i16::from(*weight))
+                } else {
+                    value.wrapping_add(i16::from(*weight))
+                };
+            }
+        }
+
+        let mut blocked = base;
+        <crate::nnue::SimdNnueBackend as super::EmberV2Backend>::apply_row_ops(
+            &mut blocked,
+            &psq_ops,
+            &threat_ops,
+            &net,
+        );
+        assert_eq!(blocked, expected);
+    }
+
+    #[test]
+    fn row_op_marker_bits_leave_threat_indices_intact() {
+        let mut covers_wide_index = false;
+        for index in [0usize, 1, 32_767, 32_768, THREAT_DIMS - 1] {
+            let add = index as u32;
+            let remove = index as u32 | THREAT_REMOVE_BIT;
+            assert_eq!(add & !THREAT_REMOVE_BIT, index as u32);
+            assert_eq!(remove & !THREAT_REMOVE_BIT, index as u32);
+            assert_ne!(remove & THREAT_REMOVE_BIT, 0);
+            covers_wide_index |= index >= 32_768;
+        }
+        assert!(covers_wide_index);
     }
 
     #[test]
