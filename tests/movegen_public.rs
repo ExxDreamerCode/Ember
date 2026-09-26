@@ -1,7 +1,9 @@
 use ember_chess::board::{
-    bit, encode_move, move_ec, move_er, move_from, move_promotion, move_sc, move_sr, move_to,
-    move_to_uci, piece_on, piece_type, sq, sq_c, sq_r, BoardState, Move, BR, EMPTY_SQ, WR,
+    all_occ, bit, board_to_fen, encode_move, is_white_piece, move_ec, move_er, move_from,
+    move_promotion, move_sc, move_sr, move_to, move_to_uci, piece_on, piece_type, sq, sq_c, sq_r,
+    BoardState, Move, BR, EMPTY_SQ, WR,
 };
+use ember_chess::magic::{bishop_attacks, rook_attacks};
 use ember_chess::movegen::*;
 use ember_chess::zobrist::compute_hash;
 use ember_chess::Engine;
@@ -438,4 +440,283 @@ fn chess960_castling_queenside_through_check() {
         .collect();
     assert!(!uci_moves.contains(&"e1a1".to_string()));
     assert!(uci_moves.contains(&"e1h1".to_string()));
+}
+
+fn corpus_positions(stride: usize) -> Vec<BoardState> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/lichess_puzzle_corpus.tsv");
+    let contents = std::fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+    contents
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
+        .skip(1)
+        .step_by(stride)
+        .filter_map(|line| line.split('\t').nth(2))
+        .map(state_from_fen)
+        .collect()
+}
+
+fn move_key(mv: Move) -> u32 {
+    (move_from(mv) as u32) | ((move_to(mv) as u32) << 6) | ((move_promotion(mv) as u32) << 12)
+}
+
+fn knight_attacks_public(s: usize) -> u64 {
+    const OFFSETS: [(i32, i32); 8] = [
+        (-2, -1),
+        (-2, 1),
+        (-1, -2),
+        (-1, 2),
+        (1, -2),
+        (1, 2),
+        (2, -1),
+        (2, 1),
+    ];
+    let r = sq_r(s) as i32;
+    let c = sq_c(s) as i32;
+    let mut acc = 0u64;
+    for (dr, dc) in OFFSETS {
+        let (nr, nc) = (r + dr, c + dc);
+        if (0..8).contains(&nr) && (0..8).contains(&nc) {
+            acc |= bit(nr as usize * 8 + nc as usize);
+        }
+    }
+    acc
+}
+
+fn pawn_targets_public(st: &BoardState, from: usize, white: bool) -> u64 {
+    let occ = all_occ(&st.bb);
+    let start_rank = if white { 6usize } else { 1usize };
+    let promo_rank = if white { 0usize } else { 7usize };
+    if sq_r(from) == promo_rank {
+        return 0;
+    }
+    let pawns = bit(from);
+    let mut targets = 0u64;
+    let push = if white { pawns >> 8 } else { pawns << 8 } & !occ;
+    targets |= push;
+    if sq_r(from) == start_rank && push != 0 {
+        let double = if white { push >> 8 } else { push << 8 };
+        targets |= double & !occ;
+    }
+    let file = sq_c(from) as i32;
+    for dc in [-1i32, 1] {
+        let nf = file + dc;
+        let nr = if white {
+            sq_r(from) as i32 - 1
+        } else {
+            sq_r(from) as i32 + 1
+        };
+        if !(0..8).contains(&nf) || !(0..8).contains(&nr) {
+            continue;
+        }
+        let to = nr as usize * 8 + nf as usize;
+        if st.mailbox[to] != EMPTY_SQ || Some(to) == st.ep {
+            targets |= bit(to);
+        }
+    }
+    targets
+}
+
+fn king_attacks_public(s: usize) -> u64 {
+    let r = (s / 8) as i32;
+    let c = (s % 8) as i32;
+    let mut acc = 0u64;
+    for dr in -1i32..=1 {
+        for dc in -1i32..=1 {
+            if dr == 0 && dc == 0 {
+                continue;
+            }
+            let (nr, nc) = (r + dr, c + dc);
+            if (0..8).contains(&nr) && (0..8).contains(&nc) {
+                acc |= bit(nr as usize * 8 + nc as usize);
+            }
+        }
+    }
+    acc
+}
+
+fn geometric_targets(st: &BoardState, from: usize) -> u64 {
+    let pi = st.mailbox[from];
+    if pi == EMPTY_SQ {
+        return 0;
+    }
+    let occ = all_occ(&st.bb);
+    let not_own = !if is_white_piece(pi) {
+        ember_chess::board::white_occ(&st.bb)
+    } else {
+        ember_chess::board::black_occ(&st.bb)
+    };
+    (match piece_type(pi) {
+        0 => pawn_targets_public(st, from, is_white_piece(pi)),
+        1 => knight_attacks_public(from),
+        2 => bishop_attacks(from, occ),
+        3 => rook_attacks(from, occ),
+        4 => bishop_attacks(from, occ) | rook_attacks(from, occ),
+        5 => king_attacks_public(from),
+        _ => 0,
+    }) & not_own
+}
+
+fn accepted_valid_moves(st: &BoardState) -> Vec<u32> {
+    let mut accepted = Vec::new();
+    for from in 0..64usize {
+        let pi = st.mailbox[from];
+        if pi == EMPTY_SQ || is_white_piece(pi) != st.w {
+            continue;
+        }
+        let targets = geometric_targets(st, from);
+        for to in 0..64usize {
+            if targets & bit(to) == 0 {
+                continue;
+            }
+            let promotion = if st.mailbox[to] != EMPTY_SQ && piece_type(st.mailbox[to]) == 5 {
+                continue;
+            } else if piece_type(pi) == 0 && (sq_r(to) == 0 || sq_r(to) == 7) {
+                b'Q'
+            } else {
+                0
+            };
+            let mv = encode_move(sq_r(from), sq_c(from), sq_r(to), sq_c(to), promotion);
+            let mut next = *st;
+            if try_apply_move(&mut next, mv) {
+                accepted.push(move_key(mv));
+            }
+        }
+    }
+    accepted.sort_unstable();
+    accepted
+}
+
+fn generated_moves(st: &BoardState) -> Vec<u32> {
+    let mut generated: Vec<u32> = generate_moves(st, st.w, &st.cr, st.ep)
+        .into_iter()
+        .map(move_key)
+        .collect();
+    generated.sort_unstable();
+    generated
+}
+
+fn assert_validator_matches_generator(st: &BoardState, context: &str) {
+    assert_eq!(
+        accepted_valid_moves(st),
+        generated_moves(st),
+        "{context}: validator and legal generator disagree at {}",
+        board_to_fen(st)
+    );
+}
+
+#[test]
+fn pseudo_moves_match_legal_moves_across_sampled_corpus() {
+    let mut checked = 0usize;
+    for st in corpus_positions(11) {
+        let pseudo: Vec<u32> = generate_pseudo_moves(&st, st.w, &st.cr, st.ep)
+            .into_iter()
+            .filter(|mv| {
+                let mut next = st;
+                try_apply_move(&mut next, *mv)
+            })
+            .map(move_key)
+            .collect();
+        let mut pseudo = pseudo;
+        pseudo.sort_unstable();
+        pseudo.dedup();
+        assert_eq!(
+            pseudo,
+            generated_moves(&st),
+            "pseudo moves with validator filtering diverged from legal moves at {}",
+            board_to_fen(&st)
+        );
+        checked += 1;
+    }
+    assert!(
+        checked > 50,
+        "corpus sampling produced only {checked} positions"
+    );
+}
+
+#[test]
+fn move_validator_matches_legal_generator_across_sampled_corpus() {
+    let mut checked = 0usize;
+    for st in corpus_positions(37) {
+        assert_validator_matches_generator(&st, "sampled corpus");
+        checked += 1;
+    }
+    assert!(
+        checked > 15,
+        "corpus sampling produced only {checked} positions"
+    );
+}
+
+#[test]
+fn move_validator_matches_legal_generator_over_random_playouts() {
+    let mut rng = 0x9E3779B97F4A7C15u64;
+    for game in 0..4 {
+        let mut st = state_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        for ply in 0..28 {
+            assert_validator_matches_generator(&st, &format!("game {game} ply {ply}"));
+            let legal = generate_moves(&st, st.w, &st.cr, st.ep);
+            for &mv in &legal {
+                let mut next = st;
+                assert!(
+                    try_apply_move(&mut next, mv),
+                    "generated move {} was rejected by the validator at {}",
+                    move_to_uci(&st, mv),
+                    board_to_fen(&st)
+                );
+            }
+            if legal.is_empty() || st.halfmove_clock >= 100 || all_occ(&st.bb).count_ones() <= 4 {
+                break;
+            }
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            let pick = legal[(rng % legal.len() as u64) as usize];
+            let mut next = st;
+            assert!(
+                try_apply_move(&mut next, pick),
+                "generated move was rejected by the validator at {}",
+                board_to_fen(&st)
+            );
+            st = next;
+        }
+    }
+}
+
+#[test]
+fn move_validator_does_not_check_piece_geometry() {
+    let st = state_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    let knight_to_a8 = encode_move(
+        sq_r(sq(7, 6)),
+        sq_c(sq(7, 6)),
+        sq_r(sq(0, 0)),
+        sq_c(sq(0, 0)),
+        0,
+    );
+    let mut next = st;
+    assert!(
+        try_apply_move(&mut next, knight_to_a8),
+        "the validator is a pseudo-legal safety check, not a geometry check"
+    );
+    assert_eq!(
+        piece_type(next.mailbox[sq(0, 0)]),
+        1,
+        "the knight stays a knight"
+    );
+    assert_eq!(
+        next.mailbox[sq(7, 6)],
+        EMPTY_SQ,
+        "the source square is vacated by an accepted geometry violation"
+    );
+}
+
+#[test]
+fn move_validator_matches_legal_generator_after_pawn_double_push() {
+    let st = state_from_fen("rnbqkbnr/pppppppp/8/8/8/1P6/P1PPPPPP/RNBQKBNR b KQkq - 0 1");
+    assert_eq!(
+        accepted_valid_moves(&st),
+        generated_moves(&st),
+        "validator and generator disagree at {}",
+        board_to_fen(&st)
+    );
 }
