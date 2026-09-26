@@ -40,7 +40,8 @@ use std::time::Instant;
 
 mod interface;
 pub use self::interface::{
-    active_search_backend, extract_pv_line, format_pv_line_uci, set_search_backend_override,
+    active_search_backend, extract_pv_line, format_pv_line_uci, format_uci_score,
+    set_search_backend_override,
 };
 pub use crate::backend::SearchBackendKind;
 

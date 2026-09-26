@@ -1,6 +1,6 @@
 pub use crate::types::{
-    Move, BB, BK, BN, BP, BQ, BR, EMPTY_SQ, INF, MATE, MAX_HALF_MOVE_CLOCK, MAX_PLY, NO_MOVE,
-    QS_DEPTH, WB, WK, WN, WP, WQ, WR,
+    Move, BB, BK, BN, BP, BQ, BR, EMPTY_SQ, INF, MATE, MATE_THRESHOLD, MAX_HALF_MOVE_CLOCK,
+    MAX_PLY, NO_MOVE, QS_DEPTH, TB_WIN_SCORE, WB, WK, WN, WP, WQ, WR,
 };
 
 #[inline(always)]

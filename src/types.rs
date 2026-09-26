@@ -10,6 +10,8 @@ pub const KING: u8 = 5;
 
 pub const EMPTY_SQ: u8 = 255;
 pub const MATE: i32 = 100_000;
+pub const MATE_THRESHOLD: i32 = 90_000;
+pub const TB_WIN_SCORE: i32 = 88_000;
 pub const INF: i32 = 1_000_000;
 pub const MAX_PLY: usize = 128;
 pub const QS_DEPTH: i32 = 0;

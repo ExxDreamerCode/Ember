@@ -32,20 +32,6 @@ const FIFTY_MOVE_ROOT_MIN_SCORE: i32 = 500;
 const FIFTY_MOVE_ROOT_STATIC_MARGIN_CP: i32 = 350;
 const FIFTY_MOVE_ROOT_MATERIAL_MARGIN_CP: i32 = 150;
 const FIFTY_MOVE_ROOT_VERIFY_NODE_LIMIT: u32 = 1_000;
-const MATE_SCORE_TEXT_THRESHOLD: i32 = 90_000;
-
-fn format_uci_score(score: i32) -> String {
-    if score.abs() > MATE_SCORE_TEXT_THRESHOLD {
-        let mate_in = (MATE - score.abs()) / 2 + 1;
-        if score > 0 {
-            format!("mate {mate_in}")
-        } else {
-            format!("mate -{mate_in}")
-        }
-    } else {
-        format!("cp {score}")
-    }
-}
 
 #[derive(Clone, Copy)]
 enum SearchTimerStart {
@@ -1111,16 +1097,7 @@ impl Engine {
                     0
                 };
                 let time_ms = (elapsed * 1000.0) as u64;
-                let score_str = if best_score.abs() > 90_000 {
-                    let mate_in = (MATE - best_score.abs()) / 2 + 1;
-                    if best_score > 0 {
-                        format!("mate {}", mate_in)
-                    } else {
-                        format!("mate -{}", mate_in)
-                    }
-                } else {
-                    format!("cp {}", best_score)
-                };
+                let score_str = crate::search::format_uci_score(best_score);
                 let pv_line =
                     crate::search::extract_pv_line(&self.searcher.shared_tt, &self.st, best_move);
                 let pv_str = format_pv_line_uci(&self.st, &pv_line);
@@ -1351,7 +1328,7 @@ impl Engine {
                         "info depth {} multipv {} score {} nodes {} nps {} time {} pv {}",
                         depth,
                         line_index + 1,
-                        format_uci_score(score),
+                        crate::search::format_uci_score(score),
                         total_nodes,
                         nps,
                         time_ms,

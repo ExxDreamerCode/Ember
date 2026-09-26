@@ -63,11 +63,24 @@ fn search_backend_from_id(id: u8) -> Option<SearchBackendKind> {
 
 use crate::board::{
     is_attacked, move_ec, move_er, move_from, move_promotion, move_sc, move_sr, move_to_uci,
-    piece_type, BoardState, Move, EMPTY_SQ, MAX_PLY,
+    piece_type, BoardState, Move, EMPTY_SQ, MATE, MATE_THRESHOLD, MAX_PLY,
 };
 use crate::movegen::{apply_move, generate_moves};
 use crate::tt::SharedTT;
 use std::collections::HashSet;
+
+pub fn format_uci_score(score: i32) -> String {
+    if score.abs() > MATE_THRESHOLD {
+        let mate_in = (MATE - score.abs()) / 2 + 1;
+        if score > 0 {
+            format!("mate {mate_in}")
+        } else {
+            format!("mate -{mate_in}")
+        }
+    } else {
+        format!("cp {score}")
+    }
+}
 
 fn malformed_promotion_move(st: &BoardState, mv: Move) -> bool {
     let promo = move_promotion(mv).to_ascii_uppercase();

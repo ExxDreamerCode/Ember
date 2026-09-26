@@ -419,16 +419,7 @@ fn print_lazy_smp_info(
     nodes: u64,
     elapsed: f64,
 ) {
-    let score_str = if score.abs() > 90_000 {
-        let mate_in = (MATE - score.abs()) / 2 + 1;
-        if score > 0 {
-            format!("mate {mate_in}")
-        } else {
-            format!("mate -{mate_in}")
-        }
-    } else {
-        format!("cp {score}")
-    };
+    let score_str = super::format_uci_score(score);
     let pv_line = extract_pv_line(&job.shared_tt, &job.st, best_move);
     let pv_str = format_pv_line_uci(&job.st, &pv_line);
     let nps = if elapsed > 0.0 {

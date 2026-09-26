@@ -1,6 +1,7 @@
 use super::*;
 use crate::board::encode_move;
 use crate::engine::Engine;
+use crate::types::{MATE_THRESHOLD, TB_WIN_SCORE};
 
 fn state_from_fen(fen: &str) -> BoardState {
     let mut engine = Engine::new();
@@ -1492,6 +1493,60 @@ fn tt_mate_scores_are_stored_ply_independent() {
 fn tt_non_mate_scores_are_not_adjusted() {
     assert_eq!(score_to_tt(42, 8), 42);
     assert_eq!(score_from_tt(-313, 5), -313);
+}
+
+const _: () = assert!(MATE - MAX_PLY as i32 > MATE_THRESHOLD);
+const _: () = assert!(MATE_THRESHOLD > TB_WIN_SCORE);
+const _: () = assert!(TB_WIN_SCORE > 0);
+
+#[test]
+fn score_bands_stay_ordered() {
+    assert_eq!(MATE - MATE_THRESHOLD, 10_000);
+    assert_eq!(MATE_THRESHOLD - TB_WIN_SCORE, 2_000);
+}
+
+#[test]
+fn tablebase_scores_are_not_classified_as_mate() {
+    for ply in 0..=MAX_PLY {
+        let win = TB_WIN_SCORE - ply as i32;
+        let loss = -TB_WIN_SCORE + ply as i32;
+        assert!(win.abs() <= MATE_THRESHOLD);
+        assert!(loss.abs() <= MATE_THRESHOLD);
+        assert_eq!(crate::search::format_uci_score(win), format!("cp {win}"));
+        assert_eq!(crate::search::format_uci_score(loss), format!("cp {loss}"));
+    }
+}
+
+#[test]
+fn mate_scores_still_format_as_mate() {
+    assert_eq!(crate::search::format_uci_score(MATE), "mate 1");
+    assert_eq!(crate::search::format_uci_score(-MATE), "mate -1");
+    assert_eq!(crate::search::format_uci_score(MATE - 2), "mate 2");
+    assert_eq!(crate::search::format_uci_score(-(MATE - 2)), "mate -2");
+    assert_eq!(crate::search::format_uci_score(MATE - 128), "mate 65");
+    assert_eq!(crate::search::format_uci_score(MATE_THRESHOLD), "cp 90000");
+    assert_eq!(
+        crate::search::format_uci_score(MATE_THRESHOLD + 1),
+        "mate 5000"
+    );
+}
+
+#[test]
+fn tablebase_scores_survive_tt_round_trip() {
+    for ply in 0..MAX_PLY {
+        for &value in &[TB_WIN_SCORE - ply as i32, -TB_WIN_SCORE + ply as i32] {
+            let stored = score_to_tt(value, ply);
+            let restored = score_from_tt(stored, ply);
+            assert!(
+                restored.abs() <= MATE_THRESHOLD,
+                "tablebase score left the centipawn band at ply {ply}: {value} -> {stored} -> {restored}"
+            );
+            assert!(
+                (restored - value).abs() <= 1,
+                "tablebase score drifted at ply {ply}: {value} -> {stored} -> {restored}"
+            );
+        }
+    }
 }
 
 #[test]

@@ -8,12 +8,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::board::{move_to_uci, BoardState, Move, MATE, MAX_PLY};
-
-// Keep tablebase results below mate scores while making them decisive against
-// any normal evaluation. The ply adjustment preserves the usual preference
-// for reaching a winning tablebase sooner and delaying a losing one.
-const TB_WIN_SCORE: i32 = MATE - MAX_PLY as i32;
+use crate::board::{move_to_uci, BoardState, Move, MAX_PLY, TB_WIN_SCORE};
 
 fn exact_search_score(wdl: AmbiguousWdl, ply: usize) -> Option<i32> {
     let ply = ply.min(MAX_PLY) as i32;
