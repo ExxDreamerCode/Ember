@@ -139,6 +139,122 @@ fn assert_go_nodes_returns_promptly(threads: usize) {
 }
 
 #[test]
+fn syzygy_path_can_be_disabled_and_reenabled_after_worker_creation() {
+    let Ok(path) = std::env::var("EMBER_TEST_SYZYGY_PATH") else {
+        eprintln!("skipping UCI Syzygy reload regression: EMBER_TEST_SYZYGY_PATH is unset");
+        return;
+    };
+    let (mut child, rx) = spawn_ember();
+    let mut stdin = child.stdin.take().expect("capture Ember stdin");
+    writeln!(stdin, "uci").unwrap();
+    writeln!(stdin, "setoption name Threads value 2").unwrap();
+    writeln!(stdin, "setoption name OwnBook value false").unwrap();
+    writeln!(stdin, "setoption name SyzygyPath value {path}").unwrap();
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(wait_for_line(&rx, "readyok", UCI_STARTUP_TIMEOUT).is_some());
+
+    let probe = |stdin: &mut std::process::ChildStdin, rx: &Receiver<String>| {
+        writeln!(stdin, "position fen 7k/8/8/8/8/8/8/1Q2K3 w - - 0 1").unwrap();
+        writeln!(stdin, "go depth 1").unwrap();
+        stdin.flush().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut probed = false;
+        while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+            let line = rx.recv_timeout(remaining).expect("Syzygy search response");
+            if line.starts_with("info depth 1 ") && info_number(&line, "nodes") == Some(0) {
+                probed = true;
+            }
+            if line.starts_with("bestmove ") {
+                assert!(probed, "search did not use the root tablebase");
+                return;
+            }
+        }
+        panic!("Syzygy search timed out");
+    };
+    probe(&mut stdin, &rx);
+    writeln!(stdin, "setoption name SyzygyPath value <empty>").unwrap();
+    writeln!(stdin, "setoption name SyzygyPath value {path}").unwrap();
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(wait_for_line(&rx, "readyok", UCI_STARTUP_TIMEOUT).is_some());
+    probe(&mut stdin, &rx);
+
+    writeln!(stdin, "quit").unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+    assert!(child.wait().expect("wait for Ember").success());
+}
+
+#[test]
+#[ignore = "run with SYZYGY_CI_PATH pointing to the compact Nix tablebase set"]
+fn ci_syzygy_reload_during_active_search_applies_to_next_search() {
+    let path = std::env::var("SYZYGY_CI_PATH").expect("SYZYGY_CI_PATH is required");
+    let old_dir = std::env::temp_dir().join(format!(
+        "ember-uci-syzygy-old-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&old_dir).unwrap();
+    for ext in ["rtbw", "rtbz"] {
+        let name = format!("KQvK.{ext}");
+        fs::copy(Path::new(&path).join(&name), old_dir.join(name)).unwrap();
+    }
+
+    let (mut child, rx) = spawn_ember();
+    let mut stdin = child.stdin.take().unwrap();
+    writeln!(stdin, "uci").unwrap();
+    writeln!(stdin, "setoption name Threads value 2").unwrap();
+    writeln!(stdin, "setoption name OwnBook value false").unwrap();
+    writeln!(
+        stdin,
+        "setoption name SyzygyPath value {}",
+        old_dir.display()
+    )
+    .unwrap();
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(wait_for_line(&rx, "readyok", UCI_STARTUP_TIMEOUT).is_some());
+
+    writeln!(stdin, "position startpos").unwrap();
+    writeln!(stdin, "go infinite").unwrap();
+    stdin.flush().unwrap();
+    assert!(wait_for_line(&rx, "info depth ", Duration::from_secs(5)).is_some());
+    writeln!(stdin, "setoption name SyzygyPath value {path}").unwrap();
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(wait_for_line(&rx, "readyok", Duration::from_secs(5)).is_some());
+    writeln!(stdin, "stop").unwrap();
+    stdin.flush().unwrap();
+    assert!(wait_for_line(&rx, "bestmove ", Duration::from_secs(5)).is_some());
+
+    writeln!(stdin, "position fen 6rk/8/8/8/8/8/8/KNN5 w - - 0 1").unwrap();
+    writeln!(stdin, "go depth 1").unwrap();
+    stdin.flush().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut root_hit = false;
+    while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+        let line = rx.recv_timeout(remaining).expect("Syzygy root response");
+        if line.starts_with("info depth 1 ") && info_number(&line, "nodes") == Some(0) {
+            root_hit = true;
+        }
+        if line.starts_with("bestmove ") {
+            assert!(root_hit, "next search did not use the new tablebase set");
+            break;
+        }
+    }
+    assert!(root_hit);
+    writeln!(stdin, "quit").unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    fs::remove_dir_all(old_dir).unwrap();
+}
+
+#[test]
 fn go_nodes_returns_promptly_in_single_threaded_search() {
     assert_go_nodes_returns_promptly(1);
 }

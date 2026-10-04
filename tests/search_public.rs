@@ -162,7 +162,7 @@ fn lazy_smp_worker_context_copies_root_search_state() {
     assert_eq!(worker.corr_hist[456], -23);
     assert_eq!(worker.history[12][28], 1_234);
     assert_eq!(worker.counter_move[7][31], root.counter_move[7][31]);
-    assert_eq!(worker.syzygy.tables.is_some(), root.syzygy.tables.is_some());
+    assert_eq!(worker.syzygy.is_loaded(), root.syzygy.is_loaded());
 }
 
 #[test]

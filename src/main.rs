@@ -8,7 +8,6 @@ use ember_chess::evaluate;
 use ember_chess::search::{
     active_search_backend, set_search_backend_override, SearchLearning, SEARCH_THREAD_STACK_SIZE,
 };
-use ember_chess::syzygy::SyzygyTables;
 use ember_chess::time_management::TimeManager;
 use ember_chess::tune::{self, TuneParam};
 use ember_chess::zobrist::compute_hash;
@@ -378,7 +377,11 @@ fn run_uci_loop() {
                     }
                     "syzygypath" => {
                         if val.is_empty() || val.to_lowercase() == "<empty>" {
-                            engine.searcher.syzygy = SyzygyTables::new();
+                            engine
+                                .searcher
+                                .syzygy
+                                .load("<empty>")
+                                .expect("disabling Syzygy cannot fail");
                             eprintln!("info string Syzygy tables disabled");
                         } else {
                             match engine.searcher.syzygy.load(&val) {
@@ -1401,9 +1404,11 @@ mod tests {
     #[test]
     fn reset_preserves_loaded_syzygy_tables() {
         let mut engine = Engine::new();
-        engine.searcher.syzygy.tables = Some(std::sync::Arc::new(shakmaty_syzygy::Tablebase::<
-            shakmaty::Chess,
-        >::new()));
+        let dir = std::env::temp_dir().join(format!("ember-reset-syzygy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = std::fs::File::create(dir.join("KQvK.rtbw")).unwrap();
+        file.set_len(80).unwrap();
+        engine.searcher.syzygy.load(dir.to_str().unwrap()).unwrap();
 
         reset_engine(&mut engine);
 
@@ -1411,6 +1416,7 @@ mod tests {
             engine.searcher.syzygy.is_loaded(),
             "ucinewgame must preserve the configured SyzygyPath"
         );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
