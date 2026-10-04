@@ -6,19 +6,10 @@ import hashlib
 import json
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
+from pyrrhic_tools import pyrrhic_root
 
-ROOT = Path(__file__).resolve().parent.parent
-
-
-def local_pyrrhic_root():
-    manifest = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))
-    path = manifest["dependencies"]["pyrrhic-rs"].get("path")
-    if path is None:
-        raise ValueError("pass --pyrrhic-root for a Git dependency")
-    return (ROOT / path).resolve(strict=True)
 
 
 def compare_ember(request, reference, candidate, ember):
@@ -94,7 +85,7 @@ def main(argv=None):
     try:
         if args.timeout <= 0:
             raise ValueError("timeout must be positive")
-        fork = (args.pyrrhic_root or local_pyrrhic_root()).resolve(strict=True)
+        fork = (args.pyrrhic_root or pyrrhic_root()).resolve(strict=True)
         ember = args.ember.resolve(strict=True)
         tables = args.tables.resolve(strict=True)
         comparator = fork / "tools/compare_syzygy.py"

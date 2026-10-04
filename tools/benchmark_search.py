@@ -28,6 +28,7 @@ DEFAULT_POSITIONS = [
 
 INFO_RE = re.compile(r"^info .*?\bdepth\s+(\d+).*?\bnodes\s+(\d+).*?\bnps\s+(\d+)\b")
 BACKEND_ACK_PREFIX = "info string NNUE backend set to "
+SYZYGY_ACK_PREFIX = "info string Syzygy tables loaded: "
 
 
 def now_id():
@@ -76,6 +77,7 @@ def accepted_backend_acknowledgements(value):
 
 def validate_option_transcript(output, options):
     lines = output.splitlines()
+    effective = {}
     for line in lines:
         if line.startswith("info string Unknown NNUE backend:") or (
             line.startswith("info string NNUE backend ")
@@ -91,21 +93,52 @@ def validate_option_transcript(output, options):
         ),
         None,
     )
-    if requested_backend is None:
-        return {}
-    acknowledgements = [
-        line[len(BACKEND_ACK_PREFIX) :]
-        for line in lines
-        if line.startswith(BACKEND_ACK_PREFIX)
-    ]
-    if not acknowledgements:
-        raise RuntimeError("engine did not acknowledge the requested NNUEBackend option")
-    if acknowledgements[-1] not in accepted_backend_acknowledgements(requested_backend):
-        raise RuntimeError(
-            f"NNUE backend mismatch: requested {requested_backend!r}, "
-            f"acknowledged {acknowledgements[-1]!r}"
+    if requested_backend is not None:
+        acknowledgements = [
+            line[len(BACKEND_ACK_PREFIX) :]
+            for line in lines
+            if line.startswith(BACKEND_ACK_PREFIX)
+        ]
+        if not acknowledgements:
+            raise RuntimeError("engine did not acknowledge the requested NNUEBackend option")
+        if acknowledgements[-1] not in accepted_backend_acknowledgements(requested_backend):
+            raise RuntimeError(
+                f"NNUE backend mismatch: requested {requested_backend!r}, "
+                f"acknowledged {acknowledgements[-1]!r}"
+            )
+        effective["NNUEBackend"] = acknowledgements[-1]
+
+    requested_syzygy = next(
+        (
+            value for name, value in reversed(options or [])
+            if name.casefold() == "syzygypath"
+        ),
+        None,
+    )
+    if requested_syzygy is not None:
+        failures = [
+            line for line in lines
+            if line.startswith("info string Failed to load Syzygy tables:")
+        ]
+        if failures:
+            raise RuntimeError(f"engine rejected benchmark option: {failures[-1]}")
+        expected = (
+            "info string Syzygy tables disabled"
+            if requested_syzygy in ("", "<empty>")
+            else SYZYGY_ACK_PREFIX + requested_syzygy
         )
-    return {"NNUEBackend": acknowledgements[-1]}
+        acknowledgements = [
+            line for line in lines
+            if line == "info string Syzygy tables disabled"
+            or line.startswith(SYZYGY_ACK_PREFIX)
+        ]
+        if not acknowledgements or acknowledgements[-1] != expected:
+            raise RuntimeError(
+                f"SyzygyPath mismatch: requested {requested_syzygy!r}, "
+                f"acknowledged {acknowledgements[-1] if acknowledgements else None!r}"
+            )
+        effective["SyzygyPath"] = requested_syzygy
+    return effective
 
 
 def run_engine(binary, input_text, timeout, raw_output=None):

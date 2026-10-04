@@ -10,6 +10,8 @@ import subprocess
 import sys
 import time
 
+from pyrrhic_tools import load_fork_tool
+
 REPO = pathlib.Path(__file__).resolve().parent.parent
 PGO_DATA = REPO / "pgo-data"
 MERGED_PROFILE = PGO_DATA / "merged.profdata"
@@ -65,12 +67,17 @@ def run_cargo(
     print(f"cargo build finished in {time.monotonic() - started:.0f}s (target-dir={target_dir.name})")
 
 
-def run_bench(binary: pathlib.Path, depths: list[int]) -> list[tuple[int, str, int]]:
+def run_bench(binary: pathlib.Path, depths: list[int],
+              profile_name: str | None = None) -> list[tuple[int, str, int]]:
     input_text = "".join(f"bench depth {d}\n" for d in depths) + "quit\n"
+    env = dict(os.environ)
+    if profile_name is not None:
+        env["LLVM_PROFILE_FILE"] = str(PGO_DATA / f"{profile_name}-%p.profraw")
     proc = subprocess.run(
         [str(binary)],
         input=input_text,
         cwd=REPO,
+        env=env,
         capture_output=True,
         text=True,
         check=True,
@@ -105,8 +112,14 @@ def main() -> None:
         "--cargo-args", default="",
         help='extra cargo build args as one quoted string, e.g. "--bin ember"',
     )
+    parser.add_argument(
+        "--syzygy-path", type=pathlib.Path,
+        help="hash-pinned compact Syzygy tables for release PGO training",
+    )
     args = parser.parse_args()
     cargo_args = shlex.split(args.cargo_args)
+    if args.syzygy_path is not None:
+        load_fork_tool("fetch_syzygy_ci.py").verify_dataset(args.syzygy_path)
 
     profdata_tool = find_llvm_profdata()
     PGO_DATA.mkdir(exist_ok=True)
@@ -118,7 +131,19 @@ def main() -> None:
     print("== step 2/5: profile workload ==")
     for stale in PGO_DATA.glob("*.profraw"):
         stale.unlink()
-    run_bench(instrumented, args.depths)
+    run_bench(instrumented, args.depths, profile_name="bench")
+    if args.syzygy_path is not None:
+        training_log = PGO_DATA / "syzygy-training.log"
+        training_env = dict(os.environ)
+        training_env["LLVM_PROFILE_FILE"] = str(PGO_DATA / "syzygy-%p.profraw")
+        with training_log.open("w", encoding="utf-8") as output:
+            subprocess.run(
+                [sys.executable, str(REPO / "tools" / "train_syzygy_pgo.py"),
+                 str(instrumented), str(args.syzygy_path)],
+                cwd=REPO, env=training_env, stdout=output,
+                stderr=subprocess.STDOUT, check=True,
+            )
+        print(f"  trained compact Syzygy roots; transcript: {training_log}")
     raw_profiles = sorted(PGO_DATA.glob("*.profraw"))
     if not raw_profiles:
         raise SystemExit("no .profraw written; the process must exit normally (no kill/panic)")
@@ -130,6 +155,14 @@ def main() -> None:
         check=True,
     )
     print(f"  {MERGED_PROFILE} ({MERGED_PROFILE.stat().st_size / 1e6:.1f} MB)")
+    if args.syzygy_path is not None:
+        covered = subprocess.run(
+            [str(profdata_tool), "show", "--covered", str(MERGED_PROFILE)],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        (PGO_DATA / "covered-functions.txt").write_text(covered, encoding="utf-8")
+        if "table_decoder11decode_pair" not in covered:
+            raise SystemExit("PGO workload did not execute the Syzygy decoder")
 
     print("== step 4/5: PGO build ==")
     run_cargo(f"{args.rustflags} -Cprofile-use={MERGED_PROFILE.as_posix()}", OPTIMIZED_DIR, cargo_args, args.target)

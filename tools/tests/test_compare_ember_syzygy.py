@@ -9,7 +9,9 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "compare_ember_syzygy.py"
+TOOLS_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(TOOLS_DIR))
+SCRIPT = TOOLS_DIR / "compare_ember_syzygy.py"
 SPEC = importlib.util.spec_from_file_location("compare_ember_syzygy", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
