@@ -107,9 +107,9 @@ let
     pname = "ember-windows-${arch}";
     inherit version;
 
-    src = import ./ember-source.nix { inherit lib; };
+    src = import ./ember-source.nix { inherit lib pkgs; };
 
-    cargoLock.lockFile = ../Cargo.lock;
+    cargoLock = import ./ember-cargo-lock.nix;
     nativeBuildInputs = [
       pkgs.cargo-xwin
       pkgs.clang
