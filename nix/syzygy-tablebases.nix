@@ -21,6 +21,23 @@ let
   sourced3To5 = addSources "3-4-5" entries3To5;
   sourced6 = addSources "6" entries6;
 
+  ciMaterials = [
+    "KQvK"
+    "KPvK"
+    "KRvK"
+    "KRvKP"
+    "KNNvKR"
+  ];
+  ciNames = lib.sort builtins.lessThan (
+    lib.concatMap (material: [ "${material}.rtbw" "${material}.rtbz" ]) ciMaterials
+  );
+  ciEntries = builtins.filter (
+    entry: builtins.elem entry.name ciNames
+  ) entries3To5;
+  ciActualNames = lib.sort builtins.lessThan (map (entry: entry.name) ciEntries);
+  ciTotalBytes = lib.foldl' (total: entry: total + entry.bytes) 0 ciEntries;
+  sourcedCi = addSources "3-4-5" ciEntries;
+
   mkSyzygy =
     {
       name,
@@ -73,6 +90,16 @@ let
     entries = sourced3To5;
   };
 
+  syzygy-ci = assert ciActualNames == ciNames;
+    assert ciTotalBytes == 774944;
+    mkSyzygy {
+      name = "syzygy-ci";
+      directory = "ci";
+      pieceLabel = "compact CI";
+      maxPieces = 5;
+      entries = sourcedCi;
+    };
+
   syzygy-3-4-5-6 = mkSyzygy {
     name = "syzygy-3-4-5-6";
     directory = "3-4-5-6";
@@ -82,7 +109,7 @@ let
   };
 in
 {
-  inherit syzygy-3-4-5 syzygy-3-4-5-6;
+  inherit syzygy-3-4-5 syzygy-3-4-5-6 syzygy-ci;
   syzygy-6 = syzygy-3-4-5-6;
   syzygy = syzygy-3-4-5;
 }
