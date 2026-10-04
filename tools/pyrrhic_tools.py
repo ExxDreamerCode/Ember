@@ -50,3 +50,7 @@ def load_fork_tool(name):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+if __name__ == "__main__":
+    print(pyrrhic_root())
