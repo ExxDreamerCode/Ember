@@ -237,6 +237,10 @@ a subtly different command.
 Every bug fix should have a regression at the narrowest useful layer. A regression proves
 the causal invariant, not just that the final game happens to end differently.
 
+When a Python test compares exact file or archive bytes, create its fixture with
+`Path.write_bytes`. Text-mode writes translate newlines on Windows and can change the
+bytes the test meant to verify.
+
 When adding a foreign NNUE architecture, first require exact integer-score parity with the
 compatible reference engine on varied positions. Separately test that static evaluation,
 the main search, and SMP workers select that network instead of silently falling back to a

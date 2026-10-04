@@ -364,6 +364,7 @@
           };
           ciPackages = with pkgs; [
             bash
+            cargo-about
             coreutils
             rustToolchain
             (python3.withPackages (ps: [

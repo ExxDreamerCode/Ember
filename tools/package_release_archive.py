@@ -138,6 +138,14 @@ def create_release_archive(
         (f"{metadata.root_name}/BUILD-INFO.txt", metadata.build_info(), 0o644),
         (f"{metadata.root_name}/SHA256SUMS.txt", metadata.checksums(), 0o644),
     ]
+    root = cargo_toml.parent
+    notices = {
+        "LICENSE": root / "LICENSE",
+        "THIRD-PARTY-LICENSES.html": root / "licenses" / "THIRD-PARTY-LICENSES.html",
+        "PYRRHIC-LICENSE": root / "licenses" / "PYRRHIC-LICENSE",
+    }
+    for name, source in notices.items():
+        members.append((f"{metadata.root_name}/{name}", source.read_bytes(), 0o644))
 
     output_dir.mkdir(parents=True, exist_ok=True)
     archive = output_dir / metadata.archive_name
@@ -207,10 +215,16 @@ def verify_release_archive(path: Path) -> ReleaseMetadata:
         f"{root_name}/{binary_name}",
         f"{root_name}/BUILD-INFO.txt",
         f"{root_name}/SHA256SUMS.txt",
+        f"{root_name}/LICENSE",
+        f"{root_name}/THIRD-PARTY-LICENSES.html",
+        f"{root_name}/PYRRHIC-LICENSE",
     }
     contents = archive_contents(path)
     if set(contents) != expected_names:
         raise ValueError(f"unexpected archive members in {path.name}")
+    for notice in ("LICENSE", "THIRD-PARTY-LICENSES.html", "PYRRHIC-LICENSE"):
+        if not contents[f"{root_name}/{notice}"][0].strip():
+            raise ValueError(f"empty {notice} in {path.name}")
 
     build_info = parse_build_info(contents[f"{root_name}/BUILD-INFO.txt"][0])
     required = {
