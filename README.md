@@ -270,6 +270,7 @@ Ratings are not comparable between the three lists.
 
 | Version | Rating | Games |
 | --- | ---: | ---: |
+| Ember 1.3.1 64-bit | 3395 ± 16 | 1115 |
 | Ember 1.3.0 64-bit | 3200 ± 21 | 750 |
 
 Elo measurement, paired version comparisons, and search-shape benchmarks are documented in
