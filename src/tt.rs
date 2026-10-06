@@ -105,7 +105,7 @@ impl SharedTT {
         let idx = (key as usize) & inner.mask;
         let entry = &inner.entries[idx];
 
-        let stored_key_xor = entry.key.load(Ordering::Relaxed);
+        let stored_key_xor = entry.key.load(Ordering::Acquire);
         let data = entry.data.load(Ordering::Relaxed);
 
         if stored_key_xor ^ data != key {
@@ -168,7 +168,7 @@ impl SharedTT {
         if replace {
             let packed = pack_data(depth, score, flag, best_move, pv, self.generation());
             entry.data.store(packed, Ordering::Relaxed);
-            entry.key.store(key ^ packed, Ordering::Relaxed);
+            entry.key.store(key ^ packed, Ordering::Release);
         }
     }
 
