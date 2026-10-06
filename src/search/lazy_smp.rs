@@ -144,6 +144,10 @@ fn spawn_lazy_smp_worker(thread_id: usize) -> std::io::Result<LazySmpWorker> {
                             initialize_learning,
                         );
                         let result = run_lazy_smp_worker(searcher, thread_id, &job);
+                        // The worker retains its learning state between jobs, but a
+                        // completed job must not pin a retired tablebase generation.
+                        searcher.syzygy = SyzygyTables::new();
+                        drop(job);
                         let _ = result_tx.send(result);
                     }
                     LazySmpWorkerCommand::ClearLearning { done_tx } => {

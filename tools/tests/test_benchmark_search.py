@@ -109,6 +109,33 @@ class SearchBenchmarkProtocolTests(unittest.TestCase):
                         [("NNUEBackend", requested)],
                     )
 
+    def test_syzygy_path_requires_the_matching_load_acknowledgement(self):
+        path = "/tmp/complete syzygy set"
+        self.assertEqual(
+            validate_option_transcript(
+                f"info string Syzygy tables loaded: {path}\n",
+                [("SyzygyPath", path)],
+            ),
+            {"SyzygyPath": path},
+        )
+        self.assertEqual(
+            validate_option_transcript(
+                "info string Syzygy tables disabled\n",
+                [("SyzygyPath", "<empty>")],
+            ),
+            {"SyzygyPath": "<empty>"},
+        )
+        for transcript in (
+            "readyok\n",
+            "info string Syzygy tables disabled\n",
+            "info string Syzygy tables loaded: /tmp/other\n",
+            f"info string Syzygy tables loaded: {path}\n"
+            "info string Failed to load Syzygy tables: missing file\n",
+        ):
+            with self.subTest(transcript=transcript):
+                with self.assertRaisesRegex(RuntimeError, "Syzygy|rejected"):
+                    validate_option_transcript(transcript, [("SyzygyPath", path)])
+
     def test_transcripts_remain_distinct_for_colliding_labels(self):
         for interleave in [False, True]:
             with self.subTest(interleave=interleave), tempfile.TemporaryDirectory() as temp_dir:

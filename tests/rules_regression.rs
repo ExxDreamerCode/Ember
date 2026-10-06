@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::mem::size_of;
 
+use cozy_chess::{Board as ReferenceBoard, Piece as ReferencePiece, Square};
 use ember_chess::board::{
     bit, board_to_fen, is_dead_position, move_ec, move_er, move_promotion, move_sc, move_sr,
     move_to_uci, piece_on, sq, BoardState, EMPTY_SQ, INF, MATE, WK, WR,
@@ -10,7 +11,6 @@ use ember_chess::syzygy::SyzygyTables;
 use ember_chess::tt::TT_EXACT;
 use ember_chess::zobrist::compute_hash;
 use ember_chess::Engine;
-use shakmaty::{fen::Fen, perft as shakmaty_perft, CastlingMode, Chess, Position};
 
 fn engine_from_fen(fen: &str, chess960: bool) -> Engine {
     let mut engine = Engine::new();
@@ -36,29 +36,53 @@ fn ember_legal_moves(fen: &str, chess960: bool) -> BTreeSet<String> {
         .collect()
 }
 
-fn reference_position(fen: &str, chess960: bool) -> Chess {
-    let mode = if chess960 {
-        CastlingMode::Chess960
-    } else {
-        CastlingMode::Standard
-    };
-    fen.parse::<Fen>()
-        .expect("valid FEN")
-        .into_position(mode)
-        .expect("legal reference position")
+fn reference_position(fen: &str, chess960: bool) -> ReferenceBoard {
+    ReferenceBoard::from_fen(fen, chess960).expect("legal reference position")
 }
 
 fn reference_legal_moves(fen: &str, chess960: bool) -> BTreeSet<String> {
-    let mode = if chess960 {
-        CastlingMode::Chess960
-    } else {
-        CastlingMode::Standard
-    };
-    reference_position(fen, chess960)
-        .legal_moves()
-        .into_iter()
-        .map(|mv| mv.to_uci(mode).to_string())
-        .collect()
+    let board = reference_position(fen, chess960);
+    let mut moves = BTreeSet::new();
+    board.generate_moves(|group| {
+        for mut mv in group {
+            // Cozy emits king-to-rook castling even for standard chess.
+            if !chess960
+                && board.piece_on(mv.from) == Some(ReferencePiece::King)
+                && board.colors(board.side_to_move()).has(mv.to)
+            {
+                let kingside = mv.to.file() > mv.from.file();
+                mv.to = match (board.side_to_move(), kingside) {
+                    (cozy_chess::Color::White, true) => Square::G1,
+                    (cozy_chess::Color::White, false) => Square::C1,
+                    (cozy_chess::Color::Black, true) => Square::G8,
+                    (cozy_chess::Color::Black, false) => Square::C8,
+                };
+            }
+            moves.insert(mv.to_string());
+        }
+        false
+    });
+    moves
+}
+
+fn reference_perft(board: &ReferenceBoard, depth: u32) -> u64 {
+    if depth == 0 {
+        return 1;
+    }
+    let mut nodes = 0;
+    board.generate_moves(|group| {
+        for mv in group {
+            if depth == 1 {
+                nodes += 1;
+            } else {
+                let mut child = board.clone();
+                child.play_unchecked(mv);
+                nodes += reference_perft(&child, depth - 1);
+            }
+        }
+        false
+    });
+    nodes
 }
 
 fn ember_perft_state(st: &ember_chess::board::BoardState, depth: u32) -> u64 {
@@ -156,7 +180,7 @@ fn perft_matches_reference_for_rule_positions() {
         let reference = reference_position(fen, chess960);
         assert_eq!(
             ember_perft_state(&engine.st, depth),
-            shakmaty_perft(&reference, depth),
+            reference_perft(&reference, depth),
             "perft mismatch for {fen}"
         );
     }

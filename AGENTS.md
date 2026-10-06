@@ -68,6 +68,10 @@ convenient result.
   alone does not identify a dirty tree.
 - Preserve raw logs, PGNs, JSON summaries, engine traces, and benchmark output needed to
   audit a conclusion.
+- For long differential comparisons, record each batch invocation, complete
+  transcript, and successful exit status. Resume only after verifying those
+  artifacts against the original inputs and binaries; preserve interrupted
+  partial captures separately.
 - Propagate background output-reader and transcript-write failures to validation callers.
   Keep draining subprocess pipes after a logging failure, reap the process, and reject
   incomplete captures even when the subprocess exits successfully.
@@ -242,6 +246,10 @@ a subtly different command.
 Every bug fix should have a regression at the narrowest useful layer. A regression proves
 the causal invariant, not just that the final game happens to end differently.
 
+When a Python test compares exact file or archive bytes, create its fixture with
+`Path.write_bytes`. Text-mode writes translate newlines on Windows and can change the
+bytes the test meant to verify.
+
 When adding a foreign NNUE architecture, first require exact integer-score parity with the
 compatible reference engine on varied positions. Separately test that static evaluation,
 the main search, and SMP workers select that network instead of silently falling back to a
@@ -307,6 +315,12 @@ Use `tools/benchmark_search.py` for throughput and
 `nix run .#search-shape-benchmark` for depth, nodes, elapsed time, and tree-shape changes.
 Disable the opening book unless book behavior is the subject of the test.
 
+For Syzygy throughput comparisons, choose roots that enter tablebases inside the search:
+an eligible root can return immediately with zero nodes, which has no meaningful NPS.
+Confirm complete WDL/DTZ files loaded for both binaries, count interior probe attempts
+and successes with an untimed diagnostic build, and report node counts and search time
+alongside NPS because tablebase scores can change the search tree.
+
 For SMP work, cover `Threads=1,2,4,8,12` when the machine has at least 12 logical CPUs. Do not
 request more active threads than the hardware can execute when judging scaling. Record both
 total NPS and scaling relative to one thread. Also inspect reached depth and node count:
@@ -342,9 +356,12 @@ layout and inlining decisions only, never program semantics, so it counts as a p
 speedup: every PGO binary must reproduce the plain build's bench signature and node
 counts exactly, and adoption still needs the standard paired NPS comparison.
 
-- Local Windows builds: `python tools/build_pgo.py` (instrumented build into
-  `target-pgo`, deterministic fixed-depth bench workload, `llvm-profdata` merge into
-  `pgo-data/merged.profdata`, rebuild with `-Cprofile-use` into `target-pgo-use`,
+- Local Windows builds: first fetch the pinned compact tables with
+  `python tools/fetch_syzygy_ci.py --out-dir pgo-data/syzygy-ci`, then run
+  `python tools/build_pgo.py --syzygy-path pgo-data/syzygy-ci` (instrumented build into
+  `target-pgo`, deterministic fixed-depth bench and real Syzygy root workloads,
+  merge with `llvm-profdata` into `pgo-data/merged.profdata`, rebuild with
+  `-Cprofile-use` into `target-pgo-use`,
   signature comparison against the plain binary). Requires
   `rustup component add llvm-tools`. Profiles are local artifacts (`pgo-data/` is
   gitignored); regenerate them after meaningful engine changes.
@@ -359,6 +376,10 @@ counts exactly, and adoption still needs the standard paired NPS comparison.
 - The Nix `ci` shell, plain CI test builds, and the fixture-gate baseline stay plain
   (no PGO) and act as the portability and correctness gate.
 - Verify with the paired-NPS workflow above on the same machine before and after.
+- Include representative inputs for hot optional subsystems in the PGO workload.
+  In particular, plain bench positions do not exercise the Syzygy decoder.
+  Check that `llvm-profdata show --counts` records nonzero decoder execution,
+  then compare tablebase-loaded search NPS and a Syzygy-disabled control.
 - For runtime-dispatched kernels, train and verify each reachable feature path in
   a fresh process. Check actual profile execution counts, not just the presence of
   the functions. Explicit QEMU CPU models can verify fallback correctness and
@@ -492,11 +513,44 @@ already incorporated.
   can use a different raw profile format. Resolve host-tool paths using Rust's host triple,
   which may differ from Nix's platform config (notably on Apple Silicon), and check the tool
   exists before starting an instrumented build.
+- After changing a Rust dependency, regenerate the locked third-party license report with
+  the command in `about.toml` and run its CI comparison. Keep original upstream notices
+  from maintained forks and translated libraries, and check that release
+  archives carry the notice files.
 - Add opponent packages separately from the comparison or test that consumes them. This
   keeps licensing/build review distinct from experimental methodology.
 - Treat Syzygy manifests as exact datasets. Verify file counts, WDL/DTZ pairing, store paths,
   and material coverage. Test `3-4-5-6` against `3-4-5` or no Syzygy as complete
   configurations, not as a misleading six-piece-only directory.
+- When a dependency package contains multiple files with the same SPDX license,
+  pin each required notice with checksummed `cargo-about` clarifications. Check
+  notices for bundled native code separately from its Rust wrapper, and verify
+  the generated report on another machine before shipping it.
+- When using a small six- or seven-piece sample, check that every root move and
+  recursive DTZ successor stays within the available tables. A pawn promotion
+  can require another table of the same cardinality. Use direct WDL/DTZ probes
+  for a sample without successor closure, and reserve root comparisons for a
+  closed sample. Record missing-table failures separately from probe defects.
+- When copying a Nix tablebase output to another host, dereference its absolute
+  store symlinks or build the output there. Verify that the destination has
+  readable table files before interpreting a probe failure.
+- When changing a tablebase backend, verify that it discovers each material split in the
+  manifest, not just the maximum piece count. Probe real positions from those splits at
+  both root and interior nodes; a successful path load can still omit a whole class of
+  tables and silently change the search tree.
+- Keep tablebase directories immutable while any loaded generation may probe them. Capture
+  one generation at search setup, publish replacements for later searches, and release
+  retired references from persistent workers after each job. Test reloads with distinct
+  directories instead of overwriting files that may still be opened lazily.
+- When a safe Rust API wraps a translated unsafe decoder, reject malformed piece masks,
+  pawn ranks, and en-passant squares before raw indexing. For shared probe state, audit
+  reference creation as well as writes: `&mut` and `as_mut_ptr()` on published data
+  claim exclusive access even when the caller only reads. Exercise first-load and
+  concurrent steady-state probes with real tables.
+- Use the hash-pinned `syzygy-ci` target for mandatory small real-table probes on both
+  Linux CI architectures. Select those tests explicitly with `SYZYGY_CI_PATH`; keep
+  full-set and six-piece tests separate so sparse tables cannot silently skip a
+  required assertion or trigger probes of missing successor tables.
 
 ## Definition of done
 

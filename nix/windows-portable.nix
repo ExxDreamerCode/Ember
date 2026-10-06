@@ -61,6 +61,9 @@ pkgs.stdenvNoCC.mkDerivation {
     mkdir -p "$bundle/engine" "$bundle/lichess-bot" "$runtime" "$site" "$out"
 
     cp "${emberWindows}/bin/ember.exe" "$bundle/engine/ember.exe"
+    cp "${../LICENSE}" "$bundle/LICENSE"
+    cp "${../licenses/THIRD-PARTY-LICENSES.html}" "$bundle/THIRD-PARTY-LICENSES.html"
+    cp "${../licenses/PYRRHIC-LICENSE}" "$bundle/PYRRHIC-LICENSE"
     unzip -q "${pythonEmbed}" -d "$runtime"
 
     dependency_site="${pythonDependencies}/${pkgs.python312.sitePackages}"
@@ -246,6 +249,11 @@ EOF
       cd "$TMPDIR"
       zip -X -9 -q -r "$out/ember-lichess-windows.zip" Ember-Lichess
     )
+    for notice in LICENSE THIRD-PARTY-LICENSES.html PYRRHIC-LICENSE; do
+      unzip -p "$out/ember-lichess-windows.zip" "Ember-Lichess/$notice" \
+        > "$TMPDIR/verified-notice"
+      cmp "$bundle/$notice" "$TMPDIR/verified-notice"
+    done
     (
       cd "$out"
       sha256sum ember-lichess-windows.zip > ember-lichess-windows.zip.sha256

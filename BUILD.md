@@ -151,6 +151,15 @@ result/ember-lichess-windows.zip
 result/ember-lichess-windows.zip.sha256
 ```
 
+The ZIP includes Ember's `LICENSE`, `THIRD-PARTY-LICENSES.html`, and
+`PYRRHIC-LICENSE` at its top level. The build verifies those members after
+creating the archive.
+
+`Cargo.toml` and `Cargo.lock` pin the maintained Pyrrhic fork to a full Git
+revision. Nix vendors that locked revision with a fixed output hash, so release
+builds and CI do not depend on a local fork checkout. The independent Syzygy
+test tools are loaded from Cargo's checkout of the same revision.
+
 All downloaded build inputs are pinned in Nix and verified by cryptographic
 hashes. The ZIP also contains `SHA256SUMS.txt`, which is checked by `Verify.cmd`
 and automatically before each run. User-owned `battle.toml` and the `results/`

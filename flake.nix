@@ -322,7 +322,6 @@
           };
           existingLinuxPackages = pkgs.lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") (
             (import ./nix/ccrl-opponents.nix { inherit pkgs; })
-            // (import ./nix/syzygy-tablebases.nix { inherit pkgs; })
             // {
               windows-ember = windowsEmberAmd64.package;
               windows-portable = import ./nix/windows-portable.nix {
@@ -332,8 +331,11 @@
               };
             }
           );
+          syzygyPackages = pkgs.lib.optionalAttrs pkgs.stdenv.isLinux (
+            import ./nix/syzygy-tablebases.nix { inherit pkgs; }
+          );
         in
-        existingLinuxPackages // linuxReleasePackages // macosReleasePackages
+        existingLinuxPackages // syzygyPackages // linuxReleasePackages // macosReleasePackages
       );
 
       devShells = forAllSystems (
@@ -362,6 +364,7 @@
           };
           ciPackages = with pkgs; [
             bash
+            cargo-about
             coreutils
             rustToolchain
             (python3.withPackages (ps: [

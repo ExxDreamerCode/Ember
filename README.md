@@ -90,6 +90,13 @@ setoption name SyzygyPath value ./result/share/syzygy/3-4-5
 
 This is the up-to-5-piece set and is 983957920 bytes. The `syzygy` alias intentionally points to this smaller set.
 
+For focused tests, `nix build .#syzygy-ci` provides ten pinned WDL/DTZ files
+(774944 bytes) under `result/share/syzygy/ci`. This subset covers recorded
+positions only; it is not a complete replacement for the 3-4-5 set. Keep a
+loaded tablebase directory unchanged while any search may use it. Changing
+`SyzygyPath` publishes a new tablebase generation for the next search while
+an active search finishes with its existing generation.
+
 Use a separate target for the complete up-to-6-piece set:
 
 ```bash
@@ -299,6 +306,17 @@ Found a bug or have an idea? Open an issue or PR — help and feedback are welco
 ## 📄 License
 
 This project is distributed under the MIT license.
+
+Runtime Syzygy probing uses the maintained MIT
+[`pyrrhic-rs` fork](https://github.com/starius/pyrrhic-rs).
+Its original Pyrrhic notice is preserved in
+[`licenses/PYRRHIC-LICENSE`](licenses/PYRRHIC-LICENSE),
+and the locked Rust dependency notices are in
+[`licenses/THIRD-PARTY-LICENSES.html`](licenses/THIRD-PARTY-LICENSES.html).
+The Syzygy parser and probe use safe Rust; the crate's file-mapping module has
+one unsafe operation and requires table files to remain unchanged while mapped.
+The fork's GPL Syzygy reference is a separate test process and is excluded
+from Ember's runtime dependencies and release packages.
 
 Ember is built, tested, and trained with other people's work, and each of those keeps its own
 license, separate from the MIT license above:

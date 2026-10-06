@@ -81,8 +81,8 @@ rustPlatform.buildRustPackage {
   pname = "ember-macos-pgo-profile-${arch}";
   inherit version;
 
-  src = import ./ember-source.nix { inherit lib; };
-  cargoLock.lockFile = ../Cargo.lock;
+  src = import ./ember-source.nix { inherit lib pkgs; };
+  cargoLock = import ./ember-cargo-lock.nix;
 
   nativeBuildInputs = [
     targetCc

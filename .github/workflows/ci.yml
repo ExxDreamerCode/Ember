@@ -31,6 +31,19 @@ jobs:
       - name: Check formatting
         run: nix develop .#ci --command cargo fmt --all --check
 
+      - name: Verify Rust license report
+        if: matrix.runner == 'ubuntu-latest'
+        run: |
+          nix develop .#ci --command bash -c '
+            set -euo pipefail
+            cargo about generate --locked --fail --all-features about.hbs \
+              --output-file /tmp/ember-third-party-licenses.html
+            cmp licenses/THIRD-PARTY-LICENSES.html \
+              /tmp/ember-third-party-licenses.html
+            grep -Fq "Copyright (c) 2018-2025 Microsoft Corporation, Daan Leijen" \
+              /tmp/ember-third-party-licenses.html
+          '
+
       - name: Run clippy
         run: >
           nix develop .#ci --command cargo clippy --locked
@@ -45,6 +58,49 @@ jobs:
           "
         env:
           RUST_BACKTRACE: 1
+
+      - name: Fetch compact Syzygy test tables
+        run: |
+          set -euo pipefail
+          package="$(nix build .#syzygy-ci --no-link --print-out-paths)"
+          echo "SYZYGY_CI_PATH=$package/share/syzygy/ci" >> "$GITHUB_ENV"
+
+      - name: Run compact Syzygy integration tests
+        run: |
+          nix develop .#ci --command bash -c '
+            set -euo pipefail
+            ulimit -s 65536
+            export RUST_MIN_STACK=16777216
+            cargo test --locked --test syzygy_public ci_ -- --ignored --test-threads=1
+            cargo test --locked --test uci_smp_regression ci_syzygy_reload_during_active_search_applies_to_next_search -- --ignored --test-threads=1
+          '
+
+      - name: Compare Ember Syzygy policy with the fork reference
+        if: matrix.runner == 'ubuntu-latest'
+        run: |
+          nix develop .#ci --command bash -c '
+            set -euo pipefail
+            test -n "${SYZYGY_CI_PATH:-}"
+            pyrrhic_root="$(python3 tools/pyrrhic_tools.py)"
+            cargo build --locked --manifest-path "$pyrrhic_root/Cargo.toml" \
+              --example syzygy_probe
+            cargo build --locked \
+              --manifest-path "$pyrrhic_root/tools/syzygy-reference/Cargo.toml"
+            cargo build --locked --example syzygy_ember_probe
+            python3 tools/compare_ember_syzygy.py \
+              --ember target/debug/examples/syzygy_ember_probe \
+              --tables "$SYZYGY_CI_PATH" \
+              --output-dir "$RUNNER_TEMP/syzygy-compact-differential"
+          '
+
+      - name: Upload compact Syzygy comparison
+        if: always() && matrix.runner == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: syzygy-compact-differential
+          path: ${{ runner.temp }}/syzygy-compact-differential
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Check default-feature test compilation
         run: nix develop .#ci --command cargo test --locked --no-run
@@ -147,14 +203,17 @@ jobs:
       - name: Build baseline binary
         run: |
           set -euo pipefail
-          rm -rf baseline-worktree
-          git worktree add -f --detach baseline-worktree "$BASELINE_SHA"
+          baseline_worktree="$RUNNER_TEMP/ember-fixture-baseline"
+          # Build independently selected revisions outside the source checkout
+          # so Cargo cannot discover an enclosing candidate workspace.
+          git worktree add --detach "$baseline_worktree" "$BASELINE_SHA"
           rm -f target/baseline-target/release/ember
-          cd baseline-worktree
-          nix develop .#ci --command cargo build --locked \
-            --release --bin ember --target-dir ../target/baseline-target
-          cd ..
-          cp target/baseline-target/release/ember baseline-worktree/ember-baseline
+          (
+            cd "$baseline_worktree"
+            nix develop .#ci --command cargo build --locked \
+              --release --bin ember \
+              --target-dir "$GITHUB_WORKSPACE/target/baseline-target"
+          )
 
       - name: Run two-binary fixture gate
         run: |
@@ -162,7 +221,7 @@ jobs:
           mkdir -p results/fixture-gate
           nix develop .#ci --command python3 tools/compare_fixture_corpus.py \
             --fixtures tests/fixtures \
-            --baseline baseline-worktree/ember-baseline \
+            --baseline target/baseline-target/release/ember \
             --candidate target/release/ember \
             --baseline-label "baseline $(git rev-parse --short "$BASELINE_SHA")" \
             --candidate-label "head $(git rev-parse --short HEAD)" \
@@ -327,9 +386,12 @@ jobs:
         shell: pwsh
         run: |
           rustup component add llvm-tools
+          $pyrrhicRoot = python tools/pyrrhic_tools.py
+          python "$pyrrhicRoot/tools/fetch_syzygy_ci.py" --out-dir "$env:RUNNER_TEMP/syzygy-ci"
           python tools/build_pgo.py --target x86_64-pc-windows-msvc `
             --rustflags "-C target-cpu=x86-64-v3 -C target-feature=+crt-static -C link-arg=/STACK:16777216" `
-            --cargo-args "--bin ember"
+            --cargo-args "--bin ember" `
+            --syzygy-path "$env:RUNNER_TEMP/syzygy-ci"
 
       - name: Promote PGO binary into the build output path
         shell: pwsh
@@ -382,11 +444,20 @@ jobs:
           python -m unittest discover
           -s windows/tests -p 'test_*.py'
 
-      - name: Upload native MSVC binary
+      - name: Package native MSVC binary
+        shell: pwsh
+        run: >-
+          python tools/package_release_archive.py
+          --binary target/x86_64-pc-windows-msvc/release/ember.exe
+          --platform windows-amd64
+          --commit $env:GITHUB_SHA
+          --output-dir native-msvc-artifact
+
+      - name: Upload native MSVC archive
         uses: actions/upload-artifact@v4
         with:
           name: ember-windows-msvc-amd64
-          path: target/x86_64-pc-windows-msvc/release/ember.exe
+          path: native-msvc-artifact/*.zip
           if-no-files-found: error
           retention-days: 7
 

@@ -1,23 +1,43 @@
-use shakmaty::{
-    uci::UciMove, Bitboard, Board, ByColor, ByRole, CastlingMode, Chess, Color as SColor,
-    FromSetup, Setup, Square,
-};
-use shakmaty_syzygy::{AmbiguousWdl, Dtz, MaybeRounded, Tablebase, Wdl};
+use pyrrhic_rs::{Color, DtzProbeValue, EngineAdapter, Piece, TableBases, WdlProbeResult};
 use std::collections::HashSet;
-use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::board::{move_to_uci, BoardState, Move, MAX_PLY, TB_WIN_SCORE};
+use crate::board::{
+    move_from, move_promotion, move_to, BoardState, Move, BB, BK, BN, BP, BQ, BR, KING_ATTACKS,
+    KNIGHT_ATTACKS, MAX_PLY, TB_WIN_SCORE, WB, WK, WN, WP, WQ, WR,
+};
+use crate::magic::{bishop_attacks, rook_attacks};
 
-fn exact_search_score(wdl: AmbiguousWdl, ply: usize) -> Option<i32> {
+fn exact_search_score(wdl: WdlProbeResult, ply: usize) -> i32 {
     let ply = ply.min(MAX_PLY) as i32;
     match wdl {
-        AmbiguousWdl::Win => Some(TB_WIN_SCORE - ply),
-        AmbiguousWdl::Loss => Some(-TB_WIN_SCORE + ply),
-        AmbiguousWdl::Draw | AmbiguousWdl::CursedWin | AmbiguousWdl::BlessedLoss => Some(0),
-        AmbiguousWdl::MaybeWin | AmbiguousWdl::MaybeLoss => None,
+        WdlProbeResult::Win => TB_WIN_SCORE - ply,
+        WdlProbeResult::Loss => -TB_WIN_SCORE + ply,
+        WdlProbeResult::Draw | WdlProbeResult::CursedWin | WdlProbeResult::BlessedLoss => 0,
     }
+}
+
+fn wdl_from_dtz(dtz: i32, halfmoves: u8) -> Option<WdlProbeResult> {
+    if dtz == 0 {
+        return Some(WdlProbeResult::Draw);
+    }
+    let distance = dtz.unsigned_abs();
+    let remaining = u32::from(halfmoves) + distance;
+    // The fork returns signed DTZ without a precise/rounded flag. Withhold
+    // exact bounds for totals 99..=101, including some known outcomes, rather
+    // than resolve the fifty-move boundary from an unqualified distance.
+    // This is deliberately more conservative than the old precision-aware
+    // backend. Root move selection still uses the fork's own selector.
+    if (99..=101).contains(&remaining) {
+        return None;
+    }
+    Some(match (dtz > 0, distance <= 100 && remaining < 100) {
+        (true, true) => WdlProbeResult::Win,
+        (false, true) => WdlProbeResult::Loss,
+        (true, false) => WdlProbeResult::CursedWin,
+        (false, false) => WdlProbeResult::BlessedLoss,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
@@ -112,146 +132,159 @@ impl MaterialKey {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 struct SyzygyCapabilities {
     max_pieces: u32,
-    wdl_materials: Arc<HashSet<MaterialKey>>,
-    dtz_materials: Arc<HashSet<MaterialKey>>,
+    wdl_materials: HashSet<MaterialKey>,
+    dtz_materials: HashSet<MaterialKey>,
 }
 
 impl SyzygyCapabilities {
-    fn from_directory(path: &Path, max_pieces: u32) -> Result<Self, String> {
+    fn from_tables(tables: &TableBases<EmberAdapter>) -> Self {
         let mut wdl_materials = HashSet::new();
         let mut dtz_materials = HashSet::new();
-
-        for entry in fs::read_dir(path)
-            .map_err(|e| format!("Failed to list Syzygy directory {}: {}", path.display(), e))?
-        {
-            let entry = entry.map_err(|e| {
-                format!(
-                    "Failed to read Syzygy directory entry in {}: {}",
-                    path.display(),
-                    e
-                )
-            })?;
-            let path = entry.path();
-            let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+        for (name, has_dtz) in tables.materials() {
+            let Some(material) = MaterialKey::from_stem(&name) else {
                 continue;
             };
-            let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
-                continue;
-            };
-            let Some(material) = MaterialKey::from_stem(stem) else {
-                continue;
-            };
-
-            match ext {
-                "rtbw" => {
-                    wdl_materials.insert(material);
-                }
-                "rtbz" => {
-                    dtz_materials.insert(material);
-                }
-                _ => {}
+            wdl_materials.insert(material);
+            if has_dtz {
+                dtz_materials.insert(material);
             }
         }
-
-        Ok(Self {
-            max_pieces,
-            wdl_materials: Arc::new(wdl_materials),
-            dtz_materials: Arc::new(dtz_materials),
-        })
-    }
-
-    fn empty() -> Self {
-        Self::default()
-    }
-}
-
-fn to_shakmaty_board(st: &BoardState) -> Board {
-    let shift = |ember_sq: usize| -> u64 { 1u64 << to_shakmaty_square(ember_sq) as u32 };
-
-    let mut white_bb = [0u64; 6];
-    let mut black_bb = [0u64; 6];
-    for sq in 0..64 {
-        let b = shift(sq);
-        for pi in 0..12 {
-            if st.bb[pi] & (1u64 << sq) != 0 {
-                if pi < 6 {
-                    white_bb[pi] |= b;
-                } else {
-                    black_bb[pi - 6] |= b;
-                }
-                break;
-            }
+        Self {
+            max_pieces: tables.max_pieces(),
+            wdl_materials,
+            dtz_materials,
         }
     }
-    let pawn = Bitboard(white_bb[0] | black_bb[0]);
-    let knight = Bitboard(white_bb[1] | black_bb[1]);
-    let bishop = Bitboard(white_bb[2] | black_bb[2]);
-    let rook = Bitboard(white_bb[3] | black_bb[3]);
-    let queen = Bitboard(white_bb[4] | black_bb[4]);
-    let king = Bitboard(white_bb[5] | black_bb[5]);
-    let white =
-        Bitboard(white_bb[0] | white_bb[1] | white_bb[2] | white_bb[3] | white_bb[4] | white_bb[5]);
-    let black =
-        Bitboard(black_bb[0] | black_bb[1] | black_bb[2] | black_bb[3] | black_bb[4] | black_bb[5]);
-    Board::try_from_bitboards(
-        ByRole {
-            pawn,
-            knight,
-            bishop,
-            rook,
-            queen,
-            king,
-        },
-        ByColor { white, black },
-    )
-    .ok()
-    .unwrap_or_else(Board::empty)
 }
 
-fn to_shakmaty_square(ember_sq: usize) -> Square {
-    let col = ember_sq & 7;
-    let ember_rank = ember_sq >> 3;
-    let shak_rank = 7 - ember_rank;
-    Square::new((shak_rank * 8 + col) as u32)
-}
+#[derive(Clone)]
+struct EmberAdapter;
 
-fn board_to_chess(st: &BoardState) -> Option<Chess> {
-    let board = to_shakmaty_board(st);
-    let color = if st.w { SColor::White } else { SColor::Black };
-    let setup = Setup {
-        board,
-        turn: color,
-        castling_rights: Bitboard(0),
-        ep_square: st.ep.map(to_shakmaty_square),
-        promoted: Bitboard(0),
-        pockets: None,
-        remaining_checks: None,
-        halfmoves: st.halfmove_clock.into(),
-        fullmoves: std::num::NonZeroU32::MIN,
-    };
-    Chess::from_setup(setup, CastlingMode::Standard).ok()
-}
-
-fn new_tablebase() -> Tablebase<Chess> {
-    #[cfg(target_pointer_width = "64")]
-    {
-        // Syzygy tables are treated as immutable while the engine is running.
-        // This is true for Nix-store tables and for normal tablebase installs.
-        unsafe { Tablebase::with_mmap_filesystem() }
+impl EngineAdapter for EmberAdapter {
+    fn pawn_attacks(color: Color, square: u64) -> u64 {
+        let bit = 1u64 << ((square as usize) ^ 56);
+        let attacks = if color == Color::White {
+            (bit & !0x8080_8080_8080_8080) >> 7 | (bit & !0x0101_0101_0101_0101) >> 9
+        } else {
+            (bit & !0x0101_0101_0101_0101) << 7 | (bit & !0x8080_8080_8080_8080) << 9
+        };
+        attacks.swap_bytes()
     }
 
-    #[cfg(not(target_pointer_width = "64"))]
-    {
-        Tablebase::new()
+    fn knight_attacks(square: u64) -> u64 {
+        KNIGHT_ATTACKS[(square as usize) ^ 56].swap_bytes()
+    }
+
+    fn bishop_attacks(square: u64, occupied: u64) -> u64 {
+        bishop_attacks((square as usize) ^ 56, occupied.swap_bytes()).swap_bytes()
+    }
+
+    fn rook_attacks(square: u64, occupied: u64) -> u64 {
+        rook_attacks((square as usize) ^ 56, occupied.swap_bytes()).swap_bytes()
+    }
+
+    fn queen_attacks(square: u64, occupied: u64) -> u64 {
+        Self::bishop_attacks(square, occupied) | Self::rook_attacks(square, occupied)
+    }
+
+    fn king_attacks(square: u64) -> u64 {
+        KING_ATTACKS[(square as usize) ^ 56].swap_bytes()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ProbePosition {
+    white: u64,
+    black: u64,
+    kings: u64,
+    queens: u64,
+    rooks: u64,
+    bishops: u64,
+    knights: u64,
+    pawns: u64,
+    ep: u32,
+    turn: bool,
+    halfmoves: u8,
+}
+
+impl ProbePosition {
+    fn from_board(st: &BoardState) -> Self {
+        let flip = |bb: u64| bb.swap_bytes();
+        Self {
+            white: flip(st.bb[WP] | st.bb[WN] | st.bb[WB] | st.bb[WR] | st.bb[WQ] | st.bb[WK]),
+            black: flip(st.bb[BP] | st.bb[BN] | st.bb[BB] | st.bb[BR] | st.bb[BQ] | st.bb[BK]),
+            kings: flip(st.bb[WK] | st.bb[BK]),
+            queens: flip(st.bb[WQ] | st.bb[BQ]),
+            rooks: flip(st.bb[WR] | st.bb[BR]),
+            bishops: flip(st.bb[WB] | st.bb[BB]),
+            knights: flip(st.bb[WN] | st.bb[BN]),
+            pawns: flip(st.bb[WP] | st.bb[BP]),
+            ep: st.ep.map_or(0, |sq| (sq ^ 56) as u32),
+            turn: st.w,
+            halfmoves: st.halfmove_clock,
+        }
+    }
+
+    fn probe_wdl(self, tb: &TableBases<EmberAdapter>) -> Option<WdlProbeResult> {
+        tb.probe_wdl(
+            self.white,
+            self.black,
+            self.kings,
+            self.queens,
+            self.rooks,
+            self.bishops,
+            self.knights,
+            self.pawns,
+            self.ep,
+            self.turn,
+        )
+        .ok()
+    }
+
+    fn probe_dtz(self, tb: &TableBases<EmberAdapter>) -> Option<i32> {
+        tb.probe_dtz(
+            self.white,
+            self.black,
+            self.kings,
+            self.queens,
+            self.rooks,
+            self.bishops,
+            self.knights,
+            self.pawns,
+            self.ep,
+            self.turn,
+        )
+        .ok()
+    }
+
+    fn probe_root(self, tb: &TableBases<EmberAdapter>) -> Option<pyrrhic_rs::DtzProbeResult> {
+        tb.probe_root(
+            self.white,
+            self.black,
+            self.kings,
+            self.queens,
+            self.rooks,
+            self.bishops,
+            self.knights,
+            self.pawns,
+            self.halfmoves.into(),
+            self.ep,
+            self.turn,
+        )
+        .ok()
     }
 }
 
 #[derive(Clone)]
 pub struct SyzygyTables {
-    pub tables: Option<Arc<Tablebase<Chess>>>,
+    generation: Option<Arc<SyzygyGeneration>>,
+}
+
+struct SyzygyGeneration {
+    tables: TableBases<EmberAdapter>,
     capabilities: SyzygyCapabilities,
 }
 
@@ -263,41 +296,39 @@ impl Default for SyzygyTables {
 
 impl SyzygyTables {
     pub fn new() -> Self {
-        SyzygyTables {
-            tables: None,
-            capabilities: SyzygyCapabilities::empty(),
-        }
+        SyzygyTables { generation: None }
     }
 
     pub fn load(&mut self, path: &str) -> Result<(), String> {
         if path.is_empty() || path.to_lowercase() == "<empty>" {
-            self.tables = None;
-            self.capabilities = SyzygyCapabilities::empty();
+            self.generation = None;
             return Ok(());
         }
-        let path = Path::new(path);
-        if !path.exists() {
-            return Err(format!("Syzygy directory not found: {}", path.display()));
+        let directory = Path::new(path);
+        if !directory.is_dir() {
+            return Err(format!(
+                "Syzygy directory not found: {}",
+                directory.display()
+            ));
         }
-        let mut tb = new_tablebase();
-        tb.add_directory(path)
-            .map_err(|e| format!("Failed to load Syzygy tables: {}", e))?;
-        let max_pieces = tb.max_pieces() as u32;
-        if max_pieces == 0 {
-            return Err(format!("No Syzygy tables found in {}", path.display()));
-        }
-        let capabilities = SyzygyCapabilities::from_directory(path, max_pieces)?;
-        self.tables = Some(Arc::new(tb));
-        self.capabilities = capabilities;
+        let tables =
+            TableBases::new(path).map_err(|e| format!("Failed to load Syzygy tables: {e:?}"))?;
+        let capabilities = SyzygyCapabilities::from_tables(&tables);
+        self.generation = Some(Arc::new(SyzygyGeneration {
+            tables,
+            capabilities,
+        }));
         Ok(())
     }
 
     pub fn max_pieces(&self) -> u32 {
-        self.capabilities.max_pieces
+        self.generation
+            .as_ref()
+            .map_or(0, |generation| generation.capabilities.max_pieces)
     }
 
     pub fn is_loaded(&self) -> bool {
-        self.tables.is_some()
+        self.generation.is_some()
     }
 
     pub fn piece_count(st: &BoardState) -> u32 {
@@ -312,7 +343,10 @@ impl SyzygyTables {
     }
 
     pub fn can_probe_wdl(&self, st: &BoardState) -> bool {
-        if !self.is_loaded() || !Self::pieces_ok(st) {
+        let Some(generation) = &self.generation else {
+            return false;
+        };
+        if !Self::pieces_ok(st) {
             return false;
         }
         let piece_count = Self::piece_count(st);
@@ -320,14 +354,17 @@ impl SyzygyTables {
             return true;
         }
         piece_count <= self.max_pieces()
-            && self
+            && generation
                 .capabilities
                 .wdl_materials
                 .contains(&MaterialKey::from_board(st))
     }
 
     pub fn can_probe_dtz(&self, st: &BoardState) -> bool {
-        if !self.is_loaded() || !Self::pieces_ok(st) {
+        let Some(generation) = &self.generation else {
+            return false;
+        };
+        if !Self::pieces_ok(st) {
             return false;
         }
         let piece_count = Self::piece_count(st);
@@ -336,77 +373,81 @@ impl SyzygyTables {
         }
         piece_count <= self.max_pieces() && {
             let material = MaterialKey::from_board(st);
-            self.capabilities.wdl_materials.contains(&material)
-                && self.capabilities.dtz_materials.contains(&material)
+            generation.capabilities.wdl_materials.contains(&material)
+                && generation.capabilities.dtz_materials.contains(&material)
         }
     }
 
-    pub fn probe_wdl(&self, st: &BoardState) -> Option<Wdl> {
+    pub fn probe_wdl(&self, st: &BoardState) -> Option<WdlProbeResult> {
         if !self.can_probe_wdl(st) {
             return None;
         }
-        let tables = self.tables.as_ref()?;
-        let chess = board_to_chess(st)?;
-        tables.probe_wdl_after_zeroing(&chess).ok()
+        let tables = &self.generation.as_ref()?.tables;
+        ProbePosition::from_board(st).probe_wdl(tables)
     }
 
-    pub fn probe_wdl_50(&self, st: &BoardState) -> Option<AmbiguousWdl> {
+    pub fn probe_wdl_50(&self, st: &BoardState) -> Option<WdlProbeResult> {
         if !self.can_probe_dtz(st) {
             return None;
         }
-        let tables = self.tables.as_ref()?;
-        let chess = board_to_chess(st)?;
-        tables.probe_wdl(&chess).ok()
+        let tables = &self.generation.as_ref()?.tables;
+        let position = ProbePosition::from_board(st);
+        wdl_from_dtz(position.probe_dtz(tables)?, position.halfmoves)
     }
 
-    pub fn probe_dtz(&self, st: &BoardState) -> Option<Dtz> {
+    pub fn probe_dtz(&self, st: &BoardState) -> Option<i32> {
         if !self.can_probe_dtz(st) {
             return None;
         }
-        let tables = self.tables.as_ref()?;
-        let chess = board_to_chess(st)?;
-        match tables.probe_dtz(&chess).ok()? {
-            MaybeRounded::Rounded(dtz) | MaybeRounded::Precise(dtz) => Some(dtz),
-        }
+        let tables = &self.generation.as_ref()?.tables;
+        ProbePosition::from_board(st).probe_dtz(tables)
     }
 
-    /// Returns the library's canonical Syzygy root move. The dependency's
-    /// selector handles captures, pawn moves, DTZ rounding, and the extra ply
-    /// for non-zeroing moves; duplicating that recurrence here caused the
-    /// previous zeroing and off-by-one bugs.
+    /// Use the library's root selector and verify the selected move against
+    /// Ember's legal move list before returning it to the UCI driver.
     pub fn probe_root_move(&self, st: &BoardState, legal_moves: &[Move]) -> Option<Move> {
         if legal_moves.is_empty() || !self.can_probe_dtz(st) {
             return None;
         }
-        let tables = self.tables.as_ref()?;
-        let chess = board_to_chess(st)?;
-        let (best, _) = tables.best_move(&chess).ok()??;
-        let best_uci = UciMove::from_standard(best).to_string();
-        legal_moves
-            .iter()
-            .copied()
-            .find(|mv| move_to_uci(st, *mv) == best_uci)
+        let tables = &self.generation.as_ref()?.tables;
+        let root = ProbePosition::from_board(st).probe_root(tables)?;
+        let DtzProbeValue::DtzResult(best) = root.root else {
+            return None;
+        };
+        let promotion = match best.promotion {
+            Piece::Queen => b'Q',
+            Piece::Rook => b'R',
+            Piece::Bishop => b'B',
+            Piece::Knight => b'N',
+            Piece::Pawn | Piece::King => 0,
+        };
+        legal_moves.iter().copied().find(|mv| {
+            move_from(*mv) == (usize::from(best.from_square) ^ 56)
+                && move_to(*mv) == (usize::from(best.to_square) ^ 56)
+                && move_promotion(*mv) == promotion
+        })
     }
 
     /// Exact, 50-move-aware score for interior search. Rounded boundary
     /// results are deliberately left to normal search instead of being used
     /// as false alpha-beta bounds.
     pub fn probe_search_score(&self, st: &BoardState, ply: usize) -> Option<i32> {
-        exact_search_score(self.probe_wdl_50(st)?, ply)
+        Some(exact_search_score(self.probe_wdl_50(st)?, ply))
     }
 
     pub fn probe_root_score(&self, st: &BoardState) -> Option<i32> {
-        let wdl = self.probe_wdl_50(st)?;
-        exact_search_score(wdl, 0).or_else(|| Some(wdl.signum()))
+        if let Some(wdl) = self.probe_wdl_50(st) {
+            return Some(exact_search_score(wdl, 0));
+        }
+        self.probe_dtz(st).map(i32::signum)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{board_to_chess, exact_search_score};
+    use super::{exact_search_score, wdl_from_dtz, EmberAdapter, ProbePosition, SyzygyTables};
     use crate::engine::Engine;
-    use shakmaty::{Position, Square};
-    use shakmaty_syzygy::AmbiguousWdl;
+    use pyrrhic_rs::{Color, EngineAdapter, WdlProbeResult};
 
     fn engine_from_fen(fen: &str) -> Engine {
         let mut engine = Engine::new();
@@ -415,28 +456,70 @@ mod tests {
     }
 
     #[test]
-    fn converted_position_preserves_the_halfmove_clock() {
-        let engine = engine_from_fen("7k/8/8/8/8/8/8/1Q2K3 w - - 73 1");
-        let chess = board_to_chess(&engine.st).expect("valid Syzygy position");
+    fn retired_generation_drops_after_its_last_snapshot() {
+        // The weak reference observes the private Arc lifetime. A public
+        // probe test cannot distinguish a released mapping from a pinned one.
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("ember-syzygy-drop-{suffix}"));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::File::create(dir.join("KQvK.rtbw"))
+            .unwrap()
+            .set_len(80)
+            .unwrap();
+        let mut published = SyzygyTables::new();
+        published.load(dir.to_str().unwrap()).unwrap();
+        let weak = std::sync::Arc::downgrade(published.generation.as_ref().unwrap());
+        let worker = published.clone();
+        published.load(dir.to_str().unwrap()).unwrap();
+        assert!(weak.upgrade().is_some());
+        drop(worker);
+        assert!(weak.upgrade().is_none());
+        drop(published);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
-        assert_eq!(chess.halfmoves(), 73);
+    #[test]
+    fn converted_position_preserves_halfmoves_and_square_orientation() {
+        let engine = engine_from_fen("7k/8/8/8/8/8/8/1Q2K3 w - - 73 1");
+        let position = ProbePosition::from_board(&engine.st);
+        assert_eq!(position.halfmoves, 73);
+        assert_eq!(position.queens & (1u64 << 1), 1u64 << 1);
+        assert_eq!(position.kings & (1u64 << 63), 1u64 << 63);
     }
 
     #[test]
     fn converted_position_preserves_en_passant() {
         let engine = engine_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
-        let chess = board_to_chess(&engine.st).expect("valid Syzygy position");
-
-        assert_eq!(chess.maybe_ep_square(), Some(Square::D6));
+        let position = ProbePosition::from_board(&engine.st);
+        assert_eq!(position.ep, 43); // D6 in A1-based bitboards.
     }
 
     #[test]
-    fn interior_scores_are_exact_and_rule_50_aware() {
-        assert!(exact_search_score(AmbiguousWdl::Win, 7).unwrap() > 0);
-        assert!(exact_search_score(AmbiguousWdl::Loss, 7).unwrap() < 0);
-        assert_eq!(exact_search_score(AmbiguousWdl::CursedWin, 7), Some(0));
-        assert_eq!(exact_search_score(AmbiguousWdl::BlessedLoss, 7), Some(0));
-        assert_eq!(exact_search_score(AmbiguousWdl::MaybeWin, 7), None);
-        assert_eq!(exact_search_score(AmbiguousWdl::MaybeLoss, 7), None);
+    fn interior_scores_avoid_rounded_fifty_move_boundary() {
+        assert!(exact_search_score(WdlProbeResult::Win, 7) > 0);
+        assert!(exact_search_score(WdlProbeResult::Loss, 7) < 0);
+        assert_eq!(exact_search_score(WdlProbeResult::CursedWin, 7), 0);
+        assert_eq!(exact_search_score(WdlProbeResult::BlessedLoss, 7), 0);
+        assert_eq!(wdl_from_dtz(30, 68), Some(WdlProbeResult::Win));
+        assert_eq!(wdl_from_dtz(30, 69), None);
+        assert_eq!(wdl_from_dtz(30, 70), None);
+        assert_eq!(wdl_from_dtz(30, 71), None);
+        assert_eq!(wdl_from_dtz(30, 72), Some(WdlProbeResult::CursedWin));
+    }
+
+    #[test]
+    fn adapter_attack_masks_use_a1_based_squares() {
+        assert_eq!(
+            EmberAdapter::pawn_attacks(Color::White, 12),
+            (1 << 19) | (1 << 21)
+        );
+        assert_eq!(
+            EmberAdapter::pawn_attacks(Color::Black, 52),
+            (1 << 43) | (1 << 45)
+        );
+        assert_eq!(EmberAdapter::knight_attacks(1) & (1 << 18), 1 << 18);
     }
 }

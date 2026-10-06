@@ -1,9 +1,10 @@
 [package]
 name = "ember-chess"
 version = "1.3.1"
+license = "MIT"
 edition = "2021"
 default-run = "ember"
- 
+
 [[bin]]
 name = "ember"
 path = "src/main.rs"
@@ -14,8 +15,12 @@ path = "src/lib.rs"
  
 [dependencies]
 rand = { version = "0.8", features = ["small_rng"] }
-shakmaty = "0.30"
-shakmaty-syzygy = { version = "0.28", features = ["mmap"] }
+pyrrhic-rs = { git = "https://github.com/starius/pyrrhic-rs", rev = "61bb83b7c46de492198b1565f45129e48f240c48" }
+
+[dev-dependencies]
+cozy-chess = "0.3.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 [target.'cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "windows")))'.dependencies]
 mimalloc = { version = "0.1.52", optional = true }

@@ -1,0 +1,36 @@
+# Regenerate licenses/THIRD-PARTY-LICENSES.html with:
+# cargo about generate --locked --fail --all-features about.hbs --output-file licenses/THIRD-PARTY-LICENSES.html
+accepted = ["Apache-2.0", "MIT", "Unicode-3.0"]
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
+
+# Pin crate-specific MIT text. Automatic harvesting can select a different
+# LICENSE file when a package contains several MIT notices.
+[ember-chess.clarify]
+license = "MIT"
+[[ember-chess.clarify.files]]
+path = "LICENSE"
+checksum = "e5b8ab35273ae8bd4fb8b7d92933f99033b9592527191a8dd30f9510e399316d"
+
+[pyrrhic-rs.clarify]
+license = "MIT"
+[[pyrrhic-rs.clarify.files]]
+path = "LICENSE"
+checksum = "53c4bf8bd57e1bb1cf9c835290688d7889768591f8a6082512fc3ff13bd6b443"
+
+[libmimalloc-sys.clarify]
+license = "MIT"
+# The Rust wrapper and its bundled v3 C allocator have distinct copyright
+# notices. Both must appear in the generated report shipped with releases.
+[[libmimalloc-sys.clarify.files]]
+path = "LICENSE.txt"
+checksum = "a08554fab028af3af047e8588d32d019662c1b1bf07959a195a2f75fe340726b"
+[[libmimalloc-sys.clarify.files]]
+path = "c_src/mimalloc/v3/LICENSE"
+checksum = "82ade5d7d9b029044b5fbbc326207fc47c2d44ee4dd71e8a559c36d728217de9"

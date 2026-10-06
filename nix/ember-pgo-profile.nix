@@ -38,7 +38,7 @@ let
     if nativeSystem == profileSystem then
       ""
     else
-      "${pkgs.qemu-user}/bin/qemu-${if arch == "arm64" then "aarch64" else "x86_64"} ";
+      "${pkgs.qemu-user}/bin/qemu-${if arch == "arm64" then "aarch64" else "x86_64"} -cpu max ";
   crossPackages =
     {
       amd64 = pkgs.pkgsCross.musl64;
@@ -64,17 +64,19 @@ let
     rustc = rustToolchain;
   };
   version = (builtins.fromTOML (builtins.readFile ../Cargo.toml)).package.version;
+  syzygyCi = (import ./syzygy-tablebases.nix { inherit pkgs; }).syzygy-ci;
 in
 rustPlatform.buildRustPackage {
   pname = "ember-pgo-profile-${arch}";
   inherit version;
 
-  src = import ./ember-source.nix { inherit lib; };
-  cargoLock.lockFile = ../Cargo.lock;
+  src = import ./ember-source.nix { inherit lib pkgs; };
+  cargoLock = import ./ember-cargo-lock.nix;
 
   nativeBuildInputs = [
     crossCc
     pkgs.buildPackages.binutils
+    pkgs.python3
   ]
   ++ pkgs.lib.optionals (emulator != "" || arch == "arm64") [ pkgs.qemu-user ];
 
@@ -108,17 +110,49 @@ rustPlatform.buildRustPackage {
             | ${emulator}target/${target}/release/ember >"$out/training/bench.log" 2>&1
         ''
     }
+    ${
+      if arch == "arm64" then
+        ''
+          for cpu in cortex-a53 max; do
+            LLVM_PROFILE_FILE="$PWD/profraw/syzygy-$cpu-%p.profraw" \
+              python3 ${../tools/train_syzygy_pgo.py} \
+                target/${target}/release/ember \
+                ${syzygyCi}/share/syzygy/ci \
+                --qemu ${pkgs.qemu-user}/bin/qemu-aarch64 --cpu "$cpu" \
+                >"$out/training/syzygy-$cpu.log" 2>&1
+          done
+        ''
+      else
+        ''
+          LLVM_PROFILE_FILE="$PWD/profraw/syzygy-%p.profraw" \
+            python3 ${../tools/train_syzygy_pgo.py} \
+              target/${target}/release/ember \
+              ${syzygyCi}/share/syzygy/ci \
+              ${lib.optionalString (emulator != "") "--qemu ${pkgs.qemu-user}/bin/qemu-x86_64 --cpu max"} \
+              >"$out/training/syzygy.log" 2>&1
+        ''
+    }
     ${llvmProfdata} merge \
       -o merged.profdata profraw/*.profraw
     test -s merged.profdata || {
       echo "PGO profile merge produced no data" >&2
       exit 1
     }
+    # Bench positions do not exercise the Syzygy decoder. A release profile
+    # must include real compressed-table probes before it is reused by builds.
+    ${llvmProfdata} show --covered merged.profdata \
+      >"$out/training/covered-functions.txt"
+    ${llvmProfdata} show --counts --function=decode_pair \
+      merged.profdata >"$out/training/decode_pair.counts"
+    grep -Fq 'table_decoder11decode_pair' \
+      "$out/training/covered-functions.txt" || {
+      echo "PGO workload did not execute the Syzygy decoder" >&2
+      cat "$out/training/decode_pair.counts" >&2
+      exit 1
+    }
     ${lib.optionalString (arch == "arm64") ''
       # --covered lists names with nonzero counters (for both IR and frontend
       # profiles). It ignores --function, so filter its complete name list here.
-      ${llvmProfdata} show --covered merged.profdata \
-        >"$out/training/covered-functions.txt"
       for kernel in fc0_forward_aarch64_neon fc0_forward_aarch64_dotprod \
         dot_product_aarch64_neon dot_product_aarch64_dotprod; do
         ${llvmProfdata} show --counts --function="$kernel" \

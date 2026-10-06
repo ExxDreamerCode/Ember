@@ -27,6 +27,14 @@ class ReleaseSetTests(unittest.TestCase):
             binary.write_bytes(b"ember-test-binary")
             cargo_toml = root / "Cargo.toml"
             cargo_toml.write_text('[package]\nversion = "1.2.3"\n', encoding="utf-8")
+            (root / "LICENSE").write_text("Ember MIT notice\n", encoding="utf-8")
+            (root / "licenses").mkdir()
+            (root / "licenses" / "THIRD-PARTY-LICENSES.html").write_text(
+                "<p>Rust dependency notices</p>\n", encoding="utf-8"
+            )
+            (root / "licenses" / "PYRRHIC-LICENSE").write_text(
+                "Original Pyrrhic MIT notice\n", encoding="utf-8"
+            )
             paths = [
                 create_release_archive(
                     binary,
