@@ -423,7 +423,7 @@ fn run_uci_loop() {
                             }
                         }
                     }
-                    "move overhead" => {
+                    "move overhead" | "moveoverhead" => {
                         let parsed = val.parse::<f64>();
                         if !parsed.is_ok_and(|value| time_manager.set_move_overhead_ms(value)) {
                             eprintln!("info string Ignoring out-of-range Move Overhead: {}", val);

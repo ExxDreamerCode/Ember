@@ -1,11 +1,98 @@
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const UCI_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[test]
+fn move_overhead_aliases_reach_the_existing_validator() {
+    // This tests production UCI routing and diagnostics, which move fixtures cannot express.
+    // Keep cleanup active through every assertion, including pipe and process failures.
+    struct ReapOnDrop(Child);
+    impl Drop for ReapOnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn capture(mut pipe: impl Read + Send + 'static) -> Receiver<std::io::Result<String>> {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut output = String::new();
+            let result = pipe.read_to_string(&mut output).map(|_| output);
+            let _ = tx.send(result);
+        });
+        rx
+    }
+
+    let mut child = ReapOnDrop(
+        Command::new(env!("CARGO_BIN_EXE_ember"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn Ember UCI process"),
+    );
+    let stdout_rx = capture(child.0.stdout.take().expect("capture Ember stdout"));
+    let stderr_rx = capture(child.0.stderr.take().expect("capture Ember stderr"));
+    {
+        let mut stdin = child.0.stdin.take().expect("capture Ember stdin");
+        stdin
+            .write_all(
+                b"uci\n\
+                  setoption name Move Overhead value -1\n\
+                  setoption name MoveOverhead value 5001\n\
+                  setoption name mOvEoVeRhEaD value NaN\n\
+                  setoption name MoveOverhead value garbage\n\
+                  isready\n\
+                  quit\n",
+            )
+            .expect("write UCI commands");
+    }
+    let status =
+        wait_for_exit(&mut child.0, UCI_STARTUP_TIMEOUT).expect("Ember did not exit after quit");
+    let stdout = stdout_rx
+        .recv_timeout(UCI_STARTUP_TIMEOUT)
+        .expect("stdout reader did not finish")
+        .expect("read Ember stdout");
+    let stderr = stderr_rx
+        .recv_timeout(UCI_STARTUP_TIMEOUT)
+        .expect("stderr reader did not finish")
+        .expect("read Ember stderr");
+    assert!(status.success(), "Ember exited with {status}: {stderr}");
+    for expected in [
+        "option name Move Overhead type spin default 7 min 0 max 5000",
+        "uciok",
+        "readyok",
+    ] {
+        assert_eq!(
+            stdout.lines().filter(|line| *line == expected).count(),
+            1,
+            "expected {expected:?} exactly once in stdout: {stdout}"
+        );
+    }
+    assert_eq!(
+        stdout
+            .lines()
+            .filter(|line| line.starts_with("option name Move") && line.contains("Overhead"))
+            .count(),
+        1,
+        "advertise only the existing Move Overhead option: {stdout}"
+    );
+    // Collect both complete streams first: stdout and stderr have no shared ordering.
+    for value in ["-1", "5001", "NaN", "garbage"] {
+        let expected = format!("info string Ignoring out-of-range Move Overhead: {value}");
+        assert_eq!(
+            stderr.lines().filter(|line| *line == expected).count(),
+            1,
+            "expected {expected:?} exactly once in stderr: {stderr}"
+        );
+    }
+}
 
 fn spawn_ember() -> (Child, Receiver<String>) {
     spawn_ember_in_dir(None)
