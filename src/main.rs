@@ -985,6 +985,7 @@ fn parse_go_params(
     let mut ponder = false;
     let mut has_clock_limit = false;
     let mut infinite = false;
+    let mut depth_was_set = false;
 
     let mut i = 1;
     while i < parts.len() {
@@ -1027,10 +1028,17 @@ fn parse_go_params(
                     .ok()
                     .filter(|&d| d >= 1)
                     .unwrap_or(1);
+                depth_was_set = true;
                 i += 1;
             }
             "nodes" if i + 1 < parts.len() => {
-                node_limit = parts[i + 1].parse::<u64>().ok().filter(|&nodes| nodes > 0);
+                node_limit = Some(
+                    parts[i + 1]
+                        .parse::<u64>()
+                        .ok()
+                        .filter(|&nodes| nodes > 0)
+                        .unwrap_or(1),
+                );
                 i += 1;
             }
             "movestogo" if i + 1 < parts.len() => {
@@ -1056,7 +1064,7 @@ fn parse_go_params(
     } else if movetime > 0.0 {
         let t = movetime / 1000.0;
         (t, t, true)
-    } else if depth < 64 || (node_limit.is_some() && !has_clock_limit) {
+    } else if depth_was_set || (node_limit.is_some() && !has_clock_limit) {
         (1_000_000_000.0, 1_000_000_000.0, false)
     } else {
         let budget = time_manager.clock_budget(time_ms, inc, movestogo, engine.st.mc);
@@ -1313,10 +1321,59 @@ mod tests {
         );
         assert!(
             limits.hard_seconds >= limits.soft_seconds
+                && limits.soft_seconds > 0.0
                 && limits.soft_seconds <= 0.01
                 && limits.hard_seconds <= 0.01,
-            "invalid clocks must collapse to a minimal budget: {limits:?}"
+            "invalid clocks must collapse to a minimal but positive budget: {limits:?}"
         );
+    }
+
+    #[test]
+    fn explicit_depth_bypasses_the_clock_while_implicit_depth_stays_clocked() {
+        let engine = Engine::new();
+        let mut time_manager = TimeManager::default();
+
+        let limits = parse_go_params(
+            &["go", "depth", "64", "wtime", "300000", "btime", "300000"],
+            &engine,
+            &mut time_manager,
+        );
+        assert!(
+            !limits.clock_managed,
+            "explicit go depth 64 must be untimed: {limits:?}"
+        );
+        assert_eq!(limits.depth, 64, "{limits:?}");
+
+        let implicit = parse_go_params(
+            &[
+                "go", "wtime", "8000", "btime", "8000", "winc", "80", "binc", "80",
+            ],
+            &engine,
+            &mut time_manager,
+        );
+        assert!(
+            implicit.clock_managed,
+            "clocks without a depth token must stay clocked: {implicit:?}"
+        );
+    }
+
+    #[test]
+    fn go_parsing_fails_closed_on_invalid_nodes() {
+        let engine = Engine::new();
+        let mut time_manager = TimeManager::default();
+
+        let limits = parse_go_params(&["go", "nodes", "garbage"], &engine, &mut time_manager);
+        assert_eq!(limits.node_limit, Some(1), "{limits:?}");
+        assert!(!limits.clock_managed, "{limits:?}");
+
+        let limits = parse_go_params(&["go", "nodes", "0"], &engine, &mut time_manager);
+        assert_eq!(limits.node_limit, Some(1), "{limits:?}");
+
+        let limits = parse_go_params(&["go", "nodes", "-5"], &engine, &mut time_manager);
+        assert_eq!(limits.node_limit, Some(1), "{limits:?}");
+
+        let limits = parse_go_params(&["go", "nodes", "1000"], &engine, &mut time_manager);
+        assert_eq!(limits.node_limit, Some(1000), "{limits:?}");
     }
 
     #[test]
