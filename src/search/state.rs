@@ -154,11 +154,6 @@ impl Searcher {
         }
     }
 
-    pub fn resize_tt(&mut self, mb: usize) {
-        self.shared_tt.resize(mb);
-        self.tt_mb = mb;
-    }
-
     pub fn refresh_nnue_net(&mut self) {
         self.nnue_net = current_nnue_net();
         self.ember_v2_net = current_ember_v2();

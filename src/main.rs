@@ -765,7 +765,7 @@ fn parse_setoption(engine: &mut Engine, name: &str, val: &str) {
         "hash" => {
             if let Ok(mb) = val.parse::<usize>() {
                 if (MIN_HASH_MB..=MAX_HASH_MB).contains(&mb) {
-                    engine.searcher.resize_tt(mb);
+                    engine.set_hash_mb(mb);
                 } else {
                     eprintln!("info string Ignoring out-of-range Hash value: {}", mb);
                 }

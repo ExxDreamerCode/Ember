@@ -173,6 +173,13 @@ impl Engine {
         self.shared_tt.ensure_size(self.searcher.tt_mb);
     }
 
+    pub fn set_hash_mb(&mut self, mb: usize) {
+        let shared_tt = Arc::new(SharedTT::new(mb));
+        self.searcher.shared_tt = Arc::clone(&shared_tt);
+        self.searcher.tt_mb = mb;
+        self.shared_tt = shared_tt;
+    }
+
     fn root_static_score_after(&self, mv: Move) -> i32 {
         let child = root_child_after(&self.st, mv);
         -self.searcher.corrected_eval(&child)

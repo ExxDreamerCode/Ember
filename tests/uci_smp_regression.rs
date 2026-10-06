@@ -935,3 +935,58 @@ fn ownbook_and_empty_book_option_both_gate_the_embedded_book() {
     drop(stdin);
     assert!(child.wait().expect("wait for Ember").success());
 }
+
+#[test]
+fn setoption_hash_during_running_search_keeps_the_engine_consistent() {
+    let (mut child, rx) = spawn_ember();
+    let mut stdin = child.stdin.take().expect("capture Ember stdin");
+    writeln!(stdin, "uci").unwrap();
+    writeln!(stdin, "setoption name Hash value 16").unwrap();
+    writeln!(stdin, "setoption name Threads value 4").unwrap();
+    writeln!(stdin, "setoption name Book value").unwrap();
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(wait_for_line(&rx, "readyok", UCI_STARTUP_TIMEOUT).is_some());
+
+    writeln!(stdin, "position startpos").unwrap();
+    writeln!(stdin, "go ponder movetime 200").unwrap();
+    stdin.flush().unwrap();
+    assert!(
+        wait_for_info_time_at_least(&rx, 50, Duration::from_secs(5)),
+        "ponder search did not start"
+    );
+
+    writeln!(stdin, "setoption name Hash value 32").unwrap();
+    writeln!(stdin, "setoption name Hash value 8").unwrap();
+    writeln!(stdin, "setoption name Hash value 64").unwrap();
+    writeln!(stdin, "ponderhit").unwrap();
+    stdin.flush().unwrap();
+    let bestmove = wait_for_line(&rx, "bestmove ", Duration::from_secs(10))
+        .expect("ponder search did not finish after Hash changed mid-search");
+    assert!(
+        bestmove.split_whitespace().count() >= 2,
+        "expected a bestmove after a mid-search Hash change: {bestmove}"
+    );
+
+    writeln!(stdin, "position startpos").unwrap();
+    writeln!(stdin, "go infinite").unwrap();
+    stdin.flush().unwrap();
+    assert!(
+        wait_for_info_time_at_least(&rx, 100, Duration::from_secs(5)),
+        "background search did not start"
+    );
+    writeln!(stdin, "setoption name Hash value 24").unwrap();
+    writeln!(stdin, "setoption name Hash value 12").unwrap();
+    stdin.flush().unwrap();
+    writeln!(stdin, "stop").unwrap();
+    stdin.flush().unwrap();
+    assert!(
+        wait_for_line(&rx, "bestmove ", Duration::from_secs(10)).is_some(),
+        "stopped search did not return a move after a mid-search Hash change"
+    );
+
+    writeln!(stdin, "quit").unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+    assert!(child.wait().expect("wait for Ember").success());
+}

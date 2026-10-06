@@ -34,6 +34,29 @@ fn engine_defers_hash_materialization_until_ready() {
 }
 
 #[test]
+fn set_hash_mb_swaps_the_table_and_preserves_an_in_flight_search_table() {
+    let mut engine = Engine::new();
+    engine.searcher.tt_mb = 1;
+    engine.ensure_hash_ready();
+    let in_flight = Arc::clone(&engine.shared_tt);
+    let old_entries = in_flight.allocated_entries();
+    in_flight.store(engine.st.hash, 6, 77, crate::tt::TT_EXACT, Some(0x1234));
+
+    engine.set_hash_mb(4);
+
+    assert!(!Arc::ptr_eq(&in_flight, &engine.shared_tt));
+    assert!(Arc::ptr_eq(&engine.shared_tt, &engine.searcher.shared_tt));
+    assert_eq!(engine.searcher.tt_mb, 4);
+    assert_eq!(in_flight.allocated_entries(), old_entries);
+    assert_eq!(in_flight.get_entry(engine.st.hash).unwrap().score, 77);
+    assert_eq!(
+        engine.shared_tt.allocated_entries(),
+        crate::tt::SharedTT::new(4).allocated_entries()
+    );
+    assert!(engine.shared_tt.get_entry(engine.st.hash).is_none());
+}
+
+#[test]
 fn legal_root_tt_move_is_promoted_between_searches() {
     let engine = engine_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
     let moves = root_moves(&engine);

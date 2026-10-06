@@ -252,7 +252,7 @@ fn bench_search(args: &Args) -> Vec<SearchResult> {
                     let mut engine = Engine::new();
                     engine.book = None;
                     engine.num_threads = threads;
-                    engine.searcher.resize_tt(args.hash_mb);
+                    engine.set_hash_mb(args.hash_mb);
                     engine.set_fen(fen);
 
                     let (best_move, score, nodes, elapsed) =

@@ -172,13 +172,6 @@ impl SharedTT {
         }
     }
 
-    pub fn resize(&self, mb: usize) {
-        let _lock = self.resize_lock.lock().unwrap();
-        let inner = unsafe { &mut *self.inner.get() };
-        let size = table_size_for_mb(mb);
-        Self::replace_entries(inner, size);
-    }
-
     pub fn ensure_size(&self, mb: usize) {
         let size = table_size_for_mb(mb);
         let _lock = self.resize_lock.lock().unwrap();

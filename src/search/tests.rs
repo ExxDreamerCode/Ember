@@ -1826,7 +1826,7 @@ fn perf_counter_report() {
         let mut engine = Engine::new();
         engine.book = None;
         engine.num_threads = 1;
-        engine.searcher.resize_tt(64);
+        engine.set_hash_mb(64);
         engine.set_fen(fen);
         let (_, _, nodes, elapsed) = nnue.measure(|| engine.find_best_move(60.0, DEPTH));
         let counters = snapshot(&engine.searcher.perf);
