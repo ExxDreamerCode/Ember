@@ -937,6 +937,43 @@ fn ownbook_and_empty_book_option_both_gate_the_embedded_book() {
 }
 
 #[test]
+fn go_infinite_searches_until_stop() {
+    let (mut child, rx) = spawn_ember();
+    let mut stdin = child.stdin.take().expect("capture Ember stdin");
+    writeln!(stdin, "uci").unwrap();
+    writeln!(stdin, "setoption name Hash value 16").unwrap();
+    writeln!(stdin, "setoption name Threads value 1").unwrap();
+    writeln!(stdin, "setoption name Book value").unwrap();
+    writeln!(stdin, "isready").unwrap();
+    stdin.flush().unwrap();
+    assert!(wait_for_line(&rx, "readyok", UCI_STARTUP_TIMEOUT).is_some());
+
+    writeln!(stdin, "position startpos").unwrap();
+    writeln!(stdin, "go infinite").unwrap();
+    stdin.flush().unwrap();
+    assert!(
+        wait_for_line(&rx, "bestmove ", Duration::from_millis(500)).is_none(),
+        "go infinite must not terminate on its own"
+    );
+    assert!(
+        wait_for_info_time_at_least(&rx, 100, Duration::from_secs(5)),
+        "go infinite did not keep searching"
+    );
+
+    writeln!(stdin, "stop").unwrap();
+    stdin.flush().unwrap();
+    assert!(
+        wait_for_line(&rx, "bestmove ", Duration::from_secs(5)).is_some(),
+        "stop did not release a bestmove from go infinite"
+    );
+
+    writeln!(stdin, "quit").unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+    assert!(child.wait().expect("wait for Ember").success());
+}
+
+#[test]
 fn setoption_hash_during_running_search_keeps_the_engine_consistent() {
     let (mut child, rx) = spawn_ember();
     let mut stdin = child.stdin.take().expect("capture Ember stdin");
