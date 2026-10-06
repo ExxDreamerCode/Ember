@@ -36,14 +36,15 @@ Its `skipped` section lists every parsed report-only row omitted from required e
 A merge that changes move choice should either fix or consciously update an active
 case. Unverified, disputed, or unresolved cases belong in the report-only disabled tier.
 
-To run the gate locally against the previous release:
+To run the gate locally against the pre-change revision (the revision the change started
+from, i.e. the previous tag when the change spans the whole release):
 
 ```bash
 python3 tools/compare_fixture_corpus.py \
   --fixtures tests/fixtures \
-  --baseline path/to/previous/ember \
+  --baseline path/to/pre-change/ember \
   --candidate path/to/candidate/ember \
-  --baseline-label V1.1.2 \
+  --baseline-label pre-change \
   --candidate-label candidate \
   --workers 4 \
   --hash-mb 256 \

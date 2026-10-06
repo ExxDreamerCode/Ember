@@ -36,15 +36,20 @@ Do not skip directly from an anecdotal game result to a broad search heuristic c
 
 ### Stable behavioral baseline
 
-Treat the `V1.1.2` release as Ember's stable behavioral baseline. For every proposed change
-that can affect move choice, compare the relevant fixtures and game scenarios against both
-the immediate parent and `V1.1.2`. A position that only `V1.1.2` solves is a regression to
+Treat the previous release tag as Ember's stable behavioral baseline: the latest tag marks
+the most recent known-good state, so the baseline rolls forward with every release instead
+of pinning one version. For every proposed change that can affect move choice, measure
+fixtures and playing strength as change vs pre-change: compare the candidate against the
+exact revision the edit started from — the previous HEAD, or N commits back when one
+change spans several commits. Fixtures and SPRT never run against an older release unless
+the change itself starts there. A flip against the pre-change revision is a regression to
 investigate before accepting the change.
 
-The baseline is a floor, not an oracle. Do not restore a `V1.1.2` move when strong analysis
-shows that the newer move is better, and do not preserve a known old bug. Record the
-evidence whenever an intentional change breaks a previously passing `V1.1.2` case. Use
-`tools/compare_fixture_corpus.py` to compare active position regressions across two binaries.
+The pre-change comparison is a floor, not an oracle. Do not restore the pre-change move
+when strong analysis shows that the newer move is better, and do not preserve a known old
+bug. Record the evidence whenever an intentional change breaks a previously passing
+pre-change case. Use `tools/compare_fixture_corpus.py` to compare active position
+regressions across two binaries.
 Run disabled report-only rows explicitly when their requested depths fit the available
 budget. This UCI-level comparison supplements rather than replaces the in-process fixture
 suite; investigate any difference between those paths instead of silently choosing the more

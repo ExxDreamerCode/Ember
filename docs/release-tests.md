@@ -60,7 +60,8 @@ cargo test --locked --all-features -- --test-threads=1
 
 Run the release move-fixture gate. The in-process fixture suite (`--ignored`) enforces
 every active hard-layer case from `engine_regressions.tsv`; soft cases use the two-binary
-comparison against the previous release binary:
+comparison against the pre-change binary — the revision the change started from, i.e. the
+previous tag when the change spans the whole release:
 
 ```bash
 cargo test --locked --release --all-features \
@@ -69,9 +70,9 @@ cargo test --locked --release --all-features \
 
 python3 tools/compare_fixture_corpus.py \
   --fixtures tests/fixtures \
-  --baseline path/to/previous/ember \
+  --baseline path/to/pre-change/ember \
   --candidate path/to/candidate/ember \
-  --baseline-label "V1.1.2" \
+  --baseline-label "pre-change" \
   --candidate-label "candidate" \
   --workers 4 \
   --hash-mb 256 \
