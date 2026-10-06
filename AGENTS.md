@@ -165,6 +165,11 @@ ponder lifecycle, clock budgets, thread coordination, node accounting, option ha
 resource cleanup, parser behavior, and other subsystem invariants. Python tooling and the
 deployment tooling should have their regressions in their existing Python test suites.
 
+For UCI option aliases, exercise the production executable and assert a diagnostic from
+the shared handler; `readyok` alone does not prove that an option was recognized. Capture
+stdout and stderr independently and collect both streams before asserting diagnostics,
+because they have no shared ordering guarantee.
+
 The fast fixture test validates the TSV schema, numeric fields, and cross-file ID uniqueness.
 The ignored in-process release fixture test runs every active hard-layer case from
 `engine_regressions.tsv`. Soft active cases are judged by the two-binary fixture gate, which
