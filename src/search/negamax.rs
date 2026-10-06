@@ -355,6 +355,7 @@ macro_rules! negamax_mode_body {
                 $st.hash ^= z.side;
                 $st.ep = None;
                 $st.w = !$st.w;
+                $this.shared_tt.prefetch($st.hash);
                 $eval.copy_null_acc($this, $ply);
                 let null_h = $st.hash;
                 $this.rep_stack.push(null_h);
@@ -532,6 +533,7 @@ macro_rules! negamax_mode_body {
                     if !try_apply_move_mode::<CHESS960>($st, mv) {
                         continue;
                     }
+                    $this.shared_tt.prefetch($st.hash);
                     $eval.push_acc(
                         $this,
                         &st_before,
@@ -1091,6 +1093,7 @@ macro_rules! negamax_mode_body {
             if !legal {
                 continue;
             }
+            $this.shared_tt.prefetch($st.hash);
             let move_index = legal_moves_seen;
             legal_moves_seen += 1;
 

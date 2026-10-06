@@ -123,6 +123,23 @@ impl SharedTT {
         self.generation.load(Ordering::Relaxed) & TT_GENERATION_MASK
     }
 
+    #[inline(always)]
+    pub fn prefetch(&self, key: u64) {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let inner = unsafe { &*self.inner.get() };
+            let idx = (key as usize) & inner.mask;
+            let ptr = inner.entries[idx].key.as_ptr();
+            unsafe {
+                std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0);
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = key;
+        }
+    }
+
     pub fn advance_generation(&self) -> u8 {
         let previous = self
             .generation

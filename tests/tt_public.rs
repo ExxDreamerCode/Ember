@@ -70,6 +70,18 @@ fn tt_miss_on_wrong_key() {
 }
 
 #[test]
+fn tt_prefetch_leaves_the_table_intact() {
+    let tt = SharedTT::new(1);
+    tt.prefetch(0x1234);
+    assert!(tt.get_entry(0x1234).is_none());
+    tt.store(0x1234, 7, 250, TT_EXACT, Some(0xABCD));
+    tt.prefetch(0x1234);
+    tt.prefetch(0xFFFF_FFFF_0000_0001);
+    let (d, s, f, m) = tt.get_depth(0x1234).unwrap();
+    assert_eq!((d, s, f, m), (7, 250, TT_EXACT, Some(0xABCD)));
+}
+
+#[test]
 fn tt_probe_polling_observes_writer_progress() {
     const ROUNDS: u32 = 40_000;
     const KEY: u64 = 0x5A5A_0000_1234_0001;
