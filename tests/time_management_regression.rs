@@ -55,7 +55,7 @@ fn testcorr_late_game_budget_falls_below_the_increment() {
 }
 
 #[test]
-fn stockfish_scaling_uses_the_actual_game_ply() {
+fn budget_scaling_uses_the_actual_game_ply() {
     let mut opening_manager = TimeManager::default();
     let opening = opening_manager.clock_budget(8_000.0, 80.0, 0, 0);
     let mut middlegame_manager = TimeManager::default();
@@ -100,6 +100,80 @@ fn p1uv2lqo_medium_clock_cannot_spend_most_of_the_remaining_time() {
     assert!(before_move_17.hard_seconds <= 105.360 * 0.35 + 1e-9);
     assert!(before_move_20.soft_seconds <= before_move_20.hard_seconds);
     assert!(before_move_20.hard_seconds <= 52.120 * 0.35 + 1e-9);
+}
+
+/// Numeric anchors of the calibrated clock-planning model: a deliberate
+/// constant change re-pins them together with a clocked match run.
+#[test]
+fn calibrated_budgets_anchor_the_clock_model() {
+    let mut manager = TimeManager::default();
+    let budget = manager.clock_budget(1_000.0, 10.0, 0, 0);
+    assert!(
+        (budget.soft_seconds - 0.011_560_072_225).abs() < 1e-6,
+        "1s+10ms opening drifted: {budget:?}"
+    );
+    assert!((budget.hard_seconds - 0.035).abs() < 1e-9, "{budget:?}");
+
+    let mut manager = TimeManager::default();
+    let budget = manager.clock_budget(8_000.0, 80.0, 0, 0);
+    assert!(
+        (budget.soft_seconds - 0.189_856_476_944).abs() < 1e-6,
+        "8s+80ms opening drifted: {budget:?}"
+    );
+    assert!(
+        (budget.hard_seconds - 1.121_642_284_376).abs() < 1e-6,
+        "8s+80ms opening drifted: {budget:?}"
+    );
+
+    let mut manager = TimeManager::default();
+    let budget = manager.clock_budget(8_000.0, 80.0, 0, 80);
+    assert!(
+        (budget.soft_seconds - 0.415_918_142_514).abs() < 1e-6,
+        "8s+80ms middlegame drifted: {budget:?}"
+    );
+    assert!(
+        (budget.hard_seconds - 2.869_835_183_335).abs() < 1e-6,
+        "8s+80ms middlegame drifted: {budget:?}"
+    );
+
+    let mut manager = TimeManager::default();
+    let _opening = manager.clock_budget(180_000.0, 2_000.0, 0, 0);
+    let budget = manager.clock_budget(24_350.0, 2_000.0, 0, 58);
+    assert!(
+        (budget.soft_seconds - 5.978_880_039_648).abs() < 1e-6,
+        "late-game anchored budget drifted: {budget:?}"
+    );
+    assert!((budget.hard_seconds - 8.522_5).abs() < 1e-6, "{budget:?}");
+
+    let mut manager = TimeManager::default();
+    let budget = manager.clock_budget(60_000.0, 0.0, 20, 0);
+    assert!(
+        (budget.soft_seconds - 2.602_996_5).abs() < 1e-6,
+        "announced-segment opening drifted: {budget:?}"
+    );
+    assert!(
+        (budget.hard_seconds - 9.240_637_575).abs() < 1e-6,
+        "announced-segment opening drifted: {budget:?}"
+    );
+
+    let mut manager = TimeManager::default();
+    let budget = manager.clock_budget(60_000.0, 0.0, 20, 80);
+    assert!(
+        (budget.soft_seconds - 4.597_629_833_333).abs() < 1e-6,
+        "announced-segment middlegame drifted: {budget:?}"
+    );
+    assert!(
+        (budget.hard_seconds - 16.321_585_908_333).abs() < 1e-6,
+        "announced-segment middlegame drifted: {budget:?}"
+    );
+
+    let mut manager = TimeManager::default();
+    let budget = manager.clock_budget(205.0, 10.0, 0, 200);
+    assert!(
+        (budget.soft_seconds - 0.003_650_326_199).abs() < 1e-6,
+        "sub-second bullet budget drifted: {budget:?}"
+    );
+    assert!((budget.hard_seconds - 0.005).abs() < 1e-9, "{budget:?}");
 }
 
 #[test]

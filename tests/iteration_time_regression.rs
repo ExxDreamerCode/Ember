@@ -122,13 +122,13 @@ fn fixed_movetime_is_not_shortened_by_iteration_prediction() {
 }
 
 #[test]
-fn forced_move_search_has_a_half_second_ceiling() {
+fn forced_move_search_has_a_tight_ceiling() {
     let before_ceiling =
-        iteration_time_decision(10.0, 40.0, 1, timing(0.49, 0.1, 0.05, 240, 0, 0.10, 1.0));
+        iteration_time_decision(10.0, 40.0, 1, timing(0.39, 0.1, 0.05, 240, 0, 0.10, 1.0));
     let after_ceiling =
-        iteration_time_decision(10.0, 40.0, 1, timing(0.51, 0.1, 0.05, 240, 0, 0.10, 1.0));
+        iteration_time_decision(10.0, 40.0, 1, timing(0.41, 0.1, 0.05, 240, 0, 0.10, 1.0));
 
-    assert_eq!(before_ceiling.target_seconds, 0.5);
+    assert_eq!(before_ceiling.target_seconds, 0.4);
     assert!(!before_ceiling.stop);
     assert!(after_ceiling.stop);
 }

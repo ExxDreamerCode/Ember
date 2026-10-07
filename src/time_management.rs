@@ -4,11 +4,67 @@ const MAX_SEARCH_TIME_MS: f64 = 60_000.0;
 const SINGLE_THREAD_BUDGET_MS: f64 = 25.0;
 const REDUCED_SMP_BUDGET_MS: f64 = 100.0;
 const EARLY_PREDICTION_BUDGET_MS: f64 = 500.0;
+// Nothing to choose with one legal move: at most a brief confirmation look.
+const FORCED_MOVE_CEILING_SECONDS: f64 = 0.4;
 const REDUCED_SMP_THREADS: usize = 4;
 // A hard deadline can stop search work, but it cannot make a descheduled
 // process return bestmove. Keep enough clock to absorb a short scheduler stall
 // once an extreme-increment game reaches its low-clock tail.
 const SHORT_INCREMENT_CLOCK_RESERVE_MS: f64 = 200.0;
+
+const ASSUMED_MOVE_HORIZON: f64 = 50.0;
+const MOVE_HORIZON_CAP: f64 = 50.0;
+// Below one second, plan one move per 25ms instead of dust spread over 50.
+const MIN_MOVE_SLICE_MS: f64 = 25.0;
+// Command, reply, and one scheduler tick: slack the pool never lends out.
+const PROTOCOL_TAIL_MOVES: f64 = 3.0;
+
+const OPENING_POOL_SHARE: f64 = 0.0173;
+const CLOCK_DECADE_SHARE: f64 = 0.00058;
+const MATURITY_GAIN: f64 = 3.2;
+const MATURITY_HALF_PLY: f64 = 135.0;
+const TEMPO_DECADE: f64 = 0.32;
+const TEMPO_REFERENCE_MS: f64 = 1_000.0;
+const TEMPO_AT_REFERENCE: f64 = 0.575;
+const TEMPO_CEILING: f64 = 1.75;
+const CLOCK_CLAIM_CAP: f64 = 0.19;
+
+// Hard headroom over the plan: HARD_BASE + HARD_REACH * t / (t + HARD_HALF)
+// + HARD_PER_PLY * ply, capped at HARD_CEILING.
+const HARD_BASE: f64 = 2.30;
+const HARD_REACH: f64 = 4.60;
+const HARD_HALF_SECONDS: f64 = 2.2;
+const HARD_PER_PLY: f64 = 0.08;
+const HARD_CEILING: f64 = 6.90;
+// Absolute guard: one move never reaches this share of the current clock.
+const HARD_CLOCK_SHARE: f64 = 0.80;
+
+const FIXED_OPENING_SHARE: f64 = 0.87;
+const FIXED_PLY_SPREAD: f64 = 120.0;
+const FIXED_CLOCK_SHARE: f64 = 0.87;
+const FIXED_HARD_BASE: f64 = 1.25;
+const FIXED_HARD_PER_MOVE: f64 = 0.115;
+
+fn pool_tempo(pool_ms: f64) -> f64 {
+    (TEMPO_DECADE * (pool_ms / TEMPO_REFERENCE_MS).log10() + TEMPO_AT_REFERENCE)
+        .clamp(0.0, TEMPO_CEILING)
+}
+
+fn opening_share(time_ms: f64) -> f64 {
+    OPENING_POOL_SHARE + CLOCK_DECADE_SHARE * (time_ms.max(1.0) / 1_000.0).log10()
+}
+
+fn maturity(ply: f64) -> f64 {
+    1.0 + MATURITY_GAIN * ply / (ply + MATURITY_HALF_PLY)
+}
+
+fn hard_multiple(time_ms: f64, ply: f64) -> f64 {
+    let clock_seconds = time_ms.max(1.0) / 1_000.0;
+    (HARD_BASE
+        + HARD_REACH * clock_seconds / (clock_seconds + HARD_HALF_SECONDS)
+        + HARD_PER_PLY * ply)
+        .min(HARD_CEILING)
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct TimeBudget {
@@ -98,7 +154,7 @@ pub fn iteration_time_decision(
         .clamp(minimum_scale, maximum_scale);
     let mut target_seconds = (soft_seconds * scale).min(hard_seconds);
     if legal_moves == 1 {
-        target_seconds = target_seconds.min(0.5).min(hard_seconds);
+        target_seconds = target_seconds.min(FORCED_MOVE_CEILING_SECONDS);
     }
 
     let stable_enough =
@@ -128,14 +184,15 @@ pub fn iteration_time_decision(
 #[derive(Clone, Debug)]
 pub struct TimeManager {
     move_overhead_ms: f64,
-    original_time_adjust: Option<f64>,
+    // Tempo anchor: the pool from the first open-ended budget of the game.
+    opening_pool_ms: Option<f64>,
 }
 
 impl Default for TimeManager {
     fn default() -> Self {
         Self {
             move_overhead_ms: DEFAULT_MOVE_OVERHEAD_MS,
-            original_time_adjust: None,
+            opening_pool_ms: None,
         }
     }
 }
@@ -154,7 +211,7 @@ impl TimeManager {
     }
 
     pub fn reset_for_new_game(&mut self) {
-        self.original_time_adjust = None;
+        self.opening_pool_ms = None;
     }
 
     pub fn clock_budget(
@@ -167,47 +224,42 @@ impl TimeManager {
         let time_ms = remaining_ms.max(0.0);
         let increment_ms = increment_ms.max(0.0);
         let overhead_ms = self.move_overhead_ms;
-        let mut move_horizon = if moves_to_go > 0 {
-            moves_to_go.min(50) as f64
+
+        let announced_horizon = moves_to_go > 0;
+        let mut move_horizon = if announced_horizon {
+            (moves_to_go as f64).min(MOVE_HORIZON_CAP)
         } else {
-            50.0
+            ASSUMED_MOVE_HORIZON
         };
         if time_ms < 1_000.0 {
-            move_horizon = (time_ms * 0.05).floor();
+            move_horizon = (time_ms / MIN_MOVE_SLICE_MS).floor();
         }
 
-        let time_left_ms = (time_ms + increment_ms * (move_horizon - 1.0)
-            - overhead_ms * (move_horizon + 2.0))
-            .max(1.0);
+        // The returning move's own increment is already in the pool.
+        let expected_increments = increment_ms * move_horizon;
+        let protocol_slack = overhead_ms * (move_horizon + PROTOCOL_TAIL_MOVES);
+        let pool_ms = (time_ms + expected_increments - protocol_slack).max(1.0);
         let ply = ply as f64;
 
-        let (opt_scale, max_scale) = if moves_to_go > 0 {
-            let horizon_scale = if move_horizon > 0.0 {
-                (0.88 + ply / 116.4) / move_horizon
-            } else {
-                f64::INFINITY
-            };
+        let (planned_ms, headroom) = if announced_horizon {
+            let horizon_moves = move_horizon.max(1.0);
+            let even_slice = FIXED_OPENING_SHARE / horizon_moves;
+            let late_bonus = (ply / FIXED_PLY_SPREAD) / horizon_moves;
+            let planned = ((even_slice + late_bonus) * pool_ms).min(FIXED_CLOCK_SHARE * time_ms);
             (
-                horizon_scale.min(0.88 * time_ms / time_left_ms),
-                1.3 + 0.11 * move_horizon,
+                planned,
+                FIXED_HARD_BASE + FIXED_HARD_PER_MOVE * move_horizon,
             )
         } else {
-            // Some constants are taken from Stockfish.
-            let original_time_adjust = *self
-                .original_time_adjust
-                .get_or_insert_with(|| 0.3272 * time_left_ms.log10() - 0.4141);
-            let log_time_seconds = (time_ms.max(1.0) / 1_000.0).log10();
-            let opt_constant = (0.0029869 + 0.00033554 * log_time_seconds).min(0.004905);
-            let max_constant = (3.3744 + 3.0608 * log_time_seconds).max(3.1441);
-            let opt = (0.012112 + (ply + 3.22713).powf(0.46866) * opt_constant)
-                .min(0.19404 * time_ms / time_left_ms)
-                * original_time_adjust;
-            (opt, (max_constant + ply / 12.352).min(6.873))
+            let tempo = pool_tempo(*self.opening_pool_ms.get_or_insert(pool_ms));
+            let claim = opening_share(time_ms) * maturity(ply);
+            let planned = (claim * pool_ms).min(CLOCK_CLAIM_CAP * time_ms) * tempo;
+            (planned, hard_multiple(time_ms, ply))
         };
 
-        let optimum_ms = (opt_scale * time_left_ms).max(1.0);
+        let planned_ms = planned_ms.max(1.0);
         let maximum_ms =
-            optimum_ms.max((0.8097 * time_ms - overhead_ms).min(max_scale * optimum_ms));
+            planned_ms.max((HARD_CLOCK_SHARE * time_ms - overhead_ms).min(headroom * planned_ms));
 
         // The GUI cannot grant the next increment before this move returns.
         // Keep both limits inside the current clock after communication slack.
@@ -226,7 +278,7 @@ impl TimeManager {
             } else {
                 MAX_SEARCH_TIME_MS
             };
-        let mut soft_ms = optimum_ms
+        let mut soft_ms = planned_ms
             .min(spendable_ms)
             .min(MAX_SEARCH_TIME_MS)
             .min(increment_reserve_cap_ms);
