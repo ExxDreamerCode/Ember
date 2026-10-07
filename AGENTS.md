@@ -170,6 +170,10 @@ the shared handler; `readyok` alone does not prove that an option was recognized
 stdout and stderr independently and collect both streams before asserting diagnostics,
 because they have no shared ordering guarantee.
 
+Use untimed fixed-depth searches when a regression observes routing into search
+through node accounting. A tiny clock can expire before the first node and hide
+the routing result; reserve clocked searches for explicit timing contracts.
+
 The fast fixture test validates the TSV schema, numeric fields, and cross-file ID uniqueness.
 The ignored in-process release fixture test runs every active hard-layer case from
 `engine_regressions.tsv`. Soft active cases are judged by the two-binary fixture gate, which

@@ -74,8 +74,9 @@ fn book_confidence_cutoff_rejects_weight_one_tail_move() {
         play_uci(&mut engine, mv);
     }
 
-    let (_best_move, _score, nodes, _elapsed) =
-        engine.find_best_move_with_time_limits(0.01, 0.01, 1);
+    // Observe book rejection through search node accounting. An untimed depth
+    // keeps scheduler delays from expiring the clock before any node is visited.
+    let (_best_move, _score, nodes, _elapsed) = engine.find_best_move_prepared_untimed(1, None);
 
     assert!(
         nodes > 0,
