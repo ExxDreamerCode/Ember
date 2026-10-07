@@ -4,13 +4,13 @@ use std::time::{Duration, Instant};
 
 use ember_chess::board::{
     encode_move, move_ec, move_er, move_promotion, move_sc, move_sr, move_to_uci, BoardState, Move,
-    INF,
+    INF, MATE, MATE_THRESHOLD, MAX_PLY, TB_WIN_SCORE,
 };
 use ember_chess::deadline::DeadlineWatchdog;
 use ember_chess::movegen::{apply_move, generate_moves};
 use ember_chess::search::{
-    extract_pv_line, format_pv_line_uci, lazy_smp_search, LazySmpPool, LazySmpSearchLimits,
-    Searcher,
+    extract_pv_line, format_pv_line_uci, format_uci_score, lazy_smp_search, LazySmpPool,
+    LazySmpSearchLimits, Searcher,
 };
 use ember_chess::syzygy::SyzygyTables;
 use ember_chess::tt::{SharedTT, TT_EXACT};
@@ -376,4 +376,37 @@ fn format_pv_line_uci_stops_before_suffixless_promotion() {
     let pv = [first, reply, suffixless_promotion];
 
     assert_eq!(format_pv_line_uci(&st, &pv), "b6b7 h8g8");
+}
+
+#[test]
+fn score_bands_stay_ordered() {
+    assert_eq!(MATE - MATE_THRESHOLD, 10_000);
+    assert_eq!(MATE_THRESHOLD - TB_WIN_SCORE, 2_000);
+}
+
+const _: () = assert!(MATE - MAX_PLY as i32 > MATE_THRESHOLD);
+const _: () = assert!(MATE_THRESHOLD > TB_WIN_SCORE);
+const _: () = assert!(TB_WIN_SCORE > 0);
+
+#[test]
+fn tablebase_scores_are_not_classified_as_mate() {
+    for ply in 0..=MAX_PLY {
+        let win = TB_WIN_SCORE - ply as i32;
+        let loss = -TB_WIN_SCORE + ply as i32;
+        assert!(win.abs() <= MATE_THRESHOLD);
+        assert!(loss.abs() <= MATE_THRESHOLD);
+        assert_eq!(format_uci_score(win), format!("cp {win}"));
+        assert_eq!(format_uci_score(loss), format!("cp {loss}"));
+    }
+}
+
+#[test]
+fn mate_scores_still_format_as_mate() {
+    assert_eq!(format_uci_score(MATE), "mate 1");
+    assert_eq!(format_uci_score(-MATE), "mate -1");
+    assert_eq!(format_uci_score(MATE - 2), "mate 2");
+    assert_eq!(format_uci_score(-(MATE - 2)), "mate -2");
+    assert_eq!(format_uci_score(MATE - 128), "mate 65");
+    assert_eq!(format_uci_score(MATE_THRESHOLD), "cp 90000");
+    assert_eq!(format_uci_score(MATE_THRESHOLD + 1), "mate 5000");
 }

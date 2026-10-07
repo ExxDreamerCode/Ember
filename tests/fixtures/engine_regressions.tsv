@@ -3,6 +3,9 @@
 # Depth 0 means an embedded-book lookup: the expected move must be returned immediately with zero search nodes. Depths 1 through 64 run a normal fixed-depth search with the book disabled.
 id	depth	fen_before_blunder	setup_move	expected_move	themes	rating	popularity	plays
 
+# Lichess puzzle 0000D, https://lichess.org/training/0000D. At depth 2 the old checked QS cap missed terminal mates and chose Qa5 instead of the winning Rd8. Detect mate before the static fallback; Stockfish 18 at 2M nodes scores Rd8 +5.12 and Qa5 +0.05 from Black's perspective.
+qsearch-mate-cap-0000d-rd8	2	5rk1/1p3ppp/pq3b2/8/8/1P1Q1N2/P4PPP/3R2K1 w - - 2 27	d3d6	f8d8	advantage,endgame,short	1474	96	36920
+
 # Lichess F1W14oiR opening branch. The embedded book must choose its established 3.c3 main line immediately instead of promoting the weak low-weight 3.d4 tail through a noisy one-ply evaluation.
 book-f1w14oir-main-line	0	rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1	g1f3 c7c5 e2e4 a7a6	c2c3	lichess,F1W14oiR,book,mainLine	0	0	0
 

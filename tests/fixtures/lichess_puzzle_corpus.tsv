@@ -939,14 +939,15 @@ id	depth	fen_before_blunder	setup_move	expected_move	themes	rating	popularity	pl
 # Currently failing mined Lichess candidates. These are kept as commented fixtures until Ember learns them.
 # Stockfish agreement audit, 2026-07-21: official Stockfish dev-20260720-f4bcd404, https://github.com/official-stockfish/Stockfish/releases/tag/stockfish-dev-20260720-f4bcd404, binary SHA-256 f852c7881146c5047a6546dcd8a8f04f9271734cc36dae40912f13c05a48aaa4.
 # Analysis settings: 8 threads on an 8-core/16-thread Intel Xeon, 4096 MiB hash. Each position was analyzed after setup_move with an unrestricted 50M-node MultiPV=8 search, then a 50M-node comparison of the expected move, Ember's recorded moves, and Stockfish's unrestricted best move.
-# Group 1, Stockfish agrees (high priority): all 81 commented data rows below. The expected move was Stockfish's unrestricted and verified first choice in every case; its smallest verified advantage over Ember's best recorded move was 393 centipawns.
+# Group 1, Stockfish agrees (high priority): the 78 remaining commented data rows below come from the original 81-case audit. The expected move was Stockfish's unrestricted and verified first choice in every audited case; its smallest verified advantage over Ember's best recorded move was 393 centipawns.
 # Group 2, Stockfish does not agree or the choice is ambiguous (lower priority): none.
 # Uncommented rows interleaved below are already active regressions and are not part of this classification.
 # failed_id	fen_before_blunder	setup_move	expected_move	got_depth2	got_depth3	got_depth4	themes	rating	popularity	plays
 # 00F5e	4k2r/1p2b1p1/p1q1Rp2/2p4p/8/1Q4B1/PP3PpP/6K1 b k - 1 22	c6d7	g3d6	h2h4	h2h4	h2h4	advantage,endgame,short	1716	100	260
 # 00OQt	8/8/8/p3b3/P1B2pKp/1Pk1p2P/6P1/8 w - - 8 50	g4h4	c3d2	e5f6	f4f3	c3b2	advancedPawn,bishopEndgame,crushing,endgame,long	1690	88	362
 00Rue	3	r2qkb1r/pp1nppp1/2p2n1p/3p1b2/3P4/BP2PN2/P1P2PPP/RN1QKB1R w KQkq - 2 7	c2c4	f5b1	advantage,fork,long,opening	2003	95	18388
-# 0000D	5rk1/1p3ppp/pq3b2/8/8/1P1Q1N2/P4PPP/3R2K1 w - - 2 27	d3d6	f8d8	b6a5	b6d6	b6a5	advantage,endgame,short	1474	96	36920
+# Puzzle 0000D, https://lichess.org/training/0000D, is now the hard depth-2 regression qsearch-mate-cap-0000d-rd8 in engine_regressions.tsv.
+# The original mined depth-2/3/4 choices were b6a5/b6d6/b6a5; its metadata is preserved in that regression.
 # 002e5	r2q4/pp1n1kbp/3P2b1/6N1/6Q1/P3P3/6P1/4K2R b K - 1 21	f7g8	g4c4	g4e6	g4e6	g4e6	crushing,long,middlegame,sacrifice	2632	85	387
 # 003Ec	3r4/p4R2/1pb2Pp1/n1p1Q1kp/8/P2q4/1P4PP/6RK b - - 2 32	d3f5	e5e3	h2h4	h2h4	h2h4	crushing,long,middlegame,pin	2245	89	309
 # 003UW	8/6pk/7p/2p5/2qp4/5PP1/P3QK1P/8 b - - 1 40	c4d5	e2e4	e2d3	e2d3	e2d3	advantage,endgame,queenEndgame,short	1473	93	977

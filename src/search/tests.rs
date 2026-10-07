@@ -18,6 +18,7 @@ fn legal_move(st: &BoardState, uci: &str) -> Move {
 
 #[test]
 fn classic_halfkp_net_is_selected_over_classic_eval() {
+    // Private evaluator-selection contract: directly distinguish the HalfKP path from classic evaluation.
     let bytes = crate::nnue::synthetic_test_net_bytes(320);
     let net = crate::nnue::ClassicHalfKpNet::parse(&bytes)
         .expect("synthetic legacy HalfKP net should parse");
@@ -101,6 +102,7 @@ fn negamax_excluding_move(
 
 #[test]
 fn special_move_gives_check_rejects_empty_from_square() {
+    // Private check-ordering predicate: test this move in isolation; a root fixture cannot observe eligibility.
     let st = state_from_fen("7k/8/8/8/8/8/8/R3K3 w - - 0 1");
     let mv = encode_move(7, 1, 7, 2, 0);
 
@@ -109,6 +111,7 @@ fn special_move_gives_check_rejects_empty_from_square() {
 
 #[test]
 fn special_move_gives_check_ignores_normal_rook_check() {
+    // Private check-ordering predicate: test this move in isolation; a root fixture cannot observe eligibility.
     let st = state_from_fen("7k/8/8/8/8/8/8/R3K3 w - - 0 1");
     let mv = legal_move(&st, "a1a8");
 
@@ -117,6 +120,7 @@ fn special_move_gives_check_ignores_normal_rook_check() {
 
 #[test]
 fn special_move_gives_check_rejects_quiet_non_check() {
+    // Private check-ordering predicate: test this move in isolation; a root fixture cannot observe eligibility.
     let st = state_from_fen("7k/8/8/8/8/8/8/R3K3 w - - 0 1");
     let mv = legal_move(&st, "a1a2");
 
@@ -125,6 +129,7 @@ fn special_move_gives_check_rejects_quiet_non_check() {
 
 #[test]
 fn special_move_gives_check_detects_en_passant_discovery() {
+    // Private check-ordering predicate: test this move in isolation; a root fixture cannot observe eligibility.
     let st = state_from_fen("8/6pp/8/R2pP1k1/6B1/8/6PP/6K1 w - d6 0 1");
     let mv = legal_move(&st, "e5d6");
 
@@ -133,6 +138,7 @@ fn special_move_gives_check_detects_en_passant_discovery() {
 
 #[test]
 fn special_move_gives_check_rejects_non_check_en_passant() {
+    // Private check-ordering predicate: test this move in isolation; a root fixture cannot observe eligibility.
     let st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
     let mv = legal_move(&st, "e5d6");
 
@@ -141,6 +147,7 @@ fn special_move_gives_check_rejects_non_check_en_passant() {
 
 #[test]
 fn special_move_gives_check_detects_castling_rook_discovery() {
+    // Private check-ordering predicate: test this move in isolation; a root fixture cannot observe eligibility.
     let st = state_from_fen("5k2/8/8/8/8/8/8/4K2R w K - 0 1");
     let mv = legal_move(&st, "e1g1");
 
@@ -149,33 +156,149 @@ fn special_move_gives_check_detects_castling_rook_discovery() {
 
 #[test]
 fn qsearch_searches_en_passant_captures() {
-    let mut st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
-    let stopped = Arc::new(AtomicBool::new(false));
-    let shared_tt = Arc::new(SharedTT::new(128));
-    let mut searcher = Searcher::new(shared_tt, stopped);
-    let stand_pat = searcher.corrected_eval(&st);
-    let mut nodes = 0u64;
+    // Private contract: even below the checked-node cap, a quiet QS entry must
+    // visit its EP child. TSV/public search cannot select the QS entry depth.
+    for depth in [QS_DEPTH, -4] {
+        let mut st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
+        let before = st;
+        let mut searcher = classic_qsearch_searcher();
+        let stand_pat = searcher.corrected_eval(&st);
+        let mut nodes = 0u64;
 
-    let score = searcher.qsearch(&mut st, -INF, INF, QS_DEPTH, &mut nodes, 0);
+        let score = searcher.qsearch(&mut st, -INF, INF, depth, &mut nodes, 0);
 
-    assert!(
+        assert!(
             score > stand_pat + 50,
             "qsearch should improve on stand-pat by searching e5xd6 en passant: stand_pat={stand_pat}, score={score}"
         );
+        assert_eq!(nodes, 2, "QS depth {depth} must visit the EP child");
+        assert_qsearch_position_preserved(&searcher, &st, &before);
+    }
+}
+
+fn classic_qsearch_searcher() -> Searcher {
+    tune::reset();
+    let mut searcher = Searcher::new(Arc::new(SharedTT::new(1)), Arc::new(AtomicBool::new(false)));
+    searcher.nnue_net = None;
+    searcher.ember_v2_net = None;
+    searcher.classic_net = None;
+    #[cfg(feature = "search-debug")]
+    {
+        searcher.debug.disable_qsearch_check_cap = false;
+    }
+    searcher
+}
+
+fn assert_qsearch_position_preserved(searcher: &Searcher, st: &BoardState, before: &BoardState) {
+    assert_eq!(st.bb, before.bb);
+    assert_eq!(st.mailbox, before.mailbox);
+    assert_eq!(st.w, before.w);
+    assert_eq!(st.cr, before.cr);
+    assert_eq!(st.castling_rooks, before.castling_rooks);
+    assert_eq!(st.ep, before.ep);
+    assert_eq!(st.mc, before.mc);
+    assert_eq!(st.halfmove_clock, before.halfmove_clock);
+    assert_eq!(st.chess960, before.chess960);
+    assert_eq!(st.hash, before.hash);
+    assert!(searcher.rep_stack.is_empty());
+    assert_eq!(searcher.rep_stack_len, 0);
+    assert_eq!(searcher.rep_root_len, 0);
+    assert!(!searcher.stopped.load(Ordering::Relaxed));
 }
 
 #[test]
 fn qsearch_checkmate_score_uses_the_actual_ply() {
-    let mut st = state_from_fen("7k/6Q1/6K1/8/8/8/8/8 b - - 0 1");
-    let stopped = Arc::new(AtomicBool::new(false));
-    let shared_tt = Arc::new(SharedTT::new(1));
-    let mut searcher = Searcher::new(shared_tt, stopped);
-    let mut nodes = 0u64;
-    let ply = 17;
+    // Private contract: exact mate distance and node accounting at arbitrary QS
+    // entry depth/ply, including the cap boundary. Public search/TSV loses this.
+    for chess960 in [false, true] {
+        for depth in [-3, -4, -5] {
+            for ply in [0, 1, 17, MAX_PLY - 1] {
+                let mut st = state_from_fen("7k/6Q1/6K1/8/8/8/8/8 b - - 0 1");
+                st.chess960 = chess960;
+                let before = st;
+                let mut searcher = classic_qsearch_searcher();
+                let mut nodes = 0u64;
 
-    let score = searcher.qsearch(&mut st, -INF, INF, -3, &mut nodes, ply);
+                let score = searcher.qsearch(&mut st, -INF, INF, depth, &mut nodes, ply);
 
-    assert_eq!(score, -MATE + ply as i32);
+                assert_eq!(
+                    score,
+                    -MATE + ply as i32,
+                    "depth={depth}, ply={ply}, Chess960={chess960}"
+                );
+                assert_eq!(nodes, 1);
+                assert_qsearch_position_preserved(&searcher, &st, &before);
+                #[cfg(feature = "search-debug")]
+                assert_eq!(searcher.debug_stats().q_checked_depth_exits, 0);
+            }
+        }
+    }
+}
+
+#[test]
+fn qsearch_checked_nonmate_keeps_the_cap_and_returns_its_buffer() {
+    // Private contract: the capped checked fallback evaluates without recursion
+    // and returns the borrowed allocation; public search/TSV cannot observe it.
+    for chess960 in [false, true] {
+        for depth in [-4, -5] {
+            let mut st = state_from_fen("7k/8/8/8/8/8/8/4K2R b - - 0 1");
+            st.chess960 = chess960;
+            let before = st;
+            let legal = generate_moves(&st, st.w, &st.cr, st.ep);
+            assert!(!legal.is_empty());
+            assert!(crate::board::is_attacked(&st.bb, st.king_sq(st.w), !st.w));
+            let mut searcher = classic_qsearch_searcher();
+            let expected = if chess960 {
+                searcher.static_eval_classic::<true>(&st)
+            } else {
+                searcher.static_eval_classic::<false>(&st)
+            };
+            let ply = 17;
+            searcher.ensure_buf_pools(ply);
+            searcher.move_bufs[ply] = Vec::with_capacity(64);
+            let allocation = searcher.move_bufs[ply].as_ptr();
+            let mut nodes = 0;
+
+            let score = searcher.qsearch(&mut st, -INF, INF, depth, &mut nodes, ply);
+
+            assert_eq!(score, expected);
+            assert_eq!(nodes, 1);
+            assert_eq!(searcher.move_bufs[ply].as_ptr(), allocation);
+            assert_eq!(searcher.move_bufs[ply].capacity(), 64);
+            assert_eq!(searcher.move_bufs[ply].len(), legal.len());
+            assert_qsearch_position_preserved(&searcher, &st, &before);
+            #[cfg(feature = "search-debug")]
+            assert_eq!(searcher.debug_stats().q_checked_depth_exits, 1);
+        }
+    }
+}
+
+#[test]
+fn qsearch_excluding_the_only_evasion_returns_alpha_below_the_cap() {
+    // Private contract: exclusion removes the sole escape from the search,
+    // not from chess legality. Neither TSV nor the public root API exposes it.
+    for depth in [-4, -5] {
+        let mut st = state_from_fen("7k/6Q1/8/5K2/8/8/8/8 b - - 0 1");
+        let before = st;
+        let legal = generate_moves(&st, st.w, &st.cr, st.ep);
+        assert_eq!(legal.len(), 1);
+        assert_eq!(crate::board::move_to_uci(&st, legal[0]), "h8g7");
+        let mut searcher = classic_qsearch_searcher();
+        let ply = 17;
+        searcher.excluded_moves[ply] = Some(legal[0]);
+        let alpha = -12345;
+        assert_ne!(searcher.static_eval_classic::<false>(&st), alpha);
+        let mut nodes = 0;
+
+        let score = searcher.qsearch(&mut st, alpha, alpha + 1, depth, &mut nodes, ply);
+
+        assert_eq!(score, alpha);
+        assert_eq!(nodes, 1);
+        assert_eq!(searcher.excluded_moves[ply], Some(legal[0]));
+        assert_qsearch_position_preserved(&searcher, &st, &before);
+        #[cfg(feature = "search-debug")]
+        assert_eq!(searcher.debug_stats().q_checked_depth_exits, 0);
+    }
 }
 
 #[test]
@@ -347,6 +470,7 @@ fn tactical_check_extension_depth_honors_tuning_overrides() {
 
 #[test]
 fn restricted_search_ignores_unrestricted_tt_cutoffs() {
+    // Private exclusion contract: unrestricted TT bounds must not cut off this restricted node.
     let st = state_from_fen("7k/4Q3/5K2/8/8/8/8/8 b - - 0 1");
     let legal_moves = generate_moves(&st, st.w, &st.cr, st.ep);
     assert_eq!(
@@ -392,6 +516,7 @@ fn restricted_search_ignores_unrestricted_tt_cutoffs() {
 
 #[test]
 fn restricted_search_with_no_alternative_fails_low_without_storing_tt() {
+    // Private exclusion contract: the restricted root bound must not enter the unrestricted TT.
     let mut st = state_from_fen("7k/4Q3/5K2/8/8/8/8/8 b - - 0 1");
     let legal_moves = generate_moves(&st, st.w, &st.cr, st.ep);
     assert_eq!(
@@ -427,6 +552,7 @@ fn restricted_search_with_no_alternative_fails_low_without_storing_tt() {
 
 #[test]
 fn stopped_restricted_search_restores_the_excluded_move() {
+    // Private exclusion lifecycle: cancellation must restore the saved excluded-move slot.
     let mut st = state_from_fen("7k/4Q3/5K2/8/8/8/8/8 b - - 0 1");
     let excluded_move = generate_moves(&st, st.w, &st.cr, st.ep)[0];
     let stopped = Arc::new(AtomicBool::new(true));
@@ -452,6 +578,7 @@ fn stopped_restricted_search_restores_the_excluded_move() {
 
 #[test]
 fn restricted_search_uses_descendant_tt_without_learning_from_its_root() {
+    // Private exclusion contract: reuse descendant TT entries without training root learning.
     let mut st = state_from_fen("7k/8/4Q3/5K2/8/8/8/8 b - - 0 1");
     let legal_moves = generate_moves(&st, st.w, &st.cr, st.ep);
     assert_eq!(
@@ -772,6 +899,7 @@ fn singular_candidate_requires_deep_reliable_safe_tt_evidence() {
 
 #[test]
 fn singular_margin_rejects_a_competitive_alternative() {
+    // Private extension contract: compare synthetic singular scores, not root move selection.
     let mut st = state_from_fen("7k/8/4Q3/5K2/8/8/8/8 b - - 0 1");
     let legal_moves = generate_moves(&st, st.w, &st.cr, st.ep);
     assert_eq!(legal_moves.len(), 2);
@@ -893,6 +1021,7 @@ fn endgame_mopup_requires_explicit_experimental_opt_in() {
 #[cfg(feature = "search-debug")]
 #[test]
 fn singular_search_extends_a_synthetic_only_move_tt_result() {
+    // Private extension contract: count singular probes and extensions from synthetic TT evidence.
     let mut st = state_from_fen("7k/8/5K2/5Q2/8/8/8/8 b - - 0 1");
     let legal_moves = generate_moves(&st, st.w, &st.cr, st.ep);
     assert_eq!(legal_moves.len(), 1, "position must have one legal move");
@@ -1136,6 +1265,7 @@ fn probcut_requires_both_verification_stages_to_pass() {
 #[cfg(feature = "search-debug")]
 #[test]
 fn probcut_stores_only_the_reduced_verified_depth() {
+    // Private ProbCut contract: verify the reduced proof depth stored in the TT.
     let mut st = state_from_fen("q6k/8/8/8/8/8/8/Q5K1 w - - 0 1");
     let tactical_move = legal_move(&st, "a1a8");
     let stopped = Arc::new(AtomicBool::new(false));
@@ -1170,6 +1300,7 @@ fn probcut_stores_only_the_reduced_verified_depth() {
 #[cfg(feature = "search-debug")]
 #[test]
 fn search_debug_stats_are_reset_between_root_moves() {
+    // Private QS entry: exercise debug reset after visiting an EP child at an arbitrary QS depth.
     let mut st = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
     let stopped = Arc::new(AtomicBool::new(false));
     let shared_tt = Arc::new(SharedTT::new(1));
@@ -1254,6 +1385,7 @@ fn settled_lazy_smp_helper_can_coordinate_the_shared_soft_stop() {
 
 #[test]
 fn lazy_smp_pool_reuses_workers_with_a_fresh_stop_token() {
+    // Private worker identity contract: the same worker threads must consume fresh stop tokens.
     let pool = LazySmpPool::new();
     let st = state_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1");
     let root_moves = generate_moves(&st, st.w, &st.cr, st.ep);
@@ -1495,42 +1627,6 @@ fn tt_non_mate_scores_are_not_adjusted() {
     assert_eq!(score_from_tt(-313, 5), -313);
 }
 
-const _: () = assert!(MATE - MAX_PLY as i32 > MATE_THRESHOLD);
-const _: () = assert!(MATE_THRESHOLD > TB_WIN_SCORE);
-const _: () = assert!(TB_WIN_SCORE > 0);
-
-#[test]
-fn score_bands_stay_ordered() {
-    assert_eq!(MATE - MATE_THRESHOLD, 10_000);
-    assert_eq!(MATE_THRESHOLD - TB_WIN_SCORE, 2_000);
-}
-
-#[test]
-fn tablebase_scores_are_not_classified_as_mate() {
-    for ply in 0..=MAX_PLY {
-        let win = TB_WIN_SCORE - ply as i32;
-        let loss = -TB_WIN_SCORE + ply as i32;
-        assert!(win.abs() <= MATE_THRESHOLD);
-        assert!(loss.abs() <= MATE_THRESHOLD);
-        assert_eq!(crate::search::format_uci_score(win), format!("cp {win}"));
-        assert_eq!(crate::search::format_uci_score(loss), format!("cp {loss}"));
-    }
-}
-
-#[test]
-fn mate_scores_still_format_as_mate() {
-    assert_eq!(crate::search::format_uci_score(MATE), "mate 1");
-    assert_eq!(crate::search::format_uci_score(-MATE), "mate -1");
-    assert_eq!(crate::search::format_uci_score(MATE - 2), "mate 2");
-    assert_eq!(crate::search::format_uci_score(-(MATE - 2)), "mate -2");
-    assert_eq!(crate::search::format_uci_score(MATE - 128), "mate 65");
-    assert_eq!(crate::search::format_uci_score(MATE_THRESHOLD), "cp 90000");
-    assert_eq!(
-        crate::search::format_uci_score(MATE_THRESHOLD + 1),
-        "mate 5000"
-    );
-}
-
 #[test]
 fn tablebase_scores_survive_tt_round_trip() {
     for ply in 0..MAX_PLY {
@@ -1551,6 +1647,7 @@ fn tablebase_scores_survive_tt_round_trip() {
 
 #[test]
 fn threefold_repetition_detected_after_long_history() {
+    // Private repetition predicate: inspect the accumulated history directly, without root search policy.
     let mut engine = Engine::new();
     engine.book = None;
 
@@ -1571,6 +1668,7 @@ fn threefold_repetition_detected_after_long_history() {
 
 #[test]
 fn draw_status_distinguishes_claimable_and_automatic_thresholds() {
+    // Private draw-classification contract: distinguish synthetic repetition and clock thresholds.
     let stopped = Arc::new(AtomicBool::new(false));
     let shared_tt = Arc::new(SharedTT::new(1));
     let mut searcher = Searcher::new(shared_tt, stopped);
@@ -1596,6 +1694,7 @@ fn draw_status_distinguishes_claimable_and_automatic_thresholds() {
 
 #[test]
 fn draw_status_terminates_cycles_only_after_the_search_root() {
+    // Private repetition contract: distinguish cycles before and after the stored root boundary.
     let stopped = Arc::new(AtomicBool::new(false));
     let shared_tt = Arc::new(SharedTT::new(1));
     let mut searcher = Searcher::new(shared_tt, stopped);

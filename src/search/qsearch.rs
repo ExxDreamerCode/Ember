@@ -96,15 +96,6 @@ macro_rules! qsearch_mode_body {
                 }
                 return $alpha;
             }
-        } else if $this.qsearch_check_cap_enabled()
-            && excluded_move.is_none()
-            && qsearch_check_cap_reached($depth)
-        {
-            #[cfg(feature = "search-debug")]
-            {
-                $this.debug.stats.q_checked_depth_exits += 1;
-            }
-            return $eval.static_eval::<CHESS960>($this, $st, $ply);
         }
 
         $this.ensure_buf_pools($ply);
@@ -135,6 +126,18 @@ macro_rules! qsearch_mode_body {
             } else {
                 $alpha
             };
+        }
+        if in_check
+            && $this.qsearch_check_cap_enabled()
+            && excluded_move.is_none()
+            && qsearch_check_cap_reached($depth)
+        {
+            #[cfg(feature = "search-debug")]
+            {
+                $this.debug.stats.q_checked_depth_exits += 1;
+            }
+            Self::return_buf(&mut $this.move_bufs, $ply, caps);
+            return $eval.static_eval::<CHESS960>($this, $st, $ply);
         }
         let qsearch_see_threshold =
             if !in_check && excluded_move.is_none() && $this.qsearch_see_enabled() {
