@@ -30,6 +30,8 @@ fn correction_history_engine_callers_match_fresh_root_training() {
     // Public learning-state contract, not a root-move expectation: the engine
     // must train exactly as a fresh evaluation of the pre-search root would.
     // Reuse each engine across changed roots to catch caches outliving a search.
+    // Child-node training is disabled here because it writes shared pawn slots
+    // and is covered separately by the node-training test below.
     let _restore = RestoreNetwork::capture();
     for (v2, chess960) in [(false, false), (true, true), (true, false)] {
         if v2 {
@@ -61,6 +63,7 @@ fn correction_history_engine_callers_match_fresh_root_training() {
                 #[cfg(feature = "search-debug")]
                 {
                     engine.searcher.debug.disable_corr_hist = false;
+                    engine.searcher.debug.disable_corr_node_train = true;
                     engine.searcher.debug.enable_endgame_mopup = false;
                 }
                 let mut oracle =
@@ -92,6 +95,53 @@ fn correction_history_engine_callers_match_fresh_root_training() {
             );
         }
     }
+}
+
+#[test]
+#[cfg(feature = "search-debug")]
+fn correction_history_trains_at_child_nodes() {
+    use ember_chess::{evaluate, search::Searcher, tt::SharedTT};
+    use std::sync::{atomic::AtomicBool, Arc};
+
+    // Public learning-state contract: a fixed-depth search must train the
+    // correction slots of its child nodes, not only the post-search root.
+    // The post-search root call alone provably cannot move any slot other
+    // than the root's pawn slot with the root-only arithmetic (the fidelity
+    // test above pins that equality), so any divergence from a fresh
+    // root-only oracle proves that child nodes trained during the search.
+    let _restore = RestoreNetwork::capture();
+    evaluate::reset_nnue().unwrap();
+    let mut engine = Engine::new();
+    engine.book = None;
+    engine.own_book = false;
+    engine.num_threads = 1;
+    engine.set_fen("2r2rk1/1b2bppp/p3pn2/1p1p4/3P4/1BN1PN2/PP3PPP/2R2RK1 w - - 0 14");
+    engine.searcher.refresh_nnue_net();
+    engine.searcher.refresh_search_backend();
+    engine.searcher.debug.disable_corr_hist = false;
+    engine.searcher.debug.disable_corr_node_train = false;
+    engine.searcher.debug.enable_endgame_mopup = false;
+
+    let mut oracle = Searcher::new(Arc::new(SharedTT::new(1)), Arc::new(AtomicBool::new(false)));
+    engine.searcher.copy_root_context_to(&mut oracle);
+    oracle.debug.disable_corr_node_train = true;
+    let root = engine.st;
+
+    // Depth 4 gives the root's children the depth-3 node gate; the position
+    // includes pawn moves whose subtrees miss the warm transposition table
+    // and search fully.
+    let (_, score, nodes, _) = engine.find_best_move_prepared_untimed(4, None);
+    assert!(nodes > 0);
+    let stats = engine.searcher.debug_stats();
+    assert!(
+        stats.corr_node_exits > 0,
+        "completed nodes must reach the training gate: {stats:?}"
+    );
+    oracle.update_correction_history(&root, score, 4);
+    assert_ne!(
+        engine.searcher.corr_hist, oracle.corr_hist,
+        "child nodes must train during the search, not only the post-search root: {stats:?}"
+    );
 }
 
 #[test]

@@ -3,6 +3,7 @@ use super::*;
 #[cfg(feature = "search-debug")]
 pub struct SearchDebug {
     pub disable_corr_hist: bool,
+    pub disable_corr_node_train: bool,
     pub disable_futility: bool,
     pub disable_history_pruning: bool,
     pub disable_iid_reduction: bool,
@@ -478,6 +479,13 @@ pub struct SearchDebugStats {
     pub singular_multicut_cutoffs: u64,
     pub singular_alternative_rejections: u64,
     pub singular_stop_rejections: u64,
+    pub corr_node_exits: u64,
+    pub corr_node_trains: u64,
+    pub corr_node_reject_check: u64,
+    pub corr_node_reject_verification: u64,
+    pub corr_node_reject_noisy: u64,
+    pub corr_node_reject_direction: u64,
+    pub corr_node_update_rejected: u64,
 }
 
 #[cfg(feature = "search-debug")]
@@ -485,6 +493,7 @@ impl SearchDebug {
     pub(super) fn from_env() -> Self {
         Self {
             disable_corr_hist: env_flag("EMBER_DISABLE_CORR_HIST"),
+            disable_corr_node_train: env_flag("EMBER_DISABLE_CORR_NODE_TRAIN"),
             disable_futility: env_flag("EMBER_DISABLE_FUTILITY"),
             disable_history_pruning: env_flag("EMBER_DISABLE_HISTORY_PRUNING"),
             disable_iid_reduction: env_flag("EMBER_DISABLE_IID_REDUCTION"),

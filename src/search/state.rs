@@ -628,7 +628,7 @@ impl Searcher {
         }
         let s = self.debug.stats;
         eprintln!(
-            "info string search-debug root depth={depth} order={order} move={mv} alpha={alpha} beta={beta} score={score} nodes={nodes} seldepth={} tt_hits={} tt_max_depth={} tt_cutoffs={} rfp={} futility={} null={}/{} iid={} lmp={} history={} see={} lmr={}/{} lmr_sum={} lmr_max={} lmr_adjust={}/{}/{} lmr_zero={} lmr_saturated={} qnodes={} qdelta={} qsee={} qcheck_cap={} probcut_eligible={} probcut_safety={} probcut_tt={} probcut_candidates={} probcut_see={} probcut_qpass={} probcut_verify={} probcut_nodes={} probcut_cutoffs={} probcut_stops={} singular_candidates={} singular_safety={} singular_verify={} singular_nodes={} singular_extensions={} singular_extension_plies={} singular_negative={} singular_multicut={} singular_alternatives={} singular_stops={}",
+            "info string search-debug root depth={depth} order={order} move={mv} alpha={alpha} beta={beta} score={score} nodes={nodes} seldepth={} tt_hits={} tt_max_depth={} tt_cutoffs={} rfp={} futility={} null={}/{} iid={} lmp={} history={} see={} lmr={}/{} lmr_sum={} lmr_max={} lmr_adjust={}/{}/{} lmr_zero={} lmr_saturated={} qnodes={} qdelta={} qsee={} qcheck_cap={} probcut_eligible={} probcut_safety={} probcut_tt={} probcut_candidates={} probcut_see={} probcut_qpass={} probcut_verify={} probcut_nodes={} probcut_cutoffs={} probcut_stops={} singular_candidates={} singular_safety={} singular_verify={} singular_nodes={} singular_extensions={} singular_extension_plies={} singular_negative={} singular_multicut={} singular_alternatives={} singular_stops={} corr_exits={} corr_trains={}",
             s.max_ply,
             s.tt_hits,
             s.tt_max_depth,
@@ -674,6 +674,8 @@ impl Searcher {
             s.singular_multicut_cutoffs,
             s.singular_alternative_rejections,
             s.singular_stop_rejections,
+            s.corr_node_exits,
+            s.corr_node_trains,
         );
     }
 
@@ -1282,51 +1284,45 @@ impl Searcher {
         )
     }
 
-    pub fn update_correction_history(&mut self, st: &BoardState, score: i32, depth: i32) {
-        self.update_correction_history_with_eval(st, score, depth, None);
+    /// Returns true when this call wrote the correction table.
+    pub fn update_correction_history(&mut self, st: &BoardState, score: i32, depth: i32) -> bool {
+        self.update_correction_history_with_eval(st, score, depth, None)
     }
 
     // Reuse only a corrected evaluation of this root with unchanged networks,
     // backend, evaluation flags, and correction history. Training invalidates it;
     // SMP callers must use the fresh public wrapper after importing learning.
+    // Returns true when this call wrote the correction table.
     pub(crate) fn update_correction_history_with_eval(
         &mut self,
         st: &BoardState,
         score: i32,
         depth: i32,
         cached_corrected_eval: Option<i32>,
-    ) {
+    ) -> bool {
         if !self.corr_hist_enabled() || depth < 3 || score.abs() > MATE / 2 {
-            return;
+            return false;
         }
         let ev = cached_corrected_eval.unwrap_or_else(|| self.corrected_eval(st));
         let diff = score - ev;
-        if diff.abs() < 500 {
-            let ph = compute_pawn_hash(st);
-            let idx = corr_idx(ph, st.w);
-            // Depth-weighted full-error bonus with gravity decay. Deeper
-            // searches contribute more (their scores are more trustworthy),
-            // the raw error is not pre-clamped so a deep large error earns
-            // the capped full bonus, and the gravity term shrinks every step
-            // as the slot approaches the limit so repeated same-sign errors
-            // converge to +/-LIMIT instead of integrating linearly. Defaults
-            // reproduce the reference scheme: bonus = err * min(depth+1, 16)
-            // * 10/55 capped at LIMIT * 10/38, gravity = old + bonus -
-            // old*|bonus|/LIMIT.
-            let limit = tune::get_int(TuneParam::CorrGravityLimit, 1024).clamp(1, 32768) as i32;
-            let cap = (limit
-                * tune::get_int(TuneParam::CorrBonusCapPermille, 263).clamp(0, 1_000_000) as i32)
-                / 1000;
-            let depth_cap = tune::get_int(TuneParam::CorrDepthCap, 16).clamp(1, 1024) as i32;
-            let scale = (depth + 1).clamp(1, depth_cap);
-            let den = tune::get_int(TuneParam::CorrWeightDen, 55).clamp(1, 1_000_000) as i32;
-            let num =
-                tune::get_int(TuneParam::CorrWeightNum, 10).clamp(-1_000_000, 1_000_000) as i32;
-            let scaled = diff.saturating_mul(scale).saturating_mul(num) / den;
-            let bonus = scaled.clamp(-cap, cap);
-            let old = self.corr_hist[idx];
-            self.corr_hist[idx] = (old + bonus - old * bonus.abs() / limit).clamp(-limit, limit);
+        if diff.abs() >= 500 {
+            return false;
         }
+        let ph = compute_pawn_hash(st);
+        let idx = corr_idx(ph, st.w);
+        let limit = tune::get_int(TuneParam::CorrGravityLimit, 1024).clamp(1, 32768) as i32;
+        let cap = (limit
+            * tune::get_int(TuneParam::CorrBonusCapPermille, 263).clamp(0, 1_000_000) as i32)
+            / 1000;
+        let depth_cap = tune::get_int(TuneParam::CorrDepthCap, 16).clamp(1, 1024) as i32;
+        let scale = (depth + 1).clamp(1, depth_cap);
+        let den = tune::get_int(TuneParam::CorrWeightDen, 55).clamp(1, 1_000_000) as i32;
+        let num = tune::get_int(TuneParam::CorrWeightNum, 10).clamp(-1_000_000, 1_000_000) as i32;
+        let scaled = diff.saturating_mul(scale).saturating_mul(num) / den;
+        let bonus = scaled.clamp(-cap, cap);
+        let old = self.corr_hist[idx];
+        self.corr_hist[idx] = (old + bonus - old * bonus.abs() / limit).clamp(-limit, limit);
+        true
     }
 
     pub(super) fn repetition_info(&self, reversible_plies: usize) -> (u8, bool) {

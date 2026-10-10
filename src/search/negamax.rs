@@ -981,6 +981,7 @@ macro_rules! negamax_mode_body {
         let orig_alpha = $alpha;
         let mut best_score = -INF;
         let mut best_move = None;
+        let mut corr_best_quiet: Option<Move> = None;
         let mut legal_moves_seen = 0usize;
         let mut quiets_tried = Self::take_buf(&mut $this.quiets_bufs, $ply);
         quiets_tried.clear();
@@ -1261,6 +1262,7 @@ macro_rules! negamax_mode_body {
             if s > best_score {
                 best_score = s;
                 best_move = Some(mv);
+                corr_best_quiet = if is_quiet { Some(mv) } else { None };
                 if s > $alpha {
                     $alpha = s;
                     if $alpha >= beta {
@@ -1355,11 +1357,85 @@ macro_rules! negamax_mode_body {
                 )
             );
         }
+        // A node only trains when its best move stayed quiet: track the quiet
+        // status of the best-scoring move while the loop knows it, then hand
+        // that to the gate (capture/promotion classification needs the
+        // const-generic variant this plain method cannot name).
+        let corr_quiet = best_move.is_some_and(|mv| Some(mv) == corr_best_quiet);
+        $this.train_correction_from_node(
+            $st,
+            best_score,
+            actual_depth,
+            eval_score,
+            flag,
+            in_check,
+            excluded_move.is_some() || $this.restricted_verification_active(),
+            corr_quiet,
+        );
         best_score
     }};
 }
 
 impl Searcher {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn train_correction_from_node(
+        &mut self,
+        st: &BoardState,
+        best_score: i32,
+        depth: i32,
+        eval: i32,
+        flag: u8,
+        in_check: bool,
+        verification_active: bool,
+        best_move_quiet: bool,
+    ) -> bool {
+        #[cfg(feature = "search-debug")]
+        {
+            if self.debug.disable_corr_node_train {
+                return false;
+            }
+            self.debug.stats.corr_node_exits += 1;
+        }
+        #[cfg(feature = "search-debug")]
+        if verification_active {
+            self.debug.stats.corr_node_reject_verification += 1;
+        }
+        #[cfg(feature = "search-debug")]
+        if in_check {
+            self.debug.stats.corr_node_reject_check += 1;
+        }
+        if verification_active || in_check || !best_move_quiet {
+            #[cfg(feature = "search-debug")]
+            if !verification_active && !in_check {
+                self.debug.stats.corr_node_reject_noisy += 1;
+            }
+            return false;
+        }
+        let direction_ok = match flag {
+            TT_ALPHA => best_score < eval,
+            TT_BETA => best_score > eval,
+            TT_EXACT => true,
+            _ => false,
+        };
+        if !direction_ok {
+            #[cfg(feature = "search-debug")]
+            {
+                self.debug.stats.corr_node_reject_direction += 1;
+            }
+            return false;
+        }
+        let trained = self.update_correction_history_with_eval(st, best_score, depth, Some(eval));
+        #[cfg(feature = "search-debug")]
+        {
+            if trained {
+                self.debug.stats.corr_node_trains += 1;
+            } else {
+                self.debug.stats.corr_node_update_rejected += 1;
+            }
+        }
+        trained
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn negamax(
         &mut self,

@@ -1,4 +1,4 @@
-use super::*;
+﻿use super::*;
 use crate::board::encode_move;
 use crate::engine::Engine;
 use crate::types::{MATE_THRESHOLD, TB_WIN_SCORE};
@@ -2410,6 +2410,168 @@ fn correction_history_gravity_depth_weight_and_tune_overrides() {
     searcher.corr_hist[idx] = 0;
     searcher.update_correction_history_with_eval(&st, ev + 100, 3, Some(ev));
     assert_eq!(searcher.corr_hist[idx], 72);
+}
+
+#[test]
+fn correction_history_node_gate_matrix() {
+    let st = state_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    let ev = 40;
+    let score = ev + 64;
+    let mut searcher = correction_history_searcher(false);
+
+    struct Case {
+        name: &'static str,
+        best_move_quiet: bool,
+        in_check: bool,
+        verification: bool,
+        flag: u8,
+        depth: i32,
+        score: i32,
+        expect_train: bool,
+        expect_slot: i32,
+    }
+    let cases = [
+        Case {
+            name: "quiet fail-low train",
+            best_move_quiet: true,
+            in_check: false,
+            verification: false,
+            flag: TT_ALPHA,
+            depth: 3,
+            score: ev - 64,
+            expect_train: true,
+            expect_slot: -10,
+        },
+        Case {
+            name: "quiet fail-high train",
+            best_move_quiet: true,
+            in_check: false,
+            verification: false,
+            flag: TT_BETA,
+            depth: 3,
+            score,
+            expect_train: true,
+            expect_slot: 82,
+        },
+        Case {
+            name: "quiet exact train",
+            best_move_quiet: true,
+            in_check: false,
+            verification: false,
+            flag: TT_EXACT,
+            depth: 3,
+            score,
+            expect_train: true,
+            expect_slot: 82,
+        },
+        Case {
+            name: "check node",
+            best_move_quiet: true,
+            in_check: true,
+            verification: false,
+            flag: TT_ALPHA,
+            depth: 3,
+            score: ev - 64,
+            expect_train: false,
+            expect_slot: 0,
+        },
+        Case {
+            name: "verification",
+            best_move_quiet: true,
+            in_check: false,
+            verification: true,
+            flag: TT_ALPHA,
+            depth: 3,
+            score: ev - 64,
+            expect_train: false,
+            expect_slot: 0,
+        },
+        Case {
+            name: "noisy best move",
+            best_move_quiet: false,
+            in_check: false,
+            verification: false,
+            flag: TT_ALPHA,
+            depth: 3,
+            score: ev - 64,
+            expect_train: false,
+            expect_slot: 0,
+        },
+        Case {
+            name: "direction mismatch alpha",
+            best_move_quiet: true,
+            in_check: false,
+            verification: false,
+            flag: TT_ALPHA,
+            depth: 3,
+            score: ev + 1,
+            expect_train: false,
+            expect_slot: 0,
+        },
+        Case {
+            name: "direction mismatch beta",
+            best_move_quiet: true,
+            in_check: false,
+            verification: false,
+            flag: TT_BETA,
+            depth: 3,
+            score: ev - 1,
+            expect_train: false,
+            expect_slot: 0,
+        },
+        Case {
+            name: "mate bound",
+            best_move_quiet: true,
+            in_check: false,
+            verification: false,
+            flag: TT_ALPHA,
+            depth: 3,
+            score: MATE - 4,
+            expect_train: false,
+            expect_slot: 0,
+        },
+        Case {
+            name: "depth below gate",
+            best_move_quiet: true,
+            in_check: false,
+            verification: false,
+            flag: TT_ALPHA,
+            depth: 2,
+            score: ev - 64,
+            expect_train: false,
+            expect_slot: 0,
+        },
+    ];
+    for case in cases {
+        for slot in searcher.corr_hist.iter_mut() {
+            *slot = 37;
+        }
+        let trained = searcher.train_correction_from_node(
+            &st,
+            case.score,
+            case.depth,
+            ev,
+            case.flag,
+            case.in_check,
+            case.verification,
+            case.best_move_quiet,
+        );
+        assert_eq!(trained, case.expect_train, "case {}", case.name);
+        if case.expect_train {
+            assert_eq!(
+                searcher.corr_hist[corr_idx(compute_pawn_hash(&st), st.w)],
+                case.expect_slot,
+                "case {} must write the trained slot",
+                case.name
+            );
+        } else {
+            assert!(
+                searcher.corr_hist.iter().all(|v| *v == 37),
+                "case {} must not write any slot",
+                case.name
+            );
+        }
+    }
 }
 
 #[test]
