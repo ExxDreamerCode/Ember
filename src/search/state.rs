@@ -1304,8 +1304,28 @@ impl Searcher {
         if diff.abs() < 500 {
             let ph = compute_pawn_hash(st);
             let idx = corr_idx(ph, st.w);
-            let corr = &mut self.corr_hist[idx];
-            *corr = (*corr + diff.clamp(-64, 64) / 8).clamp(-1024, 1024);
+            // Depth-weighted full-error bonus with gravity decay. Deeper
+            // searches contribute more (their scores are more trustworthy),
+            // the raw error is not pre-clamped so a deep large error earns
+            // the capped full bonus, and the gravity term shrinks every step
+            // as the slot approaches the limit so repeated same-sign errors
+            // converge to +/-LIMIT instead of integrating linearly. Defaults
+            // reproduce the reference scheme: bonus = err * min(depth+1, 16)
+            // * 10/55 capped at LIMIT * 10/38, gravity = old + bonus -
+            // old*|bonus|/LIMIT.
+            let limit = tune::get_int(TuneParam::CorrGravityLimit, 1024).clamp(1, 32768) as i32;
+            let cap = (limit
+                * tune::get_int(TuneParam::CorrBonusCapPermille, 263).clamp(0, 1_000_000) as i32)
+                / 1000;
+            let depth_cap = tune::get_int(TuneParam::CorrDepthCap, 16).clamp(1, 1024) as i32;
+            let scale = (depth + 1).clamp(1, depth_cap);
+            let den = tune::get_int(TuneParam::CorrWeightDen, 55).clamp(1, 1_000_000) as i32;
+            let num =
+                tune::get_int(TuneParam::CorrWeightNum, 10).clamp(-1_000_000, 1_000_000) as i32;
+            let scaled = diff.saturating_mul(scale).saturating_mul(num) / den;
+            let bonus = scaled.clamp(-cap, cap);
+            let old = self.corr_hist[idx];
+            self.corr_hist[idx] = (old + bonus - old * bonus.abs() / limit).clamp(-limit, limit);
         }
     }
 

@@ -122,6 +122,9 @@ fn correction_history_public_updater_observes_successive_training() {
         .filter(|(a, b)| **a != *b)
         .collect();
     assert_eq!(changes.len(), 1);
-    assert_eq!(*changes[0].0, 108);
-    assert_eq!(changes[0].1, 115);
+    // Depth-3 arithmetic with default constants: residual 64 gives bonus
+    // 64*4*10/55 = 46 and gravity 100*46/1024 = 4, so the first update lands
+    // at 142; the second sees residual 22, bonus 16, gravity 2 -> 156.
+    assert_eq!(*changes[0].0, 142);
+    assert_eq!(changes[0].1, 156);
 }

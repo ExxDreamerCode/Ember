@@ -1,4 +1,4 @@
-﻿use super::*;
+use super::*;
 use crate::board::encode_move;
 use crate::engine::Engine;
 use crate::types::{MATE_THRESHOLD, TB_WIN_SCORE};
@@ -2047,24 +2047,137 @@ fn correction_history_searcher(v2: bool) -> Searcher {
 fn correction_history_cached_update_matches_fresh_arithmetic_and_modes() {
     // Private cached-helper contract: compare complete correction tables and
     // arithmetic boundaries, not a chosen root move (which TSV would observe).
-    let residuals = [
-        (-500, 0),
-        (-499, -8),
-        (-65, -8),
-        (-64, -8),
-        (-63, -7),
-        (-9, -1),
-        (-8, -1),
-        (-7, 0),
-        (0, 0),
-        (7, 0),
-        (8, 1),
-        (9, 1),
-        (63, 7),
-        (64, 8),
-        (65, 8),
-        (499, 8),
-        (500, 0),
+    // Reference values for depth 3 with default constants: bonus =
+    // clamp(err * 4 * 10 / 55, +/-269), trained =
+    // clamp(old + bonus - old * |bonus| / 1024, +/-1024); |err| >= 500 and
+    // depth < 3 must not train.
+    let expected: [(i32, i32, i32); 126] = [
+        (-1023, -500, -1023),
+        (-1023, -499, -1024),
+        (-1023, -65, -1024),
+        (-1023, -64, -1024),
+        (-1023, -63, -1024),
+        (-1023, -9, -1024),
+        (-1023, -8, -1024),
+        (-1023, -7, -1024),
+        (-1023, -2, -1024),
+        (-1023, -1, -1023),
+        (-1023, 0, -1023),
+        (-1023, 1, -1023),
+        (-1023, 2, -1022),
+        (-1023, 7, -1014),
+        (-1023, 8, -1014),
+        (-1023, 9, -1012),
+        (-1023, 63, -934),
+        (-1023, 64, -932),
+        (-1023, 65, -930),
+        (-1023, 499, -486),
+        (-1023, 500, -1023),
+        (-201, -500, -201),
+        (-201, -499, -418),
+        (-201, -65, -239),
+        (-201, -64, -238),
+        (-201, -63, -238),
+        (-201, -9, -206),
+        (-201, -8, -206),
+        (-201, -7, -206),
+        (-201, -2, -202),
+        (-201, -1, -201),
+        (-201, 0, -201),
+        (-201, 1, -201),
+        (-201, 2, -200),
+        (-201, 7, -196),
+        (-201, 8, -196),
+        (-201, 9, -194),
+        (-201, 63, -148),
+        (-201, 64, -146),
+        (-201, 65, -145),
+        (-201, 499, 120),
+        (-201, 500, -201),
+        (-199, -500, -199),
+        (-199, -499, -416),
+        (-199, -65, -237),
+        (-199, -64, -237),
+        (-199, -63, -236),
+        (-199, -9, -204),
+        (-199, -8, -204),
+        (-199, -7, -204),
+        (-199, -2, -200),
+        (-199, -1, -199),
+        (-199, 0, -199),
+        (-199, 1, -199),
+        (-199, 2, -198),
+        (-199, 7, -194),
+        (-199, 8, -194),
+        (-199, 9, -192),
+        (-199, 63, -146),
+        (-199, 64, -145),
+        (-199, 65, -143),
+        (-199, 499, 122),
+        (-199, 500, -199),
+        (199, -500, 199),
+        (199, -499, -122),
+        (199, -65, 143),
+        (199, -64, 145),
+        (199, -63, 146),
+        (199, -9, 192),
+        (199, -8, 194),
+        (199, -7, 194),
+        (199, -2, 198),
+        (199, -1, 199),
+        (199, 0, 199),
+        (199, 1, 199),
+        (199, 2, 200),
+        (199, 7, 204),
+        (199, 8, 204),
+        (199, 9, 204),
+        (199, 63, 236),
+        (199, 64, 237),
+        (199, 65, 237),
+        (199, 499, 416),
+        (199, 500, 199),
+        (201, -500, 201),
+        (201, -499, -120),
+        (201, -65, 145),
+        (201, -64, 146),
+        (201, -63, 148),
+        (201, -9, 194),
+        (201, -8, 196),
+        (201, -7, 196),
+        (201, -2, 200),
+        (201, -1, 201),
+        (201, 0, 201),
+        (201, 1, 201),
+        (201, 2, 202),
+        (201, 7, 206),
+        (201, 8, 206),
+        (201, 9, 206),
+        (201, 63, 238),
+        (201, 64, 238),
+        (201, 65, 239),
+        (201, 499, 418),
+        (201, 500, 201),
+        (1023, -500, 1023),
+        (1023, -499, 486),
+        (1023, -65, 930),
+        (1023, -64, 932),
+        (1023, -63, 934),
+        (1023, -9, 1012),
+        (1023, -8, 1014),
+        (1023, -7, 1014),
+        (1023, -2, 1022),
+        (1023, -1, 1023),
+        (1023, 0, 1023),
+        (1023, 1, 1023),
+        (1023, 2, 1024),
+        (1023, 7, 1024),
+        (1023, 8, 1024),
+        (1023, 9, 1024),
+        (1023, 63, 1024),
+        (1023, 64, 1024),
+        (1023, 65, 1024),
+        (1023, 499, 1024),
+        (1023, 500, 1023),
     ];
     for (v2, chess960, mc) in [(false, false, 0), (true, true, 0), (true, false, 8)] {
         for white in [false, true] {
@@ -2075,37 +2188,32 @@ fn correction_history_cached_update_matches_fresh_arithmetic_and_modes() {
             let mut cached = correction_history_searcher(v2);
             let mut fresh = correction_history_searcher(v2);
             let idx = corr_idx(compute_pawn_hash(&st), st.w);
-            for seed in [-1023, -201, -199, 199, 201, 1023] {
-                for (residual, increment) in residuals {
-                    for depth in [2, 3] {
+            for (seed, residual, trained) in expected {
+                for depth in [2, 3] {
+                    cached.corr_hist[idx] = seed;
+                    fresh.corr_hist = cached.corr_hist;
+                    let ev = cached.corrected_eval(&st);
+                    if !v2 || chess960 {
+                        let raw = evaluate(&st) * if white { 1 } else { -1 };
+                        assert_eq!(ev, raw + seed.clamp(-200, 200));
+                        assert_ne!(ev, raw, "corrected classic value must be retained");
+                    } else {
+                        cached.corr_hist[idx] = 0;
+                        let raw = cached.corrected_eval(&st);
                         cached.corr_hist[idx] = seed;
-                        fresh.corr_hist = cached.corr_hist;
-                        let ev = cached.corrected_eval(&st);
-                        if !v2 || chess960 {
-                            let raw = evaluate(&st) * if white { 1 } else { -1 };
-                            assert_eq!(ev, raw + seed.clamp(-200, 200));
-                            assert_ne!(ev, raw, "corrected classic value must be retained");
-                        } else {
-                            cached.corr_hist[idx] = 0;
-                            let raw = cached.corrected_eval(&st);
-                            cached.corr_hist[idx] = seed;
-                            assert_eq!(ev, raw + seed.clamp(-200, 200));
-                            assert_ne!(ev, raw, "corrected v2 value must be retained");
-                        }
-                        let mut expected = cached.corr_hist;
-                        if depth == 3 {
-                            expected[idx] = (seed + increment).clamp(-1024, 1024);
-                        }
-                        cached.update_correction_history_with_eval(
-                            &st,
-                            ev + residual,
-                            depth,
-                            Some(ev),
-                        );
-                        fresh.update_correction_history(&st, ev + residual, depth);
-                        assert_eq!(cached.corr_hist, expected, "mode={v2}/{chess960} side={white} seed={seed} residual={residual} depth={depth}");
-                        assert_eq!(cached.corr_hist, fresh.corr_hist);
+                        assert_eq!(ev, raw + seed.clamp(-200, 200));
+                        assert_ne!(ev, raw, "corrected v2 value must be retained");
                     }
+                    let target = if depth == 3 { trained } else { seed };
+                    let mut wanted = cached.corr_hist;
+                    wanted[idx] = target;
+                    cached.update_correction_history_with_eval(&st, ev + residual, depth, Some(ev));
+                    fresh.update_correction_history(&st, ev + residual, depth);
+                    assert_eq!(
+                        cached.corr_hist, wanted,
+                        "mode={v2}/{chess960} side={white} seed={seed} residual={residual} depth={depth}"
+                    );
+                    assert_eq!(cached.corr_hist, fresh.corr_hist);
                 }
             }
             for score in [-MATE / 2 - 1, -MATE / 2, MATE / 2, MATE / 2 + 1] {
@@ -2191,15 +2299,17 @@ fn correction_history_reaches_static_eval_and_matches_corrected_eval() {
             searcher.corr_hist[idx] = seed;
             assert_eq!(corrected, base + seed);
             searcher.update_correction_history(&st, base, 3);
+            // Residual -100 at depth 3: bonus = -100*4*10/55 = -72, gravity
+            // term = 100*72/1024 = 7, so the slot becomes 100 - 72 - 7 = 21.
             assert_eq!(
-                searcher.corr_hist[idx], 92,
+                searcher.corr_hist[idx], 21,
                 "training must target the corrected residual: v2={v2} chess960={chess960} \
                  white={white}"
             );
-            assert_eq!(searcher.corrected_eval(&st), base + 92);
+            assert_eq!(searcher.corrected_eval(&st), base + 21);
             assert_eq!(
                 correction_eval_static(&searcher, &st, v2, chess960),
-                base + 92,
+                base + 21,
                 "static eval must follow the trained slot: v2={v2} chess960={chess960} \
                  white={white}"
             );
@@ -2235,6 +2345,71 @@ fn correction_history_reads_clamp_at_200() {
             "static eval seed={seed}"
         );
     }
+}
+
+#[test]
+fn correction_history_gravity_depth_weight_and_tune_overrides() {
+    // Private integrator contract: depth weighting, cap saturation, gravity
+    // convergence, and tune overrides are invisible to a move fixture.
+    let st = Engine::new().st;
+    let mut searcher = correction_history_searcher(false);
+    let ev = searcher.corrected_eval(&st);
+    let idx = corr_idx(compute_pawn_hash(&st), st.w);
+
+    // The same error trains more with search depth and saturates the bonus
+    // cap: err*min(depth+1,16)*10/55 capped at 1024*263/1000 = 269.
+    for (depth, bonus) in [(3, 72), (10, 200), (15, 269), (24, 269)] {
+        searcher.corr_hist[idx] = 0;
+        searcher.update_correction_history_with_eval(&st, ev + 100, depth, Some(ev));
+        assert_eq!(searcher.corr_hist[idx], bonus, "depth={depth}");
+    }
+
+    // The raw error is not pre-clamped, and small errors are no longer
+    // quantized away by the old sign-only step.
+    searcher.corr_hist[idx] = 0;
+    searcher.update_correction_history_with_eval(&st, ev + 499, 15, Some(ev));
+    assert_eq!(searcher.corr_hist[idx], 269);
+    searcher.corr_hist[idx] = 0;
+    searcher.update_correction_history_with_eval(&st, ev + 2, 3, Some(ev));
+    assert_eq!(searcher.corr_hist[idx], 1);
+
+    // Gravity shrinks every step near the limit instead of integrating
+    // linearly: 1000 + 72 - 1000*72/1024 = 1002, not 1072.
+    searcher.corr_hist[idx] = 1000;
+    searcher.update_correction_history_with_eval(&st, ev + 100, 3, Some(ev));
+    assert_eq!(searcher.corr_hist[idx], 1002);
+
+    // Repeated capped same-sign errors converge toward the limit from both
+    // directions without ever crossing it.
+    searcher.corr_hist[idx] = 0;
+    for _ in 0..64 {
+        searcher.update_correction_history_with_eval(&st, ev + 499, 15, Some(ev));
+        assert!(searcher.corr_hist[idx] <= 1024);
+    }
+    assert!(
+        (1000..=1024).contains(&searcher.corr_hist[idx]),
+        "converged={}",
+        searcher.corr_hist[idx]
+    );
+    for _ in 0..64 {
+        searcher.update_correction_history_with_eval(&st, ev - 499, 15, Some(ev));
+        assert!(searcher.corr_hist[idx] >= -1024);
+    }
+    assert!(
+        (-1024..=-1000).contains(&searcher.corr_hist[idx]),
+        "converged={}",
+        searcher.corr_hist[idx]
+    );
+
+    // Tune overrides change the arithmetic and reset restores the default.
+    crate::tune::set(crate::tune::TuneParam::CorrWeightNum, 5);
+    searcher.corr_hist[idx] = 0;
+    searcher.update_correction_history_with_eval(&st, ev + 100, 3, Some(ev));
+    assert_eq!(searcher.corr_hist[idx], 36);
+    crate::tune::reset();
+    searcher.corr_hist[idx] = 0;
+    searcher.update_correction_history_with_eval(&st, ev + 100, 3, Some(ev));
+    assert_eq!(searcher.corr_hist[idx], 72);
 }
 
 #[test]
