@@ -324,6 +324,12 @@ Use `tools/benchmark_search.py` for throughput and
 `nix run .#search-shape-benchmark` for depth, nodes, elapsed time, and tree-shape changes.
 Disable the opening book unless book behavior is the subject of the test.
 
+Before selecting a performance metric, locate the changed work relative to its timer
+boundaries. Work after iteration telemetry or elapsed-time capture requires an outer
+search-call timer or warmed `go`-to-`bestmove` latency. Use isolated counters or timings to
+prove the removed operation, and report whole-search effects separately when they are
+smaller than measurement noise.
+
 For Syzygy throughput comparisons, choose roots that enter tablebases inside the search:
 an eligible root can return immediately with zero nodes, which has no meaningful NPS.
 Confirm complete WDL/DTZ files loaded for both binaries, count interior probe attempts

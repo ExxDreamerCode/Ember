@@ -1263,10 +1263,23 @@ impl Searcher {
     }
 
     pub fn update_correction_history(&mut self, st: &BoardState, score: i32, depth: i32) {
+        self.update_correction_history_with_eval(st, score, depth, None);
+    }
+
+    // Reuse only a corrected evaluation of this root with unchanged networks,
+    // backend, evaluation flags, and correction history. Training invalidates it;
+    // SMP callers must use the fresh public wrapper after importing learning.
+    pub(crate) fn update_correction_history_with_eval(
+        &mut self,
+        st: &BoardState,
+        score: i32,
+        depth: i32,
+        cached_corrected_eval: Option<i32>,
+    ) {
         if !self.corr_hist_enabled() || depth < 3 || score.abs() > MATE / 2 {
             return;
         }
-        let ev = self.corrected_eval(st);
+        let ev = cached_corrected_eval.unwrap_or_else(|| self.corrected_eval(st));
         let diff = score - ev;
         if diff.abs() < 500 {
             let ph = compute_pawn_hash(st);

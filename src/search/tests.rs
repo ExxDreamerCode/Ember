@@ -2021,3 +2021,193 @@ fn perf_counter_report() {
         );
     }
 }
+
+fn correction_history_searcher(v2: bool) -> Searcher {
+    let mut searcher = Searcher::new(Arc::new(SharedTT::new(1)), Arc::new(AtomicBool::new(false)));
+    searcher.nnue_net = None;
+    searcher.classic_net = None;
+    searcher.ember_v2_net = if v2 {
+        crate::evaluate::init_embedded_nnue().expect("embedded NNUE should load");
+        Some(crate::evaluate::current_ember_v2().expect("embedded V2 network"))
+    } else {
+        None
+    };
+    #[cfg(feature = "search-debug")]
+    {
+        searcher.debug.disable_corr_hist = false;
+        searcher.debug.enable_endgame_mopup = false;
+    }
+    for (idx, value) in searcher.corr_hist.iter_mut().enumerate() {
+        *value = idx as i32 % 37 - 18;
+    }
+    searcher
+}
+
+#[test]
+fn correction_history_cached_update_matches_fresh_arithmetic_and_modes() {
+    // Private cached-helper contract: compare complete correction tables and
+    // arithmetic boundaries, not a chosen root move (which TSV would observe).
+    let residuals = [
+        (-500, 0),
+        (-499, -8),
+        (-65, -8),
+        (-64, -8),
+        (-63, -7),
+        (-9, -1),
+        (-8, -1),
+        (-7, 0),
+        (0, 0),
+        (7, 0),
+        (8, 1),
+        (9, 1),
+        (63, 7),
+        (64, 8),
+        (65, 8),
+        (499, 8),
+        (500, 0),
+    ];
+    for (v2, chess960, mc) in [(false, false, 0), (true, true, 0), (true, false, 8)] {
+        for white in [false, true] {
+            let mut st = Engine::new().st;
+            st.w = white;
+            st.chess960 = chess960;
+            st.mc = mc;
+            let mut cached = correction_history_searcher(v2);
+            let mut fresh = correction_history_searcher(v2);
+            let idx = corr_idx(compute_pawn_hash(&st), st.w);
+            for seed in [-1023, -201, -199, 199, 201, 1023] {
+                for (residual, increment) in residuals {
+                    for depth in [2, 3] {
+                        cached.corr_hist[idx] = seed;
+                        fresh.corr_hist = cached.corr_hist;
+                        let ev = cached.corrected_eval(&st);
+                        if !v2 || chess960 {
+                            let raw = evaluate(&st) * if white { 1 } else { -1 };
+                            assert_eq!(ev, raw + seed.clamp(-200, 200));
+                            assert_ne!(ev, raw, "corrected classic value must be retained");
+                        }
+                        let mut expected = cached.corr_hist;
+                        if depth == 3 {
+                            expected[idx] = (seed + increment).clamp(-1024, 1024);
+                        }
+                        cached.update_correction_history_with_eval(
+                            &st,
+                            ev + residual,
+                            depth,
+                            Some(ev),
+                        );
+                        fresh.update_correction_history(&st, ev + residual, depth);
+                        assert_eq!(cached.corr_hist, expected, "mode={v2}/{chess960} side={white} seed={seed} residual={residual} depth={depth}");
+                        assert_eq!(cached.corr_hist, fresh.corr_hist);
+                    }
+                }
+            }
+            for score in [-MATE / 2 - 1, -MATE / 2, MATE / 2, MATE / 2 + 1] {
+                let before = cached.corr_hist;
+                let ev = cached.corrected_eval(&st);
+                cached.update_correction_history_with_eval(&st, score, 3, Some(ev));
+                fresh.corr_hist = before;
+                fresh.update_correction_history(&st, score, 3);
+                assert_eq!(cached.corr_hist, before);
+                assert_eq!(fresh.corr_hist, before);
+            }
+            #[cfg(feature = "search-debug")]
+            {
+                cached.debug.disable_corr_hist = true;
+                fresh.debug.disable_corr_hist = true;
+                let before = cached.corr_hist;
+                let ev = cached.corrected_eval(&st);
+                cached.update_correction_history_with_eval(&st, ev + 64, 3, Some(ev));
+                fresh.update_correction_history(&st, ev + 64, 3);
+                assert_eq!(cached.corr_hist, before);
+                assert_eq!(fresh.corr_hist, before);
+            }
+        }
+    }
+}
+
+#[test]
+#[cfg(feature = "search-perf")]
+fn correction_history_cached_update_removes_only_eligible_evaluations() {
+    // Private global-counter contract: fresh V2 correction training refreshes
+    // and enumerates threats exactly once; a TSV cannot observe removed work.
+    let st = Engine::new().st;
+    let mut searcher = correction_history_searcher(true);
+    let ev = searcher.corrected_eval(&st);
+    let initial = searcher.corr_hist;
+    for (score, depth, calls) in [
+        (ev + 64, 3, 1),
+        (ev + 500, 3, 1),
+        (ev + 64, 2, 0),
+        (MATE / 2, 3, 1),
+        (-MATE / 2, 3, 1),
+        (MATE / 2 + 1, 3, 0),
+        (-MATE / 2 - 1, 3, 0),
+    ] {
+        for cached in [false, true] {
+            searcher.corr_hist = initial;
+            let mut counters = NnueReportCounters::default();
+            counters.measure(|| {
+                searcher.update_correction_history_with_eval(
+                    &st,
+                    score,
+                    depth,
+                    cached.then_some(ev),
+                )
+            });
+            let expected = if cached { 0 } else { calls };
+            assert_eq!(counters.refresh_calls, expected);
+            assert_eq!(counters.threat_scan_calls, expected);
+        }
+    }
+    #[cfg(feature = "search-debug")]
+    {
+        searcher.debug.disable_corr_hist = true;
+        for cached in [false, true] {
+            let mut counters = NnueReportCounters::default();
+            counters.measure(|| {
+                searcher.update_correction_history_with_eval(&st, ev + 64, 3, cached.then_some(ev))
+            });
+            assert_eq!(counters.refresh_calls, 0);
+            assert_eq!(counters.threat_scan_calls, 0);
+        }
+    }
+}
+
+#[test]
+#[ignore = "isolated correction update timing; run release, serially, with --nocapture"]
+fn correction_history_update_cost_report() {
+    // Private helper timing contract: restore identical learning outside every
+    // measured call; compare lazy reuse against the public fresh-eval wrapper.
+    let st = Engine::new().st;
+    let mut searcher = correction_history_searcher(true);
+    let ev = searcher.corrected_eval(&st);
+    let initial = searcher.corr_hist;
+    for _ in 0..100 {
+        searcher.corr_hist = initial;
+        searcher.update_correction_history(&st, ev + 64, 3);
+    }
+    for repeat in 0..3 {
+        let mut nanos = [0u128; 2];
+        for sample in 0..2000 {
+            for offset in 0..2 {
+                let cached = (repeat + sample + offset) % 2;
+                searcher.corr_hist = initial;
+                let start = Instant::now();
+                searcher.update_correction_history_with_eval(
+                    std::hint::black_box(&st),
+                    ev + 64,
+                    3,
+                    std::hint::black_box((cached == 1).then_some(ev)),
+                );
+                nanos[cached] += start.elapsed().as_nanos();
+                std::hint::black_box(&searcher.corr_hist);
+            }
+        }
+        println!(
+            "correction_history_cost repeat={repeat} samples=2000 fresh_ns={} cached_ns={}",
+            nanos[0] / 2000,
+            nanos[1] / 2000
+        );
+    }
+}
