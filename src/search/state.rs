@@ -789,6 +789,16 @@ impl Searcher {
         true
     }
 
+    #[inline(always)]
+    pub(super) fn apply_corr(&self, st: &BoardState, base: i32) -> i32 {
+        if self.corr_hist_enabled() {
+            let idx = corr_idx(compute_pawn_hash(st), st.w);
+            base + self.corr_hist[idx].clamp(-200, 200)
+        } else {
+            base
+        }
+    }
+
     #[cfg(feature = "search-debug")]
     pub(super) fn futility_enabled(&self) -> bool {
         !self.debug.disable_futility
@@ -983,10 +993,11 @@ impl Searcher {
 
     #[inline(always)]
     pub(super) fn static_eval_classic<const CHESS960: bool>(&self, st: &BoardState) -> i32 {
+        let base = evaluate(st) * if st.w { 1 } else { -1 };
         if CHESS960 && st.mc <= 3 {
-            return evaluate(st) * if st.w { 1 } else { -1 };
+            return self.apply_corr(st, base);
         }
-        evaluate(st) * if st.w { 1 } else { -1 }
+        self.apply_corr(st, base)
     }
 
     #[inline(always)]
@@ -997,7 +1008,7 @@ impl Searcher {
         net: &NNUENet,
     ) -> i32 {
         if CHESS960 && st.mc <= 3 {
-            return evaluate(st) * if st.w { 1 } else { -1 };
+            return self.static_eval_classic::<CHESS960>(st);
         }
         let score = if ply < self.nnue_stack.len() {
             evaluate_nnue_acc_with_backend::<B>(net, &self.nnue_stack[ply], st)
@@ -1028,7 +1039,10 @@ impl Searcher {
             }
         }
         let stm_score = if st.w { score } else { -score };
-        with_endgame_mopup(self.endgame_mopup_enabled(), st, stm_score)
+        self.apply_corr(
+            st,
+            with_endgame_mopup(self.endgame_mopup_enabled(), st, stm_score),
+        )
     }
 
     #[inline(always)]
@@ -1039,7 +1053,7 @@ impl Searcher {
         net: &NNUENet,
     ) -> i32 {
         if CHESS960 && st.mc <= 3 {
-            return evaluate(st) * if st.w { 1 } else { -1 };
+            return self.static_eval_classic::<CHESS960>(st);
         }
         let stm = if st.w { WHITE } else { BLACK };
         let pc: u32 = (0..12).map(|i| st.bb[i].count_ones()).sum();
@@ -1052,7 +1066,10 @@ impl Searcher {
             threats.refresh(net, st);
             net.forward_with_threats::<B>(&acc, &threats, stm, pc)
         };
-        with_endgame_mopup(self.endgame_mopup_enabled(), st, base)
+        self.apply_corr(
+            st,
+            with_endgame_mopup(self.endgame_mopup_enabled(), st, base),
+        )
     }
 
     #[inline(always)]
@@ -1080,7 +1097,10 @@ impl Searcher {
                 evaluate_ember_v2_with_backend::<B>(net, st)
             )
         };
-        with_endgame_mopup(self.endgame_mopup_enabled(), st, base)
+        self.apply_corr(
+            st,
+            with_endgame_mopup(self.endgame_mopup_enabled(), st, base),
+        )
     }
 
     #[inline(always)]
@@ -1098,7 +1118,10 @@ impl Searcher {
         } else {
             net.evaluate_stm(st)
         };
-        with_endgame_mopup(self.endgame_mopup_enabled(), st, base)
+        self.apply_corr(
+            st,
+            with_endgame_mopup(self.endgame_mopup_enabled(), st, base),
+        )
     }
 
     pub(super) fn corrected_eval_classic_halfkp<const CHESS960: bool>(
@@ -1109,7 +1132,8 @@ impl Searcher {
         if CHESS960 && st.mc <= 3 {
             return self.corrected_eval_classic::<CHESS960>(st);
         }
-        with_endgame_mopup(self.endgame_mopup_enabled(), st, net.evaluate_stm(st))
+        let base = with_endgame_mopup(self.endgame_mopup_enabled(), st, net.evaluate_stm(st));
+        self.apply_corr(st, base)
     }
 
     pub(super) fn corrected_eval_ember_v2<const CHESS960: bool, B: EmberV2Backend>(
@@ -1120,11 +1144,12 @@ impl Searcher {
         if CHESS960 && st.mc <= 3 {
             return self.corrected_eval_classic::<CHESS960>(st);
         }
-        with_endgame_mopup(
+        let base = with_endgame_mopup(
             self.endgame_mopup_enabled(),
             st,
             evaluate_ember_v2_with_backend::<B>(net, st),
-        )
+        );
+        self.apply_corr(st, base)
     }
 
     pub fn corrected_eval(&self, st: &BoardState) -> i32 {
@@ -1209,22 +1234,11 @@ impl Searcher {
     }
 
     pub(super) fn corrected_eval_classic<const CHESS960: bool>(&self, st: &BoardState) -> i32 {
-        if CHESS960 && st.mc <= 3 {
-            let base = evaluate(st) * if st.w { 1 } else { -1 };
-            if self.corr_hist_enabled() {
-                let ph = compute_pawn_hash(st);
-                let idx = corr_idx(ph, st.w);
-                return base + self.corr_hist[idx].clamp(-200, 200);
-            }
-            return base;
-        }
         let base = evaluate(st) * if st.w { 1 } else { -1 };
-        if self.corr_hist_enabled() {
-            let ph = compute_pawn_hash(st);
-            let idx = corr_idx(ph, st.w);
-            return base + self.corr_hist[idx].clamp(-200, 200);
+        if CHESS960 && st.mc <= 3 {
+            return self.apply_corr(st, base);
         }
-        base
+        self.apply_corr(st, base)
     }
 
     #[inline(always)]
@@ -1240,7 +1254,10 @@ impl Searcher {
         B::refresh(&mut acc, net, st);
         let score = evaluate_nnue_acc_with_backend::<B>(net, &acc, st);
         let stm_score = if st.w { score } else { -score };
-        with_endgame_mopup(self.endgame_mopup_enabled(), st, stm_score)
+        self.apply_corr(
+            st,
+            with_endgame_mopup(self.endgame_mopup_enabled(), st, stm_score),
+        )
     }
 
     #[inline(always)]
@@ -1259,7 +1276,10 @@ impl Searcher {
         let stm = if st.w { WHITE } else { BLACK };
         let pc: u32 = (0..12).map(|i| st.bb[i].count_ones()).sum();
         let base = net.forward_with_threats::<B>(&acc, &threats, stm, pc);
-        with_endgame_mopup(self.endgame_mopup_enabled(), st, base)
+        self.apply_corr(
+            st,
+            with_endgame_mopup(self.endgame_mopup_enabled(), st, base),
+        )
     }
 
     pub fn update_correction_history(&mut self, st: &BoardState, score: i32, depth: i32) {

@@ -1,4 +1,4 @@
-use super::*;
+﻿use super::*;
 use crate::board::encode_move;
 use crate::engine::Engine;
 use crate::types::{MATE_THRESHOLD, TB_WIN_SCORE};
@@ -2085,6 +2085,12 @@ fn correction_history_cached_update_matches_fresh_arithmetic_and_modes() {
                             let raw = evaluate(&st) * if white { 1 } else { -1 };
                             assert_eq!(ev, raw + seed.clamp(-200, 200));
                             assert_ne!(ev, raw, "corrected classic value must be retained");
+                        } else {
+                            cached.corr_hist[idx] = 0;
+                            let raw = cached.corrected_eval(&st);
+                            cached.corr_hist[idx] = seed;
+                            assert_eq!(ev, raw + seed.clamp(-200, 200));
+                            assert_ne!(ev, raw, "corrected v2 value must be retained");
                         }
                         let mut expected = cached.corr_hist;
                         if depth == 3 {
@@ -2123,6 +2129,156 @@ fn correction_history_cached_update_matches_fresh_arithmetic_and_modes() {
                 assert_eq!(fresh.corr_hist, before);
             }
         }
+    }
+}
+
+fn correction_eval_static(searcher: &Searcher, st: &BoardState, v2: bool, chess960: bool) -> i32 {
+    if v2 {
+        let net = searcher
+            .ember_v2_net
+            .as_deref()
+            .expect("v2 correction test requires the embedded network");
+        if chess960 {
+            searcher.static_eval_ember_v2::<true, crate::nnue::ScalarNnueBackend>(st, 0, net)
+        } else {
+            searcher.static_eval_ember_v2::<false, crate::nnue::ScalarNnueBackend>(st, 0, net)
+        }
+    } else if chess960 {
+        searcher.static_eval_classic::<true>(st)
+    } else {
+        searcher.static_eval_classic::<false>(st)
+    }
+}
+
+#[test]
+fn correction_history_reaches_static_eval_and_matches_corrected_eval() {
+    for (v2, chess960, mc) in [(false, false, 0), (true, true, 0), (true, false, 8)] {
+        for white in [false, true] {
+            let mut st = Engine::new().st;
+            st.w = white;
+            st.chess960 = chess960;
+            st.mc = mc;
+            let mut searcher = correction_history_searcher(v2);
+            searcher.search_backend = SearchBackendKind::Scalar;
+            let idx = corr_idx(compute_pawn_hash(&st), st.w);
+
+            for seed in [-1000i32, -201, -200, 100, 200, 201, 1000] {
+                searcher.corr_hist[idx] = seed;
+                let corrected = searcher.corrected_eval(&st);
+                let static_eval = correction_eval_static(&searcher, &st, v2, chess960);
+                searcher.corr_hist[idx] = 0;
+                let base = searcher.corrected_eval(&st);
+                searcher.corr_hist[idx] = seed;
+                let clamped = seed.clamp(-200, 200);
+                assert_eq!(
+                    corrected,
+                    base + clamped,
+                    "public corrected eval must add one clamp: v2={v2} chess960={chess960} \
+                     white={white} seed={seed}"
+                );
+                assert_eq!(
+                    static_eval, corrected,
+                    "static and corrected twins must agree: v2={v2} chess960={chess960} \
+                     white={white} seed={seed}"
+                );
+            }
+
+            let seed = 100;
+            searcher.corr_hist[idx] = seed;
+            let corrected = searcher.corrected_eval(&st);
+            searcher.corr_hist[idx] = 0;
+            let base = searcher.corrected_eval(&st);
+            searcher.corr_hist[idx] = seed;
+            assert_eq!(corrected, base + seed);
+            searcher.update_correction_history(&st, base, 3);
+            assert_eq!(
+                searcher.corr_hist[idx], 92,
+                "training must target the corrected residual: v2={v2} chess960={chess960} \
+                 white={white}"
+            );
+            assert_eq!(searcher.corrected_eval(&st), base + 92);
+            assert_eq!(
+                correction_eval_static(&searcher, &st, v2, chess960),
+                base + 92,
+                "static eval must follow the trained slot: v2={v2} chess960={chess960} \
+                 white={white}"
+            );
+        }
+    }
+}
+
+#[test]
+fn correction_history_reads_clamp_at_200() {
+    let st = state_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    let mut searcher = correction_history_searcher(false);
+    searcher.search_backend = SearchBackendKind::Scalar;
+    let idx = corr_idx(compute_pawn_hash(&st), st.w);
+    searcher.corr_hist[idx] = 0;
+    let base = searcher.corrected_eval(&st);
+    for (seed, clamped) in [
+        (500, 200),
+        (1024, 200),
+        (-500, -200),
+        (-1024, -200),
+        (199, 199),
+        (-199, -199),
+    ] {
+        searcher.corr_hist[idx] = seed;
+        assert_eq!(
+            searcher.corrected_eval(&st),
+            base + clamped,
+            "corrected eval seed={seed}"
+        );
+        assert_eq!(
+            searcher.static_eval_classic::<false>(&st),
+            base + clamped,
+            "static eval seed={seed}"
+        );
+    }
+}
+
+#[test]
+#[cfg(feature = "search-debug")]
+fn disabled_correction_history_ignores_the_table_and_training() {
+    let st = state_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    for v2 in [false, true] {
+        let mut searcher = correction_history_searcher(v2);
+        searcher.search_backend = SearchBackendKind::Scalar;
+        searcher.debug.disable_corr_hist = true;
+        let idx = corr_idx(compute_pawn_hash(&st), st.w);
+
+        searcher.corr_hist[idx] = 1000;
+        let corrected = searcher.corrected_eval(&st);
+        let static_eval = correction_eval_static(&searcher, &st, v2, false);
+        searcher.corr_hist[idx] = -1000;
+        assert_eq!(
+            searcher.corrected_eval(&st),
+            corrected,
+            "disabled corrected eval must ignore the table: v2={v2}"
+        );
+        assert_eq!(
+            correction_eval_static(&searcher, &st, v2, false),
+            static_eval,
+            "disabled static eval must ignore the table: v2={v2}"
+        );
+        assert_eq!(
+            static_eval, corrected,
+            "disabled static and corrected eval must agree: v2={v2}"
+        );
+
+        let snapshot = searcher.corr_hist;
+        let ev = searcher.corrected_eval(&st);
+        searcher.update_correction_history(&st, ev + 64, 3);
+        assert_eq!(
+            searcher.corr_hist, snapshot,
+            "disabled training must not write: v2={v2}"
+        );
+        searcher.debug.disable_corr_hist = false;
+        searcher.update_correction_history(&st, ev + 64, 3);
+        assert_ne!(
+            searcher.corr_hist, snapshot,
+            "control: enabled training must write: v2={v2}"
+        );
     }
 }
 
