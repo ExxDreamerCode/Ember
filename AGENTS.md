@@ -306,6 +306,11 @@ itself over a position-wide trigger such as "some rook check exists"; a broad tr
 change the search of every unrelated root move. Run the complete move-fixture corpus after
 changing eligibility, because several individually reasonable heuristics can overlap.
 
+For move-property exclusions, connect real legal moves to the production eligibility
+predicate in regressions. Injected flags alone cannot validate check detection. Use the
+legally applied child position or a detector covering every eligible move type; a helper
+for special moves is not a general check detector. Include non-qualifying controls.
+
 ## Performance and playing-strength gates
 
 Correctness, speed, search shape, clock safety, and Elo are separate gates. Report all

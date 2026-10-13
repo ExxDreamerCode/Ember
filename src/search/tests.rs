@@ -345,6 +345,94 @@ fn lmp_aggressiveness_controls_preserve_the_default_policy() {
 }
 
 #[test]
+fn lmr_eligibility_uses_legally_applied_moves() {
+    // Private contract: actual captures/promotions must feed the production LMR
+    // eligibility predicate. A root-move TSV cannot observe reduction eligibility.
+    tune::reset();
+    let cases = [
+        ("4k3/4p3/8/8/8/8/8/K3R3 w - - 0 1", "e1e7", true, false),
+        ("k7/4p3/8/8/8/8/8/K3R3 w - - 0 1", "e1e7", false, false),
+        ("4k3/8/8/8/8/3p4/4B3/K3R3 w - - 0 1", "e2d3", true, false),
+        ("5k2/8/8/8/8/3p4/4B3/K3R3 w - - 0 1", "e2d3", false, false),
+        ("7k/1P6/8/8/8/8/8/K7 w - - 0 1", "b7b8q", true, false),
+        ("7k/1P6/8/8/8/8/8/K7 w - - 0 1", "b7b8r", true, false),
+        ("7k/1P6/8/8/8/8/8/K7 w - - 0 1", "b7b8n", false, false),
+        ("8/1P6/2k5/8/8/8/8/K7 w - - 0 1", "b7b8n", true, false),
+        ("1r5k/P7/8/8/8/8/8/K7 w - - 0 1", "a7b8q", true, false),
+        ("1r5k/P7/8/8/8/8/8/K7 w - - 0 1", "a7b8b", false, false),
+        ("7k/8/8/8/8/8/6p1/K7 b - - 0 1", "g2g1q", true, false),
+        ("k3r3/8/8/8/8/8/4P3/4K3 b - - 0 1", "e8e2", true, false),
+        (
+            "8/6pp/8/R2pP1k1/6B1/8/6PP/6K1 w - d6 0 1",
+            "e5d6",
+            true,
+            false,
+        ),
+        ("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", "e5d6", false, false),
+        // Quiet checks retain the existing quiet-move LMR policy.
+        ("7k/8/8/8/8/8/8/R3K3 w - - 0 1", "a1a8", true, true),
+        ("7k/8/8/8/8/8/8/R3K3 w - - 0 1", "a1a2", false, true),
+    ];
+    for chess960 in [false, true] {
+        for (fen, uci, gives_check, is_quiet) in cases {
+            let mut parent = state_from_fen(fen);
+            parent.chess960 = chess960;
+            let mv = legal_move(&parent, uci);
+            let from = move_from(mv);
+            let to = move_to(mv);
+            let capture = if chess960 {
+                move_is_capture::<true>(&parent, parent.mailbox[from], mv, to, parent.mailbox[to])
+            } else {
+                move_is_capture::<false>(&parent, parent.mailbox[from], mv, to, parent.mailbox[to])
+            };
+            let quiet = !capture && !is_promotion_move(parent.mailbox[from], mv);
+            assert_eq!(quiet, is_quiet, "{uci} Chess960={chess960}");
+            let in_check =
+                crate::board::is_attacked(&parent.bb, parent.king_sq(parent.w), !parent.w);
+            assert!(!in_check, "{uci} must reach non-quiet LMR eligibility");
+
+            // Cover both application paths used by negamax, in both variants.
+            for pseudo in [false, true] {
+                let mut child = parent;
+                if pseudo {
+                    assert!(if chess960 {
+                        try_apply_move_mode::<true>(&mut child, mv)
+                    } else {
+                        try_apply_move_mode::<false>(&mut child, mv)
+                    });
+                } else {
+                    apply_move(
+                        &mut child,
+                        move_sr(mv),
+                        move_sc(mv),
+                        move_er(mv),
+                        move_ec(mv),
+                        move_promotion(mv),
+                    );
+                }
+                assert_eq!(
+                    crate::board::is_attacked(&child.bb, child.king_sq(child.w), !child.w),
+                    gives_check,
+                    "{uci} Chess960={chess960} pseudo={pseudo}"
+                );
+                assert_eq!(
+                    lmr_policy_eligible(
+                        10,
+                        4,
+                        quiet,
+                        in_check,
+                        !quiet && special_move_gives_check(&parent, mv),
+                        false
+                    ),
+                    quiet || !gives_check,
+                    "{uci} Chess960={chess960} pseudo={pseudo}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn lmr_controls_preserve_default_boundaries_and_reductions() {
     tune::reset();
     assert!(!lmr_policy_eligible(1, 2, true, false, false, true));
