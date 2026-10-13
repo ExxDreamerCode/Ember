@@ -416,14 +416,7 @@ fn lmr_eligibility_uses_legally_applied_moves() {
                     "{uci} Chess960={chess960} pseudo={pseudo}"
                 );
                 assert_eq!(
-                    lmr_policy_eligible(
-                        10,
-                        4,
-                        quiet,
-                        in_check,
-                        !quiet && special_move_gives_check(&parent, mv),
-                        false
-                    ),
+                    lmr_policy_eligible(10, 4, quiet, in_check, &child, false),
                     quiet || !gives_check,
                     "{uci} Chess960={chess960} pseudo={pseudo}"
                 );
@@ -435,14 +428,14 @@ fn lmr_eligibility_uses_legally_applied_moves() {
 #[test]
 fn lmr_controls_preserve_default_boundaries_and_reductions() {
     tune::reset();
-    assert!(!lmr_policy_eligible(1, 2, true, false, false, true));
-    assert!(lmr_policy_eligible(2, 2, true, false, false, true));
-    assert!(!lmr_policy_eligible(2, 1, true, false, false, true));
-    assert!(lmr_policy_eligible(2, 3, false, false, false, false));
-    assert!(!lmr_policy_eligible(2, 3, false, false, false, true));
-    assert!(!lmr_policy_eligible(2, 3, false, true, false, false));
-    assert!(!lmr_policy_eligible(2, 3, false, false, true, false));
-    assert!(lmr_policy_eligible(2, 3, true, true, false, false));
+    let child = state_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    assert!(!lmr_policy_eligible(1, 2, true, false, &child, true));
+    assert!(lmr_policy_eligible(2, 2, true, false, &child, true));
+    assert!(!lmr_policy_eligible(2, 1, true, false, &child, true));
+    assert!(lmr_policy_eligible(2, 3, false, false, &child, false));
+    assert!(!lmr_policy_eligible(2, 3, false, false, &child, true));
+    assert!(!lmr_policy_eligible(2, 3, false, true, &child, false));
+    assert!(lmr_policy_eligible(2, 3, true, true, &child, false));
     assert_eq!(lmr_reduction(10, 4, true), 2);
     assert_eq!(lmr_reduction(10, 4, false), 3);
     assert!(lmr_reduction_non_quiet(10, 4, true) > lmr_reduction(10, 4, true));
@@ -455,9 +448,9 @@ fn lmr_controls_preserve_default_boundaries_and_reductions() {
     tune::set(TuneParam::LmrMinDepth, 5);
     tune::set(TuneParam::LmrBaseMillis, 0);
     tune::set(TuneParam::LmrNonPvExtra, 0);
-    assert!(!lmr_policy_eligible(3, 5, true, false, false, true));
-    assert!(!lmr_policy_eligible(4, 4, true, false, false, true));
-    assert!(lmr_policy_eligible(4, 5, true, false, false, true));
+    assert!(!lmr_policy_eligible(3, 5, true, false, &child, true));
+    assert!(!lmr_policy_eligible(4, 4, true, false, &child, true));
+    assert!(lmr_policy_eligible(4, 5, true, false, &child, true));
     assert_eq!(lmr_reduction(10, 4, true), 1);
     assert_eq!(lmr_reduction(10, 4, false), 1);
     assert!(lmr_reduction_non_quiet(10, 4, true) > lmr_reduction(10, 4, true));

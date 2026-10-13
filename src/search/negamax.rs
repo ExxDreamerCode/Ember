@@ -55,18 +55,19 @@ pub(super) fn lmr_policy_eligible(
     actual_depth: i32,
     is_quiet: bool,
     in_check: bool,
-    gives_check: bool,
+    child: &BoardState,
     is_pv: bool,
 ) -> bool {
-    if gives_check {
-        return false;
-    }
     if !is_quiet && (in_check || is_pv) {
         return false;
     }
     let min_move_index = tune::get_int(TuneParam::LmrMinMoveIndex, LMR_MIN_MOVE_INDEX);
     let min_depth = tune::get_int(TuneParam::LmrMinDepth, LMR_MIN_DEPTH);
-    move_index as i64 >= min_move_index && i64::from(actual_depth) >= min_depth
+    move_index as i64 >= min_move_index
+        && i64::from(actual_depth) >= min_depth
+        // The child has already been legally applied, including promotions and
+        // en passant. Its side to move is the king the candidate may check.
+        && (is_quiet || !crate::board::is_attacked(&child.bb, child.king_sq(child.w), !child.w))
 }
 
 #[inline(always)]
@@ -1102,8 +1103,6 @@ macro_rules! negamax_mode_body {
                 .unwrap_or(0);
             let move_ext = combine_move_extensions(tactical_move_ext, singular_extension);
 
-            let move_gives_check = !is_quiet && special_move_gives_check_mode::<CHESS960>($st, mv);
-
             let st_before = *$st;
             let legal = if pseudo_moves {
                 perf_time!(
@@ -1157,14 +1156,7 @@ macro_rules! negamax_mode_body {
             let lmr_eligible = $this.lmr_enabled()
                 && excluded_move.is_none()
                 && move_index > 0
-                && lmr_policy_eligible(
-                    move_index,
-                    actual_depth,
-                    is_quiet,
-                    in_check,
-                    move_gives_check,
-                    is_pv,
-                );
+                && lmr_policy_eligible(move_index, actual_depth, is_quiet, in_check, $st, is_pv);
             let s = if move_index == 0 {
                 -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
                     $st,
