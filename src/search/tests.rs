@@ -427,6 +427,8 @@ fn lmr_eligibility_uses_legally_applied_moves() {
 
 #[test]
 fn lmr_controls_preserve_default_boundaries_and_reductions() {
+    // Private tuning contract: a neutral child isolates LMR eligibility bounds
+    // and reduction arithmetic, which a root-move TSV fixture cannot observe.
     tune::reset();
     let child = state_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
     assert!(!lmr_policy_eligible(1, 2, true, false, &child, true));
