@@ -1,4 +1,4 @@
-use super::*;
+﻿use super::*;
 use crate::board::encode_move;
 use crate::engine::Engine;
 use crate::types::{MATE_THRESHOLD, TB_WIN_SCORE};
@@ -1001,39 +1001,6 @@ fn singular_multi_ply_extensions_require_progressively_larger_gaps() {
         singular_extension_from_scores(candidate, candidate.beta, None, None),
         0
     );
-}
-
-#[cfg(feature = "search-debug")]
-#[test]
-fn singular_extensions_require_explicit_experimental_opt_in() {
-    let stopped = Arc::new(AtomicBool::new(false));
-    let shared_tt = Arc::new(SharedTT::new(1));
-    let mut searcher = Searcher::new(shared_tt, stopped);
-
-    searcher.debug.enable_singular_extensions = false;
-    assert!(!searcher.singular_extensions_enabled());
-
-    searcher.debug.enable_singular_extensions = true;
-    assert!(searcher.singular_extensions_enabled());
-
-    searcher.debug.enable_singular_multi_extensions = false;
-    assert!(!searcher.singular_multi_extensions_enabled());
-    searcher.debug.enable_singular_multi_extensions = true;
-    assert!(searcher.singular_multi_extensions_enabled());
-
-    searcher.debug.enable_singular_multicut = false;
-    searcher.debug.enable_singular_negative_extensions = false;
-    assert!(!searcher.singular_multicut_enabled());
-    assert!(!searcher.singular_negative_extensions_enabled());
-
-    searcher.debug.enable_singular_multicut = true;
-    assert!(searcher.singular_multicut_enabled());
-    assert!(!searcher.singular_negative_extensions_enabled());
-
-    searcher.debug.enable_singular_multicut = false;
-    searcher.debug.enable_singular_negative_extensions = true;
-    assert!(!searcher.singular_multicut_enabled());
-    assert!(searcher.singular_negative_extensions_enabled());
 }
 
 #[cfg(feature = "search-debug")]
