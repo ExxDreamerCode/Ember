@@ -338,3 +338,88 @@ base = 4000
 min = 0
 max = 8000
 step = 250
+
+[[params]]
+name = "EXTENSION_MIN_DEPTH"
+base = 12
+min = 8
+max = 20
+step = 2
+
+[[params]]
+name = "EXTENSION_BASE_MARGIN_CP"
+base = 45
+min = 20
+max = 100
+step = 4
+
+[[params]]
+name = "EXTENSION_MARGIN_PER_DEPTH_CP"
+base = 3
+min = 1
+max = 8
+step = 1
+
+[[params]]
+name = "EXTENSION_MAX_TT_AGE"
+base = 0
+min = 0
+max = 4
+step = 1
+
+[[params]]
+name = "EXTENSION_MULTI_MIN_DEPTH"
+base = 15
+min = 10
+max = 24
+step = 2
+
+[[params]]
+name = "EXTENSION_LADDER_STEPS"
+base = 3
+min = 1
+max = 4
+step = 1
+
+[[params]]
+name = "EXTENSION_LADDER_STEP_CP"
+base = 40
+min = 10
+max = 100
+step = 10
+
+[[params]]
+name = "LDSE_ENABLED"
+base = 0
+min = 0
+max = 1
+step = 1
+allow_nonpositive = true
+
+[[params]]
+name = "LDSE_MARGIN_CP"
+base = 60
+min = 20
+max = 150
+step = 10
+
+[[params]]
+name = "LDSE_MAX_DEPTH"
+base = 6
+min = 2
+max = 10
+step = 2
+
+[[params]]
+name = "LDSE_MAX_PER_LINE"
+base = 1
+min = 0
+max = 2
+step = 1
+
+[[params]]
+name = "NEG_EXT_MAX_PER_LINE"
+base = 1
+min = 0
+max = 2
+step = 1

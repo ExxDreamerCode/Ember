@@ -97,6 +97,23 @@ The tunable constants and their defaults:
 | `PASSED_PUSH_BONUS` | 3000 | Bonus for pushing a passed pawn toward the 6th–7th rank |
 | `ATTACK_ORDER_BONUS` | 4000 | Bonus for attacking an enemy piece from a safe square |
 
+### Singular / LDSE extensions (src/search/selectivity.rs)
+
+| Parameter | Default | Meaning |
+| --- | ---: | --- |
+| `EXTENSION_MIN_DEPTH` | 12 | Minimum depth for singular extension |
+| `EXTENSION_BASE_MARGIN_CP` | 45 | Base margin for the singular cutoff barrier |
+| `EXTENSION_MARGIN_PER_DEPTH_CP` | 3 | Margin added per depth |
+| `EXTENSION_MAX_TT_AGE` | 0 | Maximum TT age for eligible entries |
+| `EXTENSION_MULTI_MIN_DEPTH` | 15 | Minimum depth for multi-ply extension |
+| `EXTENSION_LADDER_STEPS` | 3 | Maximum ladder steps for positive extension |
+| `EXTENSION_LADDER_STEP_CP` | 40 | Centipawn cost per ladder step (triangular) |
+| `LDSE_ENABLED` | 0 | Enable Late-stage Delta Singular Extension |
+| `LDSE_MARGIN_CP` | 60 | LDSE margin in centipawns |
+| `LDSE_MAX_DEPTH` | 6 | Maximum depth for LDSE |
+| `LDSE_MAX_PER_LINE` | 1 | Maximum LDSE uses per line |
+| `NEG_EXT_MAX_PER_LINE` | 1 | Maximum negative extensions per line |
+
 ### Correction gravity (src/search/state.rs)
 
 Available under the non-default `correction-gravity` cargo feature. The constants are
