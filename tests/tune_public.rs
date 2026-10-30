@@ -100,6 +100,22 @@ fn every_parameter_round_trips_through_names_values_and_listing() {
         OutpostBonus,
         PassedPushBonus,
         AttackOrderBonus,
+        ExtensionMinDepth,
+        ExtensionBaseMarginCp,
+        ExtensionMarginPerDepthCp,
+        ExtensionMaxTtAge,
+        ExtensionPolicyMinDepth,
+        ExtensionDoubleMinDepth,
+        ExtensionTripleMinDepth,
+        ExtensionLadderSteps,
+        ExtensionLadderStepCp,
+        LdseEnabled,
+        LdseMarginCp,
+        LdseMaxDepth,
+        LdseMaxPerLine,
+        NegExtMaxPerLine,
+        ExtensionTtDepthMargin,
+        ExtensionMaxHalfmoveClock,
     ];
     assert_eq!(TuneParam::COUNT, params.len());
     reset();

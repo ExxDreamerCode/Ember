@@ -76,25 +76,25 @@ pub(super) fn root_move_preserves_fifty_move_conversion(st: &BoardState, mv: Mov
     let after = root_child_after(st, mv);
     let material_floor =
         root_material_score(&after, attacker).saturating_sub(FIFTY_MOVE_ROOT_MATERIAL_MARGIN_CP);
-    fifty_move_attacker_can_force_progress(&after, attacker, material_floor)
-}
-
-fn fifty_move_attacker_can_force_progress(
-    st: &BoardState,
-    attacker: bool,
-    material_floor: i32,
-) -> Option<bool> {
-    let defender = st.w;
-    let mut memo = HashMap::new();
-    let mut nodes = 0u32;
-    fifty_move_attacker_can_force_progress_inner(
-        st,
-        defender,
-        attacker,
-        material_floor,
-        &mut memo,
-        &mut nodes,
-    )
+    let defender = after.w;
+    
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || {
+            let mut memo: HashMap<(u64, u8), bool> = HashMap::new();
+            let mut nodes = 0u32;
+            fifty_move_attacker_can_force_progress_inner(
+                &after,
+                defender,
+                attacker,
+                material_floor,
+                &mut memo,
+                &mut nodes,
+            )
+        })
+        .expect("failed to spawn fifty-move verifier thread")
+        .join()
+        .expect("fifty-move verifier thread panicked")
 }
 
 fn fifty_move_attacker_can_force_progress_inner(
