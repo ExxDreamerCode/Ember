@@ -70,20 +70,21 @@ pub(crate) fn aspiration_window_delta(depth: i32) -> i32 {
 
 mod selectivity;
 use self::selectivity::{
-    combine_move_extensions, probcut_candidate, probcut_verdict, singular_candidate,
-    singular_extension_from_scores, singular_search_outcome, ChildPathState, DrawStatus,
-    ProbCutEligibility, ProbCutVerdict, SingularEligibility, SingularEvidence,
-    SingularMoveAdjustment, SingularSearchOutcome, SINGULAR_DOUBLE_MARGIN_CP,
-    SINGULAR_DOUBLE_MIN_DEPTH, SINGULAR_MAX_TT_AGE, SINGULAR_MIN_DEPTH, SINGULAR_TRIPLE_MARGIN_CP,
-    SINGULAR_TRIPLE_MIN_DEPTH, SINGULAR_TT_DEPTH_MARGIN,
+    combine_move_extensions, ldse_candidate, probcut_candidate, probcut_verdict,
+    singular_candidate, singular_extension_from_scores, singular_search_outcome, ChildPathState,
+    DrawStatus, ProbCutEligibility, ProbCutVerdict, SingularEligibility, SingularEvidence,
+    SingularMoveAdjustment, SingularSearchOutcome, LDSE_ENABLED_DEFAULT,
+    SINGULAR_DOUBLE_MIN_DEPTH_DEFAULT, SINGULAR_LADDER_STEP_CP_DEFAULT,
+    SINGULAR_TRIPLE_MIN_DEPTH_DEFAULT,
 };
-#[cfg(any(feature = "search-debug", test))]
 use self::selectivity::{next_singular_extension_count, reversible_shuffle};
 pub(crate) use self::selectivity::{prefer_non_repeating_root_on_tie, root_repetition_tie_scope};
 #[cfg(test)]
 use self::selectivity::{
     singular_margin, singular_path_budget, ProbCutCandidate, PROBCUT_MARGIN_CP, PROBCUT_MIN_DEPTH,
-    PROBCUT_REDUCTION, SINGULAR_MAX_HALF_MOVE_CLOCK, SINGULAR_POLICY_MIN_DEPTH,
+    PROBCUT_REDUCTION, SINGULAR_MAX_HALF_MOVE_CLOCK_DEFAULT, SINGULAR_MAX_TT_AGE_DEFAULT,
+    SINGULAR_MIN_DEPTH_DEFAULT, SINGULAR_POLICY_MIN_DEPTH_DEFAULT,
+    SINGULAR_TT_DEPTH_MARGIN_DEFAULT,
 };
 
 mod move_helpers;
@@ -135,6 +136,8 @@ pub struct Searcher {
     path_moves: [Option<Move>; MAX_PLY],
     #[cfg(feature = "search-debug")]
     singular_extensions_used: [u8; MAX_PLY],
+    singular_negative_on_line: [u8; MAX_PLY],
+    singular_ldse_on_line: [bool; MAX_PLY],
     #[cfg(any(feature = "search-debug", test))]
     restricted_verification: bool,
     probcut_verification: bool,

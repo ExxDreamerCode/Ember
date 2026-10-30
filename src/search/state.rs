@@ -129,10 +129,10 @@ impl Searcher {
             rep_stack_len: 0,
             rep_root_len: 0,
             excluded_moves: [None; MAX_PLY],
-            #[cfg(feature = "search-debug")]
             path_moves: [None; MAX_PLY],
-            #[cfg(feature = "search-debug")]
             singular_extensions_used: [0; MAX_PLY],
+            singular_negative_on_line: [0u8; MAX_PLY],
+            singular_ldse_on_line: [false; MAX_PLY],
             #[cfg(any(feature = "search-debug", test))]
             restricted_verification: false,
             probcut_verification: false,
@@ -416,15 +416,11 @@ impl Searcher {
         self.discard_correction_staging();
         self.rep_root_len = self.rep_stack_len;
         self.excluded_moves.fill(None);
-        #[cfg(feature = "search-debug")]
-        {
-            self.path_moves.fill(None);
-            self.singular_extensions_used.fill(0);
-        }
-        #[cfg(any(feature = "search-debug", test))]
-        {
-            self.restricted_verification = false;
-        }
+        self.singular_negative_on_line.fill(0);
+        self.singular_ldse_on_line.fill(false);
+        self.path_moves.fill(None);
+        self.singular_extensions_used.fill(0);
+        self.restricted_verification = false;
         self.probcut_verification = false;
         self.killers = [[None; 2]; MAX_PLY];
         for row in &mut self.history {
@@ -434,7 +430,6 @@ impl Searcher {
         }
     }
 
-    #[cfg(feature = "search-debug")]
     pub(super) fn enter_path(
         &mut self,
         ply: usize,
@@ -450,6 +445,13 @@ impl Searcher {
                     self.singular_extensions_used[ply],
                     singular_extension,
                 );
+                if singular_extension < 0 {
+                    self.singular_negative_on_line[child] =
+                        self.singular_negative_on_line[child].saturating_add(1);
+                }
+                if singular_extension > 0 {
+                    self.singular_ldse_on_line[child] = true;
+                }
                 previous
             })
             .unwrap_or(0);
@@ -461,7 +463,6 @@ impl Searcher {
         }
     }
 
-    #[cfg(feature = "search-debug")]
     pub(super) fn enter_child_path(
         &mut self,
         ply: usize,
@@ -471,29 +472,10 @@ impl Searcher {
         self.enter_path(ply, Some(mv), singular_extension)
     }
 
-    #[cfg(not(feature = "search-debug"))]
-    #[inline(always)]
-    pub(super) fn enter_child_path(
-        &mut self,
-        _ply: usize,
-        _mv: Move,
-        _singular_extension: i32,
-    ) -> ChildPathState {
-        ChildPathState
-    }
-
-    #[cfg(feature = "search-debug")]
     pub(super) fn enter_null_path(&mut self, ply: usize) -> ChildPathState {
         self.enter_path(ply, None, 0)
     }
 
-    #[cfg(not(feature = "search-debug"))]
-    #[inline(always)]
-    pub(super) fn enter_null_path(&mut self, _ply: usize) -> ChildPathState {
-        ChildPathState
-    }
-
-    #[cfg(feature = "search-debug")]
     pub(super) fn leave_child_path(&mut self, state: ChildPathState) {
         self.path_moves[state.ply] = state.previous_move;
         if let Some(child) = state.child_ply {
@@ -501,51 +483,47 @@ impl Searcher {
         }
     }
 
-    #[cfg(not(feature = "search-debug"))]
-    #[inline(always)]
-    pub(super) fn leave_child_path(&mut self, _state: ChildPathState) {}
-
-    #[cfg(feature = "search-debug")]
     pub(crate) fn enter_root_path(&mut self, mv: Move) {
         self.path_moves[0] = Some(mv);
         self.singular_extensions_used[0] = 0;
         self.singular_extensions_used[1] = 0;
+        self.singular_negative_on_line[0] = 0;
+        self.singular_negative_on_line[1] = 0;
+        self.singular_ldse_on_line[0] = false;
+        self.singular_ldse_on_line[1] = false;
     }
 
-    #[cfg(not(feature = "search-debug"))]
-    #[inline(always)]
-    pub(crate) fn enter_root_path(&mut self, _mv: Move) {}
-
-    #[cfg(feature = "search-debug")]
     pub(crate) fn leave_root_path(&mut self) {
         self.path_moves[0] = None;
         self.singular_extensions_used[1] = 0;
+        self.singular_negative_on_line[1] = 0;
+        self.singular_ldse_on_line[1] = false;
     }
 
-    #[cfg(not(feature = "search-debug"))]
-    #[inline(always)]
-    pub(crate) fn leave_root_path(&mut self) {}
-
-    #[cfg(feature = "search-debug")]
     pub(super) fn singular_shuffling(&self, ply: usize, halfmove_clock: u8) -> bool {
         reversible_shuffle(&self.path_moves, ply, halfmove_clock)
     }
 
-    #[cfg(not(feature = "search-debug"))]
-    #[inline(always)]
-    pub(super) fn singular_shuffling(&self, _ply: usize, _halfmove_clock: u8) -> bool {
-        false
-    }
-
-    #[cfg(feature = "search-debug")]
     pub(super) fn singular_path_extensions(&self, ply: usize) -> u8 {
         self.singular_extensions_used[ply]
     }
 
-    #[cfg(not(feature = "search-debug"))]
-    #[inline(always)]
-    pub(super) fn singular_path_extensions(&self, _ply: usize) -> u8 {
-        0
+    pub(super) fn singular_negative_extensions_on_line(&self, ply: usize) -> u8 {
+        self.singular_negative_on_line[ply]
+    }
+
+    pub(super) fn singular_ldse_used_on_line(&self, ply: usize) -> bool {
+        self.singular_ldse_on_line[ply]
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn set_singular_negative_on_line(&mut self, ply: usize, val: u8) {
+        self.singular_negative_on_line[ply] = val;
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn set_singular_ldse_on_line(&mut self, ply: usize, val: bool) {
+        self.singular_ldse_on_line[ply] = val;
     }
 
     pub fn clear_learning(&mut self) {
@@ -898,66 +876,28 @@ impl Searcher {
         true
     }
 
-    #[cfg(feature = "search-debug")]
     pub(super) fn singular_extensions_enabled(&self) -> bool {
-        self.debug.enable_singular_extensions
-    }
-    #[cfg(not(feature = "search-debug"))]
-    #[inline(always)]
-    pub(super) fn singular_extensions_enabled(&self) -> bool {
-        false
+        true
     }
 
-    #[cfg(any(feature = "search-debug", test))]
+    pub(super) fn singular_multi_extensions_enabled(&self) -> bool {
+        true
+    }
+
+    pub(super) fn singular_multicut_enabled(&self) -> bool {
+        true
+    }
+
+    pub(super) fn singular_negative_extensions_enabled(&self) -> bool {
+        true
+    }
+
     pub(super) fn set_restricted_verification(&mut self, active: bool) -> bool {
         std::mem::replace(&mut self.restricted_verification, active)
     }
 
-    #[cfg(not(any(feature = "search-debug", test)))]
-    #[inline(always)]
-    pub(super) fn set_restricted_verification(&mut self, _active: bool) -> bool {
-        false
-    }
-
-    #[cfg(any(feature = "search-debug", test))]
     pub(super) fn restricted_verification_active(&self) -> bool {
         self.restricted_verification
-    }
-
-    #[cfg(not(any(feature = "search-debug", test)))]
-    #[inline(always)]
-    pub(super) fn restricted_verification_active(&self) -> bool {
-        false
-    }
-
-    #[cfg(feature = "search-debug")]
-    pub(super) fn singular_multi_extensions_enabled(&self) -> bool {
-        self.debug.enable_singular_multi_extensions
-    }
-    #[cfg(not(feature = "search-debug"))]
-    #[inline(always)]
-    pub(super) fn singular_multi_extensions_enabled(&self) -> bool {
-        false
-    }
-
-    #[cfg(feature = "search-debug")]
-    pub(super) fn singular_multicut_enabled(&self) -> bool {
-        self.debug.enable_singular_multicut
-    }
-    #[cfg(not(feature = "search-debug"))]
-    #[inline(always)]
-    pub(super) fn singular_multicut_enabled(&self) -> bool {
-        false
-    }
-
-    #[cfg(feature = "search-debug")]
-    pub(super) fn singular_negative_extensions_enabled(&self) -> bool {
-        self.debug.enable_singular_negative_extensions
-    }
-    #[cfg(not(feature = "search-debug"))]
-    #[inline(always)]
-    pub(super) fn singular_negative_extensions_enabled(&self) -> bool {
-        false
     }
 
     #[cfg(feature = "search-debug")]

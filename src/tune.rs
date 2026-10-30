@@ -55,6 +55,18 @@ pub enum TuneParam {
     OutpostBonus,
     PassedPushBonus,
     AttackOrderBonus,
+    ExtensionMinDepth,
+    ExtensionBaseMarginCp,
+    ExtensionMarginPerDepthCp,
+    ExtensionMaxTtAge,
+    ExtensionMultiMinDepth,
+    ExtensionLadderSteps,
+    ExtensionLadderStepCp,
+    LdseEnabled,
+    LdseMarginCp,
+    LdseMaxDepth,
+    LdseMaxPerLine,
+    NegExtMaxPerLine,
 }
 
 impl TuneParam {
@@ -108,6 +120,18 @@ impl TuneParam {
             TuneParam::OutpostBonus => "OUTPOST_BONUS",
             TuneParam::PassedPushBonus => "PASSED_PUSH_BONUS",
             TuneParam::AttackOrderBonus => "ATTACK_ORDER_BONUS",
+            TuneParam::ExtensionMinDepth => "EXTENSION_MIN_DEPTH",
+            TuneParam::ExtensionBaseMarginCp => "EXTENSION_BASE_MARGIN_CP",
+            TuneParam::ExtensionMarginPerDepthCp => "EXTENSION_MARGIN_PER_DEPTH_CP",
+            TuneParam::ExtensionMaxTtAge => "EXTENSION_MAX_TT_AGE",
+            TuneParam::ExtensionMultiMinDepth => "EXTENSION_MULTI_MIN_DEPTH",
+            TuneParam::ExtensionLadderSteps => "EXTENSION_LADDER_STEPS",
+            TuneParam::ExtensionLadderStepCp => "EXTENSION_LADDER_STEP_CP",
+            TuneParam::LdseEnabled => "LDSE_ENABLED",
+            TuneParam::LdseMarginCp => "LDSE_MARGIN_CP",
+            TuneParam::LdseMaxDepth => "LDSE_MAX_DEPTH",
+            TuneParam::LdseMaxPerLine => "LDSE_MAX_PER_LINE",
+            TuneParam::NegExtMaxPerLine => "NEG_EXT_MAX_PER_LINE",
         }
     }
 
@@ -203,6 +227,28 @@ impl TuneParam {
             "OUTPOST_BONUS" | "OUTPOST-BONUS" => Some(TuneParam::OutpostBonus),
             "PASSED_PUSH_BONUS" | "PASSED-PUSH-BONUS" => Some(TuneParam::PassedPushBonus),
             "ATTACK_ORDER_BONUS" | "ATTACK-ORDER-BONUS" => Some(TuneParam::AttackOrderBonus),
+            "EXTENSION_MIN_DEPTH" | "EXTENSION-MIN-DEPTH" => Some(TuneParam::ExtensionMinDepth),
+            "EXTENSION_BASE_MARGIN_CP" | "EXTENSION-BASE-MARGIN-CP" => {
+                Some(TuneParam::ExtensionBaseMarginCp)
+            }
+            "EXTENSION_MARGIN_PER_DEPTH_CP" | "EXTENSION-MARGIN-PER-DEPTH-CP" => {
+                Some(TuneParam::ExtensionMarginPerDepthCp)
+            }
+            "EXTENSION_MAX_TT_AGE" | "EXTENSION-MAX-TT-AGE" => Some(TuneParam::ExtensionMaxTtAge),
+            "EXTENSION_MULTI_MIN_DEPTH" | "EXTENSION-MULTI-MIN-DEPTH" => {
+                Some(TuneParam::ExtensionMultiMinDepth)
+            }
+            "EXTENSION_LADDER_STEPS" | "EXTENSION-LADDER-STEPS" => {
+                Some(TuneParam::ExtensionLadderSteps)
+            }
+            "EXTENSION_LADDER_STEP_CP" | "EXTENSION-LADDER-STEP-CP" => {
+                Some(TuneParam::ExtensionLadderStepCp)
+            }
+            "LDSE_ENABLED" | "LDSE-ENABLED" => Some(TuneParam::LdseEnabled),
+            "LDSE_MARGIN_CP" | "LDSE-MARGIN-CP" => Some(TuneParam::LdseMarginCp),
+            "LDSE_MAX_DEPTH" | "LDSE-MAX-DEPTH" => Some(TuneParam::LdseMaxDepth),
+            "LDSE_MAX_PER_LINE" | "LDSE-MAX-PER-LINE" => Some(TuneParam::LdseMaxPerLine),
+            "NEG_EXT_MAX_PER_LINE" | "NEG-EXT-MAX-PER-LINE" => Some(TuneParam::NegExtMaxPerLine),
             _ => None,
         }
     }
@@ -259,6 +305,18 @@ impl TuneParam {
             43 => TuneParam::OutpostBonus,
             44 => TuneParam::PassedPushBonus,
             45 => TuneParam::AttackOrderBonus,
+            46 => TuneParam::ExtensionMinDepth,
+            47 => TuneParam::ExtensionBaseMarginCp,
+            48 => TuneParam::ExtensionMarginPerDepthCp,
+            49 => TuneParam::ExtensionMaxTtAge,
+            50 => TuneParam::ExtensionMultiMinDepth,
+            51 => TuneParam::ExtensionLadderSteps,
+            52 => TuneParam::ExtensionLadderStepCp,
+            53 => TuneParam::LdseEnabled,
+            54 => TuneParam::LdseMarginCp,
+            55 => TuneParam::LdseMaxDepth,
+            56 => TuneParam::LdseMaxPerLine,
+            57 => TuneParam::NegExtMaxPerLine,
             _ => unreachable!("invalid tuning parameter index"),
         }
     }

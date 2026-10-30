@@ -317,7 +317,70 @@ macro_rules! negamax_mode_body {
             }
         }
 
+        let eval_score = $eval.static_eval::<CHESS960>($this, $st, $ply);
+        let improving = $ply < 2 || eval_score > $this.eval_history[$ply - 2];
+        $this.eval_history[$ply] = eval_score;
+        #[cfg(feature = "search-debug")]
+        $this.record_debug_dag_eval(h, eval_score);
+
         if actual_depth <= 0 {
+            if !is_pv && !in_check {
+                let ldse_enabled =
+                    tune::get_int(TuneParam::LdseEnabled, i64::from(LDSE_ENABLED_DEFAULT)) != 0;
+                if ldse_enabled && !$this.singular_ldse_used_on_line($ply) {
+                    if let Some(ldse) = ldse_candidate(
+                        true,
+                        tt_move,
+                        tt_score,
+                        tt_flag,
+                        tt_pv,
+                        is_pv,
+                        actual_depth,
+                        $alpha,
+                        eval_score,
+                        false,
+                    ) {
+                        $this.set_singular_ldse_on_line($ply + 1, true);
+                        let st_before = *$st;
+                        let mv = ldse.mv;
+                        let legal = try_apply_move_mode::<CHESS960>($st, mv);
+                        if legal {
+                            $this.shared_tt.prefetch($st.hash);
+                            $eval.push_acc(
+                                $this,
+                                &st_before,
+                                $st,
+                                move_sr(mv),
+                                move_sc(mv),
+                                move_er(mv),
+                                move_ec(mv),
+                                move_promotion(mv),
+                                $ply,
+                            );
+                            $this.rep_stack.push($st.hash);
+                            $this.rep_stack_len += 1;
+                            let path_state = $this.enter_child_path($ply, mv, 1);
+                            let s = -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
+                                $st,
+                                ldse.depth,
+                                $ply + 1,
+                                -$alpha - 1,
+                                -$alpha,
+                                true,
+                                $cnt,
+                                $eval,
+                            );
+                            $this.leave_child_path(path_state);
+                            $this.rep_stack.pop();
+                            $this.rep_stack_len -= 1;
+                            *$st = st_before;
+                            if !$this.stopped.load(Ordering::Relaxed) && s > $alpha {
+                                return s;
+                            }
+                        }
+                    }
+                }
+            }
             return $this.$qsearch_mode::<CHESS960, NODE_LIMITED, E>(
                 $st, $alpha, beta, QS_DEPTH, $cnt, $ply, $eval,
             );
@@ -328,12 +391,6 @@ macro_rules! negamax_mode_body {
         } else {
             tactical_king_pressure($st)
         };
-
-        let eval_score = $eval.static_eval::<CHESS960>($this, $st, $ply);
-        let improving = $ply < 2 || eval_score > $this.eval_history[$ply - 2];
-        $this.eval_history[$ply] = eval_score;
-        #[cfg(feature = "search-debug")]
-        $this.record_debug_dag_eval(h, eval_score);
 
         let rfp_max_depth = tune::get_int(TuneParam::ReverseFutilityMaxDepth, 8) as i32;
         let rfp_base = tune::get_int(TuneParam::ReverseFutilityBaseCp, 80) as i32;
@@ -703,14 +760,7 @@ macro_rules! negamax_mode_body {
             $this.singular_extensions_enabled() && !$this.restricted_verification_active();
         let singular_policy_enabled =
             $this.singular_multicut_enabled() || $this.singular_negative_extensions_enabled();
-        let inspect_singular_safety = singular_enabled
-            && actual_depth >= SINGULAR_MIN_DEPTH
-            && tt_depth >= actual_depth - SINGULAR_TT_DEPTH_MARGIN
-            && (tt_flag == Some(TT_EXACT) && tt_pv
-                || singular_policy_enabled && tt_flag == Some(TT_BETA))
-            && tt_age <= SINGULAR_MAX_TT_AGE
-            && tt_move.is_some()
-            && tt_score.is_some();
+        let inspect_singular_safety = singular_enabled && tt_move.is_some() && tt_score.is_some();
         let tt_move_is_legal = inspect_singular_safety
             && tt_move.is_some_and(|mv| {
                 if !moves_buf.contains(&mv) {
@@ -745,6 +795,8 @@ macro_rules! negamax_mode_body {
             tt_pv,
             tt_age,
             tt_move_is_legal,
+            negative_extensions_on_line: $this.singular_negative_extensions_on_line($ply),
+            ldse_used_on_line: $this.singular_ldse_used_on_line($ply),
         };
         let singular_adjustment = match singular_candidate(singular_evidence) {
             SingularEligibility::NoCandidate => None,
@@ -782,14 +834,23 @@ macro_rules! negamax_mode_body {
                     && $this.singular_multi_extensions_enabled()
                     && candidate.positive_extension
                     && candidate.max_extension >= 2
-                    && actual_depth >= SINGULAR_DOUBLE_MIN_DEPTH
+                    && actual_depth
+                        >= tune::get_int(
+                            TuneParam::ExtensionMultiMinDepth,
+                            SINGULAR_DOUBLE_MIN_DEPTH_DEFAULT.into(),
+                        ) as i32
                     && alternative_score < candidate.beta
                 {
                     #[cfg(feature = "search-debug")]
                     {
                         $this.debug.stats.singular_verifications += 1;
                     }
-                    let threshold = candidate.score - SINGULAR_DOUBLE_MARGIN_CP;
+                    let threshold = candidate.score
+                        - tune::get_int(
+                            TuneParam::ExtensionLadderStepCp,
+                            SINGULAR_LADDER_STEP_CP_DEFAULT.into(),
+                        ) as i32
+                            * 3;
                     double_alternative_score =
                         Some($this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
                             $st,
@@ -803,14 +864,23 @@ macro_rules! negamax_mode_body {
                         ));
                     if !$this.stopped.load(Ordering::Relaxed)
                         && candidate.max_extension >= 3
-                        && actual_depth >= SINGULAR_TRIPLE_MIN_DEPTH
+                        && actual_depth
+                            >= tune::get_int(
+                                TuneParam::ExtensionMultiMinDepth,
+                                SINGULAR_TRIPLE_MIN_DEPTH_DEFAULT.into(),
+                            ) as i32
                         && double_alternative_score.is_some_and(|score| score < threshold)
                     {
                         #[cfg(feature = "search-debug")]
                         {
                             $this.debug.stats.singular_verifications += 1;
                         }
-                        let threshold = candidate.score - SINGULAR_TRIPLE_MARGIN_CP;
+                        let threshold = candidate.score
+                            - tune::get_int(
+                                TuneParam::ExtensionLadderStepCp,
+                                SINGULAR_LADDER_STEP_CP_DEFAULT.into(),
+                            ) as i32
+                                * 6;
                         triple_alternative_score =
                             Some($this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
                                 $st,
