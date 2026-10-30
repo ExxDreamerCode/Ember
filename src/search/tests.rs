@@ -580,6 +580,28 @@ fn restricted_search_with_no_alternative_fails_low_without_storing_tt() {
 }
 
 #[test]
+fn restricted_search_cannot_reverse_futility_cut_off_without_an_alternative() {
+    // Private exclusion contract: a static evaluation cannot establish an alternative move.
+    let mut st = state_from_fen("7k/8/5K2/5Q2/8/8/8/8 b - - 0 1");
+    let moves = generate_moves(&st, st.w, &st.cr, st.ep);
+    assert_eq!(moves.len(), 1);
+    let mut searcher = Searcher::new(Arc::new(SharedTT::new(1)), Arc::new(AtomicBool::new(false)));
+    searcher.nnue_net = None;
+    let mut nodes = 0;
+    let score = negamax_excluding_move(
+        &mut searcher,
+        &mut st,
+        moves[0],
+        7,
+        1,
+        -6001,
+        -6000,
+        &mut nodes,
+    );
+    assert_eq!(score, -6001);
+}
+
+#[test]
 fn stopped_restricted_search_restores_the_excluded_move() {
     // Private exclusion lifecycle: cancellation must restore the saved excluded-move slot.
     let mut st = state_from_fen("7k/4Q3/5K2/8/8/8/8/8 b - - 0 1");

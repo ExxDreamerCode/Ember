@@ -396,6 +396,7 @@ macro_rules! negamax_mode_body {
         let rfp_base = tune::get_int(TuneParam::ReverseFutilityBaseCp, 80) as i32;
         let rfp_per_depth = tune::get_int(TuneParam::ReverseFutilityPerDepthCp, 65) as i32;
         if $this.reverse_futility_enabled()
+            && excluded_move.is_none()
             && !in_check
             && !is_pv
             && actual_depth <= rfp_max_depth
