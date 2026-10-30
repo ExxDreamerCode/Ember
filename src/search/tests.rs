@@ -47,7 +47,7 @@ fn qualifying_singular_evidence(mv: Move) -> SingularEvidence {
         in_check: false,
         node_pv: true,
         node_beta: 100,
-        actual_depth: SINGULAR_MIN_DEPTH,
+        actual_depth: SINGULAR_MIN_DEPTH_DEFAULT,
         halfmove_clock: 0,
         repetitions: 1,
         repeated_after_root: false,
@@ -56,11 +56,13 @@ fn qualifying_singular_evidence(mv: Move) -> SingularEvidence {
         allow_lower_bound: false,
         tt_move: Some(mv),
         tt_score: Some(300),
-        tt_depth: SINGULAR_MIN_DEPTH - SINGULAR_TT_DEPTH_MARGIN,
+        tt_depth: SINGULAR_MIN_DEPTH_DEFAULT - SINGULAR_TT_DEPTH_MARGIN_DEFAULT,
         tt_flag: Some(TT_EXACT),
         tt_pv: true,
         tt_age: 0,
         tt_move_is_legal: true,
+        negative_extensions_on_line: 0,
+        ldse_used_on_line: false,
     }
 }
 
@@ -803,7 +805,7 @@ fn singular_candidate_requires_deep_reliable_safe_tt_evidence() {
     };
     assert_eq!(candidate.mv, mv);
     assert_eq!(candidate.beta, 300 - singular_margin(evidence));
-    assert_eq!(candidate.depth, (SINGULAR_MIN_DEPTH - 1) / 2);
+    assert_eq!(candidate.depth, (SINGULAR_MIN_DEPTH_DEFAULT - 1) / 2);
     assert!(candidate.positive_extension);
     assert_eq!(
         candidate.max_extension,
@@ -811,8 +813,8 @@ fn singular_candidate_requires_deep_reliable_safe_tt_evidence() {
     );
 
     let mut lower_bound = evidence;
-    lower_bound.actual_depth = SINGULAR_POLICY_MIN_DEPTH;
-    lower_bound.tt_depth = SINGULAR_POLICY_MIN_DEPTH - SINGULAR_TT_DEPTH_MARGIN;
+    lower_bound.actual_depth = SINGULAR_POLICY_MIN_DEPTH_DEFAULT;
+    lower_bound.tt_depth = SINGULAR_POLICY_MIN_DEPTH_DEFAULT - SINGULAR_TT_DEPTH_MARGIN_DEFAULT;
     lower_bound.node_pv = false;
     lower_bound.node_beta = 200;
     lower_bound.tt_flag = Some(TT_BETA);
@@ -829,7 +831,7 @@ fn singular_candidate_requires_deep_reliable_safe_tt_evidence() {
 
     let no_candidate_cases = [
         SingularEvidence {
-            actual_depth: SINGULAR_MIN_DEPTH - 1,
+            actual_depth: SINGULAR_MIN_DEPTH_DEFAULT - 1,
             ..evidence
         },
         SingularEvidence {
@@ -845,7 +847,7 @@ fn singular_candidate_requires_deep_reliable_safe_tt_evidence() {
             ..evidence
         },
         SingularEvidence {
-            tt_age: SINGULAR_MAX_TT_AGE + 1,
+            tt_age: SINGULAR_MAX_TT_AGE_DEFAULT + 1,
             ..evidence
         },
         SingularEvidence {
@@ -857,12 +859,12 @@ fn singular_candidate_requires_deep_reliable_safe_tt_evidence() {
             ..lower_bound
         },
         SingularEvidence {
-            actual_depth: SINGULAR_POLICY_MIN_DEPTH - 1,
-            tt_depth: SINGULAR_POLICY_MIN_DEPTH - 1,
+            actual_depth: SINGULAR_POLICY_MIN_DEPTH_DEFAULT - 1,
+            tt_depth: SINGULAR_POLICY_MIN_DEPTH_DEFAULT - 1,
             ..allowed_lower_bound
         },
         SingularEvidence {
-            tt_depth: SINGULAR_POLICY_MIN_DEPTH - SINGULAR_TT_DEPTH_MARGIN - 1,
+            tt_depth: SINGULAR_POLICY_MIN_DEPTH_DEFAULT - SINGULAR_TT_DEPTH_MARGIN_DEFAULT - 1,
             ..allowed_lower_bound
         },
         SingularEvidence {
@@ -903,7 +905,7 @@ fn singular_candidate_requires_deep_reliable_safe_tt_evidence() {
             ..evidence
         },
         SingularEvidence {
-            halfmove_clock: SINGULAR_MAX_HALF_MOVE_CLOCK,
+            halfmove_clock: SINGULAR_MAX_HALF_MOVE_CLOCK_DEFAULT,
             ..evidence
         },
         SingularEvidence {
@@ -954,8 +956,8 @@ fn singular_margin_rejects_a_competitive_alternative() {
 #[test]
 fn singular_multi_ply_extensions_require_progressively_larger_gaps() {
     let mut evidence = qualifying_singular_evidence(encode_move(0, 0, 0, 1, 0));
-    evidence.actual_depth = SINGULAR_TRIPLE_MIN_DEPTH;
-    evidence.tt_depth = SINGULAR_TRIPLE_MIN_DEPTH;
+    evidence.actual_depth = SINGULAR_TRIPLE_MIN_DEPTH_DEFAULT;
+    evidence.tt_depth = SINGULAR_TRIPLE_MIN_DEPTH_DEFAULT;
     let SingularEligibility::Eligible(candidate) = singular_candidate(evidence) else {
         panic!("qualifying TT evidence was rejected");
     };
@@ -965,32 +967,35 @@ fn singular_multi_ply_extensions_require_progressively_larger_gaps() {
         singular_extension_from_scores(candidate, candidate.beta - 1, None, None),
         1
     );
+    // Ladder step 2 costs 3 * step_cp = 120 cp. Alternative 160 below score passes.
     assert_eq!(
         singular_extension_from_scores(
             candidate,
             candidate.beta - 1,
-            Some(candidate.score - SINGULAR_DOUBLE_MARGIN_CP),
-            None,
-        ),
-        1
-    );
-    assert_eq!(
-        singular_extension_from_scores(
-            candidate,
-            candidate.beta - 1,
-            Some(candidate.score - SINGULAR_DOUBLE_MARGIN_CP - 1),
+            Some(candidate.score - 160),
             None,
         ),
         2
     );
+    // Ladder step 3 costs 6 * step_cp = 240 cp. Alternative 241 below score passes.
     assert_eq!(
         singular_extension_from_scores(
             candidate,
             candidate.beta - 1,
-            Some(candidate.score - SINGULAR_DOUBLE_MARGIN_CP - 1),
-            Some(candidate.score - SINGULAR_TRIPLE_MARGIN_CP - 1),
+            Some(candidate.score - 160),
+            Some(candidate.score - 241),
         ),
         3
+    );
+    // Alternative exactly at 240 margin does not pass step 3 (needs strictly less).
+    assert_eq!(
+        singular_extension_from_scores(
+            candidate,
+            candidate.beta - 1,
+            Some(candidate.score - 160),
+            Some(candidate.score - 240),
+        ),
+        2
     );
     assert_eq!(
         singular_extension_from_scores(candidate, candidate.beta, None, None),
@@ -1060,7 +1065,7 @@ fn singular_search_extends_a_synthetic_only_move_tt_result() {
     searcher.debug.enable_singular_extensions = true;
     shared_tt.store_with_pv(
         st.hash,
-        SINGULAR_MIN_DEPTH,
+        SINGULAR_MIN_DEPTH_DEFAULT,
         score_to_tt(0, 1),
         TT_EXACT,
         Some(tt_move),
@@ -1068,7 +1073,15 @@ fn singular_search_extends_a_synthetic_only_move_tt_result() {
     );
     let mut nodes = 0;
 
-    searcher.negamax(&mut st, SINGULAR_MIN_DEPTH, 1, -INF, INF, true, &mut nodes);
+    searcher.negamax(
+        &mut st,
+        SINGULAR_MIN_DEPTH_DEFAULT,
+        1,
+        -INF,
+        INF,
+        true,
+        &mut nodes,
+    );
 
     let stats = searcher.debug_stats();
     assert_eq!(stats.singular_candidates, 1);
