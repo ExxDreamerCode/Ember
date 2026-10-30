@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
-const PARAM_COUNT: usize = TuneParam::AttackOrderBonus as usize + 1;
+const PARAM_COUNT: usize = TuneParam::ExtensionMaxHalfmoveClock as usize + 1;
 const _: () = assert!(PARAM_COUNT <= u64::BITS as usize);
 
 static OVERRIDES: [AtomicI64; PARAM_COUNT] = [const { AtomicI64::new(0) }; PARAM_COUNT];
@@ -59,7 +59,9 @@ pub enum TuneParam {
     ExtensionBaseMarginCp,
     ExtensionMarginPerDepthCp,
     ExtensionMaxTtAge,
-    ExtensionMultiMinDepth,
+    ExtensionPolicyMinDepth,
+    ExtensionDoubleMinDepth,
+    ExtensionTripleMinDepth,
     ExtensionLadderSteps,
     ExtensionLadderStepCp,
     LdseEnabled,
@@ -67,6 +69,8 @@ pub enum TuneParam {
     LdseMaxDepth,
     LdseMaxPerLine,
     NegExtMaxPerLine,
+    ExtensionTtDepthMargin,
+    ExtensionMaxHalfmoveClock,
 }
 
 impl TuneParam {
@@ -124,7 +128,9 @@ impl TuneParam {
             TuneParam::ExtensionBaseMarginCp => "EXTENSION_BASE_MARGIN_CP",
             TuneParam::ExtensionMarginPerDepthCp => "EXTENSION_MARGIN_PER_DEPTH_CP",
             TuneParam::ExtensionMaxTtAge => "EXTENSION_MAX_TT_AGE",
-            TuneParam::ExtensionMultiMinDepth => "EXTENSION_MULTI_MIN_DEPTH",
+            TuneParam::ExtensionPolicyMinDepth => "EXTENSION_POLICY_MIN_DEPTH",
+            TuneParam::ExtensionDoubleMinDepth => "EXTENSION_DOUBLE_MIN_DEPTH",
+            TuneParam::ExtensionTripleMinDepth => "EXTENSION_TRIPLE_MIN_DEPTH",
             TuneParam::ExtensionLadderSteps => "EXTENSION_LADDER_STEPS",
             TuneParam::ExtensionLadderStepCp => "EXTENSION_LADDER_STEP_CP",
             TuneParam::LdseEnabled => "LDSE_ENABLED",
@@ -132,6 +138,8 @@ impl TuneParam {
             TuneParam::LdseMaxDepth => "LDSE_MAX_DEPTH",
             TuneParam::LdseMaxPerLine => "LDSE_MAX_PER_LINE",
             TuneParam::NegExtMaxPerLine => "NEG_EXT_MAX_PER_LINE",
+            TuneParam::ExtensionTtDepthMargin => "EXTENSION_TT_DEPTH_MARGIN",
+            TuneParam::ExtensionMaxHalfmoveClock => "EXTENSION_MAX_HALFMOVE_CLOCK",
         }
     }
 
@@ -235,8 +243,14 @@ impl TuneParam {
                 Some(TuneParam::ExtensionMarginPerDepthCp)
             }
             "EXTENSION_MAX_TT_AGE" | "EXTENSION-MAX-TT-AGE" => Some(TuneParam::ExtensionMaxTtAge),
-            "EXTENSION_MULTI_MIN_DEPTH" | "EXTENSION-MULTI-MIN-DEPTH" => {
-                Some(TuneParam::ExtensionMultiMinDepth)
+            "EXTENSION_POLICY_MIN_DEPTH" | "EXTENSION-POLICY-MIN-DEPTH" => {
+                Some(TuneParam::ExtensionPolicyMinDepth)
+            }
+            "EXTENSION_DOUBLE_MIN_DEPTH" | "EXTENSION-DOUBLE-MIN-DEPTH" => {
+                Some(TuneParam::ExtensionDoubleMinDepth)
+            }
+            "EXTENSION_TRIPLE_MIN_DEPTH" | "EXTENSION-TRIPLE-MIN-DEPTH" => {
+                Some(TuneParam::ExtensionTripleMinDepth)
             }
             "EXTENSION_LADDER_STEPS" | "EXTENSION-LADDER-STEPS" => {
                 Some(TuneParam::ExtensionLadderSteps)
@@ -249,6 +263,12 @@ impl TuneParam {
             "LDSE_MAX_DEPTH" | "LDSE-MAX-DEPTH" => Some(TuneParam::LdseMaxDepth),
             "LDSE_MAX_PER_LINE" | "LDSE-MAX-PER-LINE" => Some(TuneParam::LdseMaxPerLine),
             "NEG_EXT_MAX_PER_LINE" | "NEG-EXT-MAX-PER-LINE" => Some(TuneParam::NegExtMaxPerLine),
+            "EXTENSION_TT_DEPTH_MARGIN" | "EXTENSION-TT-DEPTH-MARGIN" => {
+                Some(TuneParam::ExtensionTtDepthMargin)
+            }
+            "EXTENSION_MAX_HALFMOVE_CLOCK" | "EXTENSION-MAX-HALFMOVE-CLOCK" => {
+                Some(TuneParam::ExtensionMaxHalfmoveClock)
+            }
             _ => None,
         }
     }
@@ -309,14 +329,18 @@ impl TuneParam {
             47 => TuneParam::ExtensionBaseMarginCp,
             48 => TuneParam::ExtensionMarginPerDepthCp,
             49 => TuneParam::ExtensionMaxTtAge,
-            50 => TuneParam::ExtensionMultiMinDepth,
-            51 => TuneParam::ExtensionLadderSteps,
-            52 => TuneParam::ExtensionLadderStepCp,
-            53 => TuneParam::LdseEnabled,
-            54 => TuneParam::LdseMarginCp,
-            55 => TuneParam::LdseMaxDepth,
-            56 => TuneParam::LdseMaxPerLine,
-            57 => TuneParam::NegExtMaxPerLine,
+            50 => TuneParam::ExtensionPolicyMinDepth,
+            51 => TuneParam::ExtensionDoubleMinDepth,
+            52 => TuneParam::ExtensionTripleMinDepth,
+            53 => TuneParam::ExtensionLadderSteps,
+            54 => TuneParam::ExtensionLadderStepCp,
+            55 => TuneParam::LdseEnabled,
+            56 => TuneParam::LdseMarginCp,
+            57 => TuneParam::LdseMaxDepth,
+            58 => TuneParam::LdseMaxPerLine,
+            59 => TuneParam::NegExtMaxPerLine,
+            60 => TuneParam::ExtensionTtDepthMargin,
+            61 => TuneParam::ExtensionMaxHalfmoveClock,
             _ => unreachable!("invalid tuning parameter index"),
         }
     }

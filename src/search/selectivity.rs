@@ -12,10 +12,9 @@ pub(super) const SINGULAR_POLICY_MIN_DEPTH_DEFAULT: i32 = 15;
 pub(super) const SINGULAR_DOUBLE_MIN_DEPTH_DEFAULT: i32 = 16;
 pub(super) const SINGULAR_TRIPLE_MIN_DEPTH_DEFAULT: i32 = 24;
 
-pub(super) const LDSE_ENABLED_DEFAULT: bool = false;
+pub(super) const LDSE_ENABLED_DEFAULT: i32 = 0;
 pub(super) const LDSE_MARGIN_CP_DEFAULT: i32 = 60;
 pub(super) const LDSE_MAX_DEPTH_DEFAULT: i32 = 6;
-#[allow(dead_code)]
 pub(super) const LDSE_MAX_PER_LINE_DEFAULT: u8 = 1;
 pub(super) const NEG_EXT_MAX_PER_LINE_DEFAULT: u8 = 1;
 
@@ -382,7 +381,7 @@ pub(super) fn singular_candidate(evidence: SingularEvidence) -> SingularEligibil
         i64::from(SINGULAR_MIN_DEPTH_DEFAULT),
     ) as i32;
     let tt_depth_margin = tune::get_int(
-        TuneParam::ExtensionMinDepth,
+        TuneParam::ExtensionTtDepthMargin,
         i64::from(SINGULAR_TT_DEPTH_MARGIN_DEFAULT),
     ) as i32;
     let max_tt_age = tune::get_int(
@@ -390,17 +389,22 @@ pub(super) fn singular_candidate(evidence: SingularEvidence) -> SingularEligibil
         i64::from(SINGULAR_MAX_TT_AGE_DEFAULT),
     ) as u8;
     let policy_min_depth = tune::get_int(
-        TuneParam::ExtensionMultiMinDepth,
+        TuneParam::ExtensionPolicyMinDepth,
         i64::from(SINGULAR_POLICY_MIN_DEPTH_DEFAULT),
     ) as i32;
     let max_halfmove_clock = tune::get_int(
-        TuneParam::ExtensionMaxTtAge,
+        TuneParam::ExtensionMaxHalfmoveClock,
         i64::from(SINGULAR_MAX_HALF_MOVE_CLOCK_DEFAULT),
     ) as u8;
     let neg_ext_max = tune::get_int(
         TuneParam::NegExtMaxPerLine,
         i64::from(NEG_EXT_MAX_PER_LINE_DEFAULT),
     ) as u8;
+
+    let _ = tune::get_int(
+        TuneParam::LdseMaxPerLine,
+        i64::from(LDSE_MAX_PER_LINE_DEFAULT),
+    );
 
     let (Some(mv), Some(score), Some(flag)) =
         (evidence.tt_move, evidence.tt_score, evidence.tt_flag)

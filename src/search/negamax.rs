@@ -836,8 +836,8 @@ macro_rules! negamax_mode_body {
                     && candidate.max_extension >= 2
                     && actual_depth
                         >= tune::get_int(
-                            TuneParam::ExtensionMultiMinDepth,
-                            SINGULAR_DOUBLE_MIN_DEPTH_DEFAULT.into(),
+                            TuneParam::ExtensionDoubleMinDepth,
+                            i64::from(SINGULAR_DOUBLE_MIN_DEPTH_DEFAULT),
                         ) as i32
                     && alternative_score < candidate.beta
                 {
@@ -848,7 +848,7 @@ macro_rules! negamax_mode_body {
                     let threshold = candidate.score
                         - tune::get_int(
                             TuneParam::ExtensionLadderStepCp,
-                            SINGULAR_LADDER_STEP_CP_DEFAULT.into(),
+                            i64::from(SINGULAR_LADDER_STEP_CP_DEFAULT),
                         ) as i32
                             * 3;
                     double_alternative_score =
@@ -866,8 +866,8 @@ macro_rules! negamax_mode_body {
                         && candidate.max_extension >= 3
                         && actual_depth
                             >= tune::get_int(
-                                TuneParam::ExtensionMultiMinDepth,
-                                SINGULAR_TRIPLE_MIN_DEPTH_DEFAULT.into(),
+                                TuneParam::ExtensionTripleMinDepth,
+                                i64::from(SINGULAR_TRIPLE_MIN_DEPTH_DEFAULT),
                             ) as i32
                         && double_alternative_score.is_some_and(|score| score < threshold)
                     {
@@ -878,7 +878,7 @@ macro_rules! negamax_mode_body {
                         let threshold = candidate.score
                             - tune::get_int(
                                 TuneParam::ExtensionLadderStepCp,
-                                SINGULAR_LADDER_STEP_CP_DEFAULT.into(),
+                                i64::from(SINGULAR_LADDER_STEP_CP_DEFAULT),
                             ) as i32
                                 * 6;
                         triple_alternative_score =

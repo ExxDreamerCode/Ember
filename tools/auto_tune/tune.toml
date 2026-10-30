@@ -368,10 +368,38 @@ max = 4
 step = 1
 
 [[params]]
-name = "EXTENSION_MULTI_MIN_DEPTH"
+name = "EXTENSION_TT_DEPTH_MARGIN"
+base = 1
+min = 0
+max = 4
+step = 1
+
+[[params]]
+name = "EXTENSION_MAX_HALFMOVE_CLOCK"
+base = 80
+min = 20
+max = 120
+step = 10
+
+[[params]]
+name = "EXTENSION_POLICY_MIN_DEPTH"
 base = 15
 min = 10
+max = 20
+step = 1
+
+[[params]]
+name = "EXTENSION_DOUBLE_MIN_DEPTH"
+base = 16
+min = 10
 max = 24
+step = 2
+
+[[params]]
+name = "EXTENSION_TRIPLE_MIN_DEPTH"
+base = 24
+min = 16
+max = 32
 step = 2
 
 [[params]]

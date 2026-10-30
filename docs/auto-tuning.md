@@ -105,7 +105,11 @@ The tunable constants and their defaults:
 | `EXTENSION_BASE_MARGIN_CP` | 45 | Base margin for the singular cutoff barrier |
 | `EXTENSION_MARGIN_PER_DEPTH_CP` | 3 | Margin added per depth |
 | `EXTENSION_MAX_TT_AGE` | 0 | Maximum TT age for eligible entries |
-| `EXTENSION_MULTI_MIN_DEPTH` | 15 | Minimum depth for multi-ply extension |
+| `EXTENSION_TT_DEPTH_MARGIN` | 1 | TT depth margin for eligible entries |
+| `EXTENSION_MAX_HALFMOVE_CLOCK` | 80 | Maximum halfmove clock for lower-bound policy extensions |
+| `EXTENSION_POLICY_MIN_DEPTH` | 15 | Minimum depth for multi-ply (policy) extension |
+| `EXTENSION_DOUBLE_MIN_DEPTH` | 16 | Minimum depth to attempt a double-ply singular extension |
+| `EXTENSION_TRIPLE_MIN_DEPTH` | 24 | Minimum depth to attempt a triple-ply singular extension |
 | `EXTENSION_LADDER_STEPS` | 3 | Maximum ladder steps for positive extension |
 | `EXTENSION_LADDER_STEP_CP` | 40 | Centipawn cost per ladder step (triangular) |
 | `LDSE_ENABLED` | 0 | Enable Late-stage Delta Singular Extension |
