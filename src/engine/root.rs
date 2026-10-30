@@ -77,7 +77,7 @@ pub(super) fn root_move_preserves_fifty_move_conversion(st: &BoardState, mv: Mov
     let material_floor =
         root_material_score(&after, attacker).saturating_sub(FIFTY_MOVE_ROOT_MATERIAL_MARGIN_CP);
     let defender = after.w;
-    
+
     std::thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
         .spawn(move || {
