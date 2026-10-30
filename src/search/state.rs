@@ -133,7 +133,6 @@ impl Searcher {
             singular_extensions_used: [0; MAX_PLY],
             singular_negative_on_line: [0u8; MAX_PLY],
             singular_ldse_on_line: [false; MAX_PLY],
-            #[cfg(any(feature = "search-debug", test))]
             restricted_verification: false,
             probcut_verification: false,
             tt_mb: 128,
