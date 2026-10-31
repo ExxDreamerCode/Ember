@@ -356,6 +356,14 @@ relevant ones; do not use one as a proxy for another.
 - Report process-global profiling counters as deltas over each measured workload.
   Exclude earlier tests and setup, and run measurement windows serially so unrelated
   concurrent work cannot enter the same counters.
+- In ordinary single-thread engine searches with `MultiPV=1`, `search-debug` counters
+  reset before each root-move search. The final `debug_stats()` snapshot describes only
+  the last root search, not the whole iterative search. Enable `EMBER_TRACE_ROOT_SEARCH`
+  before creating the searcher and sum additive per-root trace counters, including
+  aspiration re-searches, when reporting totals across a completed search. Maxima and
+  post-search updates require separate handling. The `MultiPV>1` root loop has different
+  counter and trace behavior; do not apply this aggregation to it. Keep the traces
+  alongside the aggregate.
 
 ### NPS and search shape
 
