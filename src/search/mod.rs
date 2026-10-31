@@ -135,7 +135,7 @@ pub struct Searcher {
     path_moves: [Option<Move>; MAX_PLY],
     singular_extensions_used: [u8; MAX_PLY],
     singular_negative_on_line: [u8; MAX_PLY],
-    singular_ldse_on_line: [bool; MAX_PLY],
+    singular_ldse_on_line: [u8; MAX_PLY],
     restricted_verification: bool,
     probcut_verification: bool,
     pub tt_mb: usize,

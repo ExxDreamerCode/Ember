@@ -803,32 +803,39 @@ fn singular_path_state_is_inherited_and_restored_across_siblings() {
     let mv = encode_move(0, 0, 0, 1, 0);
     searcher.singular_extensions_used[1] = 2;
     searcher.singular_negative_on_line[1] = 1;
-    searcher.singular_ldse_on_line[1] = true;
+    searcher.singular_ldse_on_line[1] = 1;
     searcher.singular_extensions_used[2] = 9;
     searcher.singular_negative_on_line[2] = 8;
-    searcher.singular_ldse_on_line[2] = false;
-    let child = searcher.enter_child_path(1, mv, -1);
+    searcher.singular_ldse_on_line[2] = 0;
+    let child = searcher.enter_child_path::<true>(1, mv, -1);
     assert_eq!(searcher.singular_extensions_used[2], 2);
     assert_eq!(searcher.singular_negative_on_line[2], 2);
-    assert!(searcher.singular_ldse_on_line[2]);
-    let grandchild = searcher.enter_null_path(2);
+    assert_eq!(searcher.singular_ldse_on_line[2], 1);
+    let grandchild = searcher.enter_null_path::<true>(2);
     assert_eq!(searcher.singular_negative_on_line[3], 2);
-    assert!(searcher.singular_ldse_on_line[3]);
-    searcher.leave_child_path(grandchild);
-    searcher.leave_child_path(child);
+    assert_eq!(searcher.singular_ldse_on_line[3], 1);
+    searcher.leave_child_path::<true>(grandchild);
+    searcher.leave_child_path::<true>(child);
     assert_eq!(searcher.singular_extensions_used[2], 9);
     assert_eq!(searcher.singular_negative_on_line[2], 8);
-    assert!(!searcher.singular_ldse_on_line[2]);
+    assert_eq!(searcher.singular_ldse_on_line[2], 0);
 
     searcher.singular_negative_on_line[1] = 0;
-    searcher.singular_ldse_on_line[1] = false;
-    let sibling = searcher.enter_child_path(1, mv, 1);
+    searcher.singular_ldse_on_line[1] = 0;
+    let sibling = searcher.enter_child_path::<true>(1, mv, 1);
     assert_eq!(searcher.singular_negative_on_line[2], 0);
-    assert!(!searcher.singular_ldse_on_line[2]);
-    searcher.set_singular_ldse_on_line(2, true);
-    searcher.leave_child_path(sibling);
+    assert_eq!(searcher.singular_ldse_on_line[2], 0);
+    searcher.set_singular_ldse_on_line(2, 1);
+    let nested = searcher.enter_child_path::<true>(2, mv, 0);
+    assert_eq!(searcher.singular_ldse_on_line[3], 1);
+    searcher.set_singular_ldse_on_line(3, 2);
+    let deeper = searcher.enter_child_path::<true>(3, mv, 0);
+    assert_eq!(searcher.singular_ldse_on_line[4], 2);
+    searcher.leave_child_path::<true>(deeper);
+    searcher.leave_child_path::<true>(nested);
+    searcher.leave_child_path::<true>(sibling);
     assert_eq!(searcher.singular_negative_on_line[2], 8);
-    assert!(!searcher.singular_ldse_on_line[2]);
+    assert_eq!(searcher.singular_ldse_on_line[2], 0);
 }
 
 #[test]
@@ -869,6 +876,245 @@ fn ldse_at_last_ply_falls_back_without_indexing_a_child_slot() {
         nodes > 2,
         "LDSE should still search when a child slot exists"
     );
+    tune::reset();
+}
+
+#[test]
+fn ldse_eligibility_respects_configured_depth_and_line_count() {
+    // Private selectivity contract: verify tunable eligibility without relying on root move choice.
+    tune::reset();
+    let mv = encode_move(0, 0, 0, 1, 0);
+    let candidate = |depth, used| {
+        ldse_candidate(
+            true,
+            Some(mv),
+            Some(0),
+            Some(TT_BETA),
+            false,
+            false,
+            depth,
+            0,
+            -1000,
+            used,
+        )
+        .is_some()
+    };
+    tune::set(TuneParam::LdseMaxPerLine, 0);
+    assert!(!candidate(0, 0));
+    tune::set(TuneParam::LdseMaxPerLine, 2);
+    tune::set(TuneParam::LdseMaxDepth, 2);
+    assert!(candidate(2, 0));
+    assert!(candidate(2, 1));
+    assert!(!candidate(2, 2));
+    assert!(!candidate(3, 0));
+    tune::set(TuneParam::LdseMaxDepth, 10);
+    assert!(candidate(10, 0));
+    assert!(!candidate(11, 0));
+    assert!(ldse_candidate(
+        false,
+        Some(mv),
+        Some(0),
+        Some(TT_BETA),
+        false,
+        false,
+        2,
+        0,
+        -1000,
+        0
+    )
+    .is_none());
+    assert!(ldse_candidate(
+        true,
+        Some(mv),
+        Some(0),
+        Some(TT_ALPHA),
+        false,
+        false,
+        2,
+        0,
+        -1000,
+        0
+    )
+    .is_none());
+    assert!(ldse_candidate(
+        true,
+        Some(mv),
+        Some(0),
+        Some(TT_BETA),
+        true,
+        false,
+        2,
+        0,
+        -1000,
+        0
+    )
+    .is_none());
+    assert!(ldse_candidate(
+        true,
+        Some(mv),
+        Some(0),
+        Some(TT_BETA),
+        false,
+        true,
+        2,
+        0,
+        -1000,
+        0
+    )
+    .is_none());
+    assert!(ldse_candidate(
+        true,
+        Some(mv),
+        Some(0),
+        Some(TT_BETA),
+        false,
+        false,
+        2,
+        0,
+        0,
+        0
+    )
+    .is_none());
+    tune::set(TuneParam::LdseMaxDepth, i64::MAX);
+    tune::set(TuneParam::LdseMarginCp, i64::MAX);
+    assert!(!candidate(10, 0));
+    tune::set(TuneParam::LdseMarginCp, i64::MIN);
+    let extreme = ldse_candidate(
+        true,
+        Some(mv),
+        Some(0),
+        Some(TT_BETA),
+        false,
+        false,
+        i32::MIN,
+        0,
+        -1000,
+        0,
+    )
+    .expect("wide tuning values must not overflow");
+    assert_eq!(extreme.depth, 1);
+    assert_eq!(extreme.beta, i32::MAX);
+    tune::set(TuneParam::LdseMaxDepth, i64::MIN);
+    assert!(!candidate(0, 0));
+    tune::reset();
+}
+
+#[cfg(feature = "search-debug")]
+#[test]
+fn ldse_depth_and_line_settings_reach_positive_depth_search() {
+    // Private routing contract: distinguish an optional probe from a root move assertion.
+    tune::reset();
+    tune::set(TuneParam::LdseEnabled, 1);
+    let initial = state_from_fen("7k/8/5K2/5Q2/8/8/8/8 b - - 0 1");
+    let mv = generate_moves(&initial, initial.w, &initial.cr, initial.ep)[0];
+    let run = |depth_limit, line_limit, node_limited: bool, line_uses| {
+        tune::set(TuneParam::LdseMaxDepth, depth_limit);
+        tune::set(TuneParam::LdseMaxPerLine, line_limit);
+        let tt = Arc::new(SharedTT::new(1));
+        tt.store(initial.hash, 0, score_to_tt(0, 1), TT_BETA, Some(mv));
+        let mut searcher = Searcher::new(tt, Arc::new(AtomicBool::new(false)));
+        searcher.nnue_net = None;
+        searcher.set_node_limit(node_limited.then_some(1_000_000));
+        searcher.set_singular_ldse_on_line(1, line_uses);
+        let mut st = initial;
+        let mut nodes = 0;
+        let score = searcher.negamax(&mut st, 3, 1, 5000, 5001, false, &mut nodes);
+        (score, nodes, searcher)
+    };
+    for node_limited in [false, true] {
+        tune::set(TuneParam::LdseEnabled, 0);
+        let (disabled_mode_score, disabled_mode_nodes, _) = run(4, 0, node_limited, 0);
+        tune::set(TuneParam::LdseEnabled, 1);
+        let (score, without_depth, control) = run(2, 1, node_limited, 0);
+        let (disabled_score, without_line, _) = run(4, 0, node_limited, 0);
+        let (enabled_score, enabled, searcher) = run(4, 1, node_limited, 0);
+        assert_eq!(score, disabled_score);
+        assert_eq!(disabled_mode_score, disabled_score);
+        assert_eq!(disabled_mode_nodes, without_line);
+        assert_eq!(score, enabled_score);
+        assert_eq!(without_depth, without_line);
+        assert!(
+            enabled > without_depth,
+            "eligible LDSE must search its TT move"
+        );
+        let stats = searcher.debug_stats();
+        assert_eq!(stats.ldse_probes, 1);
+        assert_eq!(stats.ldse_cutoffs, 0);
+        assert_eq!(enabled - stats.ldse_probe_nodes, without_depth);
+        assert_eq!(searcher.history, control.history);
+        assert_eq!(searcher.killers, control.killers);
+        assert_eq!(searcher.counter_move, control.counter_move);
+        assert_eq!(searcher.corr_hist, control.corr_hist);
+        #[cfg(feature = "node-correction-training")]
+        {
+            assert_eq!(searcher.corr_staged_depth, control.corr_staged_depth);
+            assert_eq!(searcher.corr_staged_diff, control.corr_staged_diff);
+            assert_eq!(searcher.corr_staged_touched, control.corr_staged_touched);
+        }
+        let mut child = initial;
+        apply_move(
+            &mut child,
+            move_sr(mv),
+            move_sc(mv),
+            move_er(mv),
+            move_ec(mv),
+            move_promotion(mv),
+        );
+        assert_eq!(
+            searcher.shared_tt.get_entry(initial.hash),
+            control.shared_tt.get_entry(initial.hash)
+        );
+        assert_eq!(
+            searcher.shared_tt.get_entry(child.hash),
+            control.shared_tt.get_entry(child.hash)
+        );
+        drop(searcher);
+        drop(control);
+        let (_, capped_nodes, capped) = run(4, 1, node_limited, 1);
+        let (_, allowed_nodes, allowed) = run(4, 2, node_limited, 1);
+        assert_eq!(capped.debug_stats().ldse_probes, 0);
+        assert_eq!(allowed.debug_stats().ldse_probes, 1);
+        assert!(allowed_nodes > capped_nodes);
+    }
+    tune::reset();
+}
+
+#[cfg(feature = "search-debug")]
+#[test]
+fn ldse_line_limit_counts_rejected_probes_in_real_children() {
+    // Private routing contract: a rejected probe consumes one use on each real continuation.
+    tune::reset();
+    tune::set(TuneParam::LdseEnabled, 1);
+    tune::set(TuneParam::LdseMaxDepth, 6);
+    // Force eligibility at both sides of the synthetic null window.
+    tune::set(TuneParam::LdseMarginCp, -100_000);
+    let initial = state_from_fen("7k/8/5K2/5Q2/8/8/8/8 b - - 0 1");
+    let root_move = generate_moves(&initial, initial.w, &initial.cr, initial.ep)[0];
+    let mut child = initial;
+    apply_move(
+        &mut child,
+        move_sr(root_move),
+        move_sc(root_move),
+        move_er(root_move),
+        move_ec(root_move),
+        move_promotion(root_move),
+    );
+    let child_move = generate_moves(&child, child.w, &child.cr, child.ep)[0];
+    let probes = |line_limit| {
+        tune::set(TuneParam::LdseMaxPerLine, line_limit);
+        let tt = Arc::new(SharedTT::new(1));
+        tt.store(initial.hash, 0, score_to_tt(0, 1), TT_BETA, Some(root_move));
+        tt.store(child.hash, 0, score_to_tt(0, 2), TT_BETA, Some(child_move));
+        let mut searcher = Searcher::new(tt, Arc::new(AtomicBool::new(false)));
+        searcher.nnue_net = None;
+        searcher.debug.disable_futility = true;
+        let mut st = initial;
+        let mut nodes = 0;
+        searcher.negamax(&mut st, 3, 1, 5000, 5001, false, &mut nodes);
+        searcher.debug_stats().ldse_probes
+    };
+    assert_eq!(probes(1), 1);
+    assert_eq!(probes(2), 2);
     tune::reset();
 }
 
