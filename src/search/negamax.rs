@@ -829,6 +829,36 @@ macro_rules! negamax_mode_body {
                     $cnt,
                     $eval,
                 );
+                // A multicut proves an alternative reaches beta. If it fails,
+                // separately verify that an alternative is close enough to beta
+                // before reducing the TT move.
+                let mut negative_verified = false;
+                if !$this.stopped.load(Ordering::Relaxed)
+                    && !candidate.positive_extension
+                    && $this.singular_negative_extensions_enabled()
+                    && alternative_score < candidate.beta
+                {
+                    let threshold = candidate
+                        .beta
+                        .saturating_sub(singular_margin(singular_evidence).max(1));
+                    if threshold > -MATE / 2 {
+                        #[cfg(feature = "search-debug")]
+                        {
+                            $this.debug.stats.singular_verifications += 1;
+                        }
+                        let score = $this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
+                            $st,
+                            candidate.depth,
+                            $ply,
+                            threshold - 1,
+                            threshold,
+                            false,
+                            $cnt,
+                            $eval,
+                        );
+                        negative_verified = score >= threshold;
+                    }
+                }
                 let mut double_alternative_score = None;
                 let mut triple_alternative_score = None;
                 if !$this.stopped.load(Ordering::Relaxed)
@@ -938,14 +968,12 @@ macro_rules! negamax_mode_body {
                 let lower_bound_policy = !candidate.positive_extension;
                 let multi_cut_beta = ($this.singular_multicut_enabled() && lower_bound_policy)
                     .then_some(candidate.beta);
-                let negative_extension = if $this.singular_negative_extensions_enabled()
-                    && lower_bound_policy
-                    && alternative_score >= candidate.beta
-                {
-                    -1
-                } else {
-                    0
-                };
+                let negative_extension =
+                    if $this.singular_negative_extensions_enabled() && negative_verified {
+                        -1
+                    } else {
+                        0
+                    };
                 match singular_search_outcome(
                     alternative_score,
                     candidate.beta,

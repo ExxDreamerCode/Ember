@@ -199,6 +199,8 @@ preserves every pass/fail flip and applies the selected baseline-relative policy
 4. Analyze the suspicious position with a strong Stockfish build at a stable, explicitly
    recorded node or depth budget. Compare Ember's move with the best alternative, then
    follow both lines for several moves. A shallow one-ply comparison is often misleading.
+   Treat UCI lower and upper bounds as bounds, not exact scores; compare MultiPV lines from
+   the same completed depth when an interrupted iteration reports only some alternatives.
 5. If Ember is already clearly better, run advantage-defense matches: make Ember play from
    the suspicious position and from nearby earlier positions against a stronger Stockfish
    with a larger clock. Use this to check whether the advantage is practically convertible
@@ -305,6 +307,9 @@ counterexamples that must not qualify. Prefer predicates that describe the candi
 itself over a position-wide trigger such as "some rook check exists"; a broad trigger can
 change the search of every unrelated root move. Run the complete move-fixture corpus after
 changing eligibility, because several individually reasonable heuristics can overlap.
+Before treating a fail-hard verification result as evidence of an alternative move, ensure
+its search window remains within the mate-distance bounds. Window clamping can otherwise
+return before any move is examined and make a nonexistent alternative appear to pass.
 
 ## Performance and playing-strength gates
 
@@ -469,6 +474,8 @@ starting discovery, predeclare one independent full-candidate confirmation with 
 and a stricter false-positive rate. Derive its run identity from the candidate, binary, and
 complete test configuration so an interrupted or repeated invocation resumes the same
 evidence instead of rerolling the statistical test.
+Verify that confirmation openings do not overlap the discovery openings; a different random
+seed alone can still sample the same positions. Record the filtered input and its hash.
 
 Leave head-to-head workers on `auto` unless the experiment deliberately reserves or
 oversubscribes CPUs. Automatic concurrency must account for each engine's UCI `Threads`

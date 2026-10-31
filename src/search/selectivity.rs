@@ -133,8 +133,10 @@ pub(super) fn singular_search_outcome(
             return SingularSearchOutcome::Cutoff(beta);
         }
     }
-    if alternative_score < singular_beta {
-        SingularSearchOutcome::Continue(i32::from(positive_extension))
+    if positive_extension && alternative_score < singular_beta {
+        SingularSearchOutcome::Continue(1)
+    } else if positive_extension {
+        SingularSearchOutcome::Continue(0)
     } else {
         SingularSearchOutcome::Continue(negative_extension.min(0))
     }
