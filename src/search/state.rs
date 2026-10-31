@@ -132,7 +132,7 @@ impl Searcher {
             path_moves: [None; MAX_PLY],
             singular_extensions_used: [0; MAX_PLY],
             singular_negative_on_line: [0u8; MAX_PLY],
-            singular_ldse_on_line: [false; MAX_PLY],
+            singular_ldse_on_line: [0; MAX_PLY],
             restricted_verification: false,
             probcut_verification: false,
             tt_mb: 128,
@@ -416,7 +416,7 @@ impl Searcher {
         self.rep_root_len = self.rep_stack_len;
         self.excluded_moves.fill(None);
         self.singular_negative_on_line.fill(0);
-        self.singular_ldse_on_line.fill(false);
+        self.singular_ldse_on_line.fill(0);
         self.path_moves.fill(None);
         self.singular_extensions_used.fill(0);
         self.restricted_verification = false;
@@ -429,7 +429,7 @@ impl Searcher {
         }
     }
 
-    pub(super) fn enter_path(
+    pub(super) fn enter_path<const LDSE: bool>(
         &mut self,
         ply: usize,
         mv: Option<Move>,
@@ -437,6 +437,16 @@ impl Searcher {
     ) -> ChildPathState {
         let previous_move = std::mem::replace(&mut self.path_moves[ply], mv);
         let child_ply = (ply + 1 < MAX_PLY).then_some(ply + 1);
+        let previous_negative_extensions = child_ply
+            .map(|child| self.singular_negative_on_line[child])
+            .unwrap_or(0);
+        let previous_ldse = if LDSE {
+            child_ply
+                .map(|child| self.singular_ldse_on_line[child])
+                .unwrap_or(0)
+        } else {
+            0
+        };
         let previous_extensions = child_ply
             .map(|child| {
                 let previous = self.singular_extensions_used[child];
@@ -444,12 +454,10 @@ impl Searcher {
                     self.singular_extensions_used[ply],
                     singular_extension,
                 );
-                if singular_extension < 0 {
-                    self.singular_negative_on_line[child] =
-                        self.singular_negative_on_line[child].saturating_add(1);
-                }
-                if singular_extension > 0 {
-                    self.singular_ldse_on_line[child] = true;
+                self.singular_negative_on_line[child] = self.singular_negative_on_line[ply]
+                    .saturating_add(u8::from(singular_extension < 0));
+                if LDSE {
+                    self.singular_ldse_on_line[child] = self.singular_ldse_on_line[ply];
                 }
                 previous
             })
@@ -459,26 +467,32 @@ impl Searcher {
             previous_move,
             child_ply,
             previous_extensions,
+            previous_negative_extensions,
+            previous_ldse,
         }
     }
 
-    pub(super) fn enter_child_path(
+    pub(super) fn enter_child_path<const LDSE: bool>(
         &mut self,
         ply: usize,
         mv: Move,
         singular_extension: i32,
     ) -> ChildPathState {
-        self.enter_path(ply, Some(mv), singular_extension)
+        self.enter_path::<LDSE>(ply, Some(mv), singular_extension)
     }
 
-    pub(super) fn enter_null_path(&mut self, ply: usize) -> ChildPathState {
-        self.enter_path(ply, None, 0)
+    pub(super) fn enter_null_path<const LDSE: bool>(&mut self, ply: usize) -> ChildPathState {
+        self.enter_path::<LDSE>(ply, None, 0)
     }
 
-    pub(super) fn leave_child_path(&mut self, state: ChildPathState) {
+    pub(super) fn leave_child_path<const LDSE: bool>(&mut self, state: ChildPathState) {
         self.path_moves[state.ply] = state.previous_move;
         if let Some(child) = state.child_ply {
             self.singular_extensions_used[child] = state.previous_extensions;
+            self.singular_negative_on_line[child] = state.previous_negative_extensions;
+            if LDSE {
+                self.singular_ldse_on_line[child] = state.previous_ldse;
+            }
         }
     }
 
@@ -488,15 +502,15 @@ impl Searcher {
         self.singular_extensions_used[1] = 0;
         self.singular_negative_on_line[0] = 0;
         self.singular_negative_on_line[1] = 0;
-        self.singular_ldse_on_line[0] = false;
-        self.singular_ldse_on_line[1] = false;
+        self.singular_ldse_on_line[0] = 0;
+        self.singular_ldse_on_line[1] = 0;
     }
 
     pub(crate) fn leave_root_path(&mut self) {
         self.path_moves[0] = None;
         self.singular_extensions_used[1] = 0;
         self.singular_negative_on_line[1] = 0;
-        self.singular_ldse_on_line[1] = false;
+        self.singular_ldse_on_line[1] = 0;
     }
 
     pub(super) fn singular_shuffling(&self, ply: usize, halfmove_clock: u8) -> bool {
@@ -511,7 +525,7 @@ impl Searcher {
         self.singular_negative_on_line[ply]
     }
 
-    pub(super) fn singular_ldse_used_on_line(&self, ply: usize) -> bool {
+    pub(super) fn singular_ldse_used_on_line(&self, ply: usize) -> u8 {
         self.singular_ldse_on_line[ply]
     }
 
@@ -521,7 +535,7 @@ impl Searcher {
     }
 
     #[allow(dead_code)]
-    pub(super) fn set_singular_ldse_on_line(&mut self, ply: usize, val: bool) {
+    pub(super) fn set_singular_ldse_on_line(&mut self, ply: usize, val: u8) {
         self.singular_ldse_on_line[ply] = val;
     }
 
@@ -621,7 +635,7 @@ impl Searcher {
         }
         let s = self.debug.stats;
         eprintln!(
-            "info string search-debug root depth={depth} order={order} move={mv} alpha={alpha} beta={beta} score={score} nodes={nodes} seldepth={} tt_hits={} tt_max_depth={} tt_cutoffs={} rfp={} futility={} null={}/{} iid={} lmp={} history={} see={} lmr={}/{} lmr_sum={} lmr_max={} lmr_adjust={}/{}/{} lmr_zero={} lmr_saturated={} qnodes={} qdelta={} qsee={} qcheck_cap={} probcut_eligible={} probcut_safety={} probcut_tt={} probcut_candidates={} probcut_see={} probcut_qpass={} probcut_verify={} probcut_nodes={} probcut_cutoffs={} probcut_stops={} singular_candidates={} singular_safety={} singular_verify={} singular_nodes={} singular_extensions={} singular_extension_plies={} singular_negative={} singular_multicut={} singular_alternatives={} singular_stops={} corr_exits={} corr_trains={} corr_flushed={}",
+            "info string search-debug root depth={depth} order={order} move={mv} alpha={alpha} beta={beta} score={score} nodes={nodes} seldepth={} tt_hits={} tt_max_depth={} tt_cutoffs={} rfp={} futility={} null={}/{} iid={} lmp={} history={} see={} lmr={}/{} lmr_sum={} lmr_max={} lmr_adjust={}/{}/{} lmr_zero={} lmr_saturated={} qnodes={} qdelta={} qsee={} qcheck_cap={} probcut_eligible={} probcut_safety={} probcut_tt={} probcut_candidates={} probcut_see={} probcut_qpass={} probcut_verify={} probcut_nodes={} probcut_cutoffs={} probcut_stops={} singular_candidates={} singular_safety={} singular_verify={} singular_nodes={} singular_extensions={} singular_extension_plies={} singular_negative={} singular_multicut={} singular_alternatives={} singular_stops={} ldse_probes={} ldse_nodes={} ldse_cutoffs={} corr_exits={} corr_trains={} corr_flushed={}",
             s.max_ply,
             s.tt_hits,
             s.tt_max_depth,
@@ -667,6 +681,9 @@ impl Searcher {
             s.singular_multicut_cutoffs,
             s.singular_alternative_rejections,
             s.singular_stop_rejections,
+            s.ldse_probes,
+            s.ldse_probe_nodes,
+            s.ldse_cutoffs,
             s.corr_node_exits,
             s.corr_node_trains,
             s.corr_node_flushed,

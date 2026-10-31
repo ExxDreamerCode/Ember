@@ -1,4 +1,4 @@
-﻿use super::*;
+use super::*;
 use crate::board::encode_move;
 use crate::engine::Engine;
 use crate::types::{MATE_THRESHOLD, TB_WIN_SCORE};
@@ -580,6 +580,28 @@ fn restricted_search_with_no_alternative_fails_low_without_storing_tt() {
 }
 
 #[test]
+fn restricted_search_cannot_reverse_futility_cut_off_without_an_alternative() {
+    // Private exclusion contract: a static evaluation cannot establish an alternative move.
+    let mut st = state_from_fen("7k/8/5K2/5Q2/8/8/8/8 b - - 0 1");
+    let moves = generate_moves(&st, st.w, &st.cr, st.ep);
+    assert_eq!(moves.len(), 1);
+    let mut searcher = Searcher::new(Arc::new(SharedTT::new(1)), Arc::new(AtomicBool::new(false)));
+    searcher.nnue_net = None;
+    let mut nodes = 0;
+    let score = negamax_excluding_move(
+        &mut searcher,
+        &mut st,
+        moves[0],
+        7,
+        1,
+        -6001,
+        -6000,
+        &mut nodes,
+    );
+    assert_eq!(score, -6001);
+}
+
+#[test]
 fn stopped_restricted_search_restores_the_excluded_move() {
     // Private exclusion lifecycle: cancellation must restore the saved excluded-move slot.
     let mut st = state_from_fen("7k/4Q3/5K2/8/8/8/8/8 b - - 0 1");
@@ -775,6 +797,328 @@ fn singular_path_budget_counts_only_positive_extensions() {
 }
 
 #[test]
+fn singular_path_state_is_inherited_and_restored_across_siblings() {
+    // Private path contract: descendant budgets must follow one line and restore sibling slots.
+    let mut searcher = Searcher::new(Arc::new(SharedTT::new(1)), Arc::new(AtomicBool::new(false)));
+    let mv = encode_move(0, 0, 0, 1, 0);
+    searcher.singular_extensions_used[1] = 2;
+    searcher.singular_negative_on_line[1] = 1;
+    searcher.singular_ldse_on_line[1] = 1;
+    searcher.singular_extensions_used[2] = 9;
+    searcher.singular_negative_on_line[2] = 8;
+    searcher.singular_ldse_on_line[2] = 0;
+    let child = searcher.enter_child_path::<true>(1, mv, -1);
+    assert_eq!(searcher.singular_extensions_used[2], 2);
+    assert_eq!(searcher.singular_negative_on_line[2], 2);
+    assert_eq!(searcher.singular_ldse_on_line[2], 1);
+    let grandchild = searcher.enter_null_path::<true>(2);
+    assert_eq!(searcher.singular_negative_on_line[3], 2);
+    assert_eq!(searcher.singular_ldse_on_line[3], 1);
+    searcher.leave_child_path::<true>(grandchild);
+    searcher.leave_child_path::<true>(child);
+    assert_eq!(searcher.singular_extensions_used[2], 9);
+    assert_eq!(searcher.singular_negative_on_line[2], 8);
+    assert_eq!(searcher.singular_ldse_on_line[2], 0);
+
+    searcher.singular_negative_on_line[1] = 0;
+    searcher.singular_ldse_on_line[1] = 0;
+    let sibling = searcher.enter_child_path::<true>(1, mv, 1);
+    assert_eq!(searcher.singular_negative_on_line[2], 0);
+    assert_eq!(searcher.singular_ldse_on_line[2], 0);
+    searcher.set_singular_ldse_on_line(2, 1);
+    let nested = searcher.enter_child_path::<true>(2, mv, 0);
+    assert_eq!(searcher.singular_ldse_on_line[3], 1);
+    searcher.set_singular_ldse_on_line(3, 2);
+    let deeper = searcher.enter_child_path::<true>(3, mv, 0);
+    assert_eq!(searcher.singular_ldse_on_line[4], 2);
+    searcher.leave_child_path::<true>(deeper);
+    searcher.leave_child_path::<true>(nested);
+    searcher.leave_child_path::<true>(sibling);
+    assert_eq!(searcher.singular_negative_on_line[2], 8);
+    assert_eq!(searcher.singular_ldse_on_line[2], 0);
+}
+
+#[test]
+fn ldse_at_last_ply_falls_back_without_indexing_a_child_slot() {
+    // Private boundary contract: a synthetic TT entry drives the optional LDSE path at MAX_PLY - 1.
+    tune::reset();
+    tune::set(TuneParam::LdseEnabled, 1);
+    let mut st = state_from_fen("7k/8/5K2/5Q2/8/8/8/8 b - - 0 1");
+    let moves = generate_moves(&st, st.w, &st.cr, st.ep);
+    assert_eq!(moves.len(), 1);
+    let tt = Arc::new(SharedTT::new(1));
+    tt.store(
+        st.hash,
+        0,
+        score_to_tt(0, MAX_PLY - 1),
+        TT_BETA,
+        Some(moves[0]),
+    );
+    let mut searcher = Searcher::new(tt, Arc::new(AtomicBool::new(false)));
+    searcher.nnue_net = None;
+    let mut nodes = 0;
+    searcher.negamax(&mut st, 0, MAX_PLY - 1, 5000, 5001, false, &mut nodes);
+    assert_eq!(nodes, 2);
+
+    let tt = Arc::new(SharedTT::new(1));
+    tt.store(
+        st.hash,
+        0,
+        score_to_tt(0, MAX_PLY - 2),
+        TT_BETA,
+        Some(moves[0]),
+    );
+    let mut searcher = Searcher::new(tt, Arc::new(AtomicBool::new(false)));
+    searcher.nnue_net = None;
+    let mut nodes = 0;
+    searcher.negamax(&mut st, 0, MAX_PLY - 2, 5000, 5001, false, &mut nodes);
+    assert!(
+        nodes > 2,
+        "LDSE should still search when a child slot exists"
+    );
+    tune::reset();
+}
+
+#[test]
+fn ldse_eligibility_respects_configured_depth_and_line_count() {
+    // Private selectivity contract: verify tunable eligibility without relying on root move choice.
+    tune::reset();
+    let mv = encode_move(0, 0, 0, 1, 0);
+    let candidate = |depth, used| {
+        ldse_candidate(
+            true,
+            Some(mv),
+            Some(0),
+            Some(TT_BETA),
+            false,
+            false,
+            depth,
+            0,
+            -1000,
+            used,
+        )
+        .is_some()
+    };
+    tune::set(TuneParam::LdseMaxPerLine, 0);
+    assert!(!candidate(0, 0));
+    tune::set(TuneParam::LdseMaxPerLine, 2);
+    tune::set(TuneParam::LdseMaxDepth, 2);
+    assert!(candidate(2, 0));
+    assert!(candidate(2, 1));
+    assert!(!candidate(2, 2));
+    assert!(!candidate(3, 0));
+    tune::set(TuneParam::LdseMaxDepth, 10);
+    assert!(candidate(10, 0));
+    assert!(!candidate(11, 0));
+    assert!(ldse_candidate(
+        false,
+        Some(mv),
+        Some(0),
+        Some(TT_BETA),
+        false,
+        false,
+        2,
+        0,
+        -1000,
+        0
+    )
+    .is_none());
+    assert!(ldse_candidate(
+        true,
+        Some(mv),
+        Some(0),
+        Some(TT_ALPHA),
+        false,
+        false,
+        2,
+        0,
+        -1000,
+        0
+    )
+    .is_none());
+    assert!(ldse_candidate(
+        true,
+        Some(mv),
+        Some(0),
+        Some(TT_BETA),
+        true,
+        false,
+        2,
+        0,
+        -1000,
+        0
+    )
+    .is_none());
+    assert!(ldse_candidate(
+        true,
+        Some(mv),
+        Some(0),
+        Some(TT_BETA),
+        false,
+        true,
+        2,
+        0,
+        -1000,
+        0
+    )
+    .is_none());
+    assert!(ldse_candidate(
+        true,
+        Some(mv),
+        Some(0),
+        Some(TT_BETA),
+        false,
+        false,
+        2,
+        0,
+        0,
+        0
+    )
+    .is_none());
+    tune::set(TuneParam::LdseMaxDepth, i64::MAX);
+    tune::set(TuneParam::LdseMarginCp, i64::MAX);
+    assert!(!candidate(10, 0));
+    tune::set(TuneParam::LdseMarginCp, i64::MIN);
+    let extreme = ldse_candidate(
+        true,
+        Some(mv),
+        Some(0),
+        Some(TT_BETA),
+        false,
+        false,
+        i32::MIN,
+        0,
+        -1000,
+        0,
+    )
+    .expect("wide tuning values must not overflow");
+    assert_eq!(extreme.depth, 1);
+    assert_eq!(extreme.beta, i32::MAX);
+    tune::set(TuneParam::LdseMaxDepth, i64::MIN);
+    assert!(!candidate(0, 0));
+    tune::reset();
+}
+
+#[cfg(feature = "search-debug")]
+#[test]
+fn ldse_depth_and_line_settings_reach_positive_depth_search() {
+    // Private routing contract: distinguish an optional probe from a root move assertion.
+    tune::reset();
+    tune::set(TuneParam::LdseEnabled, 1);
+    let initial = state_from_fen("7k/8/5K2/5Q2/8/8/8/8 b - - 0 1");
+    let mv = generate_moves(&initial, initial.w, &initial.cr, initial.ep)[0];
+    let run = |depth_limit, line_limit, node_limited: bool, line_uses| {
+        tune::set(TuneParam::LdseMaxDepth, depth_limit);
+        tune::set(TuneParam::LdseMaxPerLine, line_limit);
+        let tt = Arc::new(SharedTT::new(1));
+        tt.store(initial.hash, 0, score_to_tt(0, 1), TT_BETA, Some(mv));
+        let mut searcher = Searcher::new(tt, Arc::new(AtomicBool::new(false)));
+        searcher.nnue_net = None;
+        searcher.set_node_limit(node_limited.then_some(1_000_000));
+        searcher.set_singular_ldse_on_line(1, line_uses);
+        let mut st = initial;
+        let mut nodes = 0;
+        let score = searcher.negamax(&mut st, 3, 1, 5000, 5001, false, &mut nodes);
+        (score, nodes, searcher)
+    };
+    for node_limited in [false, true] {
+        tune::set(TuneParam::LdseEnabled, 0);
+        let (disabled_mode_score, disabled_mode_nodes, _) = run(4, 0, node_limited, 0);
+        tune::set(TuneParam::LdseEnabled, 1);
+        let (score, without_depth, control) = run(2, 1, node_limited, 0);
+        let (disabled_score, without_line, _) = run(4, 0, node_limited, 0);
+        let (enabled_score, enabled, searcher) = run(4, 1, node_limited, 0);
+        assert_eq!(score, disabled_score);
+        assert_eq!(disabled_mode_score, disabled_score);
+        assert_eq!(disabled_mode_nodes, without_line);
+        assert_eq!(score, enabled_score);
+        assert_eq!(without_depth, without_line);
+        assert!(
+            enabled > without_depth,
+            "eligible LDSE must search its TT move"
+        );
+        let stats = searcher.debug_stats();
+        assert_eq!(stats.ldse_probes, 1);
+        assert_eq!(stats.ldse_cutoffs, 0);
+        assert_eq!(enabled - stats.ldse_probe_nodes, without_depth);
+        assert_eq!(searcher.history, control.history);
+        assert_eq!(searcher.killers, control.killers);
+        assert_eq!(searcher.counter_move, control.counter_move);
+        assert_eq!(searcher.corr_hist, control.corr_hist);
+        #[cfg(feature = "node-correction-training")]
+        {
+            assert_eq!(searcher.corr_staged_depth, control.corr_staged_depth);
+            assert_eq!(searcher.corr_staged_diff, control.corr_staged_diff);
+            assert_eq!(searcher.corr_staged_touched, control.corr_staged_touched);
+        }
+        let mut child = initial;
+        apply_move(
+            &mut child,
+            move_sr(mv),
+            move_sc(mv),
+            move_er(mv),
+            move_ec(mv),
+            move_promotion(mv),
+        );
+        assert_eq!(
+            searcher.shared_tt.get_entry(initial.hash),
+            control.shared_tt.get_entry(initial.hash)
+        );
+        assert_eq!(
+            searcher.shared_tt.get_entry(child.hash),
+            control.shared_tt.get_entry(child.hash)
+        );
+        drop(searcher);
+        drop(control);
+        let (_, capped_nodes, capped) = run(4, 1, node_limited, 1);
+        let (_, allowed_nodes, allowed) = run(4, 2, node_limited, 1);
+        assert_eq!(capped.debug_stats().ldse_probes, 0);
+        assert_eq!(allowed.debug_stats().ldse_probes, 1);
+        assert!(allowed_nodes > capped_nodes);
+    }
+    tune::reset();
+}
+
+#[cfg(feature = "search-debug")]
+#[test]
+fn ldse_line_limit_counts_rejected_probes_in_real_children() {
+    // Private routing contract: a rejected probe consumes one use on each real continuation.
+    tune::reset();
+    tune::set(TuneParam::LdseEnabled, 1);
+    tune::set(TuneParam::LdseMaxDepth, 6);
+    // Force eligibility at both sides of the synthetic null window.
+    tune::set(TuneParam::LdseMarginCp, -100_000);
+    let initial = state_from_fen("7k/8/5K2/5Q2/8/8/8/8 b - - 0 1");
+    let root_move = generate_moves(&initial, initial.w, &initial.cr, initial.ep)[0];
+    let mut child = initial;
+    apply_move(
+        &mut child,
+        move_sr(root_move),
+        move_sc(root_move),
+        move_er(root_move),
+        move_ec(root_move),
+        move_promotion(root_move),
+    );
+    let child_move = generate_moves(&child, child.w, &child.cr, child.ep)[0];
+    let probes = |line_limit| {
+        tune::set(TuneParam::LdseMaxPerLine, line_limit);
+        let tt = Arc::new(SharedTT::new(1));
+        tt.store(initial.hash, 0, score_to_tt(0, 1), TT_BETA, Some(root_move));
+        tt.store(child.hash, 0, score_to_tt(0, 2), TT_BETA, Some(child_move));
+        let mut searcher = Searcher::new(tt, Arc::new(AtomicBool::new(false)));
+        searcher.nnue_net = None;
+        searcher.debug.disable_futility = true;
+        let mut st = initial;
+        let mut nodes = 0;
+        searcher.negamax(&mut st, 3, 1, 5000, 5001, false, &mut nodes);
+        searcher.debug_stats().ldse_probes
+    };
+    assert_eq!(probes(1), 1);
+    assert_eq!(probes(2), 2);
+    tune::reset();
+}
+
+#[test]
 fn singular_outcome_keeps_adjustments_and_cutoffs_distinct() {
     assert_eq!(
         singular_search_outcome(19, 20, true, None, -1),
@@ -792,8 +1136,130 @@ fn singular_outcome_keeps_adjustments_and_cutoffs_distinct() {
         singular_search_outcome(24, 20, false, None, -1),
         SingularSearchOutcome::Continue(-1)
     );
+    // A failed multicut must leave the lower-bound reduction reachable, while
+    // a verified cutoff still takes priority.
+    assert_eq!(
+        singular_search_outcome(19, 20, false, Some(20), -1),
+        SingularSearchOutcome::Continue(-1)
+    );
+    assert_eq!(
+        singular_search_outcome(20, 20, false, Some(20), -1),
+        SingularSearchOutcome::Cutoff(20)
+    );
     assert_eq!(combine_move_extensions(0, -2), -2);
     assert_eq!(combine_move_extensions(1, -2), 1);
+}
+
+#[cfg(feature = "search-debug")]
+#[test]
+fn failed_multicut_can_reduce_the_tt_move() {
+    // Private search contract: observe the adjustment from synthetic TT evidence.
+    tune::reset();
+    tune::set(TuneParam::ExtensionMinDepth, 4);
+    tune::set(TuneParam::ExtensionPolicyMinDepth, 4);
+    tune::set(TuneParam::ExtensionBaseMarginCp, 6000);
+    let mut st = state_from_fen("7k/8/5K2/5Q2/8/8/8/8 w - - 0 1");
+    let moves = generate_moves(&st, st.w, &st.cr, st.ep);
+    assert!(moves.len() > 1);
+    let shared_tt = Arc::new(SharedTT::new(1));
+    let mut searcher = Searcher::new(Arc::clone(&shared_tt), Arc::new(AtomicBool::new(false)));
+    searcher.nnue_net = None;
+    shared_tt.store(st.hash, 3, score_to_tt(5000, 1), TT_BETA, Some(moves[0]));
+    let mut nodes = 0;
+    searcher.negamax(&mut st, 4, 1, 4999, 5000, false, &mut nodes);
+    assert_eq!(searcher.debug_stats().singular_negative_extensions, 1);
+    assert_eq!(searcher.debug_stats().singular_multicut_cutoffs, 0);
+    tune::reset();
+}
+
+#[cfg(feature = "search-debug")]
+#[test]
+fn failed_multicut_does_not_reduce_a_move_without_an_alternative() {
+    // Private search contract: neither verification may invent an alternative.
+    tune::reset();
+    tune::set(TuneParam::ExtensionMinDepth, 4);
+    tune::set(TuneParam::ExtensionPolicyMinDepth, 4);
+    tune::set(TuneParam::ExtensionBaseMarginCp, 6000);
+    let mut st = state_from_fen("7k/8/5K2/5Q2/8/8/8/8 b - - 0 1");
+    let moves = generate_moves(&st, st.w, &st.cr, st.ep);
+    assert_eq!(moves.len(), 1);
+    let shared_tt = Arc::new(SharedTT::new(1));
+    let mut searcher = Searcher::new(Arc::clone(&shared_tt), Arc::new(AtomicBool::new(false)));
+    searcher.nnue_net = None;
+    shared_tt.store(st.hash, 3, score_to_tt(0, 1), TT_BETA, Some(moves[0]));
+    let mut nodes = 0;
+    searcher.negamax(&mut st, 4, 1, -1, 0, false, &mut nodes);
+    assert_eq!(searcher.debug_stats().singular_negative_extensions, 0);
+    assert_eq!(searcher.debug_stats().singular_multicut_cutoffs, 0);
+    tune::reset();
+}
+
+#[cfg(feature = "search-debug")]
+#[test]
+fn negative_verification_does_not_probe_beyond_the_mate_window() {
+    // Private verification contract: mate-bound clamping must not invent an alternative.
+    tune::reset();
+    tune::set(TuneParam::ExtensionMinDepth, 4);
+    tune::set(TuneParam::ExtensionPolicyMinDepth, 4);
+    tune::set(TuneParam::ExtensionBaseMarginCp, i64::from(MATE));
+    let mut st = state_from_fen("7k/8/5K2/5Q2/8/8/8/8 b - - 0 1");
+    let moves = generate_moves(&st, st.w, &st.cr, st.ep);
+    assert_eq!(moves.len(), 1);
+    let tt = Arc::new(SharedTT::new(1));
+    tt.store(st.hash, 3, score_to_tt(0, 1), TT_BETA, Some(moves[0]));
+    let mut searcher = Searcher::new(tt, Arc::new(AtomicBool::new(false)));
+    searcher.nnue_net = None;
+    let mut nodes = 0;
+    searcher.negamax(&mut st, 4, 1, -1, 0, false, &mut nodes);
+    let stats = searcher.debug_stats();
+    assert_eq!(stats.singular_verifications, 1);
+    assert_eq!(stats.singular_negative_extensions, 0);
+    tune::reset();
+}
+
+#[cfg(feature = "search-debug")]
+#[test]
+fn rejected_negative_verification_preserves_the_real_search() {
+    // Private search contract: rejected restricted probes must not change the real tree or learning.
+    tune::reset();
+    tune::set(TuneParam::ExtensionMinDepth, 4);
+    tune::set(TuneParam::ExtensionPolicyMinDepth, 4);
+    tune::set(TuneParam::ExtensionBaseMarginCp, 6000);
+    let initial = state_from_fen("7k/8/5K2/5Q2/8/8/8/8 b - - 0 1");
+    let moves = generate_moves(&initial, initial.w, &initial.cr, initial.ep);
+    assert_eq!(moves.len(), 1);
+    let run = |enabled: bool| {
+        tune::set(
+            TuneParam::ExtensionPolicyMinDepth,
+            if enabled { 4 } else { 100 },
+        );
+        let tt = Arc::new(SharedTT::new(1));
+        tt.store(initial.hash, 3, score_to_tt(0, 1), TT_BETA, Some(moves[0]));
+        let mut searcher = Searcher::new(tt, Arc::new(AtomicBool::new(false)));
+        searcher.nnue_net = None;
+        let mut st = initial;
+        let mut nodes = 0;
+        let score = searcher.negamax(&mut st, 4, 1, -1, 0, false, &mut nodes);
+        (score, nodes, searcher)
+    };
+    let (control_score, control_nodes, control) = run(false);
+    let (score, nodes, searcher) = run(true);
+    let stats = searcher.debug_stats();
+    assert!(stats.singular_verification_nodes > 0);
+    assert_eq!(stats.singular_negative_extensions, 0);
+    assert_eq!(score, control_score);
+    assert_eq!(nodes - stats.singular_verification_nodes, control_nodes);
+    assert_eq!(searcher.history, control.history);
+    assert_eq!(searcher.killers, control.killers);
+    assert_eq!(searcher.counter_move, control.counter_move);
+    assert_eq!(searcher.corr_hist, control.corr_hist);
+    #[cfg(feature = "node-correction-training")]
+    {
+        assert_eq!(searcher.corr_staged_depth, control.corr_staged_depth);
+        assert_eq!(searcher.corr_staged_diff, control.corr_staged_diff);
+        assert_eq!(searcher.corr_staged_touched, control.corr_staged_touched);
+    }
+    tune::reset();
 }
 
 #[test]
@@ -2831,6 +3297,34 @@ fn rejected_probcut_proofs_do_not_train_correction_history() {
 }
 
 #[test]
+#[cfg(feature = "search-debug")]
+#[cfg(feature = "node-correction-training")]
+fn restricted_verification_does_not_train_descendant_corrections() {
+    // Private speculative-context contract: descendants of rejected probes cannot train corrections.
+    let root = state_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    for restricted in [false, true] {
+        let mut st = root;
+        let mut searcher = correction_history_searcher(false);
+        searcher.debug.disable_corr_node_train = false;
+        searcher.set_restricted_verification(restricted);
+        let before = searcher.corr_hist;
+        let mut nodes = 0;
+        searcher.negamax(&mut st, 5, 1, -INF, INF, true, &mut nodes);
+        assert!(nodes > 0);
+        searcher.flush_correction_staging();
+        let stats = searcher.debug_stats();
+        if restricted {
+            assert!(stats.corr_node_reject_verification > 0);
+            assert_eq!(stats.corr_node_trains, 0);
+            assert_eq!(searcher.corr_hist, before);
+        } else {
+            assert!(stats.corr_node_trains > 0, "positive control must train");
+            assert_ne!(searcher.corr_hist, before);
+        }
+    }
+}
+
+#[test]
 #[cfg(feature = "node-correction-training")]
 fn correction_staging_is_discarded_when_learning_context_changes() {
     // Private staging contract: pending samples must not mutate cleared or
@@ -2994,4 +3488,59 @@ fn correction_history_default_integrator_keeps_legacy_boundaries() {
         assert_eq!(cached.corr_hist, table);
         assert_eq!(fresh.corr_hist, table);
     }
+}
+
+#[test]
+fn negative_extension_budget_does_not_disable_multicut_verification() {
+    // Private eligibility contract: a spent reduction budget does not prevent a cutoff proof.
+    tune::reset();
+    let mut evidence = qualifying_singular_evidence(encode_move(0, 0, 0, 1, 0));
+    evidence.actual_depth = SINGULAR_POLICY_MIN_DEPTH_DEFAULT;
+    evidence.tt_depth = SINGULAR_POLICY_MIN_DEPTH_DEFAULT;
+    evidence.node_pv = false;
+    evidence.node_beta = 200;
+    evidence.tt_flag = Some(TT_BETA);
+    evidence.tt_pv = false;
+    evidence.allow_lower_bound = true;
+    tune::set(TuneParam::NegExtMaxPerLine, 1);
+    evidence.negative_extensions_on_line = 1;
+    assert!(matches!(
+        singular_candidate(evidence),
+        SingularEligibility::Eligible(_)
+    ));
+    tune::reset();
+}
+
+#[cfg(feature = "search-debug")]
+#[test]
+fn spent_negative_budget_preserves_multicut_but_blocks_reductions() {
+    // Private search contract: the reduction budget cannot suppress a multicut proof.
+    tune::reset();
+    tune::set(TuneParam::ExtensionMinDepth, 4);
+    tune::set(TuneParam::ExtensionPolicyMinDepth, 4);
+    tune::set(TuneParam::ExtensionBaseMarginCp, 6000);
+    tune::set(TuneParam::ReverseFutilityMaxDepth, 0);
+    tune::set(TuneParam::NullMoveMinDepth, 100);
+    tune::set(TuneParam::NegExtMaxPerLine, 1);
+    let initial = state_from_fen("7k/8/5K2/5Q2/8/8/8/8 w - - 0 1");
+    let mv = generate_moves(&initial, initial.w, &initial.cr, initial.ep)[0];
+    let run = |beta: i32| {
+        let tt = Arc::new(SharedTT::new(1));
+        tt.store(initial.hash, 3, score_to_tt(beta, 1), TT_BETA, Some(mv));
+        let mut searcher = Searcher::new(tt, Arc::new(AtomicBool::new(false)));
+        searcher.nnue_net = None;
+        searcher.singular_negative_on_line[1] = 1;
+        let mut st = initial;
+        let mut nodes = 0;
+        searcher.negamax(&mut st, 4, 1, beta - 1, beta, false, &mut nodes);
+        searcher.debug_stats()
+    };
+    let cutoff = run(-5000);
+    assert_eq!(cutoff.singular_multicut_cutoffs, 1);
+    assert_eq!(cutoff.singular_negative_extensions, 0);
+    let rejected = run(5000);
+    assert_eq!(rejected.singular_multicut_cutoffs, 0);
+    assert_eq!(rejected.singular_negative_extensions, 0);
+    assert_eq!(rejected.singular_verifications, 1);
+    tune::reset();
 }

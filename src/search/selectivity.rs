@@ -14,7 +14,8 @@ pub(super) const SINGULAR_TRIPLE_MIN_DEPTH_DEFAULT: i32 = 24;
 
 pub(super) const LDSE_ENABLED_DEFAULT: i32 = 0;
 pub(super) const LDSE_MARGIN_CP_DEFAULT: i32 = 60;
-pub(super) const LDSE_MAX_DEPTH_DEFAULT: i32 = 6;
+// Preserve the previous quiescence boundary until positive-depth probes have strength evidence.
+pub(super) const LDSE_MAX_DEPTH_DEFAULT: i32 = 0;
 pub(super) const LDSE_MAX_PER_LINE_DEFAULT: u8 = 1;
 pub(super) const NEG_EXT_MAX_PER_LINE_DEFAULT: u8 = 1;
 
@@ -115,6 +116,8 @@ pub(super) struct ChildPathState {
     pub(super) previous_move: Option<Move>,
     pub(super) child_ply: Option<usize>,
     pub(super) previous_extensions: u8,
+    pub(super) previous_negative_extensions: u8,
+    pub(super) previous_ldse: u8,
 }
 
 pub(super) fn next_singular_extension_count(current: u8, extension: i32) -> u8 {
@@ -133,8 +136,10 @@ pub(super) fn singular_search_outcome(
             return SingularSearchOutcome::Cutoff(beta);
         }
     }
-    if alternative_score < singular_beta {
-        SingularSearchOutcome::Continue(i32::from(positive_extension))
+    if positive_extension && alternative_score < singular_beta {
+        SingularSearchOutcome::Continue(1)
+    } else if positive_extension {
+        SingularSearchOutcome::Continue(0)
     } else {
         SingularSearchOutcome::Continue(negative_extension.min(0))
     }
@@ -340,15 +345,19 @@ pub(super) fn ldse_candidate(
     actual_depth: i32,
     alpha: i32,
     eval_score: i32,
-    ldse_used_on_line: bool,
+    ldse_used_on_line: u8,
 ) -> Option<SingularCandidate> {
-    if !enabled || ldse_used_on_line || actual_depth > LDSE_MAX_DEPTH_DEFAULT {
+    let max_per_line = tune::get_int(
+        TuneParam::LdseMaxPerLine,
+        i64::from(LDSE_MAX_PER_LINE_DEFAULT),
+    )
+    .clamp(0, i64::from(u8::MAX)) as u8;
+    if !enabled || ldse_used_on_line >= max_per_line {
         return None;
     }
-    let margin = tune::get_int(TuneParam::LdseMarginCp, i64::from(LDSE_MARGIN_CP_DEFAULT)) as i32;
-    let max_depth =
-        tune::get_int(TuneParam::LdseMaxDepth, i64::from(LDSE_MAX_DEPTH_DEFAULT)) as i32;
-    if actual_depth > max_depth {
+    let margin = tune::get_int(TuneParam::LdseMarginCp, i64::from(LDSE_MARGIN_CP_DEFAULT));
+    let max_depth = tune::get_int(TuneParam::LdseMaxDepth, i64::from(LDSE_MAX_DEPTH_DEFAULT));
+    if i64::from(actual_depth) > max_depth {
         return None;
     }
     let reliable = matches!(tt_flag, Some(TT_EXACT) | Some(TT_BETA));
@@ -358,15 +367,17 @@ pub(super) fn ldse_candidate(
     let (Some(score), Some(mv)) = (tt_score, tt_move) else {
         return None;
     };
-    if eval_score >= alpha - margin {
+    if i64::from(eval_score) >= i64::from(alpha).saturating_sub(margin) {
         return None;
     }
-    let beta = score - margin;
+    let beta = i64::from(score)
+        .saturating_sub(margin)
+        .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
     Some(SingularCandidate {
         mv,
         score,
         beta,
-        depth: (actual_depth - 1).max(1),
+        depth: actual_depth.saturating_sub(1).max(1),
         positive_extension: false,
         max_extension: 1,
     })
@@ -396,15 +407,6 @@ pub(super) fn singular_candidate(evidence: SingularEvidence) -> SingularEligibil
         TuneParam::ExtensionMaxHalfmoveClock,
         i64::from(SINGULAR_MAX_HALF_MOVE_CLOCK_DEFAULT),
     ) as u8;
-    let neg_ext_max = tune::get_int(
-        TuneParam::NegExtMaxPerLine,
-        i64::from(NEG_EXT_MAX_PER_LINE_DEFAULT),
-    ) as u8;
-
-    let _ = tune::get_int(
-        TuneParam::LdseMaxPerLine,
-        i64::from(LDSE_MAX_PER_LINE_DEFAULT),
-    );
 
     let (Some(mv), Some(score), Some(flag)) =
         (evidence.tt_move, evidence.tt_score, evidence.tt_flag)
@@ -436,7 +438,6 @@ pub(super) fn singular_candidate(evidence: SingularEvidence) -> SingularEligibil
         || evidence.shuffling
         || evidence.path_extensions >= singular_path_budget(evidence.actual_depth)
         || !evidence.tt_move_is_legal
-        || (evidence.negative_extensions_on_line >= neg_ext_max && !positive_extension)
     {
         return SingularEligibility::SafetyRejected;
     }
