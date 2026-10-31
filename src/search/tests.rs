@@ -832,6 +832,47 @@ fn singular_path_state_is_inherited_and_restored_across_siblings() {
 }
 
 #[test]
+fn ldse_at_last_ply_falls_back_without_indexing_a_child_slot() {
+    // Private boundary contract: a synthetic TT entry drives the optional LDSE path at MAX_PLY - 1.
+    tune::reset();
+    tune::set(TuneParam::LdseEnabled, 1);
+    let mut st = state_from_fen("7k/8/5K2/5Q2/8/8/8/8 b - - 0 1");
+    let moves = generate_moves(&st, st.w, &st.cr, st.ep);
+    assert_eq!(moves.len(), 1);
+    let tt = Arc::new(SharedTT::new(1));
+    tt.store(
+        st.hash,
+        0,
+        score_to_tt(0, MAX_PLY - 1),
+        TT_BETA,
+        Some(moves[0]),
+    );
+    let mut searcher = Searcher::new(tt, Arc::new(AtomicBool::new(false)));
+    searcher.nnue_net = None;
+    let mut nodes = 0;
+    searcher.negamax(&mut st, 0, MAX_PLY - 1, 5000, 5001, false, &mut nodes);
+    assert_eq!(nodes, 2);
+
+    let tt = Arc::new(SharedTT::new(1));
+    tt.store(
+        st.hash,
+        0,
+        score_to_tt(0, MAX_PLY - 2),
+        TT_BETA,
+        Some(moves[0]),
+    );
+    let mut searcher = Searcher::new(tt, Arc::new(AtomicBool::new(false)));
+    searcher.nnue_net = None;
+    let mut nodes = 0;
+    searcher.negamax(&mut st, 0, MAX_PLY - 2, 5000, 5001, false, &mut nodes);
+    assert!(
+        nodes > 2,
+        "LDSE should still search when a child slot exists"
+    );
+    tune::reset();
+}
+
+#[test]
 fn singular_outcome_keeps_adjustments_and_cutoffs_distinct() {
     assert_eq!(
         singular_search_outcome(19, 20, true, None, -1),

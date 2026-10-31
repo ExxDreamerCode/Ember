@@ -339,7 +339,9 @@ macro_rules! negamax_mode_body {
                         $alpha,
                         eval_score,
                         false,
-                    ) {
+                    )
+                    .filter(|_| $ply + 1 < MAX_PLY)
+                    {
                         let st_before = *$st;
                         let mv = ldse.mv;
                         let legal = try_apply_move_mode::<CHESS960>($st, mv);
