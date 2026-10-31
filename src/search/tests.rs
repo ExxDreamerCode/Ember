@@ -1485,6 +1485,237 @@ fn endgame_mopup_requires_explicit_experimental_opt_in() {
 
 #[cfg(feature = "search-debug")]
 #[test]
+fn singular_ladder_limits_verification_work() {
+    // Private contract: synthetic TT entries expose probe counts and extension decisions;
+    // a root-move TSV fixture cannot observe either.
+    for (steps, expected) in [(0, 1), (-1, 1), (1, 1), (2, 2), (3, 3), (4, 3)] {
+        tune::reset();
+        tune::set(TuneParam::ExtensionLadderSteps, steps);
+        tune::set(TuneParam::LdseEnabled, 0);
+        let mut st = state_from_fen("7k/8/5K2/5Q2/8/8/8/8 b - - 0 1");
+        let moves = generate_moves(&st, st.w, &st.cr, st.ep);
+        assert_eq!(moves.len(), 1);
+        let mv = moves[0];
+        let mut child = st;
+        apply_move(
+            &mut child,
+            move_sr(mv),
+            move_sc(mv),
+            move_er(mv),
+            move_ec(mv),
+            move_promotion(mv),
+        );
+        let tt = Arc::new(SharedTT::new(1));
+        let mut searcher = Searcher::new(Arc::clone(&tt), Arc::new(AtomicBool::new(false)));
+        searcher.nnue_net = None;
+        searcher.ember_v2_net = None;
+        searcher.classic_net = None;
+        searcher.debug.enable_singular_extensions = true;
+        tt.store_with_pv(st.hash, 23, score_to_tt(300, 1), TT_EXACT, Some(mv), true);
+        tt.store(child.hash, 64, score_to_tt(-400, 2), TT_EXACT, None);
+        assert_eq!(tt.get_depth(st.hash).unwrap().1, score_to_tt(300, 1));
+        assert_eq!(tt.get_depth(child.hash).unwrap().1, score_to_tt(-400, 2));
+        let mut nodes = 0;
+        let score = searcher.negamax(&mut st, 24, 1, 299, 300, false, &mut nodes);
+        let stats = searcher.debug_stats();
+        assert_eq!(stats.singular_candidates, 1, "steps={steps}");
+        assert_eq!(stats.singular_verifications, expected, "steps={steps}");
+        assert_eq!(stats.singular_verification_nodes, expected, "steps={steps}");
+        assert_eq!(stats.singular_extension_plies, expected, "steps={steps}");
+        assert_eq!(nodes, expected + 2, "steps={steps}");
+        assert_eq!(score, 400, "steps={steps}");
+    }
+    tune::reset();
+}
+
+#[cfg(feature = "search-debug")]
+#[test]
+fn singular_ladder_respects_alternatives_and_path_budget() {
+    // Synthetic descendant TT scores expose strict verification thresholds and path budgets,
+    // which cannot be asserted by a TSV root-move fixture.
+    for (alternative, used, expected_probes, expected_extension) in [
+        (300, 0, 1, 0),
+        (200, 0, 2, 1),
+        (180, 0, 2, 1),
+        (100, 0, 3, 2),
+        (60, 0, 3, 2),
+        (0, 0, 3, 3),
+        (0, 1, 2, 2),
+        (0, 2, 1, 1),
+    ] {
+        tune::reset();
+        tune::set(TuneParam::ExtensionLadderSteps, 3);
+        tune::set(TuneParam::ExtensionMarginPerDepthCp, 0);
+        tune::set(TuneParam::LdseEnabled, 0);
+        let mut st = state_from_fen("7k/8/4Q3/5K2/8/8/8/8 b - - 0 1");
+        let moves = generate_moves(&st, st.w, &st.cr, st.ep);
+        assert_eq!(moves.len(), 2);
+        let tt = Arc::new(SharedTT::new(1));
+        let mut searcher = Searcher::new(Arc::clone(&tt), Arc::new(AtomicBool::new(false)));
+        searcher.nnue_net = None;
+        searcher.ember_v2_net = None;
+        searcher.classic_net = None;
+        searcher.debug.enable_singular_extensions = true;
+        searcher.singular_extensions_used[1] = used;
+        tt.store_with_pv(
+            st.hash,
+            23,
+            score_to_tt(300, 1),
+            TT_EXACT,
+            Some(moves[0]),
+            true,
+        );
+        let mut child_hashes = Vec::new();
+        for (mv, score) in [(moves[0], -400), (moves[1], -alternative)] {
+            let mut child = st;
+            apply_move(
+                &mut child,
+                move_sr(mv),
+                move_sc(mv),
+                move_er(mv),
+                move_ec(mv),
+                move_promotion(mv),
+            );
+            tt.store(child.hash, 64, score_to_tt(score, 2), TT_EXACT, None);
+            child_hashes.push((child.hash, score));
+        }
+        assert_eq!(tt.get_depth(st.hash).unwrap().1, score_to_tt(300, 1));
+        for (hash, score) in child_hashes {
+            assert_eq!(tt.get_depth(hash).unwrap().1, score_to_tt(score, 2));
+        }
+        let mut nodes = 0;
+        searcher.negamax(&mut st, 24, 1, 299, 300, false, &mut nodes);
+        let stats = searcher.debug_stats();
+        assert_eq!(
+            stats.singular_candidates, 1,
+            "alternative={alternative}, used={used}"
+        );
+        assert_eq!(
+            stats.singular_verifications, expected_probes,
+            "alternative={alternative}, used={used}"
+        );
+        assert_eq!(
+            stats.singular_extension_plies, expected_extension,
+            "alternative={alternative}, used={used}"
+        );
+    }
+    tune::reset();
+}
+
+#[cfg(feature = "search-debug")]
+#[test]
+fn singular_ladder_restores_state_after_interrupted_probe() {
+    // Private contract: interruption inside an excluded search must restore search state
+    // and must not commit speculative TT or learning updates; TSV cannot observe these.
+    for (fen, limit, expected_verifications, expected_max_ply) in [
+        ("7k/8/5K2/5Q2/8/8/8/8 b - - 0 1", 2, 1, 1),
+        ("7k/8/5K2/5Q2/8/8/8/8 b - - 0 1", 3, 2, 1),
+        ("7k/8/5K2/5Q2/8/8/8/8 b - - 0 1", 4, 3, 1),
+        // The alternative is made in the excluded search, then the node limit
+        // stops its child. This exercises undo after entering a descendant.
+        ("7k/8/4Q3/5K2/8/8/8/8 b - - 0 1", 3, 1, 2),
+    ] {
+        tune::reset();
+        tune::set(TuneParam::ExtensionLadderSteps, 3);
+        tune::set(TuneParam::LdseEnabled, 0);
+        let mut st = state_from_fen(fen);
+        let initial = st;
+        let moves = generate_moves(&st, st.w, &st.cr, st.ep);
+        assert_eq!(moves.len(), expected_max_ply);
+        let mv = moves[0];
+        let mut child = st;
+        apply_move(
+            &mut child,
+            move_sr(mv),
+            move_sc(mv),
+            move_er(mv),
+            move_ec(mv),
+            move_promotion(mv),
+        );
+        let tt = Arc::new(SharedTT::new(1));
+        let mut searcher = Searcher::new(Arc::clone(&tt), Arc::new(AtomicBool::new(false)));
+        searcher.nnue_net = None;
+        searcher.ember_v2_net = None;
+        searcher.classic_net = None;
+        searcher.debug.enable_singular_extensions = true;
+        searcher.set_node_limit(Some(limit));
+        if expected_max_ply == 2 {
+            // Entering the alternative must restore the child's previous path
+            // state, not merely reset it to zero on the way back out.
+            searcher.singular_extensions_used[2] = 1;
+            searcher.singular_negative_on_line[2] = 1;
+            searcher.singular_ldse_on_line[2] = 1;
+        }
+        let extensions_used = searcher.singular_extensions_used;
+        let negative_on_line = searcher.singular_negative_on_line;
+        let ldse_on_line = searcher.singular_ldse_on_line;
+        tt.store_with_pv(st.hash, 23, score_to_tt(300, 1), TT_EXACT, Some(mv), true);
+        tt.store(child.hash, 64, score_to_tt(-400, 2), TT_EXACT, None);
+        let root_entry = tt.get_entry(st.hash).unwrap();
+        let child_entry = tt.get_entry(child.hash).unwrap();
+        let rep_stack = searcher.rep_stack.clone();
+        let rep_len = searcher.rep_stack_len;
+        let mut nodes = 0;
+        let score = searcher.negamax(&mut st, 24, 1, 299, 300, false, &mut nodes);
+        let stats = searcher.debug_stats();
+        assert_eq!(score, 0);
+        assert!(searcher.stopped.load(Ordering::Relaxed));
+        assert_eq!(nodes, limit);
+        assert_eq!(stats.max_ply, expected_max_ply);
+        assert_eq!(stats.singular_verifications, expected_verifications);
+        assert_eq!(stats.singular_verification_nodes, limit - 1);
+        assert_eq!(stats.singular_stop_rejections, 1);
+        assert_eq!(stats.singular_extension_plies, 0);
+        assert_eq!(searcher.excluded_moves[1], None);
+        assert!(!searcher.restricted_verification_active());
+        assert_eq!(st.hash, initial.hash);
+        assert_eq!(st.bb, initial.bb);
+        assert_eq!(st.mailbox, initial.mailbox);
+        assert_eq!(
+            (
+                st.w,
+                st.cr,
+                st.castling_rooks,
+                st.ep,
+                st.mc,
+                st.halfmove_clock,
+                st.chess960
+            ),
+            (
+                initial.w,
+                initial.cr,
+                initial.castling_rooks,
+                initial.ep,
+                initial.mc,
+                initial.halfmove_clock,
+                initial.chess960
+            )
+        );
+        assert_eq!(searcher.rep_stack, rep_stack);
+        assert_eq!(searcher.rep_stack_len, rep_len);
+        assert_eq!(searcher.singular_extensions_used, extensions_used);
+        assert_eq!(searcher.singular_negative_on_line, negative_on_line);
+        assert_eq!(searcher.singular_ldse_on_line, ldse_on_line);
+        assert_eq!(tt.get_entry(st.hash), Some(root_entry));
+        assert_eq!(tt.get_entry(child.hash), Some(child_entry));
+        assert!(searcher.history.iter().flatten().all(|&v| v == 0));
+        assert!(searcher.killers.iter().flatten().all(Option::is_none));
+        assert!(searcher.counter_move.iter().flatten().all(Option::is_none));
+        assert!(searcher.corr_hist.iter().all(|&v| v == 0));
+        assert!(searcher
+            .capture_history
+            .iter()
+            .flatten()
+            .flatten()
+            .all(|&v| v == 0));
+        #[cfg(feature = "node-correction-training")]
+        assert!(searcher.corr_staged_depth.iter().all(|&v| v == 0));
+    }
+    tune::reset();
+}
+
+#[cfg(feature = "search-debug")]
+#[test]
 fn singular_search_extends_a_synthetic_only_move_tt_result() {
     // Private extension contract: count singular probes and extensions from synthetic TT evidence.
     let mut st = state_from_fen("7k/8/5K2/5Q2/8/8/8/8 b - - 0 1");

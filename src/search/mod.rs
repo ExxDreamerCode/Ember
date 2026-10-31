@@ -74,7 +74,7 @@ use self::selectivity::{
     singular_candidate, singular_extension_from_scores, singular_margin, singular_search_outcome,
     ChildPathState, DrawStatus, ProbCutEligibility, ProbCutVerdict, SingularEligibility,
     SingularEvidence, SingularMoveAdjustment, SingularSearchOutcome, LDSE_ENABLED_DEFAULT,
-    NEG_EXT_MAX_PER_LINE_DEFAULT, SINGULAR_DOUBLE_MIN_DEPTH_DEFAULT,
+    NEG_EXT_MAX_PER_LINE_DEFAULT, SINGULAR_DOUBLE_MIN_DEPTH_DEFAULT, SINGULAR_LADDER_STEPS_DEFAULT,
     SINGULAR_LADDER_STEP_CP_DEFAULT, SINGULAR_TRIPLE_MIN_DEPTH_DEFAULT,
 };
 use self::selectivity::{next_singular_extension_count, reversible_shuffle};

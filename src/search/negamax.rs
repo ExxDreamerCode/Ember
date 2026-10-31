@@ -931,9 +931,18 @@ macro_rules! negamax_mode_body {
                 }
                 let mut double_alternative_score = None;
                 let mut triple_alternative_score = None;
+                let max_steps = if candidate.positive_extension {
+                    tune::get_int(
+                        TuneParam::ExtensionLadderSteps,
+                        i64::from(SINGULAR_LADDER_STEPS_DEFAULT),
+                    ) as i32
+                } else {
+                    0
+                };
                 if !$this.stopped.load(Ordering::Relaxed)
                     && $this.singular_multi_extensions_enabled()
                     && candidate.positive_extension
+                    && max_steps >= 2
                     && candidate.max_extension >= 2
                     && actual_depth
                         >= tune::get_int(
@@ -964,6 +973,7 @@ macro_rules! negamax_mode_body {
                             $eval,
                         ));
                     if !$this.stopped.load(Ordering::Relaxed)
+                        && max_steps >= 3
                         && candidate.max_extension >= 3
                         && actual_depth
                             >= tune::get_int(
