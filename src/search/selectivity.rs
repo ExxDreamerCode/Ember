@@ -115,6 +115,8 @@ pub(super) struct ChildPathState {
     pub(super) previous_move: Option<Move>,
     pub(super) child_ply: Option<usize>,
     pub(super) previous_extensions: u8,
+    pub(super) previous_negative_extensions: u8,
+    pub(super) previous_ldse: bool,
 }
 
 pub(super) fn next_singular_extension_count(current: u8, extension: i32) -> u8 {
@@ -398,10 +400,6 @@ pub(super) fn singular_candidate(evidence: SingularEvidence) -> SingularEligibil
         TuneParam::ExtensionMaxHalfmoveClock,
         i64::from(SINGULAR_MAX_HALF_MOVE_CLOCK_DEFAULT),
     ) as u8;
-    let neg_ext_max = tune::get_int(
-        TuneParam::NegExtMaxPerLine,
-        i64::from(NEG_EXT_MAX_PER_LINE_DEFAULT),
-    ) as u8;
 
     let _ = tune::get_int(
         TuneParam::LdseMaxPerLine,
@@ -438,7 +436,6 @@ pub(super) fn singular_candidate(evidence: SingularEvidence) -> SingularEligibil
         || evidence.shuffling
         || evidence.path_extensions >= singular_path_budget(evidence.actual_depth)
         || !evidence.tt_move_is_legal
-        || (evidence.negative_extensions_on_line >= neg_ext_max && !positive_extension)
     {
         return SingularEligibility::SafetyRejected;
     }

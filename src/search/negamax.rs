@@ -340,7 +340,6 @@ macro_rules! negamax_mode_body {
                         eval_score,
                         false,
                     ) {
-                        $this.set_singular_ldse_on_line($ply + 1, true);
                         let st_before = *$st;
                         let mv = ldse.mv;
                         let legal = try_apply_move_mode::<CHESS960>($st, mv);
@@ -360,6 +359,7 @@ macro_rules! negamax_mode_body {
                             $this.rep_stack.push($st.hash);
                             $this.rep_stack_len += 1;
                             let path_state = $this.enter_child_path($ply, mv, 1);
+                            $this.set_singular_ldse_on_line($ply + 1, true);
                             let s = -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
                                 $st,
                                 ldse.depth,
@@ -836,6 +836,11 @@ macro_rules! negamax_mode_body {
                 if !$this.stopped.load(Ordering::Relaxed)
                     && !candidate.positive_extension
                     && $this.singular_negative_extensions_enabled()
+                    && i64::from(singular_evidence.negative_extensions_on_line)
+                        < tune::get_int(
+                            TuneParam::NegExtMaxPerLine,
+                            i64::from(NEG_EXT_MAX_PER_LINE_DEFAULT),
+                        )
                     && alternative_score < candidate.beta
                 {
                     let threshold = candidate

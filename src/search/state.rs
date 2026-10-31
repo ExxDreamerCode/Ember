@@ -437,6 +437,12 @@ impl Searcher {
     ) -> ChildPathState {
         let previous_move = std::mem::replace(&mut self.path_moves[ply], mv);
         let child_ply = (ply + 1 < MAX_PLY).then_some(ply + 1);
+        let previous_negative_extensions = child_ply
+            .map(|child| self.singular_negative_on_line[child])
+            .unwrap_or(0);
+        let previous_ldse = child_ply
+            .map(|child| self.singular_ldse_on_line[child])
+            .unwrap_or(false);
         let previous_extensions = child_ply
             .map(|child| {
                 let previous = self.singular_extensions_used[child];
@@ -444,13 +450,9 @@ impl Searcher {
                     self.singular_extensions_used[ply],
                     singular_extension,
                 );
-                if singular_extension < 0 {
-                    self.singular_negative_on_line[child] =
-                        self.singular_negative_on_line[child].saturating_add(1);
-                }
-                if singular_extension > 0 {
-                    self.singular_ldse_on_line[child] = true;
-                }
+                self.singular_negative_on_line[child] = self.singular_negative_on_line[ply]
+                    .saturating_add(u8::from(singular_extension < 0));
+                self.singular_ldse_on_line[child] = self.singular_ldse_on_line[ply];
                 previous
             })
             .unwrap_or(0);
@@ -459,6 +461,8 @@ impl Searcher {
             previous_move,
             child_ply,
             previous_extensions,
+            previous_negative_extensions,
+            previous_ldse,
         }
     }
 
@@ -479,6 +483,8 @@ impl Searcher {
         self.path_moves[state.ply] = state.previous_move;
         if let Some(child) = state.child_ply {
             self.singular_extensions_used[child] = state.previous_extensions;
+            self.singular_negative_on_line[child] = state.previous_negative_extensions;
+            self.singular_ldse_on_line[child] = state.previous_ldse;
         }
     }
 

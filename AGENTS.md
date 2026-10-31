@@ -307,6 +307,10 @@ counterexamples that must not qualify. Prefer predicates that describe the candi
 itself over a position-wide trigger such as "some rook check exists"; a broad trigger can
 change the search of every unrelated root move. Run the complete move-fixture corpus after
 changing eligibility, because several individually reasonable heuristics can overlap.
+For per-line search budgets, inherit the parent's counters when entering a child, count
+only the policy actually used, and restore the child's previous state on exit. Cover nested
+searches, null moves, and siblings so one branch cannot change another branch's eligibility.
+Exhausting a reduction budget must not disable a separate multicut verification.
 Before treating a fail-hard verification result as evidence of an alternative move, ensure
 its search window remains within the mate-distance bounds. Window clamping can otherwise
 return before any move is examined and make a nonexistent alternative appear to pass.
