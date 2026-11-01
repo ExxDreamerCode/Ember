@@ -166,9 +166,7 @@ impl Position {
                 bits.push((sq.index() >> i) & 1 == 1);
             }
         } else {
-            for _ in 0..6 {
-                bits.push(false);
-            }
+            bits.extend(std::iter::repeat_n(false, 6));
         }
 
         for i in 0..8 {
@@ -200,10 +198,7 @@ impl Position {
             }
         }
 
-        while bits.len() < 256 {
-            bits.push(false);
-        }
-        bits.truncate(256);
+        bits.resize(256, false);
 
         let mut bytes = [0u8; 32];
         for (i, &bit) in bits.iter().enumerate() {
@@ -243,7 +238,12 @@ struct PackedMove {
 
 impl PackedMove {
     fn null() -> Self {
-        PackedMove { from: 0, to: 0, promo: 0, flags: 0 }
+        PackedMove {
+            from: 0,
+            to: 0,
+            promo: 0,
+            flags: 0,
+        }
     }
 
     fn from_uci(uci: &str) -> Self {
@@ -263,10 +263,15 @@ impl PackedMove {
         } else {
             0
         };
-        PackedMove { from, to, promo, flags: 0 }
+        PackedMove {
+            from,
+            to,
+            promo,
+            flags: 0,
+        }
     }
 
-    fn to_bytes(&self) -> [u8; 4] {
+    fn to_bytes(self) -> [u8; 4] {
         [self.from, self.to, self.promo, self.flags]
     }
 }
@@ -287,7 +292,10 @@ struct ChunkWriter {
 
 impl ChunkWriter {
     fn new() -> Self {
-        ChunkWriter { entries: Vec::new(), current_size: 8 }
+        ChunkWriter {
+            entries: Vec::new(),
+            current_size: 8,
+        }
     }
 
     fn add_entry(&mut self, entry: &Entry) {
@@ -319,9 +327,9 @@ impl ChunkWriter {
             chain_data.extend_from_slice(&1u32.to_le_bytes());
 
             chain_data.extend_from_slice(&entry.mv.to_bytes());
-            chain_data.extend_from_slice(&(entry.score as i16).to_le_bytes());
-            chain_data.extend_from_slice(&(entry.ply as u16).to_le_bytes());
-            chain_data.extend_from_slice(&(entry.result as i16).to_le_bytes());
+            chain_data.extend_from_slice(&entry.score.to_le_bytes());
+            chain_data.extend_from_slice(&entry.ply.to_le_bytes());
+            chain_data.extend_from_slice(&entry.result.to_le_bytes());
         }
 
         let chunk_size = chain_data.len() as u32;
@@ -412,7 +420,13 @@ fn main() {
             PackedMove::null()
         };
 
-        let entry = Entry { pos, mv, score, ply: 0, result: 0 };
+        let entry = Entry {
+            pos,
+            mv,
+            score,
+            ply: 0,
+            result: 0,
+        };
 
         if chunk.is_full() {
             if let Err(e) = chunk.write_to(&mut out_file) {
@@ -432,7 +446,5 @@ fn main() {
 
     out_file.flush().unwrap();
 
-    println!(
-        "binpack_writer: wrote {count} entries, skipped {skipped} -> {output_path}"
-    );
+    println!("binpack_writer: wrote {count} entries, skipped {skipped} -> {output_path}");
 }

@@ -217,9 +217,13 @@ def cmd_sort(args: argparse.Namespace) -> int:
                 fen = line.rstrip("\n")
                 if not fen:
                     continue
-                if current is None or current_size >= chunk_bytes:
-                    if current is not None:
-                        current.close()
+                if current is None:
+                    current = open_part(part_idx)
+                    part_idx += 1
+                    current_size = 0
+                    log(f"Writing chunk {part_idx-1}")
+                if current_size >= chunk_bytes:
+                    current.close()
                     current = open_part(part_idx)
                     part_idx += 1
                     current_size = 0
