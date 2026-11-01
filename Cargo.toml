@@ -9,6 +9,10 @@ default-run = "ember"
 name = "ember"
 path = "src/main.rs"
 
+[[bin]]
+name = "binpack_writer"
+path = "src/bin/binpack_writer.rs"
+
 [lib]
 name = "ember_chess"
 path = "src/lib.rs"
