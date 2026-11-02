@@ -13,6 +13,10 @@ path = "src/main.rs"
 name = "binpack_writer"
 path = "src/bin/binpack_writer.rs"
 
+[[bin]]
+name = "score_db"
+path = "src/bin/score_db.rs"
+
 [lib]
 name = "ember_chess"
 path = "src/lib.rs"
