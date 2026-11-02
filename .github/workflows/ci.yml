@@ -31,6 +31,9 @@ jobs:
       - name: Check formatting
         run: nix develop .#ci --command cargo fmt --all --check
 
+      - name: Check formatting (fen_db)
+        run: nix develop .#ci --command cargo fmt --all --check --manifest-path tools/datagen/fen_db/Cargo.toml
+
       - name: Verify Rust license report
         if: matrix.runner == 'ubuntu-latest'
         run: |
@@ -48,6 +51,11 @@ jobs:
         run: >
           nix develop .#ci --command cargo clippy --locked
           --all-targets --all-features -- -D warnings
+
+      - name: Run clippy (fen_db)
+        run: >
+          nix develop .#ci --command cargo clippy --locked
+          --all-targets --all-features --manifest-path tools/datagen/fen_db/Cargo.toml -- -D warnings
 
       - name: Run native tests
         run: |
@@ -689,6 +697,11 @@ jobs:
         run: >
           nix develop .#ci --command cargo clippy --locked
           --all-targets --all-features -- -D warnings
+
+      - name: Run clippy (fen_db)
+        run: >
+          nix develop .#ci --command cargo clippy --locked
+          --all-targets --all-features --manifest-path tools/datagen/fen_db/Cargo.toml -- -D warnings
 
       - name: Run native tests
         run: |

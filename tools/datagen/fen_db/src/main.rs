@@ -13,7 +13,7 @@ const CHUNK_BYTES_DEFAULT: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_PLY_DEFAULT: u32 = 256;
 
 fn log(msg: &str) {
-    print!("[fen_db] {msg}\n");
+    println!("[fen_db] {msg}");
     let _ = std::io::stdout().flush();
 }
 
@@ -38,7 +38,8 @@ fn result_to_stm(result_tag: &str, stm_white: bool) -> Option<i8> {
 fn open_pgn_reader(path: &Path) -> Box<dyn BufRead> {
     let file = File::open(path).expect("failed to open PGN file");
     if path.extension().and_then(|e| e.to_str()) == Some("zst") {
-        let decoder = zstd::stream::read::Decoder::new(file).expect("failed to create zstd decoder");
+        let decoder =
+            zstd::stream::read::Decoder::new(file).expect("failed to create zstd decoder");
         Box::new(BufReader::new(decoder))
     } else {
         Box::new(BufReader::new(file))
@@ -92,7 +93,7 @@ fn parse_pgn_moves(text: &str) -> Option<(&str, Vec<String>)> {
         }
         let cleaned = remove_comments(line);
         for token in cleaned.split_whitespace() {
-            let t = token.trim_end_matches(|c| c == '!' || c == '?' || c == '+' || c == '#');
+            let t = token.trim_end_matches(['!', '?', '+', '#']);
             let t = t.trim_end_matches("e.p.");
             if t.is_empty() || t == "1-0" || t == "0-1" || t == "1/2-1/2" || t == "*" {
                 continue;
@@ -115,7 +116,11 @@ fn flush_batch(batch: &mut Vec<String>, batch_idx: &mut u64, out_dir: &Path) {
     if batch.is_empty() {
         return;
     }
-    let chunk_path = out_dir.join(format!("chunk_{}_{:06}.fen", std::process::id(), *batch_idx));
+    let chunk_path = out_dir.join(format!(
+        "chunk_{}_{:06}.fen",
+        std::process::id(),
+        *batch_idx
+    ));
     let f = File::create(&chunk_path).expect("failed to create chunk file");
     let mut w = BufWriter::new(f);
     for line in &mut *batch {
@@ -126,6 +131,7 @@ fn flush_batch(batch: &mut Vec<String>, batch_idx: &mut u64, out_dir: &Path) {
     *batch_idx += 1;
 }
 
+#[allow(clippy::too_many_arguments)]
 fn process_game(
     current_game: &str,
     batch: &mut Vec<String>,
@@ -265,15 +271,10 @@ fn line_key(line: &str, strip_clocks: bool) -> String {
 }
 
 fn sort_by_key(lines: &mut [String], strip_clocks: bool) {
-    lines.sort_by(|a, b| line_key(a, strip_clocks).cmp(&line_key(b, strip_clocks)));
+    lines.sort_by_key(|a| line_key(a, strip_clocks));
 }
 
-fn sort_and_dedup(
-    tmp_dirs: &[PathBuf],
-    out_dir: &Path,
-    strip_clocks: bool,
-    chunk_gb: f64,
-) {
+fn sort_and_dedup(tmp_dirs: &[PathBuf], out_dir: &Path, strip_clocks: bool, chunk_gb: f64) {
     fs::create_dir_all(out_dir).unwrap();
     let chunk_files = collect_chunk_files(tmp_dirs);
     if chunk_files.is_empty() {
@@ -335,11 +336,9 @@ fn sort_and_dedup(
     for r in &run_files {
         let f = File::open(r).expect("failed to open run file");
         let br = BufReader::new(f);
-        for line in br.lines() {
-            if let Ok(l) = line {
-                if !l.is_empty() {
-                    all_lines.push(l);
-                }
+        for l in br.lines().map_while(Result::ok) {
+            if !l.is_empty() {
+                all_lines.push(l);
             }
         }
         let _ = fs::remove_file(r);
@@ -422,7 +421,12 @@ fn main() {
             let tmp = get_opt(&opts, "--tmp").expect("--tmp required");
             let tmp2 = get_opt(&opts, "--tmp2");
             let workers: usize = get_opt(&opts, "--workers")
-                .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).to_string())
+                .unwrap_or_else(|| {
+                    std::thread::available_parallelism()
+                        .map(|n| n.get())
+                        .unwrap_or(4)
+                        .to_string()
+                })
                 .parse()
                 .expect("--workers must be a number");
             let strip_clocks = opts.iter().any(|(k, _)| k == "--strip-clocks");
@@ -472,8 +476,6 @@ fn main() {
                 let tx = tx.clone();
                 let out_dir = tmp_dirs[i % tmp_dirs.len()].clone();
                 let p = p.clone();
-                let strip_clocks = strip_clocks;
-                let max_ply = max_ply;
                 thread::spawn(move || {
                     let (total, skipped) = scan_pgn_file(&p, &out_dir, strip_clocks, max_ply);
                     tx.send((total, skipped)).unwrap();
