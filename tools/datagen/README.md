@@ -59,7 +59,7 @@ Parameters:
 - Positional args — one or more `scored_*.tsv` input files, followed by the output `.binpack` path
 - `--no-shuffle` — disable Fisher-Yates shuffle (shuffle is on by default)
 
-Output: `.binpack` binary file ready for NNUE training. Entries are filtered (no check, no tactical moves, score within ±1500 CP) and shuffled by default so training batches contain diverse positions.
+Output: `.binpack` binary file ready for NNUE training. Entries are filtered (no check, no tactical moves) and shuffled by default so training batches contain diverse positions.
 
 ### Example full pipeline
 

@@ -7,7 +7,6 @@ use rand::Rng;
 
 const MAGIC: &[u8; 4] = b"BINP";
 const CHUNK_TARGET_BYTES: usize = 32 * 1024 * 1024;
-const MAX_SCORE_ABS: i32 = 1500;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Square(u8);
@@ -578,8 +577,10 @@ fn main() {
     let mut output_path: Option<String> = None;
 
     for arg in &args[1..] {
-        if arg == "--no-shuffle" {
-            no_shuffle = true;
+        if arg == "--shuffle" || arg == "--no-shuffle" {
+            if arg == "--no-shuffle" {
+                no_shuffle = true;
+            }
         } else if output_path.is_none() && !input_paths.is_empty() && arg.ends_with(".binpack") {
             output_path = Some(arg.clone());
         } else {
@@ -605,7 +606,6 @@ fn main() {
     let mut skipped_malformed = 0u64;
     let mut skipped_check = 0u64;
     let mut skipped_tactical = 0u64;
-    let mut skipped_score = 0u64;
 
     for input_path in &input_paths {
         let reader = match File::open(input_path) {
@@ -673,11 +673,6 @@ fn main() {
                 continue;
             }
 
-            if score_val.abs() > MAX_SCORE_ABS {
-                skipped_score += 1;
-                continue;
-            }
-
             let mv = UciMove::parse(bestmove_str);
             if mv.is_tactical(&pos) {
                 skipped_tactical += 1;
@@ -740,7 +735,7 @@ fn main() {
     out_file.flush().unwrap();
 
     println!(
-        "binpack_writer: wrote {count} entries from {} input file(s) (read {total_read}, malformed {skipped_malformed}, check {skipped_check}, tactical {skipped_tactical}, score {skipped_score}) -> {output_path}{}",
+        "binpack_writer: wrote {count} entries from {} input file(s) (read {total_read}, malformed {skipped_malformed}, check {skipped_check}, tactical {skipped_tactical}) -> {output_path}{}",
         input_paths.len(),
         if no_shuffle { " [no-shuffle]" } else { "" }
     );
