@@ -1,7 +1,7 @@
 ## Stage 1 — Unique FEN
 
 ```bash
-python tools/datagen/make_fen_db.py all \
+tools/datagen/fen_db/target/release/fen_db scan \
   --src /data/lichess_pgn \
   --out results/datagen/fens \
   --tmp results/datagen/tmp \
@@ -52,7 +52,7 @@ Resume: progress is saved to `score_db.state` every 10,000 positions. If the run
 
 ```bash
 cargo build --release --bin binpack_writer
-target/release/binpack_writer --shuffle results/datagen/scored/scored_*.tsv results/datagen/binpack/output.binpack
+target/release/binpack_writer results/datagen/scored/scored_*.tsv results/datagen/binpack/output.binpack
 ```
 
 Parameters:
@@ -65,7 +65,7 @@ Output: `.binpack` binary file ready for NNUE training. Entries are filtered (no
 
 ```bash
 # Stage 1: scan + dedup (spread across two disks)
-python tools/datagen/make_fen_db.py all \
+tools/datagen/fen_db/target/release/fen_db scan \
   --src /data/lichess_pgn \
   --tmp /disk1/tmp \
   --tmp2 /disk2/tmp \
