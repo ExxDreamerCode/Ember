@@ -3,6 +3,8 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::process::exit;
 
+use rand::Rng;
+
 const MAGIC: &[u8; 4] = b"BINP";
 const CHUNK_TARGET_BYTES: usize = 32 * 1024 * 1024;
 const MAX_SCORE_ABS: i32 = 1500;
@@ -196,8 +198,7 @@ impl Position {
             _ => return None,
         };
 
-        let (mut white_ks, mut white_qs, mut black_ks, mut black_qs) =
-            (false, false, false, false);
+        let (mut white_ks, mut white_qs, mut black_ks, mut black_qs) = (false, false, false, false);
         for ch in parts[2].chars() {
             match ch {
                 'K' => white_ks = true,
@@ -273,7 +274,10 @@ impl Position {
         for (df, dr) in KNIGHT_DELTAS {
             let f = tf + df;
             let r = tr + dr;
-            if (0..8).contains(&f) && (0..8).contains(&r) && self.piece_at(Square((r * 8 + f) as u8)) == knight {
+            if (0..8).contains(&f)
+                && (0..8).contains(&r)
+                && self.piece_at(Square((r * 8 + f) as u8)) == knight
+            {
                 return true;
             }
         }
@@ -295,7 +299,10 @@ impl Position {
         for (df, dr) in KING_DELTAS {
             let f = tf + df;
             let r = tr + dr;
-            if (0..8).contains(&f) && (0..8).contains(&r) && self.piece_at(Square((r * 8 + f) as u8)) == king {
+            if (0..8).contains(&f)
+                && (0..8).contains(&r)
+                && self.piece_at(Square((r * 8 + f) as u8)) == king
+            {
                 return true;
             }
         }
@@ -491,9 +498,7 @@ impl UciMove {
         let mover = pos.piece_at(self.from);
         match mover.ptype() {
             Some(PieceType::Pawn) => self.from.file() != self.to.file(),
-            Some(PieceType::King) => {
-                (self.from.file() as i32 - self.to.file() as i32).abs() == 2
-            }
+            Some(PieceType::King) => (self.from.file() as i32 - self.to.file() as i32).abs() == 2,
             _ => false,
         }
     }
@@ -518,15 +523,14 @@ struct Entry {
 }
 
 impl Entry {
-    fn chain_bytes(&self) -> [u8; 34] {
-        let mut out = [0u8; 34];
+    fn chain_bytes(&self) -> [u8; 32] {
+        let mut out = [0u8; 32];
         out[0..24].copy_from_slice(&self.pos.compress_position());
         out[24..26].copy_from_slice(&self.mv.compress().to_be_bytes());
         out[26..28].copy_from_slice(&signed_to_unsigned(self.score).to_be_bytes());
         let pr = signed_to_unsigned(self.result) << 14 | (self.ply & 0x3FFF);
         out[28..30].copy_from_slice(&pr.to_be_bytes());
         out[30..32].copy_from_slice(&self.rule50.to_be_bytes());
-        out[32..34].copy_from_slice(&0u16.to_be_bytes());
         out
     }
 }
@@ -562,23 +566,151 @@ impl ChunkWriter {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() != 3 {
-        eprintln!("Usage: binpack_writer <input_scored.tsv> <output.binpack>");
+    if args.len() < 3 {
+        eprintln!(
+            "Usage: binpack_writer [--no-shuffle] <input_scored.tsv> [<input_scored.tsv> ...] <output.binpack>"
+        );
         exit(1);
     }
 
-    let input_path = &args[1];
-    let output_path = &args[2];
+    let mut no_shuffle = false;
+    let mut input_paths: Vec<String> = Vec::new();
+    let mut output_path: Option<String> = None;
 
-    let reader = match File::open(input_path) {
-        Ok(f) => BufReader::new(f),
-        Err(e) => {
-            eprintln!("binpack_writer: cannot open input {input_path}: {e}");
+    for arg in &args[1..] {
+        if arg == "--no-shuffle" {
+            no_shuffle = true;
+        } else if output_path.is_none() && !input_paths.is_empty() && arg.ends_with(".binpack") {
+            output_path = Some(arg.clone());
+        } else {
+            input_paths.push(arg.clone());
+        }
+    }
+
+    let output_path = match output_path {
+        Some(p) => p,
+        None => {
+            eprintln!("binpack_writer: no output .binpack path specified");
             exit(1);
         }
     };
 
-    let mut out_file = match File::create(output_path) {
+    if input_paths.is_empty() {
+        eprintln!("binpack_writer: no input .tsv files specified");
+        exit(1);
+    }
+
+    let mut entries: Vec<Entry> = Vec::new();
+    let mut total_read: u64 = 0;
+    let mut skipped_malformed = 0u64;
+    let mut skipped_check = 0u64;
+    let mut skipped_tactical = 0u64;
+    let mut skipped_score = 0u64;
+
+    for input_path in &input_paths {
+        let reader = match File::open(input_path) {
+            Ok(f) => BufReader::new(f),
+            Err(e) => {
+                eprintln!("binpack_writer: cannot open input {input_path}: {e}");
+                exit(1);
+            }
+        };
+
+        for line in reader.lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => {
+                    skipped_malformed += 1;
+                    continue;
+                }
+            };
+
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+
+            let parts: Vec<&str> = trimmed.split('\t').collect();
+            if parts.len() < 6 {
+                skipped_malformed += 1;
+                continue;
+            }
+
+            let fen = parts[0];
+            let score_val: i32 = match parts[2].parse() {
+                Ok(v) => v,
+                Err(_) => {
+                    skipped_malformed += 1;
+                    continue;
+                }
+            };
+            let bestmove_str = parts[3];
+            let ply: u16 = match parts[4].parse() {
+                Ok(v) => v,
+                Err(_) => {
+                    skipped_malformed += 1;
+                    continue;
+                }
+            };
+            let result: i16 = match parts[5].parse::<i16>() {
+                Ok(v) => v.clamp(-1, 1),
+                Err(_) => {
+                    skipped_malformed += 1;
+                    continue;
+                }
+            };
+
+            let pos = match Position::from_fen(fen) {
+                Some(p) => p,
+                None => {
+                    skipped_malformed += 1;
+                    continue;
+                }
+            };
+
+            if pos.in_check(pos.side_to_move).unwrap_or(true) {
+                skipped_check += 1;
+                continue;
+            }
+
+            if score_val.abs() > MAX_SCORE_ABS {
+                skipped_score += 1;
+                continue;
+            }
+
+            let mv = UciMove::parse(bestmove_str);
+            if mv.is_tactical(&pos) {
+                skipped_tactical += 1;
+                continue;
+            }
+
+            let score = score_val.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+
+            let entry = Entry {
+                pos,
+                mv,
+                score,
+                ply,
+                result,
+                rule50: pos.halfmove_clock,
+            };
+
+            entries.push(entry);
+            total_read += 1;
+        }
+    }
+
+    if !no_shuffle {
+        let mut rng = rand::thread_rng();
+        let mut n = entries.len();
+        while n > 1 {
+            n -= 1;
+            let j = rng.gen_range(0..=n);
+            entries.swap(n, j);
+        }
+    }
+
+    let mut out_file = match File::create(&output_path) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("binpack_writer: cannot create output {output_path}: {e}");
@@ -588,97 +720,14 @@ fn main() {
 
     let mut chunk = ChunkWriter::new();
     let mut count: u64 = 0;
-    let mut skipped_check = 0u64;
-    let mut skipped_tactical = 0u64;
-    let mut skipped_score = 0u64;
-    let mut skipped_malformed = 0u64;
 
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => {
-                skipped_malformed += 1;
-                continue;
-            }
-        };
-
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-
-        let parts: Vec<&str> = trimmed.split('\t').collect();
-        if parts.len() < 6 {
-            skipped_malformed += 1;
-            continue;
-        }
-
-        let fen = parts[0];
-        let score_val: i32 = match parts[2].parse() {
-            Ok(v) => v,
-            Err(_) => {
-                skipped_malformed += 1;
-                continue;
-            }
-        };
-        let bestmove_str = parts[3];
-        let ply: u16 = match parts[4].parse() {
-            Ok(v) => v,
-            Err(_) => {
-                skipped_malformed += 1;
-                continue;
-            }
-        };
-        let result: i16 = match parts[5].parse::<i16>() {
-            Ok(v) => v.clamp(-1, 1),
-            Err(_) => {
-                skipped_malformed += 1;
-                continue;
-            }
-        };
-
-        let pos = match Position::from_fen(fen) {
-            Some(p) => p,
-            None => {
-                skipped_malformed += 1;
-                continue;
-            }
-        };
-
-        if pos.in_check(pos.side_to_move).unwrap_or(true) {
-            skipped_check += 1;
-            continue;
-        }
-
-        if score_val.abs() > MAX_SCORE_ABS {
-            skipped_score += 1;
-            continue;
-        }
-
-        let mv = UciMove::parse(bestmove_str);
-        if mv.is_tactical(&pos) {
-            skipped_tactical += 1;
-            continue;
-        }
-
-        let score = score_val.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-
-        let entry = Entry {
-            pos,
-            mv,
-            score,
-            ply,
-            result,
-            rule50: pos.halfmove_clock,
-        };
-
+    for entry in entries.drain(..) {
         if chunk.is_full() {
             if let Err(e) = chunk.write_to(&mut out_file) {
                 eprintln!("binpack_writer: write error: {e}");
                 exit(1);
             }
         }
-
         chunk.add_entry(&entry);
         count += 1;
     }
@@ -691,6 +740,8 @@ fn main() {
     out_file.flush().unwrap();
 
     println!(
-        "binpack_writer: wrote {count} entries (check {skipped_check}, tactical {skipped_tactical}, score {skipped_score}, malformed {skipped_malformed}) -> {output_path}"
+        "binpack_writer: wrote {count} entries from {} input file(s) (read {total_read}, malformed {skipped_malformed}, check {skipped_check}, tactical {skipped_tactical}, score {skipped_score}) -> {output_path}{}",
+        input_paths.len(),
+        if no_shuffle { " [no-shuffle]" } else { "" }
     );
 }

@@ -15,8 +15,7 @@ const DEFAULT_DEPTH: i32 = 64;
 const STATE_SAVE_EVERY: u64 = 10_000;
 
 fn log(msg: &str) {
-    print!("[score_db] {msg}\n");
-    let _ = std::io::stdout().flush();
+    println!("[score_db] {msg}");
 }
 
 struct ScoreRecord {
@@ -58,10 +57,7 @@ fn load_state(state_path: &Path) -> HashMap<String, u64> {
 }
 
 fn save_state(state_path: &Path, state: &HashMap<String, u64>) {
-    let mut lines: Vec<String> = state
-        .iter()
-        .map(|(p, c)| format!("{}\t{}", p, c))
-        .collect();
+    let mut lines: Vec<String> = state.iter().map(|(p, c)| format!("{}\t{}", p, c)).collect();
     lines.sort();
     if let Ok(mut f) = File::create(state_path) {
         for l in &lines {
@@ -190,7 +186,12 @@ fn main() {
     }
     let out = get_opt(&opts, "--out").unwrap_or_else(|| "results/datagen/scored".to_string());
     let workers: usize = get_opt(&opts, "--workers")
-        .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).to_string())
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+                .to_string()
+        })
         .parse()
         .expect("--workers must be a number");
     let nodes: u64 = get_opt(&opts, "--nodes")
@@ -213,7 +214,11 @@ fn main() {
             files.push(path.to_path_buf());
         } else if let Some(parent) = path.parent() {
             if let Ok(entries) = fs::read_dir(parent) {
-                let prefix = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                let prefix = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
                 for e in entries.flatten() {
                     let p = e.path();
                     if p.to_string_lossy().contains(&prefix) {
@@ -232,7 +237,10 @@ fn main() {
 
     let state = load_state(&state_path);
     if !state.is_empty() {
-        log(&format!("Resume state loaded: {} files with prior progress", state.len()));
+        log(&format!(
+            "Resume state loaded: {} files with prior progress",
+            state.len()
+        ));
     }
 
     let (task_tx, task_rx) = mpsc::channel::<(String, String, String)>();
@@ -284,7 +292,7 @@ fn main() {
                 }
 
                 let parts: Vec<&str> = line.split('\t').collect();
-                let fen = parts.get(0).unwrap_or(&"").to_string();
+                let fen = parts.first().unwrap_or(&"").to_string();
                 let ply = parts.get(1).unwrap_or(&"0").to_string();
                 let result = parts.get(2).unwrap_or(&"0").to_string();
                 if feeder_tx.send((fen, ply, result)).is_err() {
@@ -300,7 +308,7 @@ fn main() {
                     since_save = 0;
                 }
 
-                if total_queued % 100_000 == 0 {
+                if total_queued.is_multiple_of(100_000) {
                     log(&format!(
                         "feeder: {} positions queued ({} skipped/resumed)",
                         total_queued,
@@ -347,8 +355,6 @@ fn main() {
     for i in 0..workers {
         let rx = Arc::clone(&shared_rx);
         let tx = score_tx.clone();
-        let nodes = nodes;
-        let nnue_off = nnue_off;
         let h = thread::spawn(move || {
             let mut engine = match Engine::try_new() {
                 Ok(e) => e,
@@ -389,7 +395,7 @@ fn main() {
                     }
                 }
                 processed += 1;
-                if processed % 1000 == 0 {
+                if processed.is_multiple_of(1000) {
                     log(&format!("worker {i}: {processed} scored"));
                 }
             }

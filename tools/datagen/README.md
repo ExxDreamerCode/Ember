@@ -1,46 +1,85 @@
 ## Stage 1 — Unique FEN
 
 ```bash
-python tools/Datagen/make_fen_db.py all \
+python tools/datagen/make_fen_db.py all \
   --src /data/lichess_pgn \
   --out results/datagen/fens \
   --tmp results/datagen/tmp \
+  --tmp2 results/datagen/tmp2 \
   --workers 16 \
   --strip-clocks \
   --chunk-gb 2
 ```
 
 Parameters:
-- `--src` — directory with .pgn/.epd
-- `--tmp` — temporary directory
+- `--src` — directory with .pgn/.epd/.zst
+- `--tmp` — temporary directory #1
+- `--tmp2` — temporary directory #2 (second disk), optional
 - `--out` — output directory (default: results/Datagen/fens)
 - `--workers` — parallel scanners (default: CPU count)
 - `--strip-clocks` — ignore halfmove/fullmove during dedup
 - `--max-ply` — max plies per game (default: 256)
-- `--chunk-gb` — chunk size in GiB (default: 2)
+- `--chunk-gb` — output chunk size in GiB (default: 2)
 
-## Stage 2 — Rescorer
+Scans PGN/EPD/zst files, deduplicates positions by FEN key, and writes `positions_*.fen` chunks.
+
+## Stage 2 — Rescorer (Rust, `score_db`)
 
 ```bash
-python tools/datagen/rescore.py \
-  --ember target/release/ember.exe \
+target/release/score_db score \
   --input "results/datagen/fens/positions_*.fen" \
-  --out results/Datagen/scored \
+  --out results/datagen/scored \
   --workers 16 \
-  --threads 1 \
   --nodes 5000 \
-  --timeout 60 \
   --chunk-gb 2 \
   --nnue-off
 ```
 
-Output: `FEN\tscore_type\tscore_value\tbestmove`
+Parameters:
+- `--input` — glob pattern for `positions_*.fen` chunks (can be repeated)
+- `--out` — output directory for `scored_*.tsv` chunks (default: results/datagen/scored)
+- `--workers` — parallel scoring workers (default: available CPU parallelism)
+- `--nodes` — engine node limit per position (default: 5000)
+- `--chunk-gb` — output chunk size in GiB (default: 2)
+- `--nnue-off` — disable NNUE for clean classic-eval data
+- `--state` — custom path for resume state file (default: `<out>/score_db.state`)
+
+Output format: `FEN\tscore_type\tscore_value\tbestmove\tply\tresult`
+
+Resume: progress is saved to `score_db.state` every 10,000 positions. If the run is interrupted, re-running the same command skips already-processed lines and continues from the next chunk part. State is cleared on full completion.
 
 ## Stage 3 — binpack_writer
 
 ```bash
 cargo build --release --bin binpack_writer
-for f in results/datagen/scored/scored_*.tsv; do
-  target/release/binpack_writer "$f" "results/datagen/binpack/$(basename "$f" .tsv).binpack"
-done
+target/release/binpack_writer --shuffle results/datagen/scored/scored_*.tsv results/datagen/binpack/output.binpack
+```
+
+Parameters:
+- Positional args — one or more `scored_*.tsv` input files, followed by the output `.binpack` path
+- `--no-shuffle` — disable Fisher-Yates shuffle (shuffle is on by default)
+
+Output: `.binpack` binary file ready for NNUE training. Entries are filtered (no check, no tactical moves, score within ±1500 CP) and shuffled by default so training batches contain diverse positions.
+
+### Example full pipeline
+
+```bash
+# Stage 1: scan + dedup (spread across two disks)
+python tools/datagen/make_fen_db.py all \
+  --src /data/lichess_pgn \
+  --tmp /disk1/tmp \
+  --tmp2 /disk2/tmp \
+  --out results/datagen/fens \
+  --workers 16 --strip-clocks
+
+# Stage 2: rescore with resume support
+target/release/score_db score \
+  --input "results/datagen/fens/positions_*.fen" \
+  --out results/datagen/scored \
+  --workers 16 --nodes 5000 --nnue-off
+
+# Stage 3: shuffle + pack into single .binpack
+target/release/binpack_writer \
+  results/datagen/scored/scored_*.tsv \
+  results/datagen/binpack/output.binpack
 ```
