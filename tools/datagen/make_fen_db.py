@@ -8,7 +8,7 @@ import sys
 import threading
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Optional, Sequence
 
 try:
     import chess
@@ -19,6 +19,7 @@ except ImportError as exc:
 CHUNK_BYTES_DEFAULT = 2 * 1024 * 1024 * 1024
 MAX_PLY_DEFAULT = 256
 BATCH_LINES = 200_000
+RUN_LINES = 5_000_000
 
 
 def log(msg: str) -> None:
@@ -33,9 +34,7 @@ def strip_clock_fields(fen: str) -> str:
 
 
 def fen_key(fen: str, strip_clocks: bool) -> str:
-    if strip_clocks:
-        return strip_clock_fields(fen)
-    return fen
+    return strip_clock_fields(fen) if strip_clocks else fen
 
 
 def result_to_stm(result_tag: str, stm_white: bool) -> Optional[int]:
@@ -48,52 +47,64 @@ def result_to_stm(result_tag: str, stm_white: bool) -> Optional[int]:
     return None
 
 
-def scan_pgn_file(path: Path, out_dir: Path, strip_clocks: bool, max_ply: int,
-                  batch_lines: int = BATCH_LINES) -> int:
+def _flush_batch(batch: list[str], batch_idx: int, out_dir: Path) -> int:
+    if not batch:
+        return batch_idx
     out_dir.mkdir(parents=True, exist_ok=True)
+    chunk_path = out_dir / f"chunk_{os.getpid()}_{threading.get_ident()}_{batch_idx:06d}.fen"
+    with open(chunk_path, "w", encoding="utf-8") as f:
+        for line in batch:
+            f.write(line)
+            f.write("\n")
+    return batch_idx + 1
+
+
+def scan_pgn_file(path: Path, out_dir: Path, strip_clocks: bool, max_ply: int,
+                  batch_lines: int = BATCH_LINES) -> tuple[int, int]:
     total = 0
     skipped = 0
     batch: list[str] = []
     batch_idx = 0
 
-    def flush() -> None:
-        nonlocal batch, batch_idx
-        if not batch:
-            return
-        chunk_path = out_dir / f"chunk_{os.getpid()}_{threading.get_ident()}_{batch_idx:06d}.fen"
-        with open(chunk_path, "w", encoding="utf-8") as f:
-            for line in batch:
-                f.write(line)
-                f.write("\n")
-        batch_idx += 1
-        batch = []
+    def process_fh(fh) -> None:
+        nonlocal total, skipped, batch, batch_idx
+        while True:
+            game = chess.pgn.read_game(fh)
+            if game is None:
+                break
+            result_tag = game.headers.get("Result", "*")
+            board = game.board()
+            for move in game.mainline_moves():
+                board.push(move)
+                fen = board.fen()
+                stm_white = board.turn
+                result = result_to_stm(result_tag, stm_white)
+                if result is None:
+                    skipped += 1
+                    continue
+                batch.append(f"{fen}\t{board.ply()}\t{result}")
+                total += 1
+                if len(batch) >= batch_lines:
+                    batch_idx = _flush_batch(batch, batch_idx, out_dir)
+                    batch = []
+                if board.ply() >= max_ply:
+                    break
 
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            while True:
-                game = chess.pgn.read_game(fh)
-                if game is None:
-                    break
-                result_tag = game.headers.get("Result", "*")
-                board = game.board()
-                for move in game.mainline_moves():
-                    board.push(move)
-                    fen = board.fen()
-                    key = fen_key(fen, strip_clocks)
-                    stm_white = board.turn
-                    result = result_to_stm(result_tag, stm_white)
-                    if result is None:
-                        skipped += 1
-                        continue
-                    batch.append(f"{fen}\t{board.ply()}\t{result}")
-                    total += 1
-                    if len(batch) >= batch_lines:
-                        flush()
-                    if board.ply() >= max_ply:
-                        break
+        if path.suffix.lower() == ".zst":
+            import zstandard
+            import io
+            with open(path, "rb") as fh:
+                dctx = zstandard.ZstdDecompressor()
+                with dctx.stream_reader(fh) as reader:
+                    text_stream = io.TextIOWrapper(reader, encoding="utf-8", errors="replace")
+                    process_fh(text_stream)
+        else:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                process_fh(fh)
     except Exception as exc:
         log(f"WARNING: failed to scan {path}: {exc}")
-    flush()
+    batch_idx = _flush_batch(batch, batch_idx, out_dir)
     return total, skipped
 
 
@@ -104,18 +115,21 @@ def scan_worker(args: tuple[str, str, bool, int, int]) -> tuple[int, int]:
 
 def cmd_scan(args: argparse.Namespace) -> int:
     src = Path(args.src)
-    tmp = Path(args.tmp)
-    tmp.mkdir(parents=True, exist_ok=True)
+    tmp_dirs = [Path(args.tmp)]
+    if args.tmp2:
+        tmp_dirs.append(Path(args.tmp2))
+    for d in tmp_dirs:
+        d.mkdir(parents=True, exist_ok=True)
 
-    pgn_files = sorted(src.rglob("*.pgn")) + sorted(src.rglob("*.epd"))
+    pgn_files = sorted(src.rglob("*.pgn")) + sorted(src.rglob("*.epd")) + sorted(src.rglob("*.zst"))
     if not pgn_files:
-        sys.exit(f"No .pgn/.epd files found under {src}")
+        sys.exit(f"No .pgn/.epd/.zst files found under {src}")
 
-    log(f"Found {len(pgn_files)} PGN/EPD files; workers={args.workers}")
+    log(f"Found {len(pgn_files)} PGN/EPD/zst files; workers={args.workers}; tmp_dirs={[str(d) for d in tmp_dirs]}")
 
     tasks = [
-        (str(p), str(tmp), args.strip_clocks, args.max_ply, BATCH_LINES)
-        for p in pgn_files
+        (str(p), str(tmp_dirs[i % len(tmp_dirs)]), args.strip_clocks, args.max_ply, BATCH_LINES)
+        for i, p in enumerate(pgn_files)
     ]
 
     total = 0
@@ -128,17 +142,32 @@ def cmd_scan(args: argparse.Namespace) -> int:
             skipped += s
             log(f"Scanned positions so far: {total:,}")
 
-    log(f"SCAN done: {total:,} raw positions written to {tmp} ({skipped:,} skipped without result)")
+    log(f"SCAN done: {total:,} raw positions across {len(tmp_dirs)} tmp dir(s) ({skipped:,} skipped without result)")
     return 0
 
 
-def external_sort_files(files: list[Path], out_path: Path, strip_clocks: bool,
-                        chunk_lines: int = 5_000_000) -> None:
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+def _collect_chunk_files(tmp_dirs: Sequence[Path]) -> list[Path]:
+    files: list[Path] = []
+    for d in tmp_dirs:
+        files.extend(sorted(d.glob("*.fen")))
+    return files
+
+
+def _write_sorted_run(chunk: list[str], run: Path, strip_clocks: bool) -> None:
+    chunk.sort(key=lambda s: fen_key(s.split("\t")[0], strip_clocks))
+    with open(run, "w", encoding="utf-8") as rf:
+        rf.write("\n".join(chunk))
+        rf.write("\n")
+
+
+def external_sort_files(files: list[Path], tmp_dirs: Sequence[Path], out_dir: Path, strip_clocks: bool,
+                        run_lines: int = RUN_LINES, chunk_bytes: int = CHUNK_BYTES_DEFAULT) -> int:
+    out_dir.mkdir(parents=True, exist_ok=True)
     run_files: list[Path] = []
 
-    for src in files:
-        log(f"Sorting runs from {src.name}")
+    run_idx_global = 0
+    for file_idx, src in enumerate(files):
+        log(f"Sorting runs from {src.name} ({file_idx + 1}/{len(files)})")
         chunk: list[str] = []
         run_idx = 0
         with open(src, "r", encoding="utf-8") as f:
@@ -147,106 +176,90 @@ def external_sort_files(files: list[Path], out_path: Path, strip_clocks: bool,
                 if not fen:
                     continue
                 chunk.append(fen)
-                if len(chunk) >= chunk_lines:
-                    chunk.sort(key=lambda s: fen_key(s.split("\t")[0], strip_clocks))
-                    run = src.parent / f"run_{src.stem}_{run_idx:06d}.tmp"
-                    with open(run, "w", encoding="utf-8") as rf:
-                        rf.write("\n".join(chunk))
-                        rf.write("\n")
+                if len(chunk) >= run_lines:
+                    target_dir = tmp_dirs[run_idx_global % len(tmp_dirs)]
+                    run_idx_global += 1
+                    run = target_dir / f"run_{src.stem}_{run_idx:06d}.tmp"
+                    _write_sorted_run(chunk, run, strip_clocks)
                     run_files.append(run)
                     run_idx += 1
                     chunk = []
             if chunk:
-                chunk.sort(key=lambda s: fen_key(s.split("\t")[0], strip_clocks))
-                run = src.parent / f"run_{src.stem}_{run_idx:06d}.tmp"
-                with open(run, "w", encoding="utf-8") as rf:
-                    rf.write("\n".join(chunk))
-                    rf.write("\n")
+                target_dir = tmp_dirs[run_idx_global % len(tmp_dirs)]
+                run_idx_global += 1
+                run = target_dir / f"run_{src.stem}_{run_idx:06d}.tmp"
+                _write_sorted_run(chunk, run, strip_clocks)
                 run_files.append(run)
+                run_idx += 1
 
-    log(f"Merging {len(run_files)} sorted runs -> {out_path}")
-    seen_key: Optional[str] = None
+    log(f"Produced {len(run_files)} sorted runs across {len(tmp_dirs)} tmp dir(s)")
+
+    log(f"Merging {len(run_files)} sorted runs -> output chunks under {out_dir}")
+    handles = [open(r, "r", encoding="utf-8") for r in run_files]
     written = 0
     skipped_dup = 0
-    with open(out_path, "w", encoding="utf-8") as out:
-        handles = [open(r, "r", encoding="utf-8") for r in run_files]
-        try:
-            for line in heapq.merge(*handles,
-                                    key=lambda s: fen_key(s.split("\t")[0], strip_clocks)):
-                line = line.rstrip("\n")
-                key = fen_key(line.split("\t")[0], strip_clocks)
-                if key == seen_key:
-                    skipped_dup += 1
-                    continue
-                seen_key = key
-                out.write(line)
-                out.write("\n")
-                written += 1
-        finally:
-            for h in handles:
-                h.close()
-        for r in run_files:
-            try:
-                r.unlink()
-            except OSError:
-                pass
-
-    log(f"SORT+UNIQ done: {written:,} unique positions in {out_path} ({skipped_dup:,} dupes removed)")
-
-
-def cmd_sort(args: argparse.Namespace) -> int:
-    tmp = Path(args.tmp)
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
-
-    chunk_files = sorted(tmp.glob("*.fen"))
-    if not chunk_files:
-        sys.exit(f"No .fen chunk files found in {tmp}")
-
-    merged = tmp / "merged_unique.fen"
-    external_sort_files(chunk_files, merged, args.strip_clocks, chunk_lines=5_000_000)
-
-    chunk_gb = args.chunk_gb
-    chunk_bytes = int(chunk_gb * 1024 * 1024 * 1024)
     part_idx = 0
     current_size = 0
     current: Optional[object] = None
-    written = 0
+    seen_key: Optional[str] = None
 
     def open_part(idx: int):
-        p = out / f"positions_{idx:05d}.fen"
+        p = out_dir / f"positions_{idx:05d}.fen"
         return open(p, "w", encoding="utf-8")
 
     try:
-        with open(merged, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.rstrip("\n")
-                if not line:
-                    continue
-                if current is None:
-                    current = open_part(part_idx)
-                    part_idx += 1
-                    current_size = 0
-                    log(f"Writing chunk {part_idx-1}")
-                if current_size >= chunk_bytes:
+        for line in heapq.merge(*handles,
+                                key=lambda s: fen_key(s.split("\t")[0], strip_clocks)):
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            key = fen_key(line.split("\t")[0], strip_clocks)
+            if key == seen_key:
+                skipped_dup += 1
+                continue
+            seen_key = key
+
+            if current is None or current_size >= chunk_bytes:
+                if current is not None:
                     current.close()
-                    current = open_part(part_idx)
-                    part_idx += 1
-                    current_size = 0
-                    log(f"Writing chunk {part_idx-1}")
-                current.write(line)
-                current.write("\n")
-                current_size += len(line.encode("utf-8")) + 1
-                written += 1
+                current = open_part(part_idx)
+                part_idx += 1
+                current_size = 0
+                log(f"Writing chunk {part_idx - 1}")
+            current.write(line)
+            current.write("\n")
+            current_size += len(line.encode("utf-8")) + 1
+            written += 1
     finally:
         if current is not None:
             current.close()
-    try:
-        merged.unlink()
-    except OSError:
-        pass
+        for h in handles:
+            h.close()
 
-    log(f"SORT done: {written:,} unique positions in {part_idx} chunk(s) under {out}")
+    for r in run_files:
+        try:
+            r.unlink()
+        except OSError:
+            pass
+
+    log(f"SORT+UNIQ done: {written:,} unique positions in {part_idx} chunk(s) under {out_dir} ({skipped_dup:,} dupes removed)")
+    return written
+
+
+def cmd_sort(args: argparse.Namespace) -> int:
+    tmp_dirs = [Path(args.tmp)]
+    if args.tmp2:
+        tmp_dirs.append(Path(args.tmp2))
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+
+    chunk_files = _collect_chunk_files(tmp_dirs)
+    if not chunk_files:
+        sys.exit(f"No .fen chunk files found in {tmp_dirs}")
+
+    chunk_bytes = int(args.chunk_gb * 1024 * 1024 * 1024)
+    external_sort_files(chunk_files, tmp_dirs, out, args.strip_clocks,
+                        run_lines=RUN_LINES, chunk_bytes=chunk_bytes)
     return 0
 
 
@@ -254,10 +267,13 @@ def cmd_all(args: argparse.Namespace) -> int:
     rc = cmd_scan(args)
     if rc != 0:
         return rc
+
     class SortArgs:
         pass
+
     sa = SortArgs()
     sa.tmp = args.tmp
+    sa.tmp2 = args.tmp2
     sa.out = args.out
     sa.chunk_gb = args.chunk_gb
     sa.strip_clocks = args.strip_clocks
@@ -272,25 +288,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp_scan = sub.add_parser("scan", help="Scan PGN/EPD files, emit raw FEN chunks with ply and result")
     sp_scan.add_argument("--src", required=True, help="Directory with .pgn/.epd files")
-    sp_scan.add_argument("--tmp", required=True, help="Temp dir for chunk files")
+    sp_scan.add_argument("--tmp", required=True, help="Scratch dir #1 for chunk files")
+    sp_scan.add_argument("--tmp2", default=None, help="Scratch dir #2 for chunk files (second disk), optional")
     sp_scan.add_argument("--workers", type=int, default=os.cpu_count() or 8)
     sp_scan.add_argument("--strip-clocks", action="store_true",
                          help="Ignore halfmove/fullmove counters for dedup key")
     sp_scan.add_argument("--max-ply", type=int, default=MAX_PLY_DEFAULT)
     sp_scan.set_defaults(func=cmd_scan)
 
-    sp_sort = sub.add_parser("sort", help="Sort + dedup chunks into 2 GB output files")
-    sp_sort.add_argument("--tmp", required=True, help="Temp dir with .fen chunks")
+    sp_sort = sub.add_parser("sort", help="Sort + dedup chunks into output position files")
+    sp_sort.add_argument("--tmp", required=True, help="Scratch dir #1 with .fen chunks")
+    sp_sort.add_argument("--tmp2", default=None, help="Scratch dir #2 with .fen chunks (second disk), optional")
     sp_sort.add_argument("--out", default=default_out,
                          help=f"Output dir for position chunks (default: {default_out})")
     sp_sort.add_argument("--chunk-gb", type=float, default=2.0, help="Output chunk size in GiB")
+    sp_sort.add_argument("--strip-clocks", action="store_true",
+                         help="Ignore halfmove/fullmove counters for dedup key")
     sp_sort.set_defaults(func=cmd_sort)
 
     sp_all = sub.add_parser("all", help="One-shot scan + sort + dedup")
     sp_all.add_argument("--src", required=True)
     sp_all.add_argument("--out", default=default_out,
                         help=f"Output dir for position chunks (default: {default_out})")
-    sp_all.add_argument("--tmp", required=True)
+    sp_all.add_argument("--tmp", required=True, help="Scratch dir #1")
+    sp_all.add_argument("--tmp2", default=None, help="Scratch dir #2 (second disk), optional")
     sp_all.add_argument("--workers", type=int, default=os.cpu_count() or 8)
     sp_all.add_argument("--strip-clocks", action="store_true")
     sp_all.add_argument("--max-ply", type=int, default=MAX_PLY_DEFAULT)
