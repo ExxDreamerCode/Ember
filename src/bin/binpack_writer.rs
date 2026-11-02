@@ -1,10 +1,11 @@
 use std::env;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::process::exit;
 
 const MAGIC: &[u8; 4] = b"BINP";
-const CHUNK_TARGET_SIZE: usize = 1_000_000;
+const CHUNK_TARGET_BYTES: usize = 32 * 1024 * 1024;
+const MAX_SCORE_ABS: i32 = 1500;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Square(u8);
@@ -14,8 +15,8 @@ impl Square {
         if s.len() != 2 {
             return None;
         }
-        let file = s.as_bytes()[0] - b'a';
-        let rank = s.as_bytes()[1] - b'1';
+        let file = s.as_bytes()[0].checked_sub(b'a')?;
+        let rank = s.as_bytes()[1].checked_sub(b'1')?;
         if file > 7 || rank > 7 {
             return None;
         }
@@ -25,12 +26,39 @@ impl Square {
     fn index(self) -> u8 {
         self.0
     }
+
+    fn file(self) -> u8 {
+        self.0 % 8
+    }
+
+    fn rank(self) -> u8 {
+        self.0 / 8
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Color {
     White = 0,
     Black = 1,
+}
+
+impl Color {
+    fn flip(self) -> Self {
+        match self {
+            Color::White => Color::Black,
+            Color::Black => Color::White,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PieceType {
+    Pawn = 0,
+    Knight = 1,
+    Bishop = 2,
+    Rook = 3,
+    Queen = 4,
+    King = 5,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -68,16 +96,66 @@ impl Piece {
             _ => None,
         }
     }
+
+    fn ptype(self) -> Option<PieceType> {
+        match self {
+            Piece::WhitePawn | Piece::BlackPawn => Some(PieceType::Pawn),
+            Piece::WhiteKnight | Piece::BlackKnight => Some(PieceType::Knight),
+            Piece::WhiteBishop | Piece::BlackBishop => Some(PieceType::Bishop),
+            Piece::WhiteRook | Piece::BlackRook => Some(PieceType::Rook),
+            Piece::WhiteQueen | Piece::BlackQueen => Some(PieceType::Queen),
+            Piece::WhiteKing | Piece::BlackKing => Some(PieceType::King),
+            Piece::None => None,
+        }
+    }
+
+    fn color(self) -> Option<Color> {
+        match self {
+            Piece::WhitePawn
+            | Piece::WhiteKnight
+            | Piece::WhiteBishop
+            | Piece::WhiteRook
+            | Piece::WhiteQueen
+            | Piece::WhiteKing => Some(Color::White),
+            Piece::BlackPawn
+            | Piece::BlackKnight
+            | Piece::BlackBishop
+            | Piece::BlackRook
+            | Piece::BlackQueen
+            | Piece::BlackKing => Some(Color::Black),
+            Piece::None => None,
+        }
+    }
+
+    fn nibble(self) -> u8 {
+        match self {
+            Piece::WhitePawn => 0,
+            Piece::BlackPawn => 1,
+            Piece::WhiteKnight => 2,
+            Piece::BlackKnight => 3,
+            Piece::WhiteBishop => 4,
+            Piece::BlackBishop => 5,
+            Piece::WhiteRook => 6,
+            Piece::BlackRook => 7,
+            Piece::WhiteQueen => 8,
+            Piece::BlackQueen => 9,
+            Piece::WhiteKing => 10,
+            Piece::BlackKing => 11,
+            Piece::None => 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
 struct Position {
     board: [Piece; 64],
     side_to_move: Color,
-    castling: u8,
+    white_ks: bool,
+    white_qs: bool,
+    black_ks: bool,
+    black_qs: bool,
     ep_square: Option<Square>,
-    halfmove_clock: u8,
-    fullmove_number: u16,
+    halfmove_clock: u16,
 }
 
 impl Position {
@@ -100,7 +178,7 @@ impl Position {
                     file_idx += ch.to_digit(10)? as usize;
                 } else {
                     let piece = Piece::from_char(ch)?;
-                    if file_idx >= 64 {
+                    if file_idx > 7 {
                         return None;
                     }
                     board[board_rank * 8 + file_idx] = piece;
@@ -118,13 +196,14 @@ impl Position {
             _ => return None,
         };
 
-        let mut castling: u8 = 0;
+        let (mut white_ks, mut white_qs, mut black_ks, mut black_qs) =
+            (false, false, false, false);
         for ch in parts[2].chars() {
             match ch {
-                'K' => castling |= 1,
-                'Q' => castling |= 2,
-                'k' => castling |= 4,
-                'q' => castling |= 8,
+                'K' => white_ks = true,
+                'Q' => white_qs = true,
+                'k' => black_ks = true,
+                'q' => black_qs = true,
                 '-' => {}
                 _ => return None,
             }
@@ -136,211 +215,347 @@ impl Position {
             Square::from_uci(parts[3])
         };
 
-        let halfmove_clock: u8 = parts.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
-        let fullmove_number: u16 = parts.get(5).and_then(|s| s.parse().ok()).unwrap_or(1);
+        let halfmove_clock: u16 = parts.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
 
         Some(Position {
             board,
             side_to_move,
-            castling,
+            white_ks,
+            white_qs,
+            black_ks,
+            black_qs,
             ep_square,
             halfmove_clock,
-            fullmove_number,
         })
     }
 
-    fn pack_sfen(&self) -> [u8; 32] {
-        let mut bits: Vec<bool> = Vec::with_capacity(256);
+    fn piece_at(&self, sq: Square) -> Piece {
+        self.board[sq.index() as usize]
+    }
 
-        bits.push(self.side_to_move == Color::Black);
+    fn is_square_attacked(&self, target: Square, by: Color) -> bool {
+        let tf = target.file() as i32;
+        let tr = target.rank() as i32;
+        let t = target.index() as i32;
 
-        bits.push(self.castling & 1 != 0);
-        bits.push(self.castling & 2 != 0);
-        bits.push(self.castling & 4 != 0);
-        bits.push(self.castling & 8 != 0);
-
-        let has_ep = self.ep_square.is_some();
-        bits.push(has_ep);
-        if let Some(sq) = self.ep_square {
-            for i in 0..6 {
-                bits.push((sq.index() >> i) & 1 == 1);
+        let pawn = match by {
+            Color::White => Piece::WhitePawn,
+            Color::Black => Piece::BlackPawn,
+        };
+        let pawn_origins: [i32; 2] = match by {
+            Color::White => [t - 7, t - 9],
+            Color::Black => [t + 7, t + 9],
+        };
+        let pawn_ok: [bool; 2] = match by {
+            Color::White => [tf < 7, tf > 0],
+            Color::Black => [tf > 0, tf < 7],
+        };
+        for (origin, ok) in pawn_origins.iter().zip(pawn_ok.iter()) {
+            if *ok && (0..64).contains(origin) && self.piece_at(Square(*origin as u8)) == pawn {
+                return true;
             }
-        } else {
-            bits.extend(std::iter::repeat_n(false, 6));
         }
 
-        for i in 0..8 {
-            bits.push((self.halfmove_clock >> i) & 1 == 1);
+        let knight = match by {
+            Color::White => Piece::WhiteKnight,
+            Color::Black => Piece::BlackKnight,
+        };
+        const KNIGHT_DELTAS: [(i32, i32); 8] = [
+            (1, 2),
+            (2, 1),
+            (2, -1),
+            (1, -2),
+            (-1, -2),
+            (-2, -1),
+            (-2, 1),
+            (-1, 2),
+        ];
+        for (df, dr) in KNIGHT_DELTAS {
+            let f = tf + df;
+            let r = tr + dr;
+            if (0..8).contains(&f) && (0..8).contains(&r) && self.piece_at(Square((r * 8 + f) as u8)) == knight {
+                return true;
+            }
         }
 
-        for i in 0..12 {
-            bits.push((self.fullmove_number >> i) & 1 == 1);
+        let king = match by {
+            Color::White => Piece::WhiteKing,
+            Color::Black => Piece::BlackKing,
+        };
+        const KING_DELTAS: [(i32, i32); 8] = [
+            (1, 0),
+            (1, 1),
+            (0, 1),
+            (-1, 1),
+            (-1, 0),
+            (-1, -1),
+            (0, -1),
+            (1, -1),
+        ];
+        for (df, dr) in KING_DELTAS {
+            let f = tf + df;
+            let r = tr + dr;
+            if (0..8).contains(&f) && (0..8).contains(&r) && self.piece_at(Square((r * 8 + f) as u8)) == king {
+                return true;
+            }
         }
 
-        let mut occupied = 0u64;
+        let rook = match by {
+            Color::White => Piece::WhiteRook,
+            Color::Black => Piece::BlackRook,
+        };
+        let bishop = match by {
+            Color::White => Piece::WhiteBishop,
+            Color::Black => Piece::BlackBishop,
+        };
+        let queen = match by {
+            Color::White => Piece::WhiteQueen,
+            Color::Black => Piece::BlackQueen,
+        };
+
+        const ORTHO_DIRS: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+        const DIAG_DIRS: [(i32, i32); 4] = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
+
+        for (dirs, slider) in [(&ORTHO_DIRS, rook), (&DIAG_DIRS, bishop)] {
+            for (df, dr) in *dirs {
+                let mut f = tf + df;
+                let mut r = tr + dr;
+                while (0..8).contains(&f) && (0..8).contains(&r) {
+                    let piece = self.piece_at(Square((r * 8 + f) as u8));
+                    if piece != Piece::None {
+                        if piece == slider || piece == queen {
+                            return true;
+                        }
+                        break;
+                    }
+                    f += df;
+                    r += dr;
+                }
+            }
+        }
+
+        false
+    }
+
+    fn in_check(&self, color: Color) -> Option<bool> {
+        let target = match color {
+            Color::White => Piece::WhiteKing,
+            Color::Black => Piece::BlackKing,
+        };
+        for sq in 0..64u8 {
+            if self.board[sq as usize] == target {
+                return Some(self.is_square_attacked(Square(sq), color.flip()));
+            }
+        }
+        None
+    }
+
+    fn compress_position(&self) -> [u8; 24] {
+        let mut out = [0u8; 24];
+
+        let mut occupied: u64 = 0;
         for sq in 0..64u8 {
             if self.board[sq as usize] != Piece::None {
                 occupied |= 1u64 << sq;
             }
         }
-        for i in 0..64 {
-            bits.push((occupied >> i) & 1 == 1);
-        }
+        out[0..8].copy_from_slice(&occupied.to_be_bytes());
 
+        let mut nibble_idx = 0usize;
         for sq in 0..64u8 {
-            let piece = self.board[sq as usize];
-            if piece == Piece::None {
+            if self.board[sq as usize] == Piece::None {
                 continue;
             }
-            let (code, code_len) = self.piece_code(piece);
-            for i in 0..code_len as usize {
-                bits.push(((code >> i) & 1) == 1);
+            let nibble = self.compress_piece_nibble(Square(sq), self.board[sq as usize]);
+            if nibble_idx.is_multiple_of(2) {
+                out[8 + nibble_idx / 2] = nibble;
+            } else {
+                out[8 + nibble_idx / 2] |= nibble << 4;
             }
+            nibble_idx += 1;
         }
 
-        bits.resize(256, false);
-
-        let mut bytes = [0u8; 32];
-        for (i, &bit) in bits.iter().enumerate() {
-            if bit {
-                bytes[i / 8] |= 1 << (i % 8);
-            }
-        }
-        bytes
+        out
     }
 
-    fn piece_code(&self, piece: Piece) -> (u16, u8) {
-        match piece {
-            Piece::WhitePawn => (0b0000, 4),
-            Piece::BlackPawn => (0b0001, 4),
-            Piece::WhiteKnight => (0b0010, 4),
-            Piece::BlackKnight => (0b0011, 4),
-            Piece::WhiteBishop => (0b0100, 4),
-            Piece::BlackBishop => (0b0101, 4),
-            Piece::WhiteRook => (0b0110, 4),
-            Piece::BlackRook => (0b0111, 4),
-            Piece::WhiteQueen => (0b1000, 4),
-            Piece::BlackQueen => (0b1001, 4),
-            Piece::WhiteKing => (0b1010, 4),
-            Piece::BlackKing => (0b1011, 4),
-            Piece::None => (0, 0),
+    fn compress_piece_nibble(&self, sq: Square, piece: Piece) -> u8 {
+        match piece.ptype() {
+            Some(PieceType::Pawn) => {
+                if let Some(ep) = self.ep_square {
+                    let same_file = sq.file() == ep.file();
+                    let white_ep_pawn = sq.rank() == 3 && self.side_to_move == Color::Black;
+                    let black_ep_pawn = sq.rank() == 4 && self.side_to_move == Color::White;
+                    if same_file && (white_ep_pawn || black_ep_pawn) {
+                        return 12;
+                    }
+                }
+                piece.nibble()
+            }
+            Some(PieceType::Rook) => {
+                if piece.color() == Some(Color::White) {
+                    if (sq.index() == 0 && self.white_qs) || (sq.index() == 7 && self.white_ks) {
+                        return 13;
+                    }
+                } else if (sq.index() == 56 && self.black_qs) || (sq.index() == 63 && self.black_ks)
+                {
+                    return 14;
+                }
+                piece.nibble()
+            }
+            Some(PieceType::King) => {
+                if piece.color() == Some(Color::White) {
+                    10
+                } else if self.side_to_move == Color::White {
+                    11
+                } else {
+                    15
+                }
+            }
+            _ => piece.nibble(),
         }
     }
 }
 
 #[derive(Clone, Copy)]
-struct PackedMove {
-    from: u8,
-    to: u8,
-    promo: u8,
-    flags: u8,
+struct UciMove {
+    from: Square,
+    to: Square,
+    promotion: Option<PieceType>,
+    is_null: bool,
 }
 
-impl PackedMove {
-    fn null() -> Self {
-        PackedMove {
-            from: 0,
-            to: 0,
-            promo: 0,
-            flags: 0,
-        }
-    }
-
-    fn from_uci(uci: &str) -> Self {
+impl UciMove {
+    fn parse(uci: &str) -> Self {
         if uci.len() < 4 || uci == "0000" {
-            return Self::null();
+            return UciMove {
+                from: Square(0),
+                to: Square(0),
+                promotion: None,
+                is_null: true,
+            };
         }
-        let from = Square::from_uci(&uci[0..2]).map(|s| s.index()).unwrap_or(0);
-        let to = Square::from_uci(&uci[2..4]).map(|s| s.index()).unwrap_or(0);
-        let promo = if uci.len() >= 5 {
+        let (from, to) = match (Square::from_uci(&uci[0..2]), Square::from_uci(&uci[2..4])) {
+            (Some(f), Some(t)) => (f, t),
+            _ => {
+                return UciMove {
+                    from: Square(0),
+                    to: Square(0),
+                    promotion: None,
+                    is_null: true,
+                }
+            }
+        };
+        let promotion = if uci.len() >= 5 {
             match uci.as_bytes()[4] {
-                b'q' | b'Q' => 1,
-                b'r' | b'R' => 2,
-                b'b' | b'B' => 3,
-                b'n' | b'N' => 4,
-                _ => 0,
+                b'q' | b'Q' => Some(PieceType::Queen),
+                b'r' | b'R' => Some(PieceType::Rook),
+                b'b' | b'B' => Some(PieceType::Bishop),
+                b'n' | b'N' => Some(PieceType::Knight),
+                _ => None,
             }
         } else {
-            0
+            None
         };
-        PackedMove {
+        UciMove {
             from,
             to,
-            promo,
-            flags: 0,
+            promotion,
+            is_null: false,
         }
     }
 
-    fn to_bytes(self) -> [u8; 4] {
-        [self.from, self.to, self.promo, self.flags]
+    fn compress(&self) -> u16 {
+        if self.is_null {
+            return 0;
+        }
+        let move_type: u16 = if self.promotion.is_some() { 1 } else { 0 };
+        let mut packed = move_type << 14;
+        packed |= (self.from.index() as u16) << 8;
+        packed |= (self.to.index() as u16) << 2;
+        if let Some(pt) = self.promotion {
+            packed |= (pt as u16 - PieceType::Knight as u16) & 0b11;
+        }
+        packed
+    }
+
+    fn is_tactical(&self, pos: &Position) -> bool {
+        if self.is_null {
+            return false;
+        }
+        if self.promotion.is_some() {
+            return true;
+        }
+        if pos.piece_at(self.to) != Piece::None {
+            return true;
+        }
+        let mover = pos.piece_at(self.from);
+        match mover.ptype() {
+            Some(PieceType::Pawn) => self.from.file() != self.to.file(),
+            Some(PieceType::King) => {
+                (self.from.file() as i32 - self.to.file() as i32).abs() == 2
+            }
+            _ => false,
+        }
     }
 }
 
-#[derive(Clone)]
+fn signed_to_unsigned(value: i16) -> u16 {
+    let bits = value as u16;
+    if bits & 0x8000 != 0 {
+        (bits ^ 0x7FFF).rotate_left(1)
+    } else {
+        bits.rotate_left(1)
+    }
+}
+
 struct Entry {
     pos: Position,
-    mv: PackedMove,
+    mv: UciMove,
     score: i16,
     ply: u16,
     result: i16,
+    rule50: u16,
+}
+
+impl Entry {
+    fn chain_bytes(&self) -> [u8; 34] {
+        let mut out = [0u8; 34];
+        out[0..24].copy_from_slice(&self.pos.compress_position());
+        out[24..26].copy_from_slice(&self.mv.compress().to_be_bytes());
+        out[26..28].copy_from_slice(&signed_to_unsigned(self.score).to_be_bytes());
+        let pr = signed_to_unsigned(self.result) << 14 | (self.ply & 0x3FFF);
+        out[28..30].copy_from_slice(&pr.to_be_bytes());
+        out[30..32].copy_from_slice(&self.rule50.to_be_bytes());
+        out[32..34].copy_from_slice(&0u16.to_be_bytes());
+        out
+    }
 }
 
 struct ChunkWriter {
-    entries: Vec<Entry>,
-    current_size: usize,
+    buf: Vec<u8>,
 }
 
 impl ChunkWriter {
     fn new() -> Self {
-        ChunkWriter {
-            entries: Vec::new(),
-            current_size: 8,
-        }
+        ChunkWriter { buf: Vec::new() }
     }
 
     fn add_entry(&mut self, entry: &Entry) {
-        let entry_size = 32 + 4 + 2 + 2 + 2;
-        self.entries.push(entry.clone());
-        self.current_size += entry_size;
+        self.buf.extend_from_slice(&entry.chain_bytes());
     }
 
     fn is_full(&self) -> bool {
-        self.current_size >= CHUNK_TARGET_SIZE && !self.entries.is_empty()
+        self.buf.len() >= CHUNK_TARGET_BYTES
     }
 
-    fn write_to<W: Write + Seek>(&mut self, out: &mut W) -> std::io::Result<()> {
-        if self.entries.is_empty() {
+    fn write_to<W: Write>(&mut self, out: &mut W) -> std::io::Result<()> {
+        if self.buf.is_empty() {
             return Ok(());
         }
-
-        let chunk_start = out.stream_position()?;
         out.write_all(MAGIC)?;
-        let size_pos = out.stream_position()?;
-        out.write_all(&[0u8; 4])?;
-
-        let mut chain_data: Vec<u8> = Vec::new();
-
-        for entry in &self.entries {
-            let packed = entry.pos.pack_sfen();
-            chain_data.extend_from_slice(&packed);
-
-            chain_data.extend_from_slice(&1u32.to_le_bytes());
-
-            chain_data.extend_from_slice(&entry.mv.to_bytes());
-            chain_data.extend_from_slice(&entry.score.to_le_bytes());
-            chain_data.extend_from_slice(&entry.ply.to_le_bytes());
-            chain_data.extend_from_slice(&entry.result.to_le_bytes());
-        }
-
-        let chunk_size = chain_data.len() as u32;
-        out.seek(SeekFrom::Start(size_pos))?;
-        out.write_all(&chunk_size.to_le_bytes())?;
-        out.seek(SeekFrom::Start(chunk_start + 8))?;
-
-        out.write_all(&chain_data)?;
-
-        self.entries.clear();
-        self.current_size = 8;
+        out.write_all(&(self.buf.len() as u32).to_le_bytes())?;
+        out.write_all(&self.buf)?;
+        self.buf.clear();
         Ok(())
     }
 }
@@ -373,13 +588,16 @@ fn main() {
 
     let mut chunk = ChunkWriter::new();
     let mut count: u64 = 0;
-    let mut skipped: u64 = 0;
+    let mut skipped_check = 0u64;
+    let mut skipped_tactical = 0u64;
+    let mut skipped_score = 0u64;
+    let mut skipped_malformed = 0u64;
 
     for line in reader.lines() {
         let line = match line {
             Ok(l) => l,
             Err(_) => {
-                skipped += 1;
+                skipped_malformed += 1;
                 continue;
             }
         };
@@ -390,17 +608,31 @@ fn main() {
         }
 
         let parts: Vec<&str> = trimmed.split('\t').collect();
-        if parts.len() < 3 {
-            skipped += 1;
+        if parts.len() < 6 {
+            skipped_malformed += 1;
             continue;
         }
 
         let fen = parts[0];
-        let _score_type = parts[1];
         let score_val: i32 = match parts[2].parse() {
             Ok(v) => v,
             Err(_) => {
-                skipped += 1;
+                skipped_malformed += 1;
+                continue;
+            }
+        };
+        let bestmove_str = parts[3];
+        let ply: u16 = match parts[4].parse() {
+            Ok(v) => v,
+            Err(_) => {
+                skipped_malformed += 1;
+                continue;
+            }
+        };
+        let result: i16 = match parts[5].parse::<i16>() {
+            Ok(v) => v.clamp(-1, 1),
+            Err(_) => {
+                skipped_malformed += 1;
                 continue;
             }
         };
@@ -408,24 +640,36 @@ fn main() {
         let pos = match Position::from_fen(fen) {
             Some(p) => p,
             None => {
-                skipped += 1;
+                skipped_malformed += 1;
                 continue;
             }
         };
 
+        if pos.in_check(pos.side_to_move).unwrap_or(true) {
+            skipped_check += 1;
+            continue;
+        }
+
+        if score_val.abs() > MAX_SCORE_ABS {
+            skipped_score += 1;
+            continue;
+        }
+
+        let mv = UciMove::parse(bestmove_str);
+        if mv.is_tactical(&pos) {
+            skipped_tactical += 1;
+            continue;
+        }
+
         let score = score_val.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-        let mv = if parts.len() >= 4 && !parts[3].is_empty() && parts[3] != "0000" {
-            PackedMove::from_uci(parts[3])
-        } else {
-            PackedMove::null()
-        };
 
         let entry = Entry {
             pos,
             mv,
             score,
-            ply: 0,
-            result: 0,
+            ply,
+            result,
+            rule50: pos.halfmove_clock,
         };
 
         if chunk.is_full() {
@@ -446,5 +690,7 @@ fn main() {
 
     out_file.flush().unwrap();
 
-    println!("binpack_writer: wrote {count} entries, skipped {skipped} -> {output_path}");
+    println!(
+        "binpack_writer: wrote {count} entries (check {skipped_check}, tactical {skipped_tactical}, score {skipped_score}, malformed {skipped_malformed}) -> {output_path}"
+    );
 }

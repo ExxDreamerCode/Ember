@@ -256,9 +256,14 @@ def iter_fens(input_globs: list[str]):
         log(f"reading {path}")
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             for i, line in enumerate(f, 1):
-                fen = line.rstrip("\n")
-                if fen:
-                    yield path, i, fen
+                line = line.rstrip("\n")
+                if not line:
+                    continue
+                parts = line.split("\t")
+                fen = parts[0]
+                ply = parts[1] if len(parts) > 1 else "0"
+                result = parts[2] if len(parts) > 2 else "0"
+                yield path, i, fen, ply, result
 
 
 class ChunkWriter:
@@ -324,7 +329,7 @@ def worker_loop(
             if not task_queue:
                 break
             task = task_queue.popleft()
-        src, lineno, fen = task
+        src, lineno, fen, ply, result = task
 
         score_type, score_val, nodes, best_move = ember.score_fen(fen)
         if score_type is None:
@@ -343,7 +348,7 @@ def worker_loop(
                 continue
 
         bm = best_move if best_move else "0000"
-        record = f"{fen}\t{score_type}\t{score_val}\t{bm}"
+        record = f"{fen}\t{score_type}\t{score_val}\t{bm}\t{ply}\t{result}"
         writer.write(record)
         processed += 1
         with stats_lock:

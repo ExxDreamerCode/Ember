@@ -28,7 +28,7 @@ def log(msg: str) -> None:
 def strip_clock_fields(fen: str) -> str:
     parts = fen.split()
     if len(parts) >= 6:
-        return " ".join(parts[:4] + ["-", "-"])
+        return " ".join(parts[:4])
     return fen
 
 
@@ -38,28 +38,21 @@ def fen_key(fen: str, strip_clocks: bool) -> str:
     return fen
 
 
-def epd_from_fen(fen: str) -> str:
-    parts = fen.split()
-    if len(parts) >= 6:
-        return " ".join(parts[:4] + [parts[4], parts[5]])
-    return fen
-
-
-def legal_plies(board: chess.Board, max_ply: int) -> Iterator[str]:
-    ply = 0
-    while not board.is_game_over(claim_draw=True) and ply < max_ply:
-        moves = list(board.legal_moves)
-        if not moves:
-            break
-        board.push(moves[0])
-        yield board.fen()
-        ply += 1
+def result_to_stm(result_tag: str, stm_white: bool) -> Optional[int]:
+    if result_tag == "1-0":
+        return 1 if stm_white else -1
+    if result_tag == "0-1":
+        return -1 if stm_white else 1
+    if result_tag == "1/2-1/2":
+        return 0
+    return None
 
 
 def scan_pgn_file(path: Path, out_dir: Path, strip_clocks: bool, max_ply: int,
                   batch_lines: int = BATCH_LINES) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     total = 0
+    skipped = 0
     batch: list[str] = []
     batch_idx = 0
 
@@ -69,8 +62,8 @@ def scan_pgn_file(path: Path, out_dir: Path, strip_clocks: bool, max_ply: int,
             return
         chunk_path = out_dir / f"chunk_{os.getpid()}_{threading.get_ident()}_{batch_idx:06d}.fen"
         with open(chunk_path, "w", encoding="utf-8") as f:
-            for fen in batch:
-                f.write(fen)
+            for line in batch:
+                f.write(line)
                 f.write("\n")
         batch_idx += 1
         batch = []
@@ -81,12 +74,18 @@ def scan_pgn_file(path: Path, out_dir: Path, strip_clocks: bool, max_ply: int,
                 game = chess.pgn.read_game(fh)
                 if game is None:
                     break
+                result_tag = game.headers.get("Result", "*")
                 board = game.board()
                 for move in game.mainline_moves():
                     board.push(move)
                     fen = board.fen()
                     key = fen_key(fen, strip_clocks)
-                    batch.append(key)
+                    stm_white = board.turn
+                    result = result_to_stm(result_tag, stm_white)
+                    if result is None:
+                        skipped += 1
+                        continue
+                    batch.append(f"{fen}\t{board.ply()}\t{result}")
                     total += 1
                     if len(batch) >= batch_lines:
                         flush()
@@ -95,10 +94,10 @@ def scan_pgn_file(path: Path, out_dir: Path, strip_clocks: bool, max_ply: int,
     except Exception as exc:
         log(f"WARNING: failed to scan {path}: {exc}")
     flush()
-    return total
+    return total, skipped
 
 
-def scan_worker(args: tuple[str, str, bool, int, int]) -> int:
+def scan_worker(args: tuple[str, str, bool, int, int]) -> tuple[int, int]:
     path, out_dir, strip_clocks, max_ply, batch_lines = args
     return scan_pgn_file(Path(path), Path(out_dir), strip_clocks, max_ply, batch_lines)
 
@@ -120,18 +119,21 @@ def cmd_scan(args: argparse.Namespace) -> int:
     ]
 
     total = 0
+    skipped = 0
     with ProcessPoolExecutor(max_workers=args.workers) as ex:
         futures = [ex.submit(scan_worker, t) for t in tasks]
         for fut in as_completed(futures):
-            n = fut.result()
+            n, s = fut.result()
             total += n
+            skipped += s
             log(f"Scanned positions so far: {total:,}")
 
-    log(f"SCAN done: {total:,} raw positions written to {tmp}")
+    log(f"SCAN done: {total:,} raw positions written to {tmp} ({skipped:,} skipped without result)")
     return 0
 
 
-def external_sort_files(files: list[Path], out_path: Path, chunk_lines: int = 5_000_000) -> None:
+def external_sort_files(files: list[Path], out_path: Path, strip_clocks: bool,
+                        chunk_lines: int = 5_000_000) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     run_files: list[Path] = []
 
@@ -146,7 +148,7 @@ def external_sort_files(files: list[Path], out_path: Path, chunk_lines: int = 5_
                     continue
                 chunk.append(fen)
                 if len(chunk) >= chunk_lines:
-                    chunk.sort()
+                    chunk.sort(key=lambda s: fen_key(s.split("\t")[0], strip_clocks))
                     run = src.parent / f"run_{src.stem}_{run_idx:06d}.tmp"
                     with open(run, "w", encoding="utf-8") as rf:
                         rf.write("\n".join(chunk))
@@ -155,7 +157,7 @@ def external_sort_files(files: list[Path], out_path: Path, chunk_lines: int = 5_
                     run_idx += 1
                     chunk = []
             if chunk:
-                chunk.sort()
+                chunk.sort(key=lambda s: fen_key(s.split("\t")[0], strip_clocks))
                 run = src.parent / f"run_{src.stem}_{run_idx:06d}.tmp"
                 with open(run, "w", encoding="utf-8") as rf:
                     rf.write("\n".join(chunk))
@@ -163,17 +165,21 @@ def external_sort_files(files: list[Path], out_path: Path, chunk_lines: int = 5_
                 run_files.append(run)
 
     log(f"Merging {len(run_files)} sorted runs -> {out_path}")
-    seen: Optional[str] = None
+    seen_key: Optional[str] = None
     written = 0
+    skipped_dup = 0
     with open(out_path, "w", encoding="utf-8") as out:
         handles = [open(r, "r", encoding="utf-8") for r in run_files]
         try:
-            for fen in heapq.merge(*handles, key=lambda s: s.rstrip("\n")):
-                fen = fen.rstrip("\n")
-                if fen == seen:
+            for line in heapq.merge(*handles,
+                                    key=lambda s: fen_key(s.split("\t")[0], strip_clocks)):
+                line = line.rstrip("\n")
+                key = fen_key(line.split("\t")[0], strip_clocks)
+                if key == seen_key:
+                    skipped_dup += 1
                     continue
-                seen = fen
-                out.write(fen)
+                seen_key = key
+                out.write(line)
                 out.write("\n")
                 written += 1
         finally:
@@ -185,7 +191,7 @@ def external_sort_files(files: list[Path], out_path: Path, chunk_lines: int = 5_
             except OSError:
                 pass
 
-    log(f"SORT+UNIQ done: {written:,} unique positions in {out_path}")
+    log(f"SORT+UNIQ done: {written:,} unique positions in {out_path} ({skipped_dup:,} dupes removed)")
 
 
 def cmd_sort(args: argparse.Namespace) -> int:
@@ -198,7 +204,7 @@ def cmd_sort(args: argparse.Namespace) -> int:
         sys.exit(f"No .fen chunk files found in {tmp}")
 
     merged = tmp / "merged_unique.fen"
-    external_sort_files(chunk_files, merged, chunk_lines=5_000_000)
+    external_sort_files(chunk_files, merged, args.strip_clocks, chunk_lines=5_000_000)
 
     chunk_gb = args.chunk_gb
     chunk_bytes = int(chunk_gb * 1024 * 1024 * 1024)
@@ -214,8 +220,8 @@ def cmd_sort(args: argparse.Namespace) -> int:
     try:
         with open(merged, "r", encoding="utf-8") as f:
             for line in f:
-                fen = line.rstrip("\n")
-                if not fen:
+                line = line.rstrip("\n")
+                if not line:
                     continue
                 if current is None:
                     current = open_part(part_idx)
@@ -228,9 +234,10 @@ def cmd_sort(args: argparse.Namespace) -> int:
                     part_idx += 1
                     current_size = 0
                     log(f"Writing chunk {part_idx-1}")
-                current.write(fen)
+                current.write(line)
                 current.write("\n")
-                current_size += len(fen.encode("utf-8")) + 1
+                current_size += len(line.encode("utf-8")) + 1
+                written += 1
     finally:
         if current is not None:
             current.close()
@@ -263,7 +270,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     default_out = str(Path("results/Datagen/fens"))
 
-    sp_scan = sub.add_parser("scan", help="Scan PGN/EPD files, emit raw FEN chunks")
+    sp_scan = sub.add_parser("scan", help="Scan PGN/EPD files, emit raw FEN chunks with ply and result")
     sp_scan.add_argument("--src", required=True, help="Directory with .pgn/.epd files")
     sp_scan.add_argument("--tmp", required=True, help="Temp dir for chunk files")
     sp_scan.add_argument("--workers", type=int, default=os.cpu_count() or 8)
