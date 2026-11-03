@@ -189,3 +189,6 @@ pub(crate) use state::endgame_mopup_opt_in;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod eval_reuse_tests;

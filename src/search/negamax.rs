@@ -323,6 +323,8 @@ macro_rules! negamax_mode_body {
         #[cfg(feature = "search-debug")]
         $this.record_debug_dag_eval(h, eval_score);
 
+        // Reusable only for this immediate leaf handoff; any LDSE attempt invalidates it.
+        let mut precomputed_eval = Some(eval_score);
         let mut ldse_probed = false;
         if LDSE
             && !is_pv
@@ -344,6 +346,8 @@ macro_rules! negamax_mode_body {
                     eval_score,
                     $this.singular_ldse_used_on_line($ply),
                 ) {
+                    // Clear before attempting the move, even if illegal or later rejected.
+                    precomputed_eval = None;
                     let st_before = *$st;
                     let mv = ldse.mv;
                     let legal = try_apply_move_mode::<CHESS960>($st, mv);
@@ -435,7 +439,7 @@ macro_rules! negamax_mode_body {
         }
         if actual_depth <= 0 {
             return $this.$qsearch_mode::<CHESS960, NODE_LIMITED, E>(
-                $st, $alpha, beta, QS_DEPTH, $cnt, $ply, $eval,
+                $st, $alpha, beta, QS_DEPTH, $cnt, $ply, $eval, precomputed_eval,
             );
         }
 
@@ -483,6 +487,7 @@ macro_rules! negamax_mode_body {
                     $cnt,
                     $ply,
                     $eval,
+                        None,
                 );
                 if q + margin <= $alpha {
                     #[cfg(feature = "search-debug")]
@@ -744,6 +749,7 @@ macro_rules! negamax_mode_body {
                         $cnt,
                         $ply + 1,
                         $eval,
+                        None,
                     );
                     let mut full_search_score = None;
                     if qsearch_score >= candidate.beta && !$this.stopped.load(Ordering::Relaxed) {
