@@ -6,7 +6,7 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex};
 use std::thread;
 
 use chess::{Board, ChessMove, Color};
@@ -16,7 +16,10 @@ const RUN_LINES: usize = 5_000_000;
 const CHUNK_BYTES_DEFAULT: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_PLY_DEFAULT: u32 = 256;
 
+static LOG_MUTEX: Mutex<()> = Mutex::new(());
+
 fn log(msg: &str) {
+    let _guard = LOG_MUTEX.lock().unwrap();
     println!("[fen_db] {msg}");
     let _ = std::io::stdout().flush();
 }
