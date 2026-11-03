@@ -94,7 +94,7 @@ fn parse_pgn_moves(text: &str) -> Option<(&str, Vec<String>)> {
         let cleaned = remove_comments(line);
         for token in cleaned.split_whitespace() {
             let t = token.trim_end_matches(['!', '?', '+', '#']);
-            let t = t.trim_end_matches("e.p.");
+            let t = t.strip_suffix("e.p.").unwrap_or(t);
             if t.is_empty() || t == "1-0" || t == "0-1" || t == "1/2-1/2" || t == "*" {
                 continue;
             }
@@ -132,7 +132,7 @@ fn flush_batch(batch: &mut Vec<String>, batch_idx: &mut u64, out_dir: &Path) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn process_game(
+fn process_game_inner(
     current_game: &str,
     batch: &mut Vec<String>,
     batch_idx: &mut u64,
@@ -141,15 +141,18 @@ fn process_game(
     max_ply: u32,
     total: &mut u64,
     skipped: &mut u64,
+    game_num: u64,
 ) {
     if let Some((result_tag, san_moves)) = parse_pgn_moves(current_game) {
         let mut board = Board::default();
         let mut ply: u32 = 0;
+        let game_start = std::time::Instant::now();
 
         for san in &san_moves {
             if ply >= max_ply {
                 break;
             }
+            let san_start = std::time::Instant::now();
             match ChessMove::from_san(&board, san) {
                 Ok(mv) => {
                     board = board.make_move_new(mv);
@@ -174,7 +177,64 @@ fn process_game(
                 }
                 Err(_) => break,
             }
+            let san_elapsed = san_start.elapsed();
+            if san_elapsed.as_millis() > 100 {
+                eprintln!(
+                    "SLOW SAN: ply={}, san='{}', took={} ms",
+                    ply,
+                    san,
+                    san_elapsed.as_millis()
+                );
+            }
         }
+        let elapsed = game_start.elapsed();
+        if elapsed.as_secs_f64() > 1.0 {
+            eprintln!(
+                "SLOW GAME #{}: {:?} ms, san_count={}, game=\n{}",
+                game_num,
+                elapsed.as_millis(),
+                san_moves.len(),
+                current_game
+            );
+        }
+    } else {
+        eprintln!("WARNING: game #{}: parse error, skipping", game_num);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_game(
+    current_game: &str,
+    batch: &mut Vec<String>,
+    batch_idx: &mut u64,
+    out_dir: &Path,
+    strip_clocks: bool,
+    max_ply: u32,
+    total: &mut u64,
+    skipped: &mut u64,
+    game_num: &mut u64,
+) {
+    *game_num += 1;
+    let game_start = std::time::Instant::now();
+    process_game_inner(
+        current_game,
+        batch,
+        batch_idx,
+        out_dir,
+        strip_clocks,
+        max_ply,
+        total,
+        skipped,
+        *game_num,
+    );
+    let elapsed = game_start.elapsed();
+    if elapsed.as_secs_f64() > 0.5 {
+        eprintln!(
+            "SLOW GAME #{}: {:?} ms, {} san moves",
+            game_num,
+            elapsed.as_millis(),
+            current_game.lines().count()
+        );
     }
 }
 
@@ -188,15 +248,36 @@ fn scan_pgn_file(path: &Path, out_dir: &Path, strip_clocks: bool, max_ply: u32) 
     let mut batch: Vec<String> = Vec::with_capacity(BATCH_LINES);
     let mut batch_idx: u64 = 0;
     let mut seen_moves: bool = false;
+    let mut game_count: u64 = 0;
+    let mut line_count: u64 = 0;
 
     for line in reader.lines() {
+        line_count += 1;
+        if line_count.is_multiple_of(10000) {
+            log(&format!(
+                "Read {} lines, {} games, {} positions",
+                line_count, game_count, total
+            ));
+        }
         let line = match line {
             Ok(l) => l,
-            Err(_) => continue,
+            Err(e) => {
+                eprintln!(
+                    "scan_pgn_file: read error at line {line_count}: {e}; stopping file scan"
+                );
+                break;
+            }
         };
         let trimmed = line.trim();
         if trimmed.is_empty() {
             if !current_game.is_empty() && seen_moves {
+                game_count += 1;
+                if game_count.is_multiple_of(1000) {
+                    log(&format!(
+                        "Processed {} games, {} positions",
+                        game_count, total
+                    ));
+                }
                 process_game(
                     &current_game,
                     &mut batch,
@@ -206,6 +287,7 @@ fn scan_pgn_file(path: &Path, out_dir: &Path, strip_clocks: bool, max_ply: u32) 
                     max_ply,
                     &mut total,
                     &mut skipped,
+                    &mut game_count,
                 );
                 current_game.clear();
                 seen_moves = false;
@@ -219,6 +301,7 @@ fn scan_pgn_file(path: &Path, out_dir: &Path, strip_clocks: bool, max_ply: u32) 
         }
     }
     if !current_game.is_empty() {
+        game_count += 1;
         process_game(
             &current_game,
             &mut batch,
@@ -228,9 +311,14 @@ fn scan_pgn_file(path: &Path, out_dir: &Path, strip_clocks: bool, max_ply: u32) 
             max_ply,
             &mut total,
             &mut skipped,
+            &mut game_count,
         );
     }
     flush_batch(&mut batch, &mut batch_idx, out_dir);
+    log(&format!(
+        "Finished file: {} games, {} positions",
+        game_count, total
+    ));
     (total, skipped)
 }
 
@@ -293,7 +381,6 @@ fn sort_and_dedup(tmp_dirs: &[PathBuf], out_dir: &Path, strip_clocks: bool, chun
             chunk_files.len()
         ));
         let mut chunk: Vec<String> = Vec::with_capacity(RUN_LINES);
-        let mut run_idx: u64 = 0;
         let f = File::open(src).expect("failed to open chunk file");
         let r = BufReader::new(f);
         for line in r.lines() {
@@ -308,18 +395,17 @@ fn sort_and_dedup(tmp_dirs: &[PathBuf], out_dir: &Path, strip_clocks: bool, chun
             if chunk.len() >= RUN_LINES {
                 sort_by_key(&mut chunk, strip_clocks);
                 let target_dir = &tmp_dirs[(run_idx_global % tmp_dirs.len() as u64) as usize];
+                let run = target_dir.join(format!("run_{:06}.tmp", run_idx_global));
                 run_idx_global += 1;
-                let run = target_dir.join(format!("run_{:06}.tmp", run_idx));
                 write_sorted_run(&mut chunk, &run);
                 run_files.push(run);
-                run_idx += 1;
             }
         }
         if !chunk.is_empty() {
             sort_by_key(&mut chunk, strip_clocks);
             let target_dir = &tmp_dirs[(run_idx_global % tmp_dirs.len() as u64) as usize];
+            let run = target_dir.join(format!("run_{:06}.tmp", run_idx_global));
             run_idx_global += 1;
-            let run = target_dir.join(format!("run_{:06}.tmp", run_idx));
             write_sorted_run(&mut chunk, &run);
             run_files.push(run);
         }
@@ -333,18 +419,27 @@ fn sort_and_dedup(tmp_dirs: &[PathBuf], out_dir: &Path, strip_clocks: bool, chun
 
     log("Merging sorted runs -> output chunks");
     let mut all_lines: Vec<String> = Vec::new();
+    let mut run_lines_total: u64 = 0;
     for r in &run_files {
         let f = File::open(r).expect("failed to open run file");
         let br = BufReader::new(f);
         for l in br.lines().map_while(Result::ok) {
             if !l.is_empty() {
                 all_lines.push(l);
+                run_lines_total += 1;
             }
         }
         let _ = fs::remove_file(r);
+        log(&format!(
+            "Read {} lines from runs ({} total)",
+            run_lines_total,
+            run_files.len()
+        ));
     }
 
+    log(&format!("Sorting {} unique lines...", all_lines.len()));
     sort_by_key(&mut all_lines, strip_clocks);
+    log("Sort complete, writing output chunks...");
 
     let chunk_bytes = (chunk_gb * 1024.0 * 1024.0 * 1024.0) as u64;
     let mut part_idx: u64 = 0;
@@ -377,6 +472,9 @@ fn sort_and_dedup(tmp_dirs: &[PathBuf], out_dir: &Path, strip_clocks: bool, chun
         writeln!(w, "{line}").unwrap();
         current_size += line.len() as u64 + 1;
         written += 1;
+        if written.is_multiple_of(500_000) {
+            log(&format!("Written {} positions...", written));
+        }
     }
 
     if let Some(mut w) = current.take() {
