@@ -112,10 +112,17 @@ fn parse_pgn_moves(text: &str) -> Option<(&str, Vec<String>)> {
     }
 }
 
-fn flush_batch(batch: &mut Vec<String>, batch_idx: &mut u64, out_dir: &Path) {
+fn flush_batch(
+    batch: &mut Vec<String>,
+    batch_idx: &mut u64,
+    out_dirs: &[PathBuf],
+    dir_idx: &mut usize,
+) {
     if batch.is_empty() {
         return;
     }
+    let out_dir = &out_dirs[*dir_idx % out_dirs.len()];
+    *dir_idx += 1;
     let chunk_path = out_dir.join(format!(
         "chunk_{}_{:06}.fen",
         std::process::id(),
@@ -136,7 +143,8 @@ fn process_game_inner(
     current_game: &str,
     batch: &mut Vec<String>,
     batch_idx: &mut u64,
-    out_dir: &Path,
+    out_dirs: &[PathBuf],
+    dir_idx: &mut usize,
     strip_clocks: bool,
     max_ply: u32,
     total: &mut u64,
@@ -172,7 +180,7 @@ fn process_game_inner(
                     batch.push(format!("{key}\t{ply}\t{}", result.unwrap()));
                     *total += 1;
                     if batch.len() >= BATCH_LINES {
-                        flush_batch(batch, batch_idx, out_dir);
+                        flush_batch(batch, batch_idx, out_dirs, dir_idx);
                     }
                 }
                 Err(_) => break,
@@ -207,7 +215,8 @@ fn process_game(
     current_game: &str,
     batch: &mut Vec<String>,
     batch_idx: &mut u64,
-    out_dir: &Path,
+    out_dirs: &[PathBuf],
+    dir_idx: &mut usize,
     strip_clocks: bool,
     max_ply: u32,
     total: &mut u64,
@@ -220,7 +229,8 @@ fn process_game(
         current_game,
         batch,
         batch_idx,
-        out_dir,
+        out_dirs,
+        dir_idx,
         strip_clocks,
         max_ply,
         total,
@@ -238,8 +248,16 @@ fn process_game(
     }
 }
 
-fn scan_pgn_file(path: &Path, out_dir: &Path, strip_clocks: bool, max_ply: u32) -> (u64, u64) {
-    fs::create_dir_all(out_dir).unwrap();
+fn scan_pgn_file(
+    path: &Path,
+    tmp_dirs: &[PathBuf],
+    dir_idx: &mut usize,
+    strip_clocks: bool,
+    max_ply: u32,
+) -> (u64, u64) {
+    for d in tmp_dirs {
+        fs::create_dir_all(d).unwrap();
+    }
     let mut total: u64 = 0;
     let mut skipped: u64 = 0;
     let reader = open_pgn_reader(path);
@@ -282,7 +300,8 @@ fn scan_pgn_file(path: &Path, out_dir: &Path, strip_clocks: bool, max_ply: u32) 
                     &current_game,
                     &mut batch,
                     &mut batch_idx,
-                    out_dir,
+                    tmp_dirs,
+                    dir_idx,
                     strip_clocks,
                     max_ply,
                     &mut total,
@@ -306,7 +325,8 @@ fn scan_pgn_file(path: &Path, out_dir: &Path, strip_clocks: bool, max_ply: u32) 
             &current_game,
             &mut batch,
             &mut batch_idx,
-            out_dir,
+            tmp_dirs,
+            dir_idx,
             strip_clocks,
             max_ply,
             &mut total,
@@ -314,7 +334,7 @@ fn scan_pgn_file(path: &Path, out_dir: &Path, strip_clocks: bool, max_ply: u32) 
             &mut game_count,
         );
     }
-    flush_batch(&mut batch, &mut batch_idx, out_dir);
+    flush_batch(&mut batch, &mut batch_idx, tmp_dirs, dir_idx);
     log(&format!(
         "Finished file: {} games, {} positions",
         game_count, total
@@ -570,12 +590,14 @@ fn main() {
             ));
 
             let (tx, rx) = mpsc::channel();
-            for (i, p) in pgn_files.iter().enumerate() {
+            for p in pgn_files.iter() {
                 let tx = tx.clone();
-                let out_dir = tmp_dirs[i % tmp_dirs.len()].clone();
+                let tmp_dirs = tmp_dirs.clone();
+                let mut dir_idx: usize = 0;
                 let p = p.clone();
                 thread::spawn(move || {
-                    let (total, skipped) = scan_pgn_file(&p, &out_dir, strip_clocks, max_ply);
+                    let (total, skipped) =
+                        scan_pgn_file(&p, &tmp_dirs, &mut dir_idx, strip_clocks, max_ply);
                     tx.send((total, skipped)).unwrap();
                 });
             }
