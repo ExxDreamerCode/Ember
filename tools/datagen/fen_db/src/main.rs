@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 use std::env;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
@@ -382,6 +384,61 @@ fn sort_by_key(lines: &mut [String], strip_clocks: bool) {
     lines.sort_by_key(|a| line_key(a, strip_clocks));
 }
 
+#[derive(Eq)]
+struct HeapItem {
+    key: String,
+    line: String,
+    reader_idx: usize,
+}
+
+impl Ord for HeapItem {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.key.cmp(&self.key)
+    }
+}
+
+impl PartialOrd for HeapItem {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for HeapItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+    }
+}
+
+fn sort_state_path(out_dir: &Path) -> PathBuf {
+    out_dir.join("sort.state")
+}
+
+fn save_sort_state(out_dir: &Path, processed: &[String], run_idx: u64) {
+    let path = sort_state_path(out_dir);
+    if let Ok(mut f) = File::create(&path) {
+        for p in processed {
+            let _ = writeln!(f, "{p}");
+        }
+        let _ = writeln!(f, "RUN_IDX:{}", run_idx);
+    }
+}
+
+fn load_sort_state(out_dir: &Path) -> (Vec<String>, u64) {
+    let path = sort_state_path(out_dir);
+    let mut processed: Vec<String> = Vec::new();
+    let mut run_idx: u64 = 0;
+    if let Ok(content) = fs::read_to_string(&path) {
+        for line in content.lines() {
+            if let Some(rest) = line.strip_prefix("RUN_IDX:") {
+                run_idx = rest.trim().parse().unwrap_or(0);
+            } else if !line.is_empty() {
+                processed.push(line.to_string());
+            }
+        }
+    }
+    (processed, run_idx)
+}
+
 fn sort_and_dedup(tmp_dirs: &[PathBuf], out_dir: &Path, strip_clocks: bool, chunk_gb: f64) {
     fs::create_dir_all(out_dir).unwrap();
     let chunk_files = collect_chunk_files(tmp_dirs);
@@ -391,9 +448,30 @@ fn sort_and_dedup(tmp_dirs: &[PathBuf], out_dir: &Path, strip_clocks: bool, chun
     }
     log(&format!("Found {} chunk files", chunk_files.len()));
 
+    let (mut processed_chunks, mut run_idx_global) = load_sort_state(out_dir);
+    let processed_set: std::collections::HashSet<String> =
+        processed_chunks.iter().cloned().collect();
+
     let mut run_files: Vec<PathBuf> = Vec::new();
-    let mut run_idx_global: u64 = 0;
+    for d in tmp_dirs {
+        if let Ok(entries) = fs::read_dir(d) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|e| e.to_str()) == Some("tmp") {
+                    if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                        if name.starts_with("run_") {
+                            run_files.push(p);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     for (file_idx, src) in chunk_files.iter().enumerate() {
+        if processed_set.contains(src.to_str().unwrap_or("")) {
+            continue;
+        }
         log(&format!(
             "Sorting runs from {} ({}/{})",
             src.display(),
@@ -429,6 +507,8 @@ fn sort_and_dedup(tmp_dirs: &[PathBuf], out_dir: &Path, strip_clocks: bool, chun
             write_sorted_run(&mut chunk, &run);
             run_files.push(run);
         }
+        processed_chunks.push(src.to_str().unwrap_or("").to_string());
+        save_sort_state(out_dir, &processed_chunks, run_idx_global);
     }
 
     log(&format!(
@@ -437,29 +517,94 @@ fn sort_and_dedup(tmp_dirs: &[PathBuf], out_dir: &Path, strip_clocks: bool, chun
         tmp_dirs.len()
     ));
 
-    log("Merging sorted runs -> output chunks");
-    let mut all_lines: Vec<String> = Vec::new();
-    let mut run_lines_total: u64 = 0;
-    for r in &run_files {
-        let f = File::open(r).expect("failed to open run file");
-        let br = BufReader::new(f);
-        for l in br.lines().map_while(Result::ok) {
-            if !l.is_empty() {
-                all_lines.push(l);
-                run_lines_total += 1;
+    log("Merging sorted runs -> output chunks (batched k-way merge)...");
+
+    const BATCH_SIZE: usize = 200;
+
+    run_files.sort();
+
+    let mut batch_files: Vec<PathBuf> = Vec::new();
+    for batch_start in (0..run_files.len()).step_by(BATCH_SIZE) {
+        let batch_end = std::cmp::min(batch_start + BATCH_SIZE, run_files.len());
+        let batch: Vec<&PathBuf> = run_files[batch_start..batch_end].iter().collect();
+        let batch_out_path =
+            tmp_dirs[0].join(format!("merged_batch_{:06}.tmp", batch_start / BATCH_SIZE));
+        log(&format!(
+            "Merging batch {}/{} ({} run files)",
+            batch_start / BATCH_SIZE + 1,
+            run_files.len().div_ceil(BATCH_SIZE),
+            batch.len()
+        ));
+
+        let mut readers: Vec<BufReader<File>> = Vec::new();
+        for r in &batch {
+            let f = File::open(r).expect("failed to open run file");
+            readers.push(BufReader::new(f));
+        }
+
+        let mut heap: BinaryHeap<HeapItem> = BinaryHeap::new();
+        for (i, r) in readers.iter_mut().enumerate() {
+            let mut line = String::new();
+            if r.read_line(&mut line).unwrap_or(0) > 0 {
+                let line = line.trim_end().to_string();
+                if !line.is_empty() {
+                    let key = line_key(&line, strip_clocks);
+                    heap.push(HeapItem {
+                        key,
+                        line,
+                        reader_idx: i,
+                    });
+                }
             }
         }
-        let _ = fs::remove_file(r);
+
+        let mut batch_out =
+            BufWriter::new(File::create(&batch_out_path).expect("failed to create batch output"));
+        let mut batch_written: u64 = 0;
+        let mut prev_key: Option<String> = None;
+
+        while let Some(item) = heap.pop() {
+            let key = item.key;
+            let line = item.line;
+            let reader_idx = item.reader_idx;
+
+            if prev_key.as_ref() == Some(&key) {
+            } else {
+                prev_key = Some(key.clone());
+                writeln!(batch_out, "{line}").unwrap();
+                batch_written += 1;
+            }
+
+            let r = &mut readers[reader_idx];
+            let mut next_line = String::new();
+            if r.read_line(&mut next_line).unwrap_or(0) > 0 {
+                let next_line = next_line.trim_end().to_string();
+                if !next_line.is_empty() {
+                    let next_key = line_key(&next_line, strip_clocks);
+                    heap.push(HeapItem {
+                        key: next_key,
+                        line: next_line,
+                        reader_idx,
+                    });
+                }
+            }
+        }
+
+        batch_out.flush().unwrap();
+        drop(batch_out);
+        batch_files.push(batch_out_path);
         log(&format!(
-            "Read {} lines from runs ({} total)",
-            run_lines_total,
-            run_files.len()
+            "Batch {} written: {} positions",
+            batch_start / BATCH_SIZE + 1,
+            batch_written
         ));
     }
 
-    log(&format!("Sorting {} unique lines...", all_lines.len()));
-    sort_by_key(&mut all_lines, strip_clocks);
-    log("Sort complete, writing output chunks...");
+    for r in &run_files {
+        let _ = fs::remove_file(r);
+    }
+
+    log("Final merge of batch files (global dedup)...");
 
     let chunk_bytes = (chunk_gb * 1024.0 * 1024.0 * 1024.0) as u64;
     let mut part_idx: u64 = 0;
@@ -469,37 +614,82 @@ fn sort_and_dedup(tmp_dirs: &[PathBuf], out_dir: &Path, strip_clocks: bool, chun
     let mut skipped_dup: u64 = 0;
     let mut seen_key: Option<String> = None;
 
-    for line in all_lines {
-        let key = line_key(&line, strip_clocks);
+    let mut readers: Vec<BufReader<File>> = Vec::new();
+    for r in &batch_files {
+        let f = File::open(r).expect("failed to open batch file");
+        readers.push(BufReader::new(f));
+    }
+
+    let mut heap: BinaryHeap<HeapItem> = BinaryHeap::new();
+    for (i, r) in readers.iter_mut().enumerate() {
+        let mut line = String::new();
+        if r.read_line(&mut line).unwrap_or(0) > 0 {
+            let line = line.trim_end().to_string();
+            if !line.is_empty() {
+                let key = line_key(&line, strip_clocks);
+                heap.push(HeapItem {
+                    key,
+                    line,
+                    reader_idx: i,
+                });
+            }
+        }
+    }
+
+    while let Some(item) = heap.pop() {
+        let key = item.key;
+        let line = item.line;
+        let reader_idx = item.reader_idx;
+
         if seen_key.as_ref() == Some(&key) {
             skipped_dup += 1;
-            continue;
-        }
-        seen_key = Some(key);
+        } else {
+            seen_key = Some(key.clone());
 
-        if current.is_none() || current_size >= chunk_bytes {
-            if let Some(mut w) = current.take() {
-                w.flush().unwrap();
+            if current.is_none() || current_size >= chunk_bytes {
+                if let Some(mut w) = current.take() {
+                    w.flush().unwrap();
+                }
+                let p = out_dir.join(format!("positions_{:05}.fen", part_idx));
+                let f = File::create(&p).expect("failed to create output chunk");
+                current = Some(BufWriter::new(f));
+                part_idx += 1;
+                current_size = 0;
+                log(&format!("Writing chunk {}", part_idx - 1));
             }
-            let p = out_dir.join(format!("positions_{:05}.fen", part_idx));
-            let f = File::create(&p).expect("failed to create output chunk");
-            current = Some(BufWriter::new(f));
-            part_idx += 1;
-            current_size = 0;
-            log(&format!("Writing chunk {}", part_idx - 1));
+            let w = current.as_mut().unwrap();
+            writeln!(w, "{line}").unwrap();
+            current_size += line.len() as u64 + 1;
+            written += 1;
+            if written.is_multiple_of(500_000) {
+                log(&format!("Written {} positions...", written));
+            }
         }
-        let w = current.as_mut().unwrap();
-        writeln!(w, "{line}").unwrap();
-        current_size += line.len() as u64 + 1;
-        written += 1;
-        if written.is_multiple_of(500_000) {
-            log(&format!("Written {} positions...", written));
+
+        let r = &mut readers[reader_idx];
+        let mut next_line = String::new();
+        if r.read_line(&mut next_line).unwrap_or(0) > 0 {
+            let next_line = next_line.trim_end().to_string();
+            if !next_line.is_empty() {
+                let next_key = line_key(&next_line, strip_clocks);
+                heap.push(HeapItem {
+                    key: next_key,
+                    line: next_line,
+                    reader_idx,
+                });
+            }
         }
     }
 
     if let Some(mut w) = current.take() {
         w.flush().unwrap();
     }
+
+    for r in &batch_files {
+        let _ = fs::remove_file(r);
+    }
+
+    let _ = fs::remove_file(sort_state_path(out_dir));
 
     log(&format!(
         "SORT+UNIQ done: {} unique positions in {} chunk(s) under {} ({} dupes removed)",
