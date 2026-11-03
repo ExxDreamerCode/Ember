@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 chess = "3"
 zstd = "0.13"
+rayon = "1.8"

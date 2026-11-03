@@ -1,9 +1,11 @@
+use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::env;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::mpsc;
 use std::thread;
 
@@ -413,16 +415,6 @@ fn sort_state_path(out_dir: &Path) -> PathBuf {
     out_dir.join("sort.state")
 }
 
-fn save_sort_state(out_dir: &Path, processed: &[String], run_idx: u64) {
-    let path = sort_state_path(out_dir);
-    if let Ok(mut f) = File::create(&path) {
-        for p in processed {
-            let _ = writeln!(f, "{p}");
-        }
-        let _ = writeln!(f, "RUN_IDX:{}", run_idx);
-    }
-}
-
 fn load_sort_state(out_dir: &Path) -> (Vec<String>, u64) {
     let path = sort_state_path(out_dir);
     let mut processed: Vec<String> = Vec::new();
@@ -448,7 +440,7 @@ fn sort_and_dedup(tmp_dirs: &[PathBuf], out_dir: &Path, strip_clocks: bool, chun
     }
     log(&format!("Found {} chunk files", chunk_files.len()));
 
-    let (mut processed_chunks, mut run_idx_global) = load_sort_state(out_dir);
+    let (processed_chunks, run_idx_global) = load_sort_state(out_dir);
     let processed_set: std::collections::HashSet<String> =
         processed_chunks.iter().cloned().collect();
 
@@ -468,16 +460,19 @@ fn sort_and_dedup(tmp_dirs: &[PathBuf], out_dir: &Path, strip_clocks: bool, chun
         }
     }
 
-    for (file_idx, src) in chunk_files.iter().enumerate() {
-        if processed_set.contains(src.to_str().unwrap_or("")) {
-            continue;
-        }
-        log(&format!(
-            "Sorting runs from {} ({}/{})",
-            src.display(),
-            file_idx + 1,
-            chunk_files.len()
-        ));
+    let unprocessed_chunks: Vec<&PathBuf> = chunk_files
+        .iter()
+        .filter(|src| !processed_set.contains(src.to_str().unwrap_or("")))
+        .collect();
+
+    log(&format!(
+        "Sorting runs from {} unprocessed chunk files",
+        unprocessed_chunks.len()
+    ));
+
+    let global_run_idx = AtomicUsize::new(run_idx_global as usize);
+
+    unprocessed_chunks.par_iter().for_each(|src| {
         let mut chunk: Vec<String> = Vec::with_capacity(RUN_LINES);
         let f = File::open(src).expect("failed to open chunk file");
         let r = BufReader::new(f);
@@ -492,23 +487,35 @@ fn sort_and_dedup(tmp_dirs: &[PathBuf], out_dir: &Path, strip_clocks: bool, chun
             chunk.push(line);
             if chunk.len() >= RUN_LINES {
                 sort_by_key(&mut chunk, strip_clocks);
-                let target_dir = &tmp_dirs[(run_idx_global % tmp_dirs.len() as u64) as usize];
-                let run = target_dir.join(format!("run_{:06}.tmp", run_idx_global));
-                run_idx_global += 1;
+                let run_idx = global_run_idx.fetch_add(1, AtomicOrdering::SeqCst) as u64;
+                let target_dir = &tmp_dirs[(run_idx % tmp_dirs.len() as u64) as usize];
+                let run = target_dir.join(format!("run_{:06}.tmp", run_idx));
                 write_sorted_run(&mut chunk, &run);
-                run_files.push(run);
             }
         }
         if !chunk.is_empty() {
             sort_by_key(&mut chunk, strip_clocks);
-            let target_dir = &tmp_dirs[(run_idx_global % tmp_dirs.len() as u64) as usize];
-            let run = target_dir.join(format!("run_{:06}.tmp", run_idx_global));
-            run_idx_global += 1;
+            let run_idx = global_run_idx.fetch_add(1, AtomicOrdering::SeqCst) as u64;
+            let target_dir = &tmp_dirs[(run_idx % tmp_dirs.len() as u64) as usize];
+            let run = target_dir.join(format!("run_{:06}.tmp", run_idx));
             write_sorted_run(&mut chunk, &run);
-            run_files.push(run);
         }
-        processed_chunks.push(src.to_str().unwrap_or("").to_string());
-        save_sort_state(out_dir, &processed_chunks, run_idx_global);
+    });
+
+    run_files.clear();
+    for d in tmp_dirs {
+        if let Ok(entries) = fs::read_dir(d) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|e| e.to_str()) == Some("tmp") {
+                    if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                        if name.starts_with("run_") {
+                            run_files.push(p);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     log(&format!(
