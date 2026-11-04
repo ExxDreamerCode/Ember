@@ -462,8 +462,15 @@ fn append_sort_state_line(out_dir: &Path, line: &str) {
 }
 
 fn append_sort_state(out_dir: &Path, chunk_path: &Path, next_run_idx: u64) {
-    append_sort_state_line(out_dir, chunk_path.to_str().unwrap_or(""));
-    append_sort_state_line(out_dir, &format!("RUN_IDX:{next_run_idx}"));
+    let path = sort_state_path(out_dir);
+    let _guard = STATE_MUTEX.lock().unwrap();
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) else {
+        eprintln!("sort state: cannot append to {path:?}; resume will reprocess chunks");
+        return;
+    };
+    let _ = writeln!(file, "{}", chunk_path.to_str().unwrap_or(""));
+    let _ = writeln!(file, "RUN_IDX:{next_run_idx}");
+    let _ = file.flush();
 }
 
 fn sort_and_dedup(tmp_dirs: &[PathBuf], out_dir: &Path, strip_clocks: bool, chunk_gb: f64) {
@@ -909,5 +916,86 @@ fn main() {
             );
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_strip_clock_fields_removes_clock_fields() {
+        let fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        let stripped = strip_clock_fields(fen);
+        assert_eq!(
+            stripped,
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -"
+        );
+    }
+
+    #[test]
+    fn test_strip_clock_fields_keeps_four_fields() {
+        let fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -";
+        assert_eq!(strip_clock_fields(fen), fen);
+    }
+
+    #[test]
+    fn test_result_to_stm_white_to_move() {
+        assert_eq!(result_to_stm("1-0", true), Some(1));
+        assert_eq!(result_to_stm("0-1", true), Some(-1));
+        assert_eq!(result_to_stm("1/2-1/2", true), Some(0));
+        assert_eq!(result_to_stm("*", true), None);
+    }
+
+    #[test]
+    fn test_result_to_stm_black_to_move() {
+        assert_eq!(result_to_stm("1-0", false), Some(-1));
+        assert_eq!(result_to_stm("0-1", false), Some(1));
+        assert_eq!(result_to_stm("1/2-1/2", false), Some(0));
+        assert_eq!(result_to_stm("*", false), None);
+    }
+
+    #[test]
+    fn test_line_key_uses_fen_before_tab() {
+        let line = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\t5\t1";
+        let key = line_key(line, false);
+        assert_eq!(
+            key,
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        );
+    }
+
+    #[test]
+    fn test_line_key_strips_clocks_when_requested() {
+        let line = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\t5\t1";
+        let key = line_key(line, true);
+        assert_eq!(key, "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -");
+    }
+
+    #[test]
+    fn test_sort_by_key_orders_by_fen() {
+        let mut lines = vec!["b fen\t1\t0".to_string(), "a fen\t1\t0".to_string()];
+        sort_by_key(&mut lines, false);
+        assert_eq!(lines[0], "a fen\t1\t0");
+        assert_eq!(lines[1], "b fen\t1\t0");
+    }
+
+    #[test]
+    fn test_parse_pgn_moves_extracts_result_and_moves() {
+        let pgn = "[Event \"test\"]\n[Result \"1-0\"]\n\n1. e4 e5 2. Nf3 Nc6 1-0";
+        let result = parse_pgn_moves(pgn);
+        assert!(result.is_some());
+        let (tag, moves) = result.unwrap();
+        assert_eq!(tag, "1-0");
+        assert_eq!(moves, vec!["e4", "e5", "Nf3", "Nc6"]);
+    }
+
+    #[test]
+    fn test_parse_pgn_moves_ignores_headers_and_comments() {
+        let pgn = "[Event \"test\"]\n{ comment }\n1. e4 { another comment } e5 1/2-1/2";
+        let result = parse_pgn_moves(pgn);
+        assert!(result.is_some());
+        let (_tag, moves) = result.unwrap();
+        assert_eq!(moves, vec!["e4", "e5"]);
     }
 }
