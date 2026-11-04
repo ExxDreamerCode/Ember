@@ -52,7 +52,7 @@ jobs:
           nix develop .#ci --command cargo clippy --locked
           --all-targets --all-features -- -D warnings
 
-      - name: Run clippy (fen_db)
+      - name: Run fen_db clippy
         run: >
           nix develop .#ci --command cargo clippy --locked
           --all-targets --all-features --manifest-path tools/datagen/fen_db/Cargo.toml -- -D warnings
@@ -440,6 +440,14 @@ jobs:
           RUST_MIN_STACK: 16777216
           RUST_BACKTRACE: 1
 
+      - name: Check fen_db formatting
+        shell: pwsh
+        run: cargo fmt --all --check --manifest-path tools/datagen/fen_db/Cargo.toml
+
+      - name: Run fen_db clippy
+        shell: pwsh
+        run: cargo clippy --locked --all-targets --all-features --manifest-path tools/datagen/fen_db/Cargo.toml -- -D warnings
+
       - name: Run Python tool tests
         shell: pwsh
         run: >-
@@ -698,7 +706,10 @@ jobs:
           nix develop .#ci --command cargo clippy --locked
           --all-targets --all-features -- -D warnings
 
-      - name: Run clippy (fen_db)
+      - name: Check fen_db formatting
+        run: nix develop .#ci --command cargo fmt --all --check --manifest-path tools/datagen/fen_db/Cargo.toml
+
+      - name: Run fen_db clippy
         run: >
           nix develop .#ci --command cargo clippy --locked
           --all-targets --all-features --manifest-path tools/datagen/fen_db/Cargo.toml -- -D warnings
