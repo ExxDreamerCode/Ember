@@ -125,17 +125,14 @@ fn flush_batch(
     batch_idx: &mut u64,
     out_dirs: &[PathBuf],
     dir_idx: &mut usize,
+    file_id: u64,
 ) {
     if batch.is_empty() {
         return;
     }
     let out_dir = &out_dirs[*dir_idx % out_dirs.len()];
     *dir_idx += 1;
-    let chunk_path = out_dir.join(format!(
-        "chunk_{}_{:06}.fen",
-        std::process::id(),
-        *batch_idx
-    ));
+    let chunk_path = out_dir.join(format!("chunk_{file_id}_{batch_idx:06}.fen"));
     let f = File::create(&chunk_path).expect("failed to create chunk file");
     let mut w = BufWriter::new(f);
     for line in &mut *batch {
@@ -158,6 +155,7 @@ fn process_game_inner(
     total: &mut u64,
     skipped: &mut u64,
     game_num: u64,
+    file_id: u64,
 ) {
     if let Some((result_tag, san_moves)) = parse_pgn_moves(current_game) {
         let mut board = Board::default();
@@ -188,7 +186,7 @@ fn process_game_inner(
                     batch.push(format!("{key}\t{ply}\t{}", result.unwrap()));
                     *total += 1;
                     if batch.len() >= BATCH_LINES {
-                        flush_batch(batch, batch_idx, out_dirs, dir_idx);
+                        flush_batch(batch, batch_idx, out_dirs, dir_idx, file_id);
                     }
                 }
                 Err(_) => break,
@@ -230,6 +228,7 @@ fn process_game(
     total: &mut u64,
     skipped: &mut u64,
     game_num: &mut u64,
+    file_id: u64,
 ) {
     *game_num += 1;
     let game_start = std::time::Instant::now();
@@ -244,6 +243,7 @@ fn process_game(
         total,
         skipped,
         *game_num,
+        file_id,
     );
     let elapsed = game_start.elapsed();
     if elapsed.as_secs_f64() > 0.5 {
@@ -262,6 +262,7 @@ fn scan_pgn_file(
     dir_idx: &mut usize,
     strip_clocks: bool,
     max_ply: u32,
+    file_id: u64,
 ) -> (u64, u64) {
     for d in tmp_dirs {
         fs::create_dir_all(d).unwrap();
@@ -315,6 +316,7 @@ fn scan_pgn_file(
                     &mut total,
                     &mut skipped,
                     &mut game_count,
+                    file_id,
                 );
                 current_game.clear();
                 seen_moves = false;
@@ -340,9 +342,10 @@ fn scan_pgn_file(
             &mut total,
             &mut skipped,
             &mut game_count,
+            file_id,
         );
     }
-    flush_batch(&mut batch, &mut batch_idx, tmp_dirs, dir_idx);
+    flush_batch(&mut batch, &mut batch_idx, tmp_dirs, dir_idx, file_id);
     log(&format!(
         "Finished file: {} games, {} positions",
         game_count, total
@@ -864,14 +867,17 @@ fn main() {
             ));
 
             let (tx, rx) = mpsc::channel();
+            let mut file_id: u64 = 0;
             for p in pgn_files.iter() {
                 let tx = tx.clone();
                 let tmp_dirs = tmp_dirs.clone();
                 let mut dir_idx: usize = 0;
                 let p = p.clone();
+                let fid = file_id;
+                file_id += 1;
                 thread::spawn(move || {
                     let (total, skipped) =
-                        scan_pgn_file(&p, &tmp_dirs, &mut dir_idx, strip_clocks, max_ply);
+                        scan_pgn_file(&p, &tmp_dirs, &mut dir_idx, strip_clocks, max_ply, fid);
                     tx.send((total, skipped)).unwrap();
                 });
             }
