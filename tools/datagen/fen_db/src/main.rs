@@ -476,7 +476,13 @@ fn append_sort_state(out_dir: &Path, chunk_path: &Path, next_run_idx: u64) {
     let _ = file.flush();
 }
 
-fn sort_and_dedup(tmp_dirs: &[PathBuf], out_dir: &Path, strip_clocks: bool, chunk_gb: f64) {
+fn sort_and_dedup(
+    tmp_dirs: &[PathBuf],
+    out_dir: &Path,
+    strip_clocks: bool,
+    chunk_gb: f64,
+    delete_chunks: bool,
+) {
     fs::create_dir_all(out_dir).unwrap();
     let chunk_files = collect_chunk_files(tmp_dirs);
     if chunk_files.is_empty() {
@@ -563,6 +569,9 @@ fn sort_and_dedup(tmp_dirs: &[PathBuf], out_dir: &Path, strip_clocks: bool, chun
                     src,
                     global_run_idx.load(AtomicOrdering::SeqCst) as u64,
                 );
+            }
+            if delete_chunks {
+                let _ = fs::remove_file(src);
             }
         });
     }
@@ -867,17 +876,14 @@ fn main() {
             ));
 
             let (tx, rx) = mpsc::channel();
-            let mut file_id: u64 = 0;
-            for p in pgn_files.iter() {
+            for (file_id, p) in (0_u64..).zip(pgn_files.iter()) {
                 let tx = tx.clone();
                 let tmp_dirs = tmp_dirs.clone();
                 let mut dir_idx: usize = 0;
                 let p = p.clone();
-                let fid = file_id;
-                file_id += 1;
                 thread::spawn(move || {
                     let (total, skipped) =
-                        scan_pgn_file(&p, &tmp_dirs, &mut dir_idx, strip_clocks, max_ply, fid);
+                        scan_pgn_file(&p, &tmp_dirs, &mut dir_idx, strip_clocks, max_ply, file_id);
                     tx.send((total, skipped)).unwrap();
                 });
             }
@@ -907,18 +913,25 @@ fn main() {
                 .parse()
                 .expect("--chunk-gb must be a number");
             let strip_clocks = opts.iter().any(|(k, _)| k == "--strip-clocks");
+            let delete_chunks = opts.iter().any(|(k, _)| k == "--delete-chunks");
 
             let tmp_dirs: Vec<PathBuf> = match tmp2 {
                 Some(t2) => vec![PathBuf::from(&tmp), PathBuf::from(&t2)],
                 None => vec![PathBuf::from(&tmp)],
             };
-            sort_and_dedup(&tmp_dirs, Path::new(&out), strip_clocks, chunk_gb);
+            sort_and_dedup(
+                &tmp_dirs,
+                Path::new(&out),
+                strip_clocks,
+                chunk_gb,
+                delete_chunks,
+            );
         }
         _ => {
             eprintln!(
                 "Usage: fen_db <scan|sort> [options]\n\
                  scan  --src <dir> --tmp <dir> [--tmp2 <dir>] [--workers N] [--strip-clocks] [--max-ply N]\n\
-                 sort  --tmp <dir> [--tmp2 <dir>] --out <dir> [--chunk-gb N] [--strip-clocks]"
+                 sort  --tmp <dir> [--tmp2 <dir>] --out <dir> [--chunk-gb N] [--strip-clocks] [--delete-chunks]"
             );
             std::process::exit(1);
         }
