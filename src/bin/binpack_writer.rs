@@ -9,6 +9,7 @@ const MAGIC: &[u8; 4] = b"BINP";
 const CHUNK_TARGET_BYTES: usize = 32 * 1024 * 1024;
 const ENTRY_SIZE: usize = 32;
 const COUNT_SIZE: usize = 2;
+const DEFAULT_BATCH_SIZE: usize = 1_000_000;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Square(u8);
@@ -554,28 +555,77 @@ fn write_chunk<W: Write>(out: &mut W, buf: &mut Vec<u8>) -> std::io::Result<()> 
     Ok(())
 }
 
+fn flush_batch(
+    batch: &mut Vec<Entry>,
+    out_file: &mut File,
+    buf: &mut Vec<u8>,
+    count: &mut u64,
+    no_shuffle: bool,
+) -> std::io::Result<()> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+
+    if !no_shuffle {
+        let mut rng = rand::thread_rng();
+        let mut n = batch.len();
+        while n > 1 {
+            n -= 1;
+            let j = rng.gen_range(0..=n);
+            batch.swap(n, j);
+        }
+    }
+
+    for entry in batch.drain(..) {
+        let entry_bytes = entry.chain_bytes_with_count();
+        if buf.len() + entry_bytes.len() > CHUNK_TARGET_BYTES && !buf.is_empty() {
+            write_chunk(out_file, buf)?;
+        }
+        buf.extend_from_slice(&entry_bytes);
+        *count += 1;
+    }
+
+    Ok(())
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 3 {
         eprintln!(
-            "Usage: binpack_writer [--no-shuffle] <input_scored.tsv> [<input_scored.tsv> ...] <output.binpack>"
+            "Usage: binpack_writer [--no-shuffle] [--batch-size N] <input_scored.tsv> [<input_scored.tsv> ...] <output.binpack>"
         );
         exit(1);
     }
 
     let mut no_shuffle = false;
+    let mut batch_size: usize = DEFAULT_BATCH_SIZE;
     let mut input_paths: Vec<String> = Vec::new();
     let mut output_path: Option<String> = None;
 
-    for arg in &args[1..] {
-        if arg == "--shuffle" || arg == "--no-shuffle" {
-            if arg == "--no-shuffle" {
-                no_shuffle = true;
+    let mut iter = args[1..].iter().peekable();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--shuffle" => {}
+            "--no-shuffle" => no_shuffle = true,
+            "--batch-size" => {
+                batch_size = match iter.next() {
+                    Some(v) => match v.parse() {
+                        Ok(n) if n > 0 => n,
+                        _ => {
+                            eprintln!("binpack_writer: invalid --batch-size value: {v}");
+                            exit(1);
+                        }
+                    },
+                    None => {
+                        eprintln!("binpack_writer: --batch-size requires a value");
+                        exit(1);
+                    }
+                };
             }
-        } else if output_path.is_none() && !input_paths.is_empty() && arg.ends_with(".binpack") {
-            output_path = Some(arg.clone());
-        } else {
-            input_paths.push(arg.clone());
+            _ if output_path.is_none() && !input_paths.is_empty() && arg.ends_with(".binpack") => {
+                output_path = Some(arg.clone());
+            }
+            _ => input_paths.push(arg.clone()),
         }
     }
 
@@ -592,8 +642,18 @@ fn main() {
         exit(1);
     }
 
-    let mut entries: Vec<Entry> = Vec::new();
+    let mut out_file = match File::create(&output_path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("binpack_writer: cannot create output {output_path}: {e}");
+            exit(1);
+        }
+    };
+
+    let mut batch: Vec<Entry> = Vec::with_capacity(batch_size);
+    let mut buf: Vec<u8> = Vec::new();
     let mut total_read: u64 = 0;
+    let mut count: u64 = 0;
     let mut skipped_malformed = 0u64;
     let mut skipped_check = 0u64;
     let mut skipped_tactical = 0u64;
@@ -672,51 +732,30 @@ fn main() {
 
             let score = score_val.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
 
-            let entry = Entry {
+            batch.push(Entry {
                 pos,
                 mv,
                 score,
                 ply,
                 result,
                 rule50: pos.halfmove_clock,
-            };
-
-            entries.push(entry);
+            });
             total_read += 1;
-        }
-    }
 
-    if !no_shuffle {
-        let mut rng = rand::thread_rng();
-        let mut n = entries.len();
-        while n > 1 {
-            n -= 1;
-            let j = rng.gen_range(0..=n);
-            entries.swap(n, j);
-        }
-    }
-
-    let mut out_file = match File::create(&output_path) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("binpack_writer: cannot create output {output_path}: {e}");
-            exit(1);
-        }
-    };
-
-    let mut buf: Vec<u8> = Vec::new();
-    let mut count: u64 = 0;
-
-    for entry in entries.drain(..) {
-        let entry_bytes = entry.chain_bytes_with_count();
-        if buf.len() + entry_bytes.len() > CHUNK_TARGET_BYTES && !buf.is_empty() {
-            if let Err(e) = write_chunk(&mut out_file, &mut buf) {
-                eprintln!("binpack_writer: write error: {e}");
-                exit(1);
+            if batch.len() >= batch_size {
+                if let Err(e) =
+                    flush_batch(&mut batch, &mut out_file, &mut buf, &mut count, no_shuffle)
+                {
+                    eprintln!("binpack_writer: write error: {e}");
+                    exit(1);
+                }
             }
         }
-        buf.extend_from_slice(&entry_bytes);
-        count += 1;
+    }
+
+    if let Err(e) = flush_batch(&mut batch, &mut out_file, &mut buf, &mut count, no_shuffle) {
+        eprintln!("binpack_writer: write error: {e}");
+        exit(1);
     }
 
     if let Err(e) = write_chunk(&mut out_file, &mut buf) {
