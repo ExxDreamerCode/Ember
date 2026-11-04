@@ -560,8 +560,8 @@ fn sort_and_dedup(tmp_dirs: &[PathBuf], out_dir: &Path, strip_clocks: bool, chun
     for batch_start in (0..run_files.len()).step_by(BATCH_SIZE) {
         let batch_end = std::cmp::min(batch_start + BATCH_SIZE, run_files.len());
         let batch: Vec<&PathBuf> = run_files[batch_start..batch_end].iter().collect();
-        let batch_out_path =
-            tmp_dirs[0].join(format!("merged_batch_{:06}.tmp", batch_start / BATCH_SIZE));
+        let batch_out_path = tmp_dirs[(batch_start / BATCH_SIZE) % tmp_dirs.len()]
+            .join(format!("merged_batch_{:06}.tmp", batch_start / BATCH_SIZE));
         log(&format!(
             "Merging batch {}/{} ({} run files)",
             batch_start / BATCH_SIZE + 1,
