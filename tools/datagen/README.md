@@ -21,6 +21,11 @@ Parameters:
 - `--max-ply` — max plies per game (default: 256)
 - `--chunk-gb` — output chunk size in GiB (default: 2)
 
+Resume: progress of the chunk-to-sorted-runs stage is saved to `sort.state` in `--out`
+after every run file is flushed. If the run is interrupted, re-running the same command
+skips already-processed chunks and continues run numbering instead of overwriting
+`run_*.tmp` files left on disk. State is cleared on full completion.
+
 Scans PGN/EPD/zst files, deduplicates positions by FEN key, and writes `positions_*.fen` chunks.
 
 ## Stage 2 — Rescorer (Rust, `score_db`)

@@ -2,7 +2,7 @@ use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::env;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -17,6 +17,7 @@ const CHUNK_BYTES_DEFAULT: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_PLY_DEFAULT: u32 = 256;
 
 static LOG_MUTEX: Mutex<()> = Mutex::new(());
+static STATE_MUTEX: Mutex<()> = Mutex::new(());
 
 fn log(msg: &str) {
     let _guard = LOG_MUTEX.lock().unwrap();
@@ -434,6 +435,18 @@ fn load_sort_state(out_dir: &Path) -> (Vec<String>, u64) {
     (processed, run_idx)
 }
 
+fn append_sort_state(out_dir: &Path, chunk_path: &Path, next_run_idx: u64) {
+    let path = sort_state_path(out_dir);
+    let _guard = STATE_MUTEX.lock().unwrap();
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) else {
+        eprintln!("sort state: cannot append to {path:?}; resume will reprocess chunks");
+        return;
+    };
+    let _ = writeln!(file, "{}", chunk_path.to_str().unwrap_or(""));
+    let _ = writeln!(file, "RUN_IDX:{next_run_idx}");
+    let _ = file.flush();
+}
+
 fn sort_and_dedup(tmp_dirs: &[PathBuf], out_dir: &Path, strip_clocks: bool, chunk_gb: f64) {
     fs::create_dir_all(out_dir).unwrap();
     let chunk_files = collect_chunk_files(tmp_dirs);
@@ -494,6 +507,11 @@ fn sort_and_dedup(tmp_dirs: &[PathBuf], out_dir: &Path, strip_clocks: bool, chun
                 let target_dir = &tmp_dirs[(run_idx % tmp_dirs.len() as u64) as usize];
                 let run = target_dir.join(format!("run_{:06}.tmp", run_idx));
                 write_sorted_run(&mut chunk, &run);
+                append_sort_state(
+                    out_dir,
+                    src,
+                    global_run_idx.load(AtomicOrdering::SeqCst) as u64,
+                );
             }
         }
         if !chunk.is_empty() {
@@ -502,6 +520,11 @@ fn sort_and_dedup(tmp_dirs: &[PathBuf], out_dir: &Path, strip_clocks: bool, chun
             let target_dir = &tmp_dirs[(run_idx % tmp_dirs.len() as u64) as usize];
             let run = target_dir.join(format!("run_{:06}.tmp", run_idx));
             write_sorted_run(&mut chunk, &run);
+            append_sort_state(
+                out_dir,
+                src,
+                global_run_idx.load(AtomicOrdering::SeqCst) as u64,
+            );
         }
     });
 
