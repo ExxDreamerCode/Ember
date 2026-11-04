@@ -57,6 +57,12 @@ jobs:
           nix develop .#ci --command cargo clippy --locked
           --all-targets --all-features --manifest-path tools/datagen/fen_db/Cargo.toml -- -D warnings
 
+      - name: Check fen_db
+        run: nix develop .#ci --command cargo check --locked --manifest-path tools/datagen/fen_db/Cargo.toml
+
+      - name: Run fen_db tests
+        run: nix develop .#ci --command cargo test --locked --manifest-path tools/datagen/fen_db/Cargo.toml
+
       - name: Run native tests
         run: |
           nix develop .#ci --command bash -c "
@@ -448,6 +454,14 @@ jobs:
         shell: pwsh
         run: cargo clippy --locked --all-targets --all-features --manifest-path tools/datagen/fen_db/Cargo.toml -- -D warnings
 
+      - name: Check fen_db
+        shell: pwsh
+        run: cargo check --locked --manifest-path tools/datagen/fen_db/Cargo.toml
+
+      - name: Run fen_db tests
+        shell: pwsh
+        run: cargo test --locked --manifest-path tools/datagen/fen_db/Cargo.toml
+
       - name: Run Python tool tests
         shell: pwsh
         run: >-
@@ -713,6 +727,12 @@ jobs:
         run: >
           nix develop .#ci --command cargo clippy --locked
           --all-targets --all-features --manifest-path tools/datagen/fen_db/Cargo.toml -- -D warnings
+
+      - name: Check fen_db
+        run: nix develop .#ci --command cargo check --locked --manifest-path tools/datagen/fen_db/Cargo.toml
+
+      - name: Run fen_db tests
+        run: nix develop .#ci --command cargo test --locked --manifest-path tools/datagen/fen_db/Cargo.toml
 
       - name: Run native tests
         run: |
