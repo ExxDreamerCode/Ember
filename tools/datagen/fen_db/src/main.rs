@@ -419,32 +419,51 @@ fn sort_state_path(out_dir: &Path) -> PathBuf {
     out_dir.join("sort.state")
 }
 
-fn load_sort_state(out_dir: &Path) -> (Vec<String>, u64) {
+struct SortState {
+    processed_chunks: Vec<String>,
+    run_idx: u64,
+    phase1_done: bool,
+    merge_batch_idx: u64,
+}
+
+fn load_sort_state(out_dir: &Path) -> SortState {
     let path = sort_state_path(out_dir);
-    let mut processed: Vec<String> = Vec::new();
-    let mut run_idx: u64 = 0;
+    let mut state = SortState {
+        processed_chunks: Vec::new(),
+        run_idx: 0,
+        phase1_done: false,
+        merge_batch_idx: 0,
+    };
     if let Ok(content) = fs::read_to_string(&path) {
         for line in content.lines() {
             if let Some(rest) = line.strip_prefix("RUN_IDX:") {
-                run_idx = rest.trim().parse().unwrap_or(0);
+                state.run_idx = rest.trim().parse().unwrap_or(0);
+            } else if let Some(rest) = line.strip_prefix("MERGE_BATCH_IDX:") {
+                state.merge_batch_idx = rest.trim().parse().unwrap_or(0);
+            } else if line == "PHASE1_DONE" {
+                state.phase1_done = true;
             } else if !line.is_empty() {
-                processed.push(line.to_string());
+                state.processed_chunks.push(line.to_string());
             }
         }
     }
-    (processed, run_idx)
+    state
 }
 
-fn append_sort_state(out_dir: &Path, chunk_path: &Path, next_run_idx: u64) {
+fn append_sort_state_line(out_dir: &Path, line: &str) {
     let path = sort_state_path(out_dir);
     let _guard = STATE_MUTEX.lock().unwrap();
     let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) else {
         eprintln!("sort state: cannot append to {path:?}; resume will reprocess chunks");
         return;
     };
-    let _ = writeln!(file, "{}", chunk_path.to_str().unwrap_or(""));
-    let _ = writeln!(file, "RUN_IDX:{next_run_idx}");
+    let _ = writeln!(file, "{line}");
     let _ = file.flush();
+}
+
+fn append_sort_state(out_dir: &Path, chunk_path: &Path, next_run_idx: u64) {
+    append_sort_state_line(out_dir, chunk_path.to_str().unwrap_or(""));
+    append_sort_state_line(out_dir, &format!("RUN_IDX:{next_run_idx}"));
 }
 
 fn sort_and_dedup(tmp_dirs: &[PathBuf], out_dir: &Path, strip_clocks: bool, chunk_gb: f64) {
@@ -456,9 +475,9 @@ fn sort_and_dedup(tmp_dirs: &[PathBuf], out_dir: &Path, strip_clocks: bool, chun
     }
     log(&format!("Found {} chunk files", chunk_files.len()));
 
-    let (processed_chunks, run_idx_global) = load_sort_state(out_dir);
+    let state = load_sort_state(out_dir);
     let processed_set: std::collections::HashSet<String> =
-        processed_chunks.iter().cloned().collect();
+        state.processed_chunks.iter().cloned().collect();
 
     let mut run_files: Vec<PathBuf> = Vec::new();
     for d in tmp_dirs {
@@ -486,47 +505,61 @@ fn sort_and_dedup(tmp_dirs: &[PathBuf], out_dir: &Path, strip_clocks: bool, chun
         unprocessed_chunks.len()
     ));
 
-    let global_run_idx = AtomicUsize::new(run_idx_global as usize);
+    let global_run_idx = AtomicUsize::new(state.run_idx as usize);
 
-    unprocessed_chunks.par_iter().for_each(|src| {
-        let mut chunk: Vec<String> = Vec::with_capacity(RUN_LINES);
-        let f = File::open(src).expect("failed to open chunk file");
-        let r = BufReader::new(f);
-        for line in r.lines() {
-            let line = match line {
-                Ok(l) => l,
-                Err(_) => continue,
-            };
-            if line.is_empty() {
-                continue;
+    if !unprocessed_chunks.is_empty() {
+        unprocessed_chunks.par_iter().for_each(|src| {
+            let mut chunk: Vec<String> = Vec::with_capacity(RUN_LINES);
+            let f = File::open(src).expect("failed to open chunk file");
+            let r = BufReader::new(f);
+            for line in r.lines() {
+                let line = match line {
+                    Ok(l) => l,
+                    Err(_) => continue,
+                };
+                if line.is_empty() {
+                    continue;
+                }
+                chunk.push(line);
+                if chunk.len() >= RUN_LINES {
+                    sort_by_key(&mut chunk, strip_clocks);
+                    let run_idx = global_run_idx.fetch_add(1, AtomicOrdering::SeqCst) as u64;
+                    let target_dir = &tmp_dirs[(run_idx % tmp_dirs.len() as u64) as usize];
+                    let run = target_dir.join(format!("run_{:06}.tmp", run_idx));
+                    if run.exists() {
+                        chunk.clear();
+                    } else {
+                        write_sorted_run(&mut chunk, &run);
+                    }
+                    append_sort_state(
+                        out_dir,
+                        src,
+                        global_run_idx.load(AtomicOrdering::SeqCst) as u64,
+                    );
+                }
             }
-            chunk.push(line);
-            if chunk.len() >= RUN_LINES {
+            if !chunk.is_empty() {
                 sort_by_key(&mut chunk, strip_clocks);
                 let run_idx = global_run_idx.fetch_add(1, AtomicOrdering::SeqCst) as u64;
                 let target_dir = &tmp_dirs[(run_idx % tmp_dirs.len() as u64) as usize];
                 let run = target_dir.join(format!("run_{:06}.tmp", run_idx));
-                write_sorted_run(&mut chunk, &run);
+                if run.exists() {
+                    chunk.clear();
+                } else {
+                    write_sorted_run(&mut chunk, &run);
+                }
                 append_sort_state(
                     out_dir,
                     src,
                     global_run_idx.load(AtomicOrdering::SeqCst) as u64,
                 );
             }
-        }
-        if !chunk.is_empty() {
-            sort_by_key(&mut chunk, strip_clocks);
-            let run_idx = global_run_idx.fetch_add(1, AtomicOrdering::SeqCst) as u64;
-            let target_dir = &tmp_dirs[(run_idx % tmp_dirs.len() as u64) as usize];
-            let run = target_dir.join(format!("run_{:06}.tmp", run_idx));
-            write_sorted_run(&mut chunk, &run);
-            append_sort_state(
-                out_dir,
-                src,
-                global_run_idx.load(AtomicOrdering::SeqCst) as u64,
-            );
-        }
-    });
+        });
+    }
+
+    if !state.phase1_done {
+        append_sort_state_line(out_dir, "PHASE1_DONE");
+    }
 
     run_files.clear();
     for d in tmp_dirs {
@@ -557,15 +590,24 @@ fn sort_and_dedup(tmp_dirs: &[PathBuf], out_dir: &Path, strip_clocks: bool, chun
     run_files.sort();
 
     let mut batch_files: Vec<PathBuf> = Vec::new();
+    let total_batches = run_files.len().div_ceil(BATCH_SIZE);
+
     for batch_start in (0..run_files.len()).step_by(BATCH_SIZE) {
+        let batch_index = batch_start / BATCH_SIZE;
         let batch_end = std::cmp::min(batch_start + BATCH_SIZE, run_files.len());
         let batch: Vec<&PathBuf> = run_files[batch_start..batch_end].iter().collect();
-        let batch_out_path = tmp_dirs[(batch_start / BATCH_SIZE) % tmp_dirs.len()]
-            .join(format!("merged_batch_{:06}.tmp", batch_start / BATCH_SIZE));
+        let batch_out_path = tmp_dirs[batch_index % tmp_dirs.len()]
+            .join(format!("merged_batch_{:06}.tmp", batch_index));
+
+        if batch_index < state.merge_batch_idx as usize {
+            batch_files.push(batch_out_path);
+            continue;
+        }
+
         log(&format!(
             "Merging batch {}/{} ({} run files)",
-            batch_start / BATCH_SIZE + 1,
-            run_files.len().div_ceil(BATCH_SIZE),
+            batch_index + 1,
+            total_batches,
             batch.len()
         ));
 
@@ -628,9 +670,11 @@ fn sort_and_dedup(tmp_dirs: &[PathBuf], out_dir: &Path, strip_clocks: bool, chun
         batch_files.push(batch_out_path);
         log(&format!(
             "Batch {} written: {} positions",
-            batch_start / BATCH_SIZE + 1,
+            batch_index + 1,
             batch_written
         ));
+
+        append_sort_state_line(out_dir, &format!("MERGE_BATCH_IDX:{}", batch_index + 1));
     }
 
     for r in &run_files {

@@ -21,10 +21,11 @@ Parameters:
 - `--max-ply` — max plies per game (default: 256)
 - `--chunk-gb` — output chunk size in GiB (default: 2)
 
-Resume: progress of the chunk-to-sorted-runs stage is saved to `sort.state` in `--out`
-after every run file is flushed. If the run is interrupted, re-running the same command
-skips already-processed chunks and continues run numbering instead of overwriting
-`run_*.tmp` files left on disk. State is cleared on full completion.
+Resume: progress of both sort stages is saved to `sort.state` in `--out`.
+- After every phase-1 run file is flushed, the chunk path and next run index are appended, so a re-run skips already-processed chunks and continues run numbering instead of overwriting `run_*.tmp` files left on disk.
+- After every phase-2 merged batch is written, the batch index is appended, so a re-run skips already-produced `merged_batch_*.tmp` files and continues the batched k-way merge from where it stopped.
+
+State is cleared on full completion.
 
 Scans PGN/EPD/zst files, deduplicates positions by FEN key, and writes `positions_*.fen` chunks.
 
