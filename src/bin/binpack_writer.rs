@@ -7,6 +7,8 @@ use rand::Rng;
 
 const MAGIC: &[u8; 4] = b"BINP";
 const CHUNK_TARGET_BYTES: usize = 32 * 1024 * 1024;
+const ENTRY_SIZE: usize = 32;
+const COUNT_SIZE: usize = 2;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Square(u8);
@@ -448,7 +450,7 @@ impl UciMove {
                     to: Square(0),
                     promotion: None,
                     is_null: true,
-                }
+                };
             }
         };
         let promotion = if uci.len() >= 5 {
@@ -522,8 +524,8 @@ struct Entry {
 }
 
 impl Entry {
-    fn chain_bytes(&self) -> [u8; 32] {
-        let mut out = [0u8; 32];
+    fn chain_bytes(&self) -> [u8; ENTRY_SIZE] {
+        let mut out = [0u8; ENTRY_SIZE];
         out[0..24].copy_from_slice(&self.pos.compress_position());
         out[24..26].copy_from_slice(&self.mv.compress().to_be_bytes());
         out[26..28].copy_from_slice(&signed_to_unsigned(self.score).to_be_bytes());
@@ -532,35 +534,24 @@ impl Entry {
         out[30..32].copy_from_slice(&self.rule50.to_be_bytes());
         out
     }
+
+    fn chain_bytes_with_count(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(ENTRY_SIZE + COUNT_SIZE);
+        buf.extend_from_slice(&self.chain_bytes());
+        buf.extend_from_slice(&0u16.to_be_bytes());
+        buf
+    }
 }
 
-struct ChunkWriter {
-    buf: Vec<u8>,
-}
-
-impl ChunkWriter {
-    fn new() -> Self {
-        ChunkWriter { buf: Vec::new() }
+fn write_chunk<W: Write>(out: &mut W, buf: &mut Vec<u8>) -> std::io::Result<()> {
+    if buf.is_empty() {
+        return Ok(());
     }
-
-    fn add_entry(&mut self, entry: &Entry) {
-        self.buf.extend_from_slice(&entry.chain_bytes());
-    }
-
-    fn is_full(&self) -> bool {
-        self.buf.len() >= CHUNK_TARGET_BYTES
-    }
-
-    fn write_to<W: Write>(&mut self, out: &mut W) -> std::io::Result<()> {
-        if self.buf.is_empty() {
-            return Ok(());
-        }
-        out.write_all(MAGIC)?;
-        out.write_all(&(self.buf.len() as u32).to_le_bytes())?;
-        out.write_all(&self.buf)?;
-        self.buf.clear();
-        Ok(())
-    }
+    out.write_all(MAGIC)?;
+    out.write_all(&(buf.len() as u32).to_le_bytes())?;
+    out.write_all(buf)?;
+    buf.clear();
+    Ok(())
 }
 
 fn main() {
@@ -713,21 +704,22 @@ fn main() {
         }
     };
 
-    let mut chunk = ChunkWriter::new();
+    let mut buf: Vec<u8> = Vec::new();
     let mut count: u64 = 0;
 
     for entry in entries.drain(..) {
-        if chunk.is_full() {
-            if let Err(e) = chunk.write_to(&mut out_file) {
+        let entry_bytes = entry.chain_bytes_with_count();
+        if buf.len() + entry_bytes.len() > CHUNK_TARGET_BYTES && !buf.is_empty() {
+            if let Err(e) = write_chunk(&mut out_file, &mut buf) {
                 eprintln!("binpack_writer: write error: {e}");
                 exit(1);
             }
         }
-        chunk.add_entry(&entry);
+        buf.extend_from_slice(&entry_bytes);
         count += 1;
     }
 
-    if let Err(e) = chunk.write_to(&mut out_file) {
+    if let Err(e) = write_chunk(&mut out_file, &mut buf) {
         eprintln!("binpack_writer: final write error: {e}");
         exit(1);
     }
@@ -739,4 +731,135 @@ fn main() {
         input_paths.len(),
         if no_shuffle { " [no-shuffle]" } else { "" }
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_test_entry(score: i16, result: i16, ply: u16, rule50: u16) -> Entry {
+        let mut board = [Piece::None; 64];
+        board[4] = Piece::WhiteKing;
+        board[60] = Piece::BlackKing;
+        Entry {
+            pos: Position {
+                board,
+                side_to_move: Color::White,
+                white_ks: false,
+                white_qs: false,
+                black_ks: false,
+                black_qs: false,
+                ep_square: None,
+                halfmove_clock: rule50,
+            },
+            mv: UciMove {
+                from: Square(0),
+                to: Square(0),
+                promotion: None,
+                is_null: true,
+            },
+            score,
+            ply,
+            result,
+            rule50,
+        }
+    }
+
+    #[test]
+    fn test_entry_is_34_bytes_with_count() {
+        let entry = make_test_entry(100, 1, 20, 0);
+        let bytes = entry.chain_bytes_with_count();
+        assert_eq!(bytes.len(), ENTRY_SIZE + COUNT_SIZE);
+    }
+
+    #[test]
+    fn test_entry_32_bytes_plus_count_zero() {
+        let entry = make_test_entry(100, 1, 20, 0);
+        let bytes = entry.chain_bytes_with_count();
+        assert_eq!(&bytes[0..ENTRY_SIZE], &entry.chain_bytes());
+        assert_eq!(
+            &bytes[ENTRY_SIZE..ENTRY_SIZE + COUNT_SIZE],
+            &0u16.to_be_bytes()
+        );
+    }
+
+    #[test]
+    fn test_score_is_zigzag_encoded() {
+        let entry = make_test_entry(100, 1, 20, 0);
+        let bytes = entry.chain_bytes();
+        assert_eq!(&bytes[26..28], &signed_to_unsigned(100).to_be_bytes());
+
+        let entry = make_test_entry(-100, 1, 20, 0);
+        let bytes = entry.chain_bytes();
+        assert_eq!(&bytes[26..28], &signed_to_unsigned(-100).to_be_bytes());
+
+        let entry = make_test_entry(0, 1, 20, 0);
+        let bytes = entry.chain_bytes();
+        assert_eq!(&bytes[26..28], &signed_to_unsigned(0).to_be_bytes());
+
+        let entry = make_test_entry(-32768, 1, 20, 0);
+        let bytes = entry.chain_bytes();
+        assert_eq!(&bytes[26..28], &signed_to_unsigned(-32768).to_be_bytes());
+
+        let entry = make_test_entry(32767, 1, 20, 0);
+        let bytes = entry.chain_bytes();
+        assert_eq!(&bytes[26..28], &signed_to_unsigned(32767).to_be_bytes());
+    }
+
+    #[test]
+    fn test_result_is_zigzag_encoded() {
+        let entry = make_test_entry(0, 0, 20, 0);
+        let bytes = entry.chain_bytes();
+        let pr = u16::from_be_bytes([bytes[28], bytes[29]]);
+        assert_eq!((pr >> 14) & 0x3, signed_to_unsigned(0) & 0x3);
+        assert_eq!(pr & 0x3FFF, 20);
+
+        let entry = make_test_entry(0, -1, 20, 0);
+        let bytes = entry.chain_bytes();
+        let pr = u16::from_be_bytes([bytes[28], bytes[29]]);
+        assert_eq!((pr >> 14) & 0x3, signed_to_unsigned(-1) & 0x3);
+
+        let entry = make_test_entry(0, 1, 20, 0);
+        let bytes = entry.chain_bytes();
+        let pr = u16::from_be_bytes([bytes[28], bytes[29]]);
+        assert_eq!((pr >> 14) & 0x3, signed_to_unsigned(1) & 0x3);
+    }
+
+    #[test]
+    fn test_rule50_is_uint16be() {
+        let entry = make_test_entry(0, 1, 20, 90);
+        let bytes = entry.chain_bytes();
+        assert_eq!(&bytes[30..32], &90u16.to_be_bytes());
+    }
+
+    #[test]
+    fn test_chunk_header_magic_and_size() {
+        let mut buf = Vec::new();
+        buf.write_all(MAGIC).unwrap();
+        buf.write_all(&(34u32).to_le_bytes()).unwrap();
+        assert_eq!(&buf[0..4], b"BINP");
+        assert_eq!(u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]), 34);
+    }
+
+    #[test]
+    fn test_position_compression_roundtrip_initial() {
+        let pos =
+            Position::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap();
+        let compressed = pos.compress_position();
+
+        let occupied = u64::from_be_bytes([
+            compressed[0],
+            compressed[1],
+            compressed[2],
+            compressed[3],
+            compressed[4],
+            compressed[5],
+            compressed[6],
+            compressed[7],
+        ]);
+        assert_eq!(occupied, 0xFFFF00000000FFFF);
+
+        let packed_state = &compressed[8..24];
+        assert_eq!(packed_state[0], 0x2D);
+    }
 }
