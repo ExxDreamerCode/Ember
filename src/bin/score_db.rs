@@ -1,8 +1,8 @@
-use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -12,7 +12,7 @@ use ember_chess::Engine;
 
 const DEFAULT_NODES: u64 = 5000;
 const DEFAULT_DEPTH: i32 = 64;
-const STATE_SAVE_EVERY: u64 = 10_000;
+const STATE_SAVE_EVERY: u64 = 1000;
 
 fn log(msg: &str) {
     println!("[score_db] {msg}");
@@ -25,10 +25,13 @@ struct ScoreRecord {
     best_move: String,
     ply: String,
     result: String,
+    position_index: u64,
 }
 
 fn score_position(engine: &mut Engine, fen: &str, nodes: u64) -> Option<(String, i32)> {
     engine.set_fen(fen);
+    engine.searcher.stopped.store(false, Ordering::Relaxed);
+
     let (best_move, score_cp, _nodes, _elapsed) =
         engine.find_best_move_prepared_untimed(DEFAULT_DEPTH, Some(nodes));
     if best_move == "0000" {
@@ -42,27 +45,18 @@ fn state_path_for(out_dir: &Path) -> PathBuf {
     out_dir.join("score_db.state")
 }
 
-fn load_state(state_path: &Path) -> HashMap<String, u64> {
-    let mut map = HashMap::new();
+fn load_state(state_path: &Path) -> u64 {
     if let Ok(content) = fs::read_to_string(state_path) {
-        for line in content.lines() {
-            if let Some((p, count)) = line.split_once('\t') {
-                if let Ok(n) = count.parse::<u64>() {
-                    map.insert(p.to_string(), n);
-                }
-            }
+        if let Ok(n) = content.trim().parse::<u64>() {
+            return n;
         }
     }
-    map
+    0
 }
 
-fn save_state(state_path: &Path, state: &HashMap<String, u64>) {
-    let mut lines: Vec<String> = state.iter().map(|(p, c)| format!("{}\t{}", p, c)).collect();
-    lines.sort();
+fn save_state(state_path: &Path, next_index: u64) {
     if let Ok(mut f) = File::create(state_path) {
-        for l in &lines {
-            let _ = writeln!(f, "{l}");
-        }
+        let _ = writeln!(f, "{next_index}");
     }
 }
 
@@ -94,11 +88,14 @@ fn chunk_writer_loop(
     out_dir: &Path,
     chunk_bytes: u64,
     start_part: u64,
+    state_path: &Path,
+    next_index: Arc<AtomicU64>,
 ) {
     fs::create_dir_all(out_dir).unwrap();
     let mut part = start_part;
     let mut current_size: u64 = 0;
     let mut written: u64 = 0;
+    let mut since_save: u64 = 0;
 
     let mut open_next = || -> BufWriter<File> {
         let p = out_dir.join(format!("scored_{:05}.tsv", part));
@@ -132,11 +129,22 @@ fn chunk_writer_loop(
         writeln!(w, "{line}").unwrap();
         current_size += data_len;
         written += 1;
+        since_save += 1;
+
+        let idx = record.position_index + 1;
+        next_index.store(idx, Ordering::Relaxed);
+
+        if since_save >= STATE_SAVE_EVERY {
+            save_state(state_path, idx);
+            since_save = 0;
+        }
     }
 
     if let Some(mut w) = current.take() {
         w.flush().unwrap();
     }
+
+    save_state(state_path, next_index.load(Ordering::Relaxed));
 
     log(&format!(
         "SCORE DONE: {written} records written to {}",
@@ -170,7 +178,7 @@ fn main() {
     if cmd != "score" {
         eprintln!(
             "Usage: score_db score --input <glob> [--input <glob> ...] --out <dir>\n\
-             [--workers N] [--nodes N] [--chunk-gb N] [--nnue-off] [--state <path>]"
+             [--workers N] [--nodes N] [--chunk-gb N] [--nnue-off]"
         );
         std::process::exit(1);
     }
@@ -203,9 +211,14 @@ fn main() {
         .parse()
         .expect("--chunk-gb must be a number");
     let nnue_off = opts.iter().any(|(k, _)| k == "--nnue-off");
-    let state_path = get_opt(&opts, "--state")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| state_path_for(Path::new(&out)));
+
+    let out_path = PathBuf::from(&out);
+    let state_path = state_path_for(&out_path);
+
+    let start_index = load_state(&state_path);
+    if start_index > 0 {
+        log(&format!("Resuming from position index {start_index}"));
+    }
 
     let mut files: Vec<std::path::PathBuf> = Vec::new();
     for glob_pattern in &inputs {
@@ -235,34 +248,21 @@ fn main() {
     files.sort();
     log(&format!("Found {} input files", files.len()));
 
-    let state = load_state(&state_path);
-    if !state.is_empty() {
-        log(&format!(
-            "Resume state loaded: {} files with prior progress",
-            state.len()
-        ));
-    }
-
-    let (task_tx, task_rx) = mpsc::channel::<(String, String, String)>();
+    let (task_tx, task_rx) = mpsc::channel::<(String, String, String, u64)>();
     let (score_tx, score_rx) = mpsc::channel::<ScoreRecord>();
 
     let feeder_tx = task_tx.clone();
     let feeder_files = files.clone();
-    let feeder_state = state.clone();
-    let feeder_state_path = state_path.clone();
+    let start_index = Arc::new(AtomicU64::new(start_index));
+    let feeder_start_index = Arc::clone(&start_index);
     let feeder_handle = thread::spawn(move || {
+        let mut global_index: u64 = 0;
         let mut total_queued: u64 = 0;
         let mut total_skipped: u64 = 0;
-        let mut since_save: u64 = 0;
-        let mut local_state = feeder_state;
+
+        let resume_from = feeder_start_index.load(Ordering::Relaxed);
 
         for path in &feeder_files {
-            let abs_path = match path.canonicalize() {
-                Ok(p) => p.to_string_lossy().to_string(),
-                Err(_) => path.to_string_lossy().to_string(),
-            };
-            let skip_lines = local_state.get(&abs_path).copied().unwrap_or(0);
-
             let f = match File::open(path) {
                 Ok(f) => f,
                 Err(e) => {
@@ -271,9 +271,8 @@ fn main() {
                 }
             };
             let r = BufReader::new(f);
-            let mut line_idx: u64 = 0;
             let mut file_queued: u64 = 0;
-            let mut file_skipped: u64 = 0;
+            let file_skipped: u64 = 0;
 
             for line in r.lines() {
                 let line = match line {
@@ -284,10 +283,9 @@ fn main() {
                     continue;
                 }
 
-                line_idx += 1;
-
-                if line_idx <= skip_lines {
-                    file_skipped += 1;
+                if global_index < resume_from {
+                    total_skipped += 1;
+                    global_index += 1;
                     continue;
                 }
 
@@ -295,57 +293,52 @@ fn main() {
                 let fen = parts.first().unwrap_or(&"").to_string();
                 let ply = parts.get(1).unwrap_or(&"0").to_string();
                 let result = parts.get(2).unwrap_or(&"0").to_string();
-                if feeder_tx.send((fen, ply, result)).is_err() {
+                if feeder_tx.send((fen, ply, result, global_index)).is_err() {
                     break;
                 }
                 file_queued += 1;
                 total_queued += 1;
-                since_save += 1;
-
-                if since_save >= STATE_SAVE_EVERY {
-                    local_state.insert(abs_path.clone(), line_idx);
-                    save_state(&feeder_state_path, &local_state);
-                    since_save = 0;
-                }
+                global_index += 1;
 
                 if total_queued.is_multiple_of(100_000) {
                     log(&format!(
                         "feeder: {} positions queued ({} skipped/resumed)",
-                        total_queued,
-                        total_skipped + file_skipped
+                        total_queued, total_skipped
                     ));
                 }
             }
 
-            local_state.insert(abs_path, line_idx);
             total_skipped += file_skipped;
             log(&format!(
-                "feeder: file {} done — {} new, {} skipped (resume)",
+                "feeder: file {} done — {} new, {} skipped",
                 path.display(),
                 file_queued,
                 file_skipped
             ));
         }
 
-        save_state(&feeder_state_path, &local_state);
         drop(feeder_tx);
         log(&format!(
-            "feeder: done, {} total positions queued, {} skipped (resume)",
+            "feeder: done, {} total positions queued, {} skipped",
             total_queued, total_skipped
         ));
     });
 
-    let out_path = PathBuf::from(&out);
     let start_part = find_next_part(&out_path);
     if start_part > 0 {
         log(&format!("resuming output chunks from part {start_part}"));
     }
+
+    let writer_next_index = Arc::clone(&start_index);
+    let writer_state_path = state_path.clone();
     let writer_handle = thread::spawn(move || {
         chunk_writer_loop(
             score_rx,
             &out_path,
             (chunk_gb * 1024.0 * 1024.0 * 1024.0) as u64,
             start_part,
+            &writer_state_path,
+            writer_next_index,
         );
     });
 
@@ -376,7 +369,7 @@ fn main() {
                     let guard = rx.lock().unwrap();
                     guard.recv().ok()
                 };
-                let Some((fen, ply, result)) = item else {
+                let Some((fen, ply, result, position_index)) = item else {
                     break;
                 };
                 match score_position(&mut engine, &fen, nodes) {
@@ -388,6 +381,7 @@ fn main() {
                             best_move,
                             ply,
                             result,
+                            position_index,
                         });
                     }
                     None => {
@@ -414,5 +408,6 @@ fn main() {
     let _ = writer_handle.join();
 
     let _ = fs::remove_file(&state_path);
-    log("state cleared — full run complete");
+
+    log("full run complete");
 }

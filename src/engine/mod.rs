@@ -872,10 +872,10 @@ impl Engine {
             );
         }
         let mut best_move = ordered_moves[0];
-        let mut best_score = 0i32;
         let mut total_nodes = 0u64;
 
         let init_eval = self.searcher.corrected_eval(&self.st);
+        let mut best_score = init_eval;
         let mut prev_score = init_eval;
         let mut best_depth = 0;
         let mut stable_iterations = 0u32;
