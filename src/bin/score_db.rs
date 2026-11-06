@@ -195,7 +195,7 @@ fn main() {
     if cmd != "score" {
         eprintln!(
             "Usage: score_db score --input <glob> [--input <glob> ...] --out <dir>\n\
-             [--workers N] [--nodes N] [--depth N] [--chunk-gb N] [--nnue-off] [--quiet] [--eval-only]"
+             [--workers N] [--nodes N] [--depth N] [--chunk-gb N] [--nnue-off] [--nnue-on] [--quiet] [--eval-only]"
         );
         std::process::exit(1);
     }
@@ -232,6 +232,7 @@ fn main() {
         .parse()
         .expect("--chunk-gb must be a number");
     let nnue_off = opts.iter().any(|(k, _)| k == "--nnue-off");
+    let nnue_on = opts.iter().any(|(k, _)| k == "--nnue-on");
     let quiet = opts.iter().any(|(k, _)| k == "--quiet");
     let eval_only = opts.iter().any(|(k, _)| k == "--eval-only");
 
@@ -389,6 +390,12 @@ fn main() {
             if nnue_off {
                 let _ = evaluate::reset_nnue();
             }
+            if nnue_on {
+                if let Err(e) = evaluate::init_embedded_nnue() {
+                    eprintln!("worker {i}: failed to load embedded NNUE: {e}");
+                }
+            }
+            engine.searcher.refresh_nnue_net();
 
             let mut processed: u64 = 0;
             let mut batch: Vec<ScoreRecord> = Vec::with_capacity(batch_cap);
