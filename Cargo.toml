@@ -10,8 +10,8 @@ name = "ember"
 path = "src/main.rs"
 
 [[bin]]
-name = "binpack_writer"
-path = "src/bin/binpack_writer.rs"
+name = "chainpack"
+path = "src/bin/chainpack.rs"
 
 [[bin]]
 name = "score_db"
@@ -24,6 +24,7 @@ path = "src/lib.rs"
 [dependencies]
 rand = { version = "0.8", features = ["small_rng"] }
 pyrrhic-rs = { git = "https://github.com/starius/pyrrhic-rs", rev = "61bb83b7c46de492198b1565f45129e48f240c48" }
+zstd = "0.13"
 
 [dev-dependencies]
 cozy-chess = "0.3.4"
