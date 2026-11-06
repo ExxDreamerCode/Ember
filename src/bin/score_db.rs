@@ -28,12 +28,23 @@ struct ScoreRecord {
     position_index: u64,
 }
 
-fn score_position(engine: &mut Engine, fen: &str, nodes: u64) -> Option<(String, i32)> {
+fn score_position(
+    engine: &mut Engine,
+    fen: &str,
+    nodes: u64,
+    depth: i32,
+    eval_only: bool,
+) -> Option<(String, i32)> {
     engine.set_fen(fen);
     engine.searcher.stopped.store(false, Ordering::Relaxed);
 
+    if eval_only {
+        let score = engine.searcher.corrected_eval(&engine.st);
+        return Some(("0000".to_string(), score));
+    }
+
     let (best_move, score_cp, _nodes, _elapsed) =
-        engine.find_best_move_prepared_untimed(DEFAULT_DEPTH, Some(nodes));
+        engine.find_best_move_prepared_untimed(depth, Some(nodes));
     if best_move == "0000" {
         None
     } else {
@@ -84,7 +95,7 @@ fn find_next_part(out_dir: &Path) -> u64 {
 }
 
 fn chunk_writer_loop(
-    rx: mpsc::Receiver<ScoreRecord>,
+    rx: mpsc::Receiver<Vec<ScoreRecord>>,
     out_dir: &Path,
     chunk_bytes: u64,
     start_part: u64,
@@ -107,36 +118,38 @@ fn chunk_writer_loop(
 
     let mut current = Some(open_next());
 
-    for record in rx {
-        let line = format!(
-            "{}\t{}\t{}\t{}\t{}\t{}",
-            record.fen,
-            record.score_type,
-            record.score_val,
-            record.best_move,
-            record.ply,
-            record.result
-        );
-        let data_len = line.len() as u64 + 1;
-        if current_size >= chunk_bytes {
-            if let Some(mut w) = current.take() {
-                w.flush().unwrap();
+    for batch in rx {
+        for record in batch {
+            let line = format!(
+                "{}\t{}\t{}\t{}\t{}\t{}",
+                record.fen,
+                record.score_type,
+                record.score_val,
+                record.best_move,
+                record.ply,
+                record.result
+            );
+            let data_len = line.len() as u64 + 1;
+            if current_size >= chunk_bytes {
+                if let Some(mut w) = current.take() {
+                    w.flush().unwrap();
+                }
+                current = Some(open_next());
+                current_size = 0;
             }
-            current = Some(open_next());
-            current_size = 0;
-        }
-        let w = current.as_mut().unwrap();
-        writeln!(w, "{line}").unwrap();
-        current_size += data_len;
-        written += 1;
-        since_save += 1;
+            let w = current.as_mut().unwrap();
+            writeln!(w, "{line}").unwrap();
+            current_size += data_len;
+            written += 1;
+            since_save += 1;
 
-        let idx = record.position_index + 1;
-        next_index.store(idx, Ordering::Relaxed);
+            let idx = record.position_index + 1;
+            next_index.store(idx, Ordering::Relaxed);
 
-        if since_save >= STATE_SAVE_EVERY {
-            save_state(state_path, idx);
-            since_save = 0;
+            if since_save >= STATE_SAVE_EVERY {
+                save_state(state_path, idx);
+                since_save = 0;
+            }
         }
     }
 
@@ -155,11 +168,15 @@ fn chunk_writer_loop(
 fn parse_args() -> (String, Vec<(String, String)>) {
     let mut cmd = String::new();
     let mut opts: Vec<(String, String)> = Vec::new();
-    let mut iter = env::args().skip(1);
+    let mut iter = env::args().skip(1).peekable();
     while let Some(arg) = iter.next() {
         if arg.starts_with("--") {
             let key = arg.clone();
-            let val = iter.next().unwrap_or_default();
+            let val = if iter.peek().is_some_and(|next| next.starts_with("--")) {
+                String::new()
+            } else {
+                iter.next().unwrap_or_default()
+            };
             opts.push((key, val));
         } else if cmd.is_empty() {
             cmd = arg;
@@ -178,7 +195,7 @@ fn main() {
     if cmd != "score" {
         eprintln!(
             "Usage: score_db score --input <glob> [--input <glob> ...] --out <dir>\n\
-             [--workers N] [--nodes N] [--chunk-gb N] [--nnue-off]"
+             [--workers N] [--nodes N] [--depth N] [--chunk-gb N] [--nnue-off] [--quiet] [--eval-only]"
         );
         std::process::exit(1);
     }
@@ -206,11 +223,17 @@ fn main() {
         .unwrap_or_else(|| DEFAULT_NODES.to_string())
         .parse()
         .expect("--nodes must be a number");
+    let depth: i32 = get_opt(&opts, "--depth")
+        .unwrap_or_else(|| DEFAULT_DEPTH.to_string())
+        .parse()
+        .expect("--depth must be a number");
     let chunk_gb: f64 = get_opt(&opts, "--chunk-gb")
         .unwrap_or_else(|| "2".to_string())
         .parse()
         .expect("--chunk-gb must be a number");
     let nnue_off = opts.iter().any(|(k, _)| k == "--nnue-off");
+    let quiet = opts.iter().any(|(k, _)| k == "--quiet");
+    let eval_only = opts.iter().any(|(k, _)| k == "--eval-only");
 
     let out_path = PathBuf::from(&out);
     let state_path = state_path_for(&out_path);
@@ -249,7 +272,7 @@ fn main() {
     log(&format!("Found {} input files", files.len()));
 
     let (task_tx, task_rx) = mpsc::channel::<(String, String, String, u64)>();
-    let (score_tx, score_rx) = mpsc::channel::<ScoreRecord>();
+    let (score_tx, score_rx) = mpsc::channel::<Vec<ScoreRecord>>();
 
     let feeder_tx = task_tx.clone();
     let feeder_files = files.clone();
@@ -344,6 +367,9 @@ fn main() {
 
     let shared_rx = Arc::new(Mutex::new(task_rx));
 
+    let log_every = if quiet { 100_000 } else { 1_000 };
+    let batch_cap = 64;
+
     let mut worker_handles = Vec::new();
     for i in 0..workers {
         let rx = Arc::clone(&shared_rx);
@@ -358,12 +384,14 @@ fn main() {
             };
             engine.set_hash_mb(256);
             engine.num_threads = 1;
+            engine.quiet = quiet;
 
             if nnue_off {
                 let _ = evaluate::reset_nnue();
             }
 
             let mut processed: u64 = 0;
+            let mut batch: Vec<ScoreRecord> = Vec::with_capacity(batch_cap);
             loop {
                 let item = {
                     let guard = rx.lock().unwrap();
@@ -372,11 +400,11 @@ fn main() {
                 let Some((fen, ply, result, position_index)) = item else {
                     break;
                 };
-                match score_position(&mut engine, &fen, nodes) {
+                match score_position(&mut engine, &fen, nodes, depth, eval_only) {
                     Some((best_move, score_cp)) => {
-                        let _ = tx.send(ScoreRecord {
+                        batch.push(ScoreRecord {
                             fen,
-                            score_type: "cp".to_string(),
+                            score_type: if eval_only { "ep" } else { "cp" }.to_string(),
                             score_val: score_cp,
                             best_move,
                             ply,
@@ -389,9 +417,15 @@ fn main() {
                     }
                 }
                 processed += 1;
-                if processed.is_multiple_of(1000) {
+                if processed.is_multiple_of(log_every) {
                     log(&format!("worker {i}: {processed} scored"));
                 }
+                if batch.len() >= batch_cap && tx.send(std::mem::take(&mut batch)).is_err() {
+                    break;
+                }
+            }
+            if !batch.is_empty() {
+                let _ = tx.send(batch);
             }
             log(&format!("worker {i}: finished {processed} scored"));
         });

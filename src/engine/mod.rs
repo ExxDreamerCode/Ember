@@ -48,6 +48,7 @@ pub struct Engine {
     pub deadline_watchdog: Arc<DeadlineWatchdog>,
     pub num_threads: usize,
     pub multi_pv: usize,
+    pub quiet: bool,
     pub stopped: Arc<AtomicBool>,
     pub book: Option<OpeningBook>,
     pub own_book: bool,
@@ -155,6 +156,7 @@ impl Engine {
             deadline_watchdog,
             num_threads: 1,
             multi_pv: 1,
+            quiet: false,
             stopped,
             book: None,
             own_book: false,
@@ -256,6 +258,7 @@ impl Engine {
             deadline_watchdog,
             num_threads,
             multi_pv: 1,
+            quiet: false,
             stopped,
             book: book_config.book,
             own_book: false,
@@ -674,7 +677,9 @@ impl Engine {
             let ks = self.st.king_sq(self.st.w);
             let in_check = is_attacked(&self.st.bb, ks, !self.st.w);
             if in_check {
-                println!("info depth 0 score mate 0");
+                if !self.quiet {
+                    println!("info depth 0 score mate 0");
+                }
                 #[cfg(feature = "decision-trace")]
                 self.trace.emit_decision(DecisionTrace {
                     fen: &root_fen,
@@ -690,7 +695,9 @@ impl Engine {
                 });
                 return ("0000".into(), -MATE, 0, 0.0);
             } else {
-                println!("info depth 0 score cp 0");
+                if !self.quiet {
+                    println!("info depth 0 score cp 0");
+                }
                 #[cfg(feature = "decision-trace")]
                 self.trace.emit_decision(DecisionTrace {
                     fen: &root_fen,
@@ -720,12 +727,14 @@ impl Engine {
             let mv_str = move_to_uci(&self.st, best_move);
             let score = self.searcher.syzygy.probe_root_score(&self.st).unwrap_or(0);
             let elapsed = tablebase_start.elapsed().as_secs_f64();
-            println!(
-                "info depth 1 score cp {} nodes 0 nps 0 time {} pv {}",
-                score,
-                (elapsed * 1000.0) as u64,
-                mv_str
-            );
+            if !self.quiet {
+                println!(
+                    "info depth 1 score cp {} nodes 0 nps 0 time {} pv {}",
+                    score,
+                    (elapsed * 1000.0) as u64,
+                    mv_str
+                );
+            }
             #[cfg(feature = "decision-trace")]
             self.trace.emit_decision(DecisionTrace {
                 fen: &root_fen,
@@ -780,9 +789,11 @@ impl Engine {
                         SearchTimerStart::BeforeSetup(start) => start.elapsed().as_secs_f64(),
                         SearchTimerStart::AfterSetup | SearchTimerStart::Untimed => 0.0,
                     };
-                    println!(
-                        "info depth 0 score cp 0 nodes 0 nps 0 time 0 pv {mv_str} string book move"
-                    );
+                    if !self.quiet {
+                        println!(
+                            "info depth 0 score cp 0 nodes 0 nps 0 time 0 pv {mv_str} string book move"
+                        );
+                    }
                     #[cfg(feature = "decision-trace")]
                     self.trace.emit_decision(DecisionTrace {
                         fen: &root_fen,
@@ -1100,28 +1111,33 @@ impl Engine {
                     Some(best_move),
                     true,
                 );
-                let nps = if elapsed > 0.0 {
-                    (total_nodes as f64 / elapsed) as i64
-                } else {
-                    0
-                };
-                let time_ms = (elapsed * 1000.0) as u64;
-                let score_str = crate::search::format_uci_score(best_score);
-                let pv_line =
-                    crate::search::extract_pv_line(&self.searcher.shared_tt, &self.st, best_move);
-                let pv_str = format_pv_line_uci(&self.st, &pv_line);
-                println!(
-                    "info depth {} score {} nodes {} nps {} time {} pv {}",
-                    depth, score_str, total_nodes, nps, time_ms, pv_str
-                );
-                #[cfg(feature = "decision-trace")]
-                depth_infos.push(DepthInfo {
-                    depth,
-                    score_cp: best_score,
-                    nodes: total_nodes,
-                    elapsed_ms: (elapsed * 1000.0) as u128,
-                    pv: pv_str,
-                });
+                if !self.quiet {
+                    let nps = if elapsed > 0.0 {
+                        (total_nodes as f64 / elapsed) as i64
+                    } else {
+                        0
+                    };
+                    let time_ms = (elapsed * 1000.0) as u64;
+                    let score_str = crate::search::format_uci_score(best_score);
+                    let pv_line = crate::search::extract_pv_line(
+                        &self.searcher.shared_tt,
+                        &self.st,
+                        best_move,
+                    );
+                    let pv_str = format_pv_line_uci(&self.st, &pv_line);
+                    println!(
+                        "info depth {} score {} nodes {} nps {} time {} pv {}",
+                        depth, score_str, total_nodes, nps, time_ms, pv_str
+                    );
+                    #[cfg(feature = "decision-trace")]
+                    depth_infos.push(DepthInfo {
+                        depth,
+                        score_cp: best_score,
+                        nodes: total_nodes,
+                        elapsed_ms: (elapsed * 1000.0) as u128,
+                        pv: pv_str,
+                    });
+                }
                 if !self.searcher.pondering.load(Ordering::Relaxed) && time_decision.stop {
                     break;
                 }
@@ -1343,37 +1359,39 @@ impl Engine {
                 } else {
                     0
                 };
-                let time_ms = (elapsed * 1000.0) as u64;
-                for (line_index, &(mv, score, _)) in pv_lines.iter().enumerate() {
-                    let pv_line =
-                        crate::search::extract_pv_line(&self.searcher.shared_tt, &self.st, mv);
-                    let pv_str = format_pv_line_uci(&self.st, &pv_line);
-                    println!(
-                        "info depth {} multipv {} score {} nodes {} nps {} time {} pv {}",
+                if !self.quiet {
+                    let time_ms = (elapsed * 1000.0) as u64;
+                    for (line_index, &(mv, score, _)) in pv_lines.iter().enumerate() {
+                        let pv_line =
+                            crate::search::extract_pv_line(&self.searcher.shared_tt, &self.st, mv);
+                        let pv_str = format_pv_line_uci(&self.st, &pv_line);
+                        println!(
+                            "info depth {} multipv {} score {} nodes {} nps {} time {} pv {}",
+                            depth,
+                            line_index + 1,
+                            crate::search::format_uci_score(score),
+                            total_nodes,
+                            nps,
+                            time_ms,
+                            pv_str
+                        );
+                    }
+                    #[cfg(feature = "decision-trace")]
+                    depth_infos.push(DepthInfo {
                         depth,
-                        line_index + 1,
-                        crate::search::format_uci_score(score),
-                        total_nodes,
-                        nps,
-                        time_ms,
-                        pv_str
-                    );
-                }
-                #[cfg(feature = "decision-trace")]
-                depth_infos.push(DepthInfo {
-                    depth,
-                    score_cp: best_score,
-                    nodes: total_nodes,
-                    elapsed_ms: (elapsed * 1000.0) as u128,
-                    pv: format_pv_line_uci(
-                        &self.st,
-                        &crate::search::extract_pv_line(
-                            &self.searcher.shared_tt,
+                        score_cp: best_score,
+                        nodes: total_nodes,
+                        elapsed_ms: (elapsed * 1000.0) as u128,
+                        pv: format_pv_line_uci(
                             &self.st,
-                            best_move,
+                            &crate::search::extract_pv_line(
+                                &self.searcher.shared_tt,
+                                &self.st,
+                                best_move,
+                            ),
                         ),
-                    ),
-                });
+                    });
+                }
                 if !self.searcher.pondering.load(Ordering::Relaxed) && time_decision.stop {
                     break;
                 }
