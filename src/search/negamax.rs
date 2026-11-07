@@ -323,66 +323,123 @@ macro_rules! negamax_mode_body {
         #[cfg(feature = "search-debug")]
         $this.record_debug_dag_eval(h, eval_score);
 
-        if actual_depth <= 0 {
-            if !is_pv && !in_check {
-                let ldse_enabled =
-                    tune::get_int(TuneParam::LdseEnabled, i64::from(LDSE_ENABLED_DEFAULT)) != 0;
-                if ldse_enabled && !$this.singular_ldse_used_on_line($ply) {
-                    if let Some(ldse) = ldse_candidate(
-                        true,
-                        tt_move,
-                        tt_score,
-                        tt_flag,
-                        tt_pv,
-                        is_pv,
-                        actual_depth,
-                        $alpha,
-                        eval_score,
-                        false,
-                    ) {
-                        $this.set_singular_ldse_on_line($ply + 1, true);
-                        let st_before = *$st;
-                        let mv = ldse.mv;
-                        let legal = try_apply_move_mode::<CHESS960>($st, mv);
-                        if legal {
-                            $this.shared_tt.prefetch($st.hash);
-                            $eval.push_acc(
-                                $this,
-                                &st_before,
-                                $st,
-                                move_sr(mv),
-                                move_sc(mv),
-                                move_er(mv),
-                                move_ec(mv),
-                                move_promotion(mv),
-                                $ply,
-                            );
-                            $this.rep_stack.push($st.hash);
-                            $this.rep_stack_len += 1;
-                            let path_state = $this.enter_child_path($ply, mv, 1);
-                            let s = -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
-                                $st,
+        // Reusable only for this immediate leaf handoff; any LDSE attempt invalidates it.
+        let mut precomputed_eval = Some(eval_score);
+        let mut ldse_probed = false;
+        if LDSE
+            && !is_pv
+            && !in_check
+            && excluded_move.is_none()
+            && !$this.restricted_verification_active()
+            && !$this.probcut_verification
+        {
+            if $ply + 1 < MAX_PLY {
+                if let Some(ldse) = ldse_candidate(
+                    true,
+                    tt_move,
+                    tt_score,
+                    tt_flag,
+                    tt_pv,
+                    is_pv,
+                    actual_depth,
+                    $alpha,
+                    eval_score,
+                    $this.singular_ldse_used_on_line($ply),
+                ) {
+                    // Clear before attempting the move, even if illegal or later rejected.
+                    precomputed_eval = None;
+                    let st_before = *$st;
+                    let mv = ldse.mv;
+                    let legal = try_apply_move_mode::<CHESS960>($st, mv);
+                    if legal {
+                        ldse_probed = true;
+                        #[cfg(feature = "search-debug")]
+                        let ldse_nodes_before = *$cnt;
+                        #[cfg(feature = "search-debug")]
+                        {
+                            $this.debug.stats.ldse_probes += 1;
+                        }
+                        $this.shared_tt.prefetch($st.hash);
+                        $eval.push_acc(
+                            $this,
+                            &st_before,
+                            $st,
+                            move_sr(mv),
+                            move_sc(mv),
+                            move_er(mv),
+                            move_ec(mv),
+                            move_promotion(mv),
+                            $ply,
+                        );
+                        $this.rep_stack.push($st.hash);
+                        $this.rep_stack_len += 1;
+                        let path_state = $this.enter_child_path::<LDSE>($ply, mv, 1);
+                        $this.set_singular_ldse_on_line(
+                            $ply + 1,
+                            $this.singular_ldse_used_on_line($ply).saturating_add(1),
+                        );
+                        let previous_restricted = $this.set_restricted_verification(true);
+                        let s = -$this.$negamax_mode::<CHESS960, NODE_LIMITED, LDSE, E>(
+                            $st,
+                            ldse.depth,
+                            $ply + 1,
+                            -$alpha - 1,
+                            -$alpha,
+                            true,
+                            $cnt,
+                            $eval,
+                        );
+                        #[cfg(feature = "search-debug")]
+                        {
+                            $this.debug.stats.ldse_probe_nodes +=
+                                (*$cnt).saturating_sub(ldse_nodes_before);
+                        }
+                        $this.set_restricted_verification(previous_restricted);
+                        $this.leave_child_path::<LDSE>(path_state);
+                        $this.rep_stack.pop();
+                        $this.rep_stack_len -= 1;
+                        *$st = st_before;
+                        #[cfg(feature = "search-debug")]
+                        if $this.debug.trace_singular_candidates {
+                            let stopped = $this.stopped.load(Ordering::Relaxed);
+                            let outcome = if stopped {
+                                "stopped"
+                            } else if s > $alpha {
+                                "cutoff"
+                            } else {
+                                "rejected"
+                            };
+                            eprintln!(
+                                "info string search-debug ldse-event {{\"hash\":\"{:016x}\",\"fen\":\"{}\",\"move\":\"{}\",\"depth\":{},\"alpha\":{},\"beta\":{},\"eval\":{},\"tt_score\":{},\"line_uses\":{},\"probe_depth\":{},\"probe_score\":{},\"probe_nodes\":{},\"outcome\":\"{}\"}}",
+                                $st.hash,
+                                crate::board::board_to_fen($st),
+                                crate::board::move_to_uci($st, mv),
+                                actual_depth,
+                                $alpha,
+                                beta,
+                                eval_score,
+                                ldse.score,
+                                $this.singular_ldse_used_on_line($ply),
                                 ldse.depth,
-                                $ply + 1,
-                                -$alpha - 1,
-                                -$alpha,
-                                true,
-                                $cnt,
-                                $eval,
+                                s,
+                                (*$cnt).saturating_sub(ldse_nodes_before),
+                                outcome,
                             );
-                            $this.leave_child_path(path_state);
-                            $this.rep_stack.pop();
-                            $this.rep_stack_len -= 1;
-                            *$st = st_before;
-                            if !$this.stopped.load(Ordering::Relaxed) && s > $alpha {
-                                return s;
+                        }
+                        if !$this.stopped.load(Ordering::Relaxed) && s > $alpha {
+                            #[cfg(feature = "search-debug")]
+                            {
+                                $this.debug.stats.ldse_cutoffs += 1;
                             }
+                            return s;
                         }
                     }
                 }
             }
+        }
+        if actual_depth <= 0 {
             return $this.$qsearch_mode::<CHESS960, NODE_LIMITED, E>(
-                $st, $alpha, beta, QS_DEPTH, $cnt, $ply, $eval,
+                $st, $alpha, beta, QS_DEPTH, $cnt, $ply, $eval, precomputed_eval,
             );
         }
 
@@ -396,6 +453,7 @@ macro_rules! negamax_mode_body {
         let rfp_base = tune::get_int(TuneParam::ReverseFutilityBaseCp, 80) as i32;
         let rfp_per_depth = tune::get_int(TuneParam::ReverseFutilityPerDepthCp, 65) as i32;
         if $this.reverse_futility_enabled()
+            && excluded_move.is_none()
             && !in_check
             && !is_pv
             && actual_depth <= rfp_max_depth
@@ -429,6 +487,7 @@ macro_rules! negamax_mode_body {
                     $cnt,
                     $ply,
                     $eval,
+                        None,
                 );
                 if q + margin <= $alpha {
                     #[cfg(feature = "search-debug")]
@@ -481,8 +540,14 @@ macro_rules! negamax_mode_body {
                 let null_h = $st.hash;
                 $this.rep_stack.push(null_h);
                 $this.rep_stack_len += 1;
-                let path_state = $this.enter_null_path($ply);
-                let s = -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
+                let path_state = $this.enter_null_path::<LDSE>($ply);
+                if LDSE && ldse_probed && $ply + 1 < MAX_PLY {
+                    $this.set_singular_ldse_on_line(
+                        $ply + 1,
+                        $this.singular_ldse_used_on_line($ply).saturating_add(1),
+                    );
+                }
+                let s = -$this.$negamax_mode::<CHESS960, NODE_LIMITED, LDSE, E>(
                     $st,
                     actual_depth - r - 1,
                     $ply + 1,
@@ -492,7 +557,7 @@ macro_rules! negamax_mode_body {
                     $cnt,
                     $eval,
                 );
-                $this.leave_child_path(path_state);
+                $this.leave_child_path::<LDSE>(path_state);
                 $this.rep_stack.pop();
                 $this.rep_stack_len -= 1;
                 $st.hash ^= z.side;
@@ -668,7 +733,13 @@ macro_rules! negamax_mode_body {
                     );
                     $this.rep_stack.push($st.hash);
                     $this.rep_stack_len += 1;
-                    let path_state = $this.enter_child_path($ply, mv, 0);
+                    let path_state = $this.enter_child_path::<LDSE>($ply, mv, 0);
+                    if LDSE && ldse_probed && $ply + 1 < MAX_PLY {
+                        $this.set_singular_ldse_on_line(
+                            $ply + 1,
+                            $this.singular_ldse_used_on_line($ply).saturating_add(1),
+                        );
+                    }
 
                     let qsearch_score = -$this.$qsearch_mode::<CHESS960, NODE_LIMITED, E>(
                         $st,
@@ -678,6 +749,7 @@ macro_rules! negamax_mode_body {
                         $cnt,
                         $ply + 1,
                         $eval,
+                        None,
                     );
                     let mut full_search_score = None;
                     if qsearch_score >= candidate.beta && !$this.stopped.load(Ordering::Relaxed) {
@@ -691,7 +763,7 @@ macro_rules! negamax_mode_body {
                         let previous_verification = $this.probcut_verification;
                         $this.probcut_verification = true;
                         full_search_score =
-                            Some(-$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
+                            Some(-$this.$negamax_mode::<CHESS960, NODE_LIMITED, LDSE, E>(
                                 $st,
                                 candidate.child_depth,
                                 $ply + 1,
@@ -709,7 +781,7 @@ macro_rules! negamax_mode_body {
                         }
                     }
 
-                    $this.leave_child_path(path_state);
+                    $this.leave_child_path::<LDSE>(path_state);
                     $this.rep_stack.pop();
                     $this.rep_stack_len -= 1;
                     *$st = st_before;
@@ -796,7 +868,7 @@ macro_rules! negamax_mode_body {
             tt_age,
             tt_move_is_legal,
             negative_extensions_on_line: $this.singular_negative_extensions_on_line($ply),
-            ldse_used_on_line: $this.singular_ldse_used_on_line($ply),
+            ldse_used_on_line: LDSE && $this.singular_ldse_used_on_line($ply) > 0,
         };
         let singular_adjustment = match singular_candidate(singular_evidence) {
             SingularEligibility::NoCandidate => None,
@@ -818,7 +890,7 @@ macro_rules! negamax_mode_body {
                 let previous = $this.excluded_moves[$ply].replace(candidate.mv);
                 let previous_restricted = $this.set_restricted_verification(true);
                 let previous_eval_entry = $this.eval_history[$ply];
-                let alternative_score = $this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
+                let alternative_score = $this.$negamax_mode::<CHESS960, NODE_LIMITED, LDSE, E>(
                     $st,
                     candidate.depth,
                     $ply,
@@ -828,11 +900,55 @@ macro_rules! negamax_mode_body {
                     $cnt,
                     $eval,
                 );
+                // A multicut proves an alternative reaches beta. If it fails,
+                // separately verify that an alternative is close enough to beta
+                // before reducing the TT move.
+                let mut negative_verified = false;
+                if !$this.stopped.load(Ordering::Relaxed)
+                    && !candidate.positive_extension
+                    && $this.singular_negative_extensions_enabled()
+                    && i64::from(singular_evidence.negative_extensions_on_line)
+                        < tune::get_int(
+                            TuneParam::NegExtMaxPerLine,
+                            i64::from(NEG_EXT_MAX_PER_LINE_DEFAULT),
+                        )
+                    && alternative_score < candidate.beta
+                {
+                    let threshold = candidate
+                        .beta
+                        .saturating_sub(singular_margin(singular_evidence).max(1));
+                    if threshold > -MATE / 2 {
+                        #[cfg(feature = "search-debug")]
+                        {
+                            $this.debug.stats.singular_verifications += 1;
+                        }
+                        let score = $this.$negamax_mode::<CHESS960, NODE_LIMITED, LDSE, E>(
+                            $st,
+                            candidate.depth,
+                            $ply,
+                            threshold - 1,
+                            threshold,
+                            false,
+                            $cnt,
+                            $eval,
+                        );
+                        negative_verified = score >= threshold;
+                    }
+                }
                 let mut double_alternative_score = None;
                 let mut triple_alternative_score = None;
+                let max_steps = if candidate.positive_extension {
+                    tune::get_int(
+                        TuneParam::ExtensionLadderSteps,
+                        i64::from(SINGULAR_LADDER_STEPS_DEFAULT),
+                    ) as i32
+                } else {
+                    0
+                };
                 if !$this.stopped.load(Ordering::Relaxed)
                     && $this.singular_multi_extensions_enabled()
                     && candidate.positive_extension
+                    && max_steps >= 2
                     && candidate.max_extension >= 2
                     && actual_depth
                         >= tune::get_int(
@@ -852,7 +968,7 @@ macro_rules! negamax_mode_body {
                         ) as i32
                             * 3;
                     double_alternative_score =
-                        Some($this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
+                        Some($this.$negamax_mode::<CHESS960, NODE_LIMITED, LDSE, E>(
                             $st,
                             candidate.depth,
                             $ply,
@@ -863,6 +979,7 @@ macro_rules! negamax_mode_body {
                             $eval,
                         ));
                     if !$this.stopped.load(Ordering::Relaxed)
+                        && max_steps >= 3
                         && candidate.max_extension >= 3
                         && actual_depth
                             >= tune::get_int(
@@ -882,7 +999,7 @@ macro_rules! negamax_mode_body {
                             ) as i32
                                 * 6;
                         triple_alternative_score =
-                            Some($this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
+                            Some($this.$negamax_mode::<CHESS960, NODE_LIMITED, LDSE, E>(
                                 $st,
                                 candidate.depth,
                                 $ply,
@@ -937,14 +1054,12 @@ macro_rules! negamax_mode_body {
                 let lower_bound_policy = !candidate.positive_extension;
                 let multi_cut_beta = ($this.singular_multicut_enabled() && lower_bound_policy)
                     .then_some(candidate.beta);
-                let negative_extension = if $this.singular_negative_extensions_enabled()
-                    && lower_bound_policy
-                    && alternative_score >= candidate.beta
-                {
-                    -1
-                } else {
-                    0
-                };
+                let negative_extension =
+                    if $this.singular_negative_extensions_enabled() && negative_verified {
+                        -1
+                    } else {
+                        0
+                    };
                 match singular_search_outcome(
                     alternative_score,
                     candidate.beta,
@@ -1262,7 +1377,13 @@ macro_rules! negamax_mode_body {
             let h_after = $st.hash;
             $this.rep_stack.push(h_after);
             $this.rep_stack_len += 1;
-            let path_state = $this.enter_child_path($ply, mv, singular_extension);
+            let path_state = $this.enter_child_path::<LDSE>($ply, mv, singular_extension);
+            if LDSE && ldse_probed && $ply + 1 < MAX_PLY {
+                $this.set_singular_ldse_on_line(
+                    $ply + 1,
+                    $this.singular_ldse_used_on_line($ply).saturating_add(1),
+                );
+            }
 
             let new_depth = actual_depth - 1 + move_ext;
 
@@ -1278,7 +1399,7 @@ macro_rules! negamax_mode_body {
                     is_pv,
                 );
             let s = if move_index == 0 {
-                -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
+                -$this.$negamax_mode::<CHESS960, NODE_LIMITED, LDSE, E>(
                     $st,
                     new_depth,
                     $ply + 1,
@@ -1344,7 +1465,7 @@ macro_rules! negamax_mode_body {
                     $this.debug.stats.lmr_max_reduction =
                         $this.debug.stats.lmr_max_reduction.max(r);
                 }
-                let s2 = -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
+                let s2 = -$this.$negamax_mode::<CHESS960, NODE_LIMITED, LDSE, E>(
                     $st,
                     new_depth - r,
                     $ply + 1,
@@ -1359,7 +1480,7 @@ macro_rules! negamax_mode_body {
                     {
                         $this.debug.stats.lmr_researches += 1;
                     }
-                    let s3 = -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
+                    let s3 = -$this.$negamax_mode::<CHESS960, NODE_LIMITED, LDSE, E>(
                         $st,
                         new_depth,
                         $ply + 1,
@@ -1374,7 +1495,7 @@ macro_rules! negamax_mode_body {
                     s2
                 };
                 if full_depth_score > $alpha && is_pv {
-                    -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
+                    -$this.$negamax_mode::<CHESS960, NODE_LIMITED, LDSE, E>(
                         $st,
                         new_depth,
                         $ply + 1,
@@ -1388,7 +1509,7 @@ macro_rules! negamax_mode_body {
                     full_depth_score
                 }
             } else if is_pv {
-                let s2 = -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
+                let s2 = -$this.$negamax_mode::<CHESS960, NODE_LIMITED, LDSE, E>(
                     $st,
                     new_depth,
                     $ply + 1,
@@ -1399,7 +1520,7 @@ macro_rules! negamax_mode_body {
                     $eval,
                 );
                 if s2 > $alpha && s2 < beta {
-                    -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
+                    -$this.$negamax_mode::<CHESS960, NODE_LIMITED, LDSE, E>(
                         $st,
                         new_depth,
                         $ply + 1,
@@ -1413,7 +1534,7 @@ macro_rules! negamax_mode_body {
                     s2
                 }
             } else {
-                -$this.$negamax_mode::<CHESS960, NODE_LIMITED, E>(
+                -$this.$negamax_mode::<CHESS960, NODE_LIMITED, LDSE, E>(
                     $st,
                     new_depth,
                     $ply + 1,
@@ -1425,7 +1546,7 @@ macro_rules! negamax_mode_body {
                 )
             };
 
-            $this.leave_child_path(path_state);
+            $this.leave_child_path::<LDSE>(path_state);
             $this.rep_stack.pop();
             $this.rep_stack_len -= 1;
             *$st = st_before;
@@ -1681,15 +1802,25 @@ impl Searcher {
         can_null: bool,
         cnt: &mut u64,
     ) -> i32 {
-        if self.node_limit.is_some() {
-            self.negamax_with_limits::<true>(st, depth, ply, alpha, beta, can_null, cnt)
-        } else {
-            self.negamax_with_limits::<false>(st, depth, ply, alpha, beta, can_null, cnt)
+        let ldse = tune::get_int(TuneParam::LdseEnabled, i64::from(LDSE_ENABLED_DEFAULT)) != 0;
+        match (self.node_limit.is_some(), ldse) {
+            (true, true) => {
+                self.negamax_with_limits::<true, true>(st, depth, ply, alpha, beta, can_null, cnt)
+            }
+            (true, false) => {
+                self.negamax_with_limits::<true, false>(st, depth, ply, alpha, beta, can_null, cnt)
+            }
+            (false, true) => {
+                self.negamax_with_limits::<false, true>(st, depth, ply, alpha, beta, can_null, cnt)
+            }
+            (false, false) => {
+                self.negamax_with_limits::<false, false>(st, depth, ply, alpha, beta, can_null, cnt)
+            }
         }
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn negamax_with_limits<const NODE_LIMITED: bool>(
+    pub(super) fn negamax_with_limits<const NODE_LIMITED: bool, const LDSE: bool>(
         &mut self,
         st: &mut BoardState,
         depth: i32,
@@ -1704,41 +1835,43 @@ impl Searcher {
                 #[cfg(target_arch = "x86_64")]
                 {
                     return unsafe {
-                        self.negamax_x86_avx512::<NODE_LIMITED>(
+                        self.negamax_x86_avx512::<NODE_LIMITED, LDSE>(
                             st, depth, ply, alpha, beta, can_null, cnt,
                         )
                     };
                 }
                 #[allow(unreachable_code)]
-                self.negamax_scalar::<NODE_LIMITED>(st, depth, ply, alpha, beta, can_null, cnt)
+                self.negamax_scalar::<NODE_LIMITED, LDSE>(
+                    st, depth, ply, alpha, beta, can_null, cnt,
+                )
             }
             SearchBackendKind::X86V3 => {
                 #[cfg(target_arch = "x86_64")]
                 {
                     return unsafe {
-                        self.negamax_x86_v3::<NODE_LIMITED>(
+                        self.negamax_x86_v3::<NODE_LIMITED, LDSE>(
                             st, depth, ply, alpha, beta, can_null, cnt,
                         )
                     };
                 }
                 #[allow(unreachable_code)]
-                self.negamax_scalar::<NODE_LIMITED>(st, depth, ply, alpha, beta, can_null, cnt)
+                self.negamax_scalar::<NODE_LIMITED, LDSE>(
+                    st, depth, ply, alpha, beta, can_null, cnt,
+                )
             }
-            SearchBackendKind::Aarch64Simd128 => {
-                self.negamax_simd128::<NODE_LIMITED>(st, depth, ply, alpha, beta, can_null, cnt)
-            }
-            SearchBackendKind::Aarch64Simd256 => {
-                self.negamax_simd256::<NODE_LIMITED>(st, depth, ply, alpha, beta, can_null, cnt)
-            }
-            SearchBackendKind::Aarch64Simd512 => {
-                self.negamax_simd512::<NODE_LIMITED>(st, depth, ply, alpha, beta, can_null, cnt)
-            }
-            _ => self.negamax_scalar::<NODE_LIMITED>(st, depth, ply, alpha, beta, can_null, cnt),
+            SearchBackendKind::Aarch64Simd128 => self
+                .negamax_simd128::<NODE_LIMITED, LDSE>(st, depth, ply, alpha, beta, can_null, cnt),
+            SearchBackendKind::Aarch64Simd256 => self
+                .negamax_simd256::<NODE_LIMITED, LDSE>(st, depth, ply, alpha, beta, can_null, cnt),
+            SearchBackendKind::Aarch64Simd512 => self
+                .negamax_simd512::<NODE_LIMITED, LDSE>(st, depth, ply, alpha, beta, can_null, cnt),
+            _ => self
+                .negamax_scalar::<NODE_LIMITED, LDSE>(st, depth, ply, alpha, beta, can_null, cnt),
         }
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn negamax_scalar<const NODE_LIMITED: bool>(
+    pub(super) fn negamax_scalar<const NODE_LIMITED: bool, const LDSE: bool>(
         &mut self,
         st: &mut BoardState,
         depth: i32,
@@ -1751,7 +1884,7 @@ impl Searcher {
         let ember_v2_net = self.ember_v2_net.clone();
         if let Some(net) = ember_v2_net.as_deref() {
             return if st.chess960 {
-                self.negamax_mode_scalar::<true, NODE_LIMITED, _>(
+                self.negamax_mode_scalar::<true, NODE_LIMITED, LDSE, _>(
                     st,
                     depth,
                     ply,
@@ -1765,7 +1898,7 @@ impl Searcher {
                     },
                 )
             } else {
-                self.negamax_mode_scalar::<false, NODE_LIMITED, _>(
+                self.negamax_mode_scalar::<false, NODE_LIMITED, LDSE, _>(
                     st,
                     depth,
                     ply,
@@ -1783,7 +1916,7 @@ impl Searcher {
         let classic_net = self.classic_net.clone();
         if let Some(net) = classic_net.as_deref() {
             return if st.chess960 {
-                self.negamax_mode_scalar::<true, NODE_LIMITED, _>(
+                self.negamax_mode_scalar::<true, NODE_LIMITED, LDSE, _>(
                     st,
                     depth,
                     ply,
@@ -1794,7 +1927,7 @@ impl Searcher {
                     ClassicHalfKpEval { net },
                 )
             } else {
-                self.negamax_mode_scalar::<false, NODE_LIMITED, _>(
+                self.negamax_mode_scalar::<false, NODE_LIMITED, LDSE, _>(
                     st,
                     depth,
                     ply,
@@ -1810,7 +1943,7 @@ impl Searcher {
         match (st.chess960, nnue_net.as_deref()) {
             (true, Some(net)) => {
                 if net.has_threat_features() {
-                    self.negamax_mode_scalar::<true, NODE_LIMITED, _>(
+                    self.negamax_mode_scalar::<true, NODE_LIMITED, LDSE, _>(
                         st,
                         depth,
                         ply,
@@ -1824,7 +1957,7 @@ impl Searcher {
                         },
                     )
                 } else {
-                    self.negamax_mode_scalar::<true, NODE_LIMITED, _>(
+                    self.negamax_mode_scalar::<true, NODE_LIMITED, LDSE, _>(
                         st,
                         depth,
                         ply,
@@ -1839,7 +1972,7 @@ impl Searcher {
                     )
                 }
             }
-            (true, None) => self.negamax_mode_scalar::<true, NODE_LIMITED, _>(
+            (true, None) => self.negamax_mode_scalar::<true, NODE_LIMITED, LDSE, _>(
                 st,
                 depth,
                 ply,
@@ -1851,7 +1984,7 @@ impl Searcher {
             ),
             (false, Some(net)) => {
                 if net.has_threat_features() {
-                    self.negamax_mode_scalar::<false, NODE_LIMITED, _>(
+                    self.negamax_mode_scalar::<false, NODE_LIMITED, LDSE, _>(
                         st,
                         depth,
                         ply,
@@ -1865,7 +1998,7 @@ impl Searcher {
                         },
                     )
                 } else {
-                    self.negamax_mode_scalar::<false, NODE_LIMITED, _>(
+                    self.negamax_mode_scalar::<false, NODE_LIMITED, LDSE, _>(
                         st,
                         depth,
                         ply,
@@ -1880,7 +2013,7 @@ impl Searcher {
                     )
                 }
             }
-            (false, None) => self.negamax_mode_scalar::<false, NODE_LIMITED, _>(
+            (false, None) => self.negamax_mode_scalar::<false, NODE_LIMITED, LDSE, _>(
                 st,
                 depth,
                 ply,
@@ -1894,7 +2027,7 @@ impl Searcher {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn negamax_simd128<const NODE_LIMITED: bool>(
+    pub(super) fn negamax_simd128<const NODE_LIMITED: bool, const LDSE: bool>(
         &mut self,
         st: &mut BoardState,
         depth: i32,
@@ -1907,7 +2040,7 @@ impl Searcher {
         let ember_v2_net = self.ember_v2_net.clone();
         if let Some(net) = ember_v2_net.as_deref() {
             return if st.chess960 {
-                self.negamax_mode_simd128::<true, NODE_LIMITED, _>(
+                self.negamax_mode_simd128::<true, NODE_LIMITED, LDSE, _>(
                     st,
                     depth,
                     ply,
@@ -1921,7 +2054,7 @@ impl Searcher {
                     },
                 )
             } else {
-                self.negamax_mode_simd128::<false, NODE_LIMITED, _>(
+                self.negamax_mode_simd128::<false, NODE_LIMITED, LDSE, _>(
                     st,
                     depth,
                     ply,
@@ -1939,7 +2072,7 @@ impl Searcher {
         let classic_net = self.classic_net.clone();
         if let Some(net) = classic_net.as_deref() {
             return if st.chess960 {
-                self.negamax_mode_simd128::<true, NODE_LIMITED, _>(
+                self.negamax_mode_simd128::<true, NODE_LIMITED, LDSE, _>(
                     st,
                     depth,
                     ply,
@@ -1950,7 +2083,7 @@ impl Searcher {
                     ClassicHalfKpEval { net },
                 )
             } else {
-                self.negamax_mode_simd128::<false, NODE_LIMITED, _>(
+                self.negamax_mode_simd128::<false, NODE_LIMITED, LDSE, _>(
                     st,
                     depth,
                     ply,
@@ -1966,7 +2099,7 @@ impl Searcher {
         match (st.chess960, nnue_net.as_deref()) {
             (true, Some(net)) => {
                 if net.has_threat_features() {
-                    self.negamax_mode_simd128::<true, NODE_LIMITED, _>(
+                    self.negamax_mode_simd128::<true, NODE_LIMITED, LDSE, _>(
                         st,
                         depth,
                         ply,
@@ -1980,7 +2113,7 @@ impl Searcher {
                         },
                     )
                 } else {
-                    self.negamax_mode_simd128::<true, NODE_LIMITED, _>(
+                    self.negamax_mode_simd128::<true, NODE_LIMITED, LDSE, _>(
                         st,
                         depth,
                         ply,
@@ -1995,7 +2128,7 @@ impl Searcher {
                     )
                 }
             }
-            (true, None) => self.negamax_mode_simd128::<true, NODE_LIMITED, _>(
+            (true, None) => self.negamax_mode_simd128::<true, NODE_LIMITED, LDSE, _>(
                 st,
                 depth,
                 ply,
@@ -2007,7 +2140,7 @@ impl Searcher {
             ),
             (false, Some(net)) => {
                 if net.has_threat_features() {
-                    self.negamax_mode_simd128::<false, NODE_LIMITED, _>(
+                    self.negamax_mode_simd128::<false, NODE_LIMITED, LDSE, _>(
                         st,
                         depth,
                         ply,
@@ -2021,7 +2154,7 @@ impl Searcher {
                         },
                     )
                 } else {
-                    self.negamax_mode_simd128::<false, NODE_LIMITED, _>(
+                    self.negamax_mode_simd128::<false, NODE_LIMITED, LDSE, _>(
                         st,
                         depth,
                         ply,
@@ -2036,7 +2169,7 @@ impl Searcher {
                     )
                 }
             }
-            (false, None) => self.negamax_mode_simd128::<false, NODE_LIMITED, _>(
+            (false, None) => self.negamax_mode_simd128::<false, NODE_LIMITED, LDSE, _>(
                 st,
                 depth,
                 ply,
@@ -2050,7 +2183,7 @@ impl Searcher {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn negamax_simd256<const NODE_LIMITED: bool>(
+    pub(super) fn negamax_simd256<const NODE_LIMITED: bool, const LDSE: bool>(
         &mut self,
         st: &mut BoardState,
         depth: i32,
@@ -2063,7 +2196,7 @@ impl Searcher {
         let ember_v2_net = self.ember_v2_net.clone();
         if let Some(net) = ember_v2_net.as_deref() {
             return if st.chess960 {
-                self.negamax_mode_simd256::<true, NODE_LIMITED, _>(
+                self.negamax_mode_simd256::<true, NODE_LIMITED, LDSE, _>(
                     st,
                     depth,
                     ply,
@@ -2077,7 +2210,7 @@ impl Searcher {
                     },
                 )
             } else {
-                self.negamax_mode_simd256::<false, NODE_LIMITED, _>(
+                self.negamax_mode_simd256::<false, NODE_LIMITED, LDSE, _>(
                     st,
                     depth,
                     ply,
@@ -2095,7 +2228,7 @@ impl Searcher {
         let classic_net = self.classic_net.clone();
         if let Some(net) = classic_net.as_deref() {
             return if st.chess960 {
-                self.negamax_mode_simd256::<true, NODE_LIMITED, _>(
+                self.negamax_mode_simd256::<true, NODE_LIMITED, LDSE, _>(
                     st,
                     depth,
                     ply,
@@ -2106,7 +2239,7 @@ impl Searcher {
                     ClassicHalfKpEval { net },
                 )
             } else {
-                self.negamax_mode_simd256::<false, NODE_LIMITED, _>(
+                self.negamax_mode_simd256::<false, NODE_LIMITED, LDSE, _>(
                     st,
                     depth,
                     ply,
@@ -2122,7 +2255,7 @@ impl Searcher {
         match (st.chess960, nnue_net.as_deref()) {
             (true, Some(net)) => {
                 if net.has_threat_features() {
-                    self.negamax_mode_simd256::<true, NODE_LIMITED, _>(
+                    self.negamax_mode_simd256::<true, NODE_LIMITED, LDSE, _>(
                         st,
                         depth,
                         ply,
@@ -2136,7 +2269,7 @@ impl Searcher {
                         },
                     )
                 } else {
-                    self.negamax_mode_simd256::<true, NODE_LIMITED, _>(
+                    self.negamax_mode_simd256::<true, NODE_LIMITED, LDSE, _>(
                         st,
                         depth,
                         ply,
@@ -2151,7 +2284,7 @@ impl Searcher {
                     )
                 }
             }
-            (true, None) => self.negamax_mode_simd256::<true, NODE_LIMITED, _>(
+            (true, None) => self.negamax_mode_simd256::<true, NODE_LIMITED, LDSE, _>(
                 st,
                 depth,
                 ply,
@@ -2163,7 +2296,7 @@ impl Searcher {
             ),
             (false, Some(net)) => {
                 if net.has_threat_features() {
-                    self.negamax_mode_simd256::<false, NODE_LIMITED, _>(
+                    self.negamax_mode_simd256::<false, NODE_LIMITED, LDSE, _>(
                         st,
                         depth,
                         ply,
@@ -2177,7 +2310,7 @@ impl Searcher {
                         },
                     )
                 } else {
-                    self.negamax_mode_simd256::<false, NODE_LIMITED, _>(
+                    self.negamax_mode_simd256::<false, NODE_LIMITED, LDSE, _>(
                         st,
                         depth,
                         ply,
@@ -2192,7 +2325,7 @@ impl Searcher {
                     )
                 }
             }
-            (false, None) => self.negamax_mode_simd256::<false, NODE_LIMITED, _>(
+            (false, None) => self.negamax_mode_simd256::<false, NODE_LIMITED, LDSE, _>(
                 st,
                 depth,
                 ply,
@@ -2206,7 +2339,7 @@ impl Searcher {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn negamax_simd512<const NODE_LIMITED: bool>(
+    pub(super) fn negamax_simd512<const NODE_LIMITED: bool, const LDSE: bool>(
         &mut self,
         st: &mut BoardState,
         depth: i32,
@@ -2219,7 +2352,7 @@ impl Searcher {
         let ember_v2_net = self.ember_v2_net.clone();
         if let Some(net) = ember_v2_net.as_deref() {
             return if st.chess960 {
-                self.negamax_mode_simd512::<true, NODE_LIMITED, _>(
+                self.negamax_mode_simd512::<true, NODE_LIMITED, LDSE, _>(
                     st,
                     depth,
                     ply,
@@ -2233,7 +2366,7 @@ impl Searcher {
                     },
                 )
             } else {
-                self.negamax_mode_simd512::<false, NODE_LIMITED, _>(
+                self.negamax_mode_simd512::<false, NODE_LIMITED, LDSE, _>(
                     st,
                     depth,
                     ply,
@@ -2251,7 +2384,7 @@ impl Searcher {
         let classic_net = self.classic_net.clone();
         if let Some(net) = classic_net.as_deref() {
             return if st.chess960 {
-                self.negamax_mode_simd512::<true, NODE_LIMITED, _>(
+                self.negamax_mode_simd512::<true, NODE_LIMITED, LDSE, _>(
                     st,
                     depth,
                     ply,
@@ -2262,7 +2395,7 @@ impl Searcher {
                     ClassicHalfKpEval { net },
                 )
             } else {
-                self.negamax_mode_simd512::<false, NODE_LIMITED, _>(
+                self.negamax_mode_simd512::<false, NODE_LIMITED, LDSE, _>(
                     st,
                     depth,
                     ply,
@@ -2278,7 +2411,7 @@ impl Searcher {
         match (st.chess960, nnue_net.as_deref()) {
             (true, Some(net)) => {
                 if net.has_threat_features() {
-                    self.negamax_mode_simd512::<true, NODE_LIMITED, _>(
+                    self.negamax_mode_simd512::<true, NODE_LIMITED, LDSE, _>(
                         st,
                         depth,
                         ply,
@@ -2292,7 +2425,7 @@ impl Searcher {
                         },
                     )
                 } else {
-                    self.negamax_mode_simd512::<true, NODE_LIMITED, _>(
+                    self.negamax_mode_simd512::<true, NODE_LIMITED, LDSE, _>(
                         st,
                         depth,
                         ply,
@@ -2307,7 +2440,7 @@ impl Searcher {
                     )
                 }
             }
-            (true, None) => self.negamax_mode_simd512::<true, NODE_LIMITED, _>(
+            (true, None) => self.negamax_mode_simd512::<true, NODE_LIMITED, LDSE, _>(
                 st,
                 depth,
                 ply,
@@ -2319,7 +2452,7 @@ impl Searcher {
             ),
             (false, Some(net)) => {
                 if net.has_threat_features() {
-                    self.negamax_mode_simd512::<false, NODE_LIMITED, _>(
+                    self.negamax_mode_simd512::<false, NODE_LIMITED, LDSE, _>(
                         st,
                         depth,
                         ply,
@@ -2333,7 +2466,7 @@ impl Searcher {
                         },
                     )
                 } else {
-                    self.negamax_mode_simd512::<false, NODE_LIMITED, _>(
+                    self.negamax_mode_simd512::<false, NODE_LIMITED, LDSE, _>(
                         st,
                         depth,
                         ply,
@@ -2348,7 +2481,7 @@ impl Searcher {
                     )
                 }
             }
-            (false, None) => self.negamax_mode_simd512::<false, NODE_LIMITED, _>(
+            (false, None) => self.negamax_mode_simd512::<false, NODE_LIMITED, LDSE, _>(
                 st,
                 depth,
                 ply,
@@ -2364,7 +2497,7 @@ impl Searcher {
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx,avx2,bmi1,bmi2,fma,lzcnt,popcnt")]
     #[allow(clippy::too_many_arguments)]
-    pub(super) unsafe fn negamax_x86_v3<const NODE_LIMITED: bool>(
+    pub(super) unsafe fn negamax_x86_v3<const NODE_LIMITED: bool, const LDSE: bool>(
         &mut self,
         st: &mut BoardState,
         depth: i32,
@@ -2380,7 +2513,7 @@ impl Searcher {
         unsafe {
             if let Some(net) = ember_v2_net.as_deref() {
                 return if st.chess960 {
-                    self.negamax_mode_x86_v3::<true, NODE_LIMITED, _>(
+                    self.negamax_mode_x86_v3::<true, NODE_LIMITED, LDSE, _>(
                         st,
                         depth,
                         ply,
@@ -2394,7 +2527,7 @@ impl Searcher {
                         },
                     )
                 } else {
-                    self.negamax_mode_x86_v3::<false, NODE_LIMITED, _>(
+                    self.negamax_mode_x86_v3::<false, NODE_LIMITED, LDSE, _>(
                         st,
                         depth,
                         ply,
@@ -2411,7 +2544,7 @@ impl Searcher {
             }
             if let Some(net) = classic_net.as_deref() {
                 return if st.chess960 {
-                    self.negamax_mode_x86_v3::<true, NODE_LIMITED, _>(
+                    self.negamax_mode_x86_v3::<true, NODE_LIMITED, LDSE, _>(
                         st,
                         depth,
                         ply,
@@ -2422,7 +2555,7 @@ impl Searcher {
                         ClassicHalfKpEval { net },
                     )
                 } else {
-                    self.negamax_mode_x86_v3::<false, NODE_LIMITED, _>(
+                    self.negamax_mode_x86_v3::<false, NODE_LIMITED, LDSE, _>(
                         st,
                         depth,
                         ply,
@@ -2437,7 +2570,7 @@ impl Searcher {
             match (st.chess960, nnue_net.as_deref()) {
                 (true, Some(net)) => {
                     if net.has_threat_features() {
-                        self.negamax_mode_x86_v3::<true, NODE_LIMITED, _>(
+                        self.negamax_mode_x86_v3::<true, NODE_LIMITED, LDSE, _>(
                             st,
                             depth,
                             ply,
@@ -2451,7 +2584,7 @@ impl Searcher {
                             },
                         )
                     } else {
-                        self.negamax_mode_x86_v3::<true, NODE_LIMITED, _>(
+                        self.negamax_mode_x86_v3::<true, NODE_LIMITED, LDSE, _>(
                             st,
                             depth,
                             ply,
@@ -2466,7 +2599,7 @@ impl Searcher {
                         )
                     }
                 }
-                (true, None) => self.negamax_mode_x86_v3::<true, NODE_LIMITED, _>(
+                (true, None) => self.negamax_mode_x86_v3::<true, NODE_LIMITED, LDSE, _>(
                     st,
                     depth,
                     ply,
@@ -2478,7 +2611,7 @@ impl Searcher {
                 ),
                 (false, Some(net)) => {
                     if net.has_threat_features() {
-                        self.negamax_mode_x86_v3::<false, NODE_LIMITED, _>(
+                        self.negamax_mode_x86_v3::<false, NODE_LIMITED, LDSE, _>(
                             st,
                             depth,
                             ply,
@@ -2492,7 +2625,7 @@ impl Searcher {
                             },
                         )
                     } else {
-                        self.negamax_mode_x86_v3::<false, NODE_LIMITED, _>(
+                        self.negamax_mode_x86_v3::<false, NODE_LIMITED, LDSE, _>(
                             st,
                             depth,
                             ply,
@@ -2507,7 +2640,7 @@ impl Searcher {
                         )
                     }
                 }
-                (false, None) => self.negamax_mode_x86_v3::<false, NODE_LIMITED, _>(
+                (false, None) => self.negamax_mode_x86_v3::<false, NODE_LIMITED, LDSE, _>(
                     st,
                     depth,
                     ply,
@@ -2526,7 +2659,7 @@ impl Searcher {
         enable = "avx,avx2,avx512f,avx512bw,avx512dq,avx512vl,bmi1,bmi2,fma,lzcnt,popcnt"
     )]
     #[allow(clippy::too_many_arguments)]
-    pub(super) unsafe fn negamax_x86_avx512<const NODE_LIMITED: bool>(
+    pub(super) unsafe fn negamax_x86_avx512<const NODE_LIMITED: bool, const LDSE: bool>(
         &mut self,
         st: &mut BoardState,
         depth: i32,
@@ -2542,7 +2675,7 @@ impl Searcher {
         unsafe {
             if let Some(net) = ember_v2_net.as_deref() {
                 return if st.chess960 {
-                    self.negamax_mode_x86_avx512::<true, NODE_LIMITED, _>(
+                    self.negamax_mode_x86_avx512::<true, NODE_LIMITED, LDSE, _>(
                         st,
                         depth,
                         ply,
@@ -2556,7 +2689,7 @@ impl Searcher {
                         },
                     )
                 } else {
-                    self.negamax_mode_x86_avx512::<false, NODE_LIMITED, _>(
+                    self.negamax_mode_x86_avx512::<false, NODE_LIMITED, LDSE, _>(
                         st,
                         depth,
                         ply,
@@ -2573,7 +2706,7 @@ impl Searcher {
             }
             if let Some(net) = classic_net.as_deref() {
                 return if st.chess960 {
-                    self.negamax_mode_x86_avx512::<true, NODE_LIMITED, _>(
+                    self.negamax_mode_x86_avx512::<true, NODE_LIMITED, LDSE, _>(
                         st,
                         depth,
                         ply,
@@ -2584,7 +2717,7 @@ impl Searcher {
                         ClassicHalfKpEval { net },
                     )
                 } else {
-                    self.negamax_mode_x86_avx512::<false, NODE_LIMITED, _>(
+                    self.negamax_mode_x86_avx512::<false, NODE_LIMITED, LDSE, _>(
                         st,
                         depth,
                         ply,
@@ -2599,7 +2732,7 @@ impl Searcher {
             match (st.chess960, nnue_net.as_deref()) {
                 (true, Some(net)) => {
                     if net.has_threat_features() {
-                        self.negamax_mode_x86_avx512::<true, NODE_LIMITED, _>(
+                        self.negamax_mode_x86_avx512::<true, NODE_LIMITED, LDSE, _>(
                             st,
                             depth,
                             ply,
@@ -2613,7 +2746,7 @@ impl Searcher {
                             },
                         )
                     } else {
-                        self.negamax_mode_x86_avx512::<true, NODE_LIMITED, _>(
+                        self.negamax_mode_x86_avx512::<true, NODE_LIMITED, LDSE, _>(
                             st,
                             depth,
                             ply,
@@ -2628,7 +2761,7 @@ impl Searcher {
                         )
                     }
                 }
-                (true, None) => self.negamax_mode_x86_avx512::<true, NODE_LIMITED, _>(
+                (true, None) => self.negamax_mode_x86_avx512::<true, NODE_LIMITED, LDSE, _>(
                     st,
                     depth,
                     ply,
@@ -2640,7 +2773,7 @@ impl Searcher {
                 ),
                 (false, Some(net)) => {
                     if net.has_threat_features() {
-                        self.negamax_mode_x86_avx512::<false, NODE_LIMITED, _>(
+                        self.negamax_mode_x86_avx512::<false, NODE_LIMITED, LDSE, _>(
                             st,
                             depth,
                             ply,
@@ -2654,7 +2787,7 @@ impl Searcher {
                             },
                         )
                     } else {
-                        self.negamax_mode_x86_avx512::<false, NODE_LIMITED, _>(
+                        self.negamax_mode_x86_avx512::<false, NODE_LIMITED, LDSE, _>(
                             st,
                             depth,
                             ply,
@@ -2669,7 +2802,7 @@ impl Searcher {
                         )
                     }
                 }
-                (false, None) => self.negamax_mode_x86_avx512::<false, NODE_LIMITED, _>(
+                (false, None) => self.negamax_mode_x86_avx512::<false, NODE_LIMITED, LDSE, _>(
                     st,
                     depth,
                     ply,
@@ -2687,6 +2820,7 @@ impl Searcher {
     pub(super) fn negamax_mode_scalar<
         const CHESS960: bool,
         const NODE_LIMITED: bool,
+        const LDSE: bool,
         E: SearchEval,
     >(
         &mut self,
@@ -2718,6 +2852,7 @@ impl Searcher {
     pub(super) fn negamax_mode_simd128<
         const CHESS960: bool,
         const NODE_LIMITED: bool,
+        const LDSE: bool,
         E: SearchEval,
     >(
         &mut self,
@@ -2749,6 +2884,7 @@ impl Searcher {
     pub(super) fn negamax_mode_simd256<
         const CHESS960: bool,
         const NODE_LIMITED: bool,
+        const LDSE: bool,
         E: SearchEval,
     >(
         &mut self,
@@ -2780,6 +2916,7 @@ impl Searcher {
     pub(super) fn negamax_mode_simd512<
         const CHESS960: bool,
         const NODE_LIMITED: bool,
+        const LDSE: bool,
         E: SearchEval,
     >(
         &mut self,
@@ -2813,6 +2950,7 @@ impl Searcher {
     pub(super) unsafe fn negamax_mode_x86_v3<
         const CHESS960: bool,
         const NODE_LIMITED: bool,
+        const LDSE: bool,
         E: SearchEval,
     >(
         &mut self,
@@ -2850,6 +2988,7 @@ impl Searcher {
     pub(super) unsafe fn negamax_mode_x86_avx512<
         const CHESS960: bool,
         const NODE_LIMITED: bool,
+        const LDSE: bool,
         E: SearchEval,
     >(
         &mut self,

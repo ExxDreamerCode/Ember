@@ -125,6 +125,11 @@ def parse_uci_info(line):
     if not line.startswith("info "):
         return None
     tokens = line.split()
+    # A search interrupted during an aspiration re-search can finish with a
+    # bound; retain the preceding exact iteration instead of treating it as
+    # a comparable score.
+    if "lowerbound" in tokens or "upperbound" in tokens:
+        return None
     result = {"multipv": 1}
     index = 1
     while index < len(tokens):
@@ -207,12 +212,17 @@ class UciOracle:
             command += " searchmoves " + " ".join(searchmoves)
         self._send(command)
         lines = self._read_until("bestmove")
-        latest = {}
+        by_depth = defaultdict(dict)
         for line in lines:
             parsed = parse_uci_info(line)
             if parsed is not None:
-                latest[parsed["multipv"]] = parsed
-        return [latest[index] for index in sorted(latest)]
+                by_depth[parsed.get("depth", 0)][parsed["multipv"]] = parsed
+        # An interrupted MultiPV iteration may contain only its first line.
+        # Compare alternatives from the latest depth with every requested PV.
+        for depth in sorted(by_depth, reverse=True):
+            if all(index in by_depth[depth] for index in range(1, multipv + 1)):
+                return [by_depth[depth][index] for index in range(1, multipv + 1)]
+        return []
 
     def close(self):
         if self.process.poll() is None:

@@ -106,6 +106,10 @@ class AutoTuneTests(unittest.TestCase):
         self.assertEqual(lmp["base"], 8)
         self.assertEqual(lmp["max"], 8)
 
+    def test_repository_tuning_configuration_passes_preflight(self):
+        params = validate_tune_config(read_toml(AUTO_TUNE / "tune.toml"))
+        self.assertTrue(any(param["name"] == "LDSE_MAX_PER_LINE" for param in params))
+
     def test_candidate_is_engine_a_for_positive_sprt_alternative(self):
         config = generate_match_config(
             self.cfg,

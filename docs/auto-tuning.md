@@ -114,9 +114,14 @@ The tunable constants and their defaults:
 | `EXTENSION_LADDER_STEP_CP` | 40 | Centipawn cost per ladder step (triangular) |
 | `LDSE_ENABLED` | 0 | Enable Late-stage Delta Singular Extension |
 | `LDSE_MARGIN_CP` | 60 | LDSE margin in centipawns |
-| `LDSE_MAX_DEPTH` | 6 | Maximum depth for LDSE |
+| `LDSE_MAX_DEPTH` | 0 | Maximum depth for LDSE; positive values are experimental |
 | `LDSE_MAX_PER_LINE` | 1 | Maximum LDSE uses per line |
 | `NEG_EXT_MAX_PER_LINE` | 1 | Maximum negative extensions per line |
+
+Positive-depth LDSE is experimental: enabling a depth limit of 6 lost the negative
+SPRT at 640 paired openings (8+0.08, estimated −11.9 Elo versus the pre-change
+revision). The default keeps probes at the previous quiescence boundary; explicit
+positive limits remain available for further tuning.
 
 ### Correction gravity (src/search/state.rs)
 

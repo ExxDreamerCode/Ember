@@ -45,7 +45,8 @@ macro_rules! qsearch_mode_body {
         $depth:ident,
         $cnt:ident,
         $ply:ident,
-        $eval:ident
+        $eval:ident,
+        $precomputed_eval:ident
     ) => {{
         if $this.stop_requested() {
             return 0;
@@ -75,7 +76,8 @@ macro_rules! qsearch_mode_body {
         }
 
         if !in_check {
-            let stand = $eval.static_eval::<CHESS960>($this, $st, $ply);
+            let stand = $precomputed_eval
+                .unwrap_or_else(|| $eval.static_eval::<CHESS960>($this, $st, $ply));
             #[cfg(feature = "search-debug")]
             $this.record_debug_dag_eval($st.hash, stand);
             if stand >= $beta {
@@ -243,6 +245,7 @@ macro_rules! qsearch_mode_body {
                 $cnt,
                 $ply + 1,
                 $eval,
+                None,
             );
             $this.rep_stack.pop();
             $this.rep_stack_len -= 1;
@@ -303,6 +306,7 @@ impl Searcher {
                         net,
                         _backend: ScalarNnueBackend,
                     },
+                    None,
                 )
             } else {
                 self.qsearch_mode_scalar::<false, false, _>(
@@ -316,6 +320,7 @@ impl Searcher {
                         net,
                         _backend: ScalarNnueBackend,
                     },
+                    None,
                 )
             };
         }
@@ -330,6 +335,7 @@ impl Searcher {
                     cnt,
                     ply,
                     ClassicHalfKpEval { net },
+                    None,
                 )
             } else {
                 self.qsearch_mode_scalar::<false, false, _>(
@@ -340,6 +346,7 @@ impl Searcher {
                     cnt,
                     ply,
                     ClassicHalfKpEval { net },
+                    None,
                 )
             };
         }
@@ -358,6 +365,7 @@ impl Searcher {
                             net,
                             _backend: ScalarNnueBackend,
                         },
+                        None,
                     )
                 } else {
                     self.qsearch_mode_scalar::<true, false, _>(
@@ -371,6 +379,7 @@ impl Searcher {
                             net,
                             _backend: ScalarNnueBackend,
                         },
+                        None,
                     )
                 }
             }
@@ -382,6 +391,7 @@ impl Searcher {
                 cnt,
                 ply,
                 ClassicEval,
+                None,
             ),
             (false, Some(net)) => {
                 if net.has_threat_features() {
@@ -396,6 +406,7 @@ impl Searcher {
                             net,
                             _backend: ScalarNnueBackend,
                         },
+                        None,
                     )
                 } else {
                     self.qsearch_mode_scalar::<false, false, _>(
@@ -409,6 +420,7 @@ impl Searcher {
                             net,
                             _backend: ScalarNnueBackend,
                         },
+                        None,
                     )
                 }
             }
@@ -420,6 +432,7 @@ impl Searcher {
                 cnt,
                 ply,
                 ClassicEval,
+                None,
             ),
         }
     }
@@ -438,6 +451,7 @@ impl Searcher {
         cnt: &mut u64,
         ply: usize,
         eval: E,
+        precomputed_eval: Option<i32>,
     ) -> i32 {
         qsearch_mode_body!(
             self,
@@ -448,7 +462,8 @@ impl Searcher {
             depth,
             cnt,
             ply,
-            eval
+            eval,
+            precomputed_eval
         )
     }
 
@@ -466,6 +481,7 @@ impl Searcher {
         cnt: &mut u64,
         ply: usize,
         eval: E,
+        precomputed_eval: Option<i32>,
     ) -> i32 {
         qsearch_mode_body!(
             self,
@@ -476,7 +492,8 @@ impl Searcher {
             depth,
             cnt,
             ply,
-            eval
+            eval,
+            precomputed_eval
         )
     }
 
@@ -494,6 +511,7 @@ impl Searcher {
         cnt: &mut u64,
         ply: usize,
         eval: E,
+        precomputed_eval: Option<i32>,
     ) -> i32 {
         qsearch_mode_body!(
             self,
@@ -504,7 +522,8 @@ impl Searcher {
             depth,
             cnt,
             ply,
-            eval
+            eval,
+            precomputed_eval
         )
     }
 
@@ -522,6 +541,7 @@ impl Searcher {
         cnt: &mut u64,
         ply: usize,
         eval: E,
+        precomputed_eval: Option<i32>,
     ) -> i32 {
         qsearch_mode_body!(
             self,
@@ -532,7 +552,8 @@ impl Searcher {
             depth,
             cnt,
             ply,
-            eval
+            eval,
+            precomputed_eval
         )
     }
 
@@ -552,6 +573,7 @@ impl Searcher {
         cnt: &mut u64,
         ply: usize,
         eval: E,
+        precomputed_eval: Option<i32>,
     ) -> i32 {
         unsafe {
             qsearch_mode_body!(
@@ -563,7 +585,8 @@ impl Searcher {
                 depth,
                 cnt,
                 ply,
-                eval
+                eval,
+                precomputed_eval
             )
         }
     }
@@ -586,6 +609,7 @@ impl Searcher {
         cnt: &mut u64,
         ply: usize,
         eval: E,
+        precomputed_eval: Option<i32>,
     ) -> i32 {
         unsafe {
             qsearch_mode_body!(
@@ -597,7 +621,8 @@ impl Searcher {
                 depth,
                 cnt,
                 ply,
-                eval
+                eval,
+                precomputed_eval
             )
         }
     }

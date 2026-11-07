@@ -30,7 +30,7 @@ def _regularized_counts(counts):
     return [float(count) if count else 1e-3 for count in counts]
 
 
-def _mle_with_expected_score(empirical_pdf, expected_score):
+def _mle_shifts_and_root(empirical_pdf, expected_score):
     values = [index / 4.0 for index in range(5)]
     shifts = [value - expected_score for value in values]
     negative = min(shifts)
@@ -55,7 +55,11 @@ def _mle_with_expected_score(empirical_pdf, expected_score):
         else:
             upper = midpoint
 
-    root = (lower + upper) / 2.0
+    return shifts, (lower + upper) / 2.0
+
+
+def _mle_with_expected_score(empirical_pdf, expected_score):
+    shifts, root = _mle_shifts_and_root(empirical_pdf, expected_score)
     probabilities = [
         probability / (1.0 + root * shift)
         for probability, shift in zip(empirical_pdf, shifts)
@@ -68,13 +72,15 @@ def logistic_llr(counts, elo0, elo1):
     regularized = _regularized_counts(counts)
     total = sum(regularized)
     empirical_pdf = [count / total for count in regularized]
-    hypothesis0 = _mle_with_expected_score(empirical_pdf, logistic_score(elo0))
-    hypothesis1 = _mle_with_expected_score(empirical_pdf, logistic_score(elo1))
-    return sum(
-        count * math.log(probability1 / probability0)
-        for count, probability0, probability1 in zip(
-            regularized, hypothesis0, hypothesis1
-        )
+    shifts0, root0 = _mle_shifts_and_root(empirical_pdf, logistic_score(elo0))
+    shifts1, root1 = _mle_shifts_and_root(empirical_pdf, logistic_score(elo1))
+    # At the constrained optimum q_i = p_i / (1 + root * shift_i).
+    # The dual log-likelihood cancels p_i between hypotheses. Evaluate it
+    # directly: renormalizing an approximate q near a pole amplifies the
+    # root's floating-point residual into a first-order likelihood error.
+    return math.fsum(
+        count * (math.log1p(root0 * shift0) - math.log1p(root1 * shift1))
+        for count, shift0, shift1 in zip(regularized, shifts0, shifts1)
     )
 
 

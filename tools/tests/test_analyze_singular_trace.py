@@ -74,6 +74,38 @@ class UciParsingTests(unittest.TestCase):
         self.assertEqual(winning["score_cp"], MODULE.MATE_SCORE - 3)
         self.assertEqual(losing["score_cp"], -MODULE.MATE_SCORE + 4)
 
+    def test_bound_scores_are_not_exact_analysis(self):
+        for bound in ("lowerbound", "upperbound"):
+            with self.subTest(bound=bound):
+                self.assertIsNone(MODULE.parse_uci_info(
+                    f"info depth 22 score cp 70 {bound} nodes 1234 pv e2e4"
+                ))
+
+    def test_search_retains_last_exact_score_after_a_bound(self):
+        oracle = object.__new__(MODULE.UciOracle)
+        oracle._send = lambda command: None
+        oracle._read_until = lambda terminator: (
+            ["info depth 20 score cp 35 pv e2e4 e7e5",
+             "info depth 21 score cp 80 lowerbound pv e2e4",
+             "bestmove e2e4"] if terminator == "bestmove" else ["readyok"]
+        )
+        lines = oracle.search("example", 1000)
+        self.assertEqual(lines[0]["score_cp"], 35)
+        self.assertEqual(lines[0]["pv"], ["e2e4", "e7e5"])
+
+    def test_multipv_search_uses_the_last_complete_depth(self):
+        oracle = object.__new__(MODULE.UciOracle)
+        oracle._send = lambda command: None
+        oracle._read_until = lambda terminator: (
+            ["info depth 20 multipv 1 score cp 35 pv e2e4",
+             "info depth 20 multipv 2 score cp 10 pv d2d4",
+             "info depth 21 multipv 1 score cp 70 pv e2e4",
+             "bestmove e2e4"] if terminator == "bestmove" else ["readyok"]
+        )
+        lines = oracle.search("example", 1000, multipv=2)
+        self.assertEqual([line["score_cp"] for line in lines], [35, 10])
+        self.assertEqual([line["depth"] for line in lines], [20, 20])
+
 
 class FakeOracle:
     def __init__(self):

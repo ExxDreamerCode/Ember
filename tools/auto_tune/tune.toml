@@ -315,6 +315,7 @@ allow_nonpositive = true
 name = "KING_SHIELD_PENALTY"
 base = 4000
 min = 0
+allow_nonpositive = true
 max = 8000
 step = 250
 
@@ -322,6 +323,7 @@ step = 250
 name = "OUTPOST_BONUS"
 base = 3000
 min = 0
+allow_nonpositive = true
 max = 6000
 step = 250
 
@@ -329,6 +331,7 @@ step = 250
 name = "PASSED_PUSH_BONUS"
 base = 3000
 min = 0
+allow_nonpositive = true
 max = 6000
 step = 250
 
@@ -336,6 +339,7 @@ step = 250
 name = "ATTACK_ORDER_BONUS"
 base = 4000
 min = 0
+allow_nonpositive = true
 max = 8000
 step = 250
 
@@ -364,6 +368,7 @@ step = 1
 name = "EXTENSION_MAX_TT_AGE"
 base = 0
 min = 0
+allow_nonpositive = true
 max = 4
 step = 1
 
@@ -371,6 +376,7 @@ step = 1
 name = "EXTENSION_TT_DEPTH_MARGIN"
 base = 1
 min = 0
+allow_nonpositive = true
 max = 4
 step = 1
 
@@ -433,15 +439,17 @@ step = 10
 
 [[params]]
 name = "LDSE_MAX_DEPTH"
-base = 6
-min = 2
+base = 0
+min = 0
 max = 10
 step = 2
+allow_nonpositive = true
 
 [[params]]
 name = "LDSE_MAX_PER_LINE"
 base = 1
 min = 0
+allow_nonpositive = true
 max = 2
 step = 1
 
@@ -449,5 +457,6 @@ step = 1
 name = "NEG_EXT_MAX_PER_LINE"
 base = 1
 min = 0
+allow_nonpositive = true
 max = 2
 step = 1
