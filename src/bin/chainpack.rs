@@ -21,7 +21,6 @@ use ember_chess::Engine;
 const MAGIC: &[u8; 4] = b"BINP";
 const CHUNK_TARGET_BYTES: usize = 32 * 1024 * 1024;
 const ENTRY_SIZE: usize = 32;
-const SCORE_VLE_BLOCK_SIZE: usize = 4;
 const DEFAULT_BATCH_SIZE: usize = 1_000_000;
 const DEFAULT_NODES: u64 = 5000;
 const DEFAULT_DEPTH: i32 = 64;
@@ -32,48 +31,6 @@ const START_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 
 struct BitWriter {
     movetext: Vec<u8>,
     bits_left: usize,
-}
-
-impl BitWriter {
-    fn new() -> Self {
-        Self::default()
-    }
-
-    fn add_bits_le8(&mut self, bits: u8, count: usize) {
-        if count == 0 {
-            return;
-        }
-        if self.bits_left == 0 {
-            self.movetext.push(bits << (8 - count));
-            self.bits_left = 8;
-        } else if count <= self.bits_left {
-            let last_idx = self.movetext.len() - 1;
-            self.movetext[last_idx] |= bits << (self.bits_left - count);
-        } else {
-            let spill_count = count - self.bits_left;
-            let last_idx = self.movetext.len() - 1;
-            self.movetext[last_idx] |= bits >> spill_count;
-            self.movetext.push(bits << (8 - spill_count));
-            self.bits_left += 8;
-        }
-        self.bits_left -= count;
-    }
-
-    fn add_bits_vle16(&mut self, mut v: u16, block_size: usize) {
-        let mask = (1u16 << block_size) - 1;
-        loop {
-            let block = ((v & mask) as u8) | (((v > mask) as u8) << block_size);
-            self.add_bits_le8(block, block_size + 1);
-            v >>= block_size;
-            if v == 0 {
-                break;
-            }
-        }
-    }
-
-    fn movetext(&self) -> &[u8] {
-        &self.movetext
-    }
 }
 
 fn used_bits_safe(n: u64) -> usize {
@@ -421,43 +378,17 @@ fn pack_stem(pos: &ChainPosition, mv: &ChainMove, score: i16, ply: u16, result: 
 fn build_chain_entries(start: &BoardState, links: &[ChainLink]) -> Option<Vec<ChainEntryBytes>> {
     let mut st = *start;
     let mut entries = Vec::new();
-    let mut last_score: i16 = 0;
-    let mut bw = BitWriter::new();
 
-    for (link_idx, link) in links.iter().enumerate() {
+    for link in links.iter() {
         let mv = ChainMove::from_uci(&link.bestmove)?;
         let pos = ChainPosition::from_state(&st);
 
-        if link_idx == 0 {
-            let stem = pack_stem(&pos, &mv, link.score, link.ply, link.result);
-            entries.push(ChainEntryBytes {
-                stem,
-                movetext: Vec::new(),
-                num_plies: 0,
-            });
-            last_score = link.score;
-        } else {
-            if let Some(prev) = entries.last_mut() {
-                let (piece_id, move_id, num_moves) = calculate_move_encoding(&st, &mv);
-
-                let our_pieces = if st.w {
-                    white_occ(&st.bb)
-                } else {
-                    black_occ(&st.bb)
-                };
-                let piece_bits = used_bits_safe(our_pieces.count_ones() as u64);
-                bw.add_bits_le8(piece_id as u8, piece_bits);
-
-                let move_bits = used_bits_safe(num_moves);
-                bw.add_bits_le8(move_id as u8, move_bits);
-
-                let score_delta = signed_to_unsigned(link.score.wrapping_sub(last_score));
-                bw.add_bits_vle16(score_delta, SCORE_VLE_BLOCK_SIZE);
-
-                prev.num_plies += 1;
-                last_score = link.score;
-            }
-        }
+        let stem = pack_stem(&pos, &mv, link.score, link.ply, link.result);
+        entries.push(ChainEntryBytes {
+            stem,
+            movetext: Vec::new(),
+            num_plies: link.ply,
+        });
 
         if !mv.is_null {
             let promotion_char = match mv.promotion {
@@ -483,9 +414,6 @@ fn build_chain_entries(start: &BoardState, links: &[ChainLink]) -> Option<Vec<Ch
     if entries.is_empty() {
         None
     } else {
-        if let Some(first) = entries.first_mut() {
-            first.movetext = bw.movetext().to_vec();
-        }
         Some(entries)
     }
 }
@@ -819,8 +747,9 @@ impl GameProcessor {
 
             match eval {
                 Some((_, score_cp)) => {
+                    let score = score_cp.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
                     links.push(ChainLink {
-                        score: score_cp as i16,
+                        score,
                         bestmove: move_to_uci(&board, mv),
                         ply,
                         result: game_result,
@@ -831,6 +760,8 @@ impl GameProcessor {
                     self.skipped_positions += 1;
                 }
             }
+
+            self.engine.searcher.clear_learning();
 
             apply_move(
                 &mut board,
@@ -1182,8 +1113,7 @@ fn main() {
         let nnue_on = nnue_on;
 
         worker_handles.push(thread::spawn(move || {
-            let mut processor =
-                GameProcessor::new(nodes, depth, eval_only, nnue_off, nnue_on);
+            let mut processor = GameProcessor::new(nodes, depth, eval_only, nnue_off, nnue_on);
             loop {
                 let game_text = {
                     let rx = game_rx.lock().unwrap();
@@ -1297,8 +1227,9 @@ fn main() {
                     eprintln!("chainpack: write error: {e}");
                     exit(1);
                 }
-                let num_plies = entry.num_plies;
-                if let Err(e) = writer.write_bytes(&[(num_plies >> 8) as u8, num_plies as u8]) {
+                let movetext_len = entry.movetext.len() as u16;
+                if let Err(e) = writer.write_bytes(&[(movetext_len >> 8) as u8, movetext_len as u8])
+                {
                     eprintln!("chainpack: write error: {e}");
                     exit(1);
                 }
@@ -1330,8 +1261,8 @@ fn main() {
                 eprintln!("chainpack: write error: {e}");
                 exit(1);
             }
-            let num_plies = entry.num_plies;
-            if let Err(e) = writer.write_bytes(&[(num_plies >> 8) as u8, num_plies as u8]) {
+            let movetext_len = entry.movetext.len() as u16;
+            if let Err(e) = writer.write_bytes(&[(movetext_len >> 8) as u8, movetext_len as u8]) {
                 eprintln!("chainpack: write error: {e}");
                 exit(1);
             }
