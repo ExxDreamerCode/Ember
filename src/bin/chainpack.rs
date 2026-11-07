@@ -10,9 +10,9 @@ use std::thread;
 use std::time::Instant;
 
 use ember_chess::board::{
-    all_occ, black_occ, board_to_fen, is_attacked, move_ec, move_er, move_from, move_promotion,
-    move_sc, move_sr, move_to, move_to_uci, piece_on, piece_type, sq, sq_c, sq_r, white_occ,
-    BoardState, Move, EMPTY_SQ, KING_ATTACKS, KNIGHT_ATTACKS,
+    all_occ, black_occ, board_to_fen, move_ec, move_er, move_from, move_promotion, move_sc,
+    move_sr, move_to, move_to_uci, piece_on, piece_type, sq, sq_c, sq_r, white_occ, BoardState,
+    Move, EMPTY_SQ, KING_ATTACKS, KNIGHT_ATTACKS,
 };
 use ember_chess::magic::{bishop_attacks, rook_attacks};
 use ember_chess::movegen::{apply_move, generate_moves};
@@ -27,57 +27,6 @@ const DEFAULT_NODES: u64 = 5000;
 const DEFAULT_DEPTH: i32 = 64;
 const CHAINPACK_STATE_SAVE_EVERY: u64 = 10_000;
 const START_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-const DEFAULT_SEEN_BITS: usize = 1_000_000_000;
-
-#[derive(Clone)]
-struct BloomFilter {
-    bits: Vec<u64>,
-    num_bits: usize,
-    inserted: usize,
-}
-
-impl BloomFilter {
-    fn new(num_bits: usize) -> Self {
-        let num_words = num_bits.div_ceil(64);
-        Self {
-            bits: vec![0u64; num_words],
-            num_bits,
-            inserted: 0,
-        }
-    }
-
-    #[inline]
-    fn contains(&self, hash: u64) -> bool {
-        let i1 = (hash as usize) % self.num_bits;
-        let i2 = ((hash.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize) % self.num_bits;
-        self.bit_get(i1) && self.bit_get(i2)
-    }
-
-    #[inline]
-    fn insert(&mut self, hash: u64) {
-        let i1 = (hash as usize) % self.num_bits;
-        let i2 = ((hash.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize) % self.num_bits;
-        self.bit_set(i1);
-        self.bit_set(i2);
-        self.inserted += 1;
-    }
-
-    #[inline]
-    fn bit_get(&self, i: usize) -> bool {
-        (self.bits[i / 64] >> (i % 64)) & 1 == 1
-    }
-
-    #[inline]
-    fn bit_set(&mut self, i: usize) {
-        self.bits[i / 64] |= 1 << (i % 64);
-    }
-}
-
-impl Default for BloomFilter {
-    fn default() -> Self {
-        Self::new(DEFAULT_SEEN_BITS)
-    }
-}
 
 #[derive(Debug, Clone, Default)]
 struct BitWriter {
@@ -502,7 +451,7 @@ fn build_chain_entries(start: &BoardState, links: &[ChainLink]) -> Option<Vec<Ch
                 let move_bits = used_bits_safe(num_moves);
                 bw.add_bits_le8(move_id as u8, move_bits);
 
-                let score_delta = signed_to_unsigned(link.score.wrapping_add(last_score));
+                let score_delta = signed_to_unsigned(link.score.wrapping_sub(last_score));
                 bw.add_bits_vle16(score_delta, SCORE_VLE_BLOCK_SIZE);
 
                 prev.num_plies += 1;
@@ -788,25 +737,14 @@ struct GameProcessor {
     nodes: u64,
     depth: i32,
     eval_only: bool,
-    seen_positions: Arc<Mutex<BloomFilter>>,
     total_games: u64,
     total_positions: u64,
     skipped_games: u64,
     skipped_positions: u64,
-    skipped_check: u64,
-    skipped_tactical: u64,
-    skipped_duplicate: u64,
 }
 
 impl GameProcessor {
-    fn new(
-        nodes: u64,
-        depth: i32,
-        eval_only: bool,
-        seen_positions: Arc<Mutex<BloomFilter>>,
-        nnue_off: bool,
-        nnue_on: bool,
-    ) -> Self {
+    fn new(nodes: u64, depth: i32, eval_only: bool, nnue_off: bool, nnue_on: bool) -> Self {
         let mut engine = Engine::try_new().expect("failed to create engine");
         engine.set_hash_mb(256);
         engine.num_threads = 1;
@@ -827,14 +765,10 @@ impl GameProcessor {
             nodes,
             depth,
             eval_only,
-            seen_positions,
             total_games: 0,
             total_positions: 0,
             skipped_games: 0,
             skipped_positions: 0,
-            skipped_check: 0,
-            skipped_tactical: 0,
-            skipped_duplicate: 0,
         }
     }
 
@@ -854,59 +788,6 @@ impl GameProcessor {
                 self.skipped_positions += 1;
                 break;
             };
-
-            let king_sq = board.king_sq(board.w);
-            if is_attacked(&board.bb, king_sq, !board.w) {
-                self.skipped_check += 1;
-                apply_move(
-                    &mut board,
-                    move_sr(mv),
-                    move_sc(mv),
-                    move_er(mv),
-                    move_ec(mv),
-                    move_promotion(mv),
-                );
-                ply = ply.wrapping_add(1);
-                continue;
-            }
-
-            let mover = board.mailbox[move_from(mv)];
-            let mover_type = piece_type(mover);
-            let is_capture = board.mailbox[move_to(mv)] != EMPTY_SQ;
-            let is_en_passant = mover_type == 0 && board.ep == Some(move_to(mv));
-            let is_castle =
-                mover_type == 5 && (move_from(mv) as i32 - move_to(mv) as i32).abs() == 2;
-            if move_promotion(mv) != 0 || is_capture || is_en_passant || is_castle {
-                self.skipped_tactical += 1;
-                apply_move(
-                    &mut board,
-                    move_sr(mv),
-                    move_sc(mv),
-                    move_er(mv),
-                    move_ec(mv),
-                    move_promotion(mv),
-                );
-                ply = ply.wrapping_add(1);
-                continue;
-            }
-
-            {
-                let mut seen = self.seen_positions.lock().unwrap();
-                if seen.contains(board.hash) {
-                    self.skipped_duplicate += 1;
-                    apply_move(
-                        &mut board,
-                        move_sr(mv),
-                        move_sc(mv),
-                        move_er(mv),
-                        move_ec(mv),
-                        move_promotion(mv),
-                    );
-                    ply = ply.wrapping_add(1);
-                    continue;
-                }
-                seen.insert(board.hash);
-            }
 
             let stm_white = board.w;
             let game_result = match game.result {
@@ -1200,7 +1081,6 @@ fn main() {
     let mut nnue_on = false;
     let mut no_shuffle = false;
     let mut batch_size: usize = DEFAULT_BATCH_SIZE;
-    let mut seen_bits: usize = DEFAULT_SEEN_BITS;
     let mut input_paths: Vec<String> = Vec::new();
     let mut output_path: Option<String> = None;
 
@@ -1234,12 +1114,6 @@ fn main() {
                     .next()
                     .map(|v| v.parse().unwrap_or(batch_size))
                     .unwrap_or(batch_size);
-            }
-            "--seen-bits" => {
-                seen_bits = iter
-                    .next()
-                    .map(|v| v.parse().unwrap_or(seen_bits))
-                    .unwrap_or(seen_bits);
             }
             _ if output_path.is_none() && !input_paths.is_empty() && arg.ends_with(".binpack") => {
                 output_path = Some(arg.clone());
@@ -1297,8 +1171,6 @@ fn main() {
 
     let game_rx_arc = Arc::new(Mutex::new(game_rx));
 
-    let seen_positions = Arc::new(Mutex::new(BloomFilter::new(seen_bits)));
-
     let mut worker_handles = Vec::new();
     for _ in 0..threads {
         let game_rx = game_rx_arc.clone();
@@ -1308,11 +1180,10 @@ fn main() {
         let eval_only = eval_only;
         let nnue_off = nnue_off;
         let nnue_on = nnue_on;
-        let seen_positions = seen_positions.clone();
 
         worker_handles.push(thread::spawn(move || {
             let mut processor =
-                GameProcessor::new(nodes, depth, eval_only, seen_positions, nnue_off, nnue_on);
+                GameProcessor::new(nodes, depth, eval_only, nnue_off, nnue_on);
             loop {
                 let game_text = {
                     let rx = game_rx.lock().unwrap();
@@ -1329,14 +1200,11 @@ fn main() {
                 let _ = result_tx.send(ChainBatch { entries });
             }
             eprintln!(
-                "worker: {} games, {} positions, {} skipped games, {} skipped positions, {} skipped check, {} skipped tactical, {} skipped duplicate",
+                "worker: {} games, {} positions, {} skipped games, {} skipped positions",
                 processor.total_games,
                 processor.total_positions,
                 processor.skipped_games,
                 processor.skipped_positions,
-                processor.skipped_check,
-                processor.skipped_tactical,
-                processor.skipped_duplicate
             );
         }));
     }
