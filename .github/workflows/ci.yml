@@ -31,6 +31,9 @@ jobs:
       - name: Check formatting
         run: nix develop .#ci --command cargo fmt --all --check
 
+      - name: Check formatting (fen_db)
+        run: nix develop .#ci --command cargo fmt --all --check --manifest-path tools/datagen/fen_db/Cargo.toml
+
       - name: Verify Rust license report
         if: matrix.runner == 'ubuntu-latest'
         run: |
@@ -48,6 +51,17 @@ jobs:
         run: >
           nix develop .#ci --command cargo clippy --locked
           --all-targets --all-features -- -D warnings
+
+      - name: Run fen_db clippy
+        run: >
+          nix develop .#ci --command cargo clippy --locked
+          --all-targets --all-features --manifest-path tools/datagen/fen_db/Cargo.toml -- -D warnings
+
+      - name: Check fen_db
+        run: nix develop .#ci --command cargo check --locked --manifest-path tools/datagen/fen_db/Cargo.toml
+
+      - name: Run fen_db tests
+        run: nix develop .#ci --command cargo test --locked --manifest-path tools/datagen/fen_db/Cargo.toml
 
       - name: Run native tests
         run: |
@@ -432,6 +446,22 @@ jobs:
           RUST_MIN_STACK: 16777216
           RUST_BACKTRACE: 1
 
+      - name: Check fen_db formatting
+        shell: pwsh
+        run: cargo fmt --all --check --manifest-path tools/datagen/fen_db/Cargo.toml
+
+      - name: Run fen_db clippy
+        shell: pwsh
+        run: cargo clippy --locked --all-targets --all-features --manifest-path tools/datagen/fen_db/Cargo.toml -- -D warnings
+
+      - name: Check fen_db
+        shell: pwsh
+        run: cargo check --locked --manifest-path tools/datagen/fen_db/Cargo.toml
+
+      - name: Run fen_db tests
+        shell: pwsh
+        run: cargo test --locked --manifest-path tools/datagen/fen_db/Cargo.toml
+
       - name: Run Python tool tests
         shell: pwsh
         run: >-
@@ -689,6 +719,20 @@ jobs:
         run: >
           nix develop .#ci --command cargo clippy --locked
           --all-targets --all-features -- -D warnings
+
+      - name: Check fen_db formatting
+        run: nix develop .#ci --command cargo fmt --all --check --manifest-path tools/datagen/fen_db/Cargo.toml
+
+      - name: Run fen_db clippy
+        run: >
+          nix develop .#ci --command cargo clippy --locked
+          --all-targets --all-features --manifest-path tools/datagen/fen_db/Cargo.toml -- -D warnings
+
+      - name: Check fen_db
+        run: nix develop .#ci --command cargo check --locked --manifest-path tools/datagen/fen_db/Cargo.toml
+
+      - name: Run fen_db tests
+        run: nix develop .#ci --command cargo test --locked --manifest-path tools/datagen/fen_db/Cargo.toml
 
       - name: Run native tests
         run: |

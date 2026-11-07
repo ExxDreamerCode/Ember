@@ -1,6 +1,6 @@
 # Regenerate licenses/THIRD-PARTY-LICENSES.html with:
 # cargo about generate --locked --fail --all-features about.hbs --output-file licenses/THIRD-PARTY-LICENSES.html
-accepted = ["Apache-2.0", "MIT", "Unicode-3.0"]
+accepted = ["Apache-2.0", "BSD-3-Clause", "MIT", "Unicode-3.0"]
 targets = [
     "x86_64-unknown-linux-musl",
     "aarch64-unknown-linux-musl",
@@ -34,3 +34,21 @@ checksum = "a08554fab028af3af047e8588d32d019662c1b1bf07959a195a2f75fe340726b"
 [[libmimalloc-sys.clarify.files]]
 path = "c_src/mimalloc/v3/LICENSE"
 checksum = "82ade5d7d9b029044b5fbbc326207fc47c2d44ee4dd71e8a559c36d728217de9"
+
+[zstd.clarify]
+license = "BSD-3-Clause"
+[[zstd.clarify.files]]
+path = "LICENSE"
+checksum = "ce4868c8e4ebe47a7d4b3c93dbf6b802033e5ae2fa7638098173f80836daac60"
+
+[zstd-safe.clarify]
+license = "BSD-3-Clause"
+[[zstd-safe.clarify.files]]
+path = "LICENSE"
+checksum = "ce4868c8e4ebe47a7d4b3c93dbf6b802033e5ae2fa7638098173f80836daac60"
+
+[zstd-sys.clarify]
+license = "BSD-3-Clause"
+[[zstd-sys.clarify.files]]
+path = "LICENSE"
+checksum = "ce4868c8e4ebe47a7d4b3c93dbf6b802033e5ae2fa7638098173f80836daac60"
