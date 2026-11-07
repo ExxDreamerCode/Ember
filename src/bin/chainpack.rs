@@ -10,11 +10,9 @@ use std::thread;
 use std::time::Instant;
 
 use ember_chess::board::{
-    all_occ, black_occ, board_to_fen, move_ec, move_er, move_from, move_promotion, move_sc,
-    move_sr, move_to, move_to_uci, piece_on, piece_type, sq, sq_c, sq_r, white_occ, BoardState,
-    Move, EMPTY_SQ, KING_ATTACKS, KNIGHT_ATTACKS,
+    board_to_fen, move_ec, move_er, move_from, move_promotion, move_sc, move_sr, move_to,
+    move_to_uci, piece_on, piece_type, sq, sq_c, sq_r, BoardState, Move, EMPTY_SQ,
 };
-use ember_chess::magic::{bishop_attacks, rook_attacks};
 use ember_chess::movegen::{apply_move, generate_moves};
 use ember_chess::Engine;
 
@@ -26,31 +24,6 @@ const DEFAULT_NODES: u64 = 5000;
 const DEFAULT_DEPTH: i32 = 64;
 const CHAINPACK_STATE_SAVE_EVERY: u64 = 10_000;
 const START_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-
-#[derive(Debug, Clone, Default)]
-struct BitWriter {
-    movetext: Vec<u8>,
-    bits_left: usize,
-}
-
-fn used_bits_safe(n: u64) -> usize {
-    if n == 0 {
-        return 0;
-    }
-    used_bits(n - 1) as usize
-}
-
-fn used_bits(n: u64) -> u64 {
-    if n == 0 {
-        return 0;
-    }
-    msb(n) as u64 + 1
-}
-
-fn msb(n: u64) -> u32 {
-    debug_assert!(n != 0);
-    63 ^ n.leading_zeros()
-}
 
 fn signed_to_unsigned(value: i16) -> u16 {
     let bits = value as u16;
@@ -225,129 +198,6 @@ impl ChainMove {
     }
 }
 
-fn calculate_move_encoding(st: &BoardState, mv: &ChainMove) -> (u32, u32, u64) {
-    if mv.is_null {
-        return (0, 0, 0);
-    }
-
-    let bbs = std_bitboards(st);
-    let side = st.w;
-    let our_pieces = if side {
-        white_occ(&bbs)
-    } else {
-        black_occ(&bbs)
-    };
-    let occupied = all_occ(&bbs);
-
-    let piece_id = (our_pieces & ((1u64 << mv.from) - 1)).count_ones();
-
-    let pt = piece_type(piece_on(&bbs, mv.from));
-
-    let from_ember = ember_square(mv.from);
-    let our_ember = our_pieces.swap_bytes();
-    let occ_ember = occupied.swap_bytes();
-
-    match pt {
-        0 => {
-            let mut destinations: u64 = 0;
-            let second_to_last_rank = if side { 6 } else { 1 };
-            let start_rank = if side { 1 } else { 6 };
-            let forward_offset: i32 = if side { 8 } else { -8 };
-
-            let mut attack_targets = if side {
-                black_occ(&bbs)
-            } else {
-                white_occ(&bbs)
-            };
-            if let Some(ep) = st.ep {
-                attack_targets |= 1u64 << std_square(ep);
-            }
-
-            let from_file = mv.from % 8;
-            let from_rank = mv.from / 8;
-
-            let direction = if side { 1i32 } else { -1 };
-            for df in [-1i32, 1] {
-                let target_file = from_file as i32 + df;
-                let target_rank = from_rank as i32 + direction;
-                if (0..8).contains(&target_file) && (0..8).contains(&target_rank) {
-                    let target = target_rank * 8 + target_file;
-                    if attack_targets & (1u64 << target) != 0 {
-                        destinations |= 1u64 << target;
-                    }
-                }
-            }
-
-            let sq_forward = mv.from as i32 + forward_offset;
-            if (0..64).contains(&sq_forward) && occupied & (1u64 << sq_forward) == 0 {
-                destinations |= 1u64 << sq_forward;
-                if from_rank == start_rank {
-                    let sq_forward2 = sq_forward + forward_offset;
-                    if (0..64).contains(&sq_forward2) && occupied & (1u64 << sq_forward2) == 0 {
-                        destinations |= 1u64 << sq_forward2;
-                    }
-                }
-            }
-
-            let move_id = (destinations & ((1u64 << mv.to) - 1)).count_ones();
-            let num_moves = destinations.count_ones();
-
-            if from_rank == second_to_last_rank {
-                let promotion_index = mv.promotion as u32 - 1;
-                let move_id = move_id * 4 + promotion_index;
-                let num_moves = num_moves * 4;
-                (piece_id, move_id, num_moves as u64)
-            } else {
-                (piece_id, move_id, num_moves as u64)
-            }
-        }
-        5 => {
-            let attacks = (KING_ATTACKS[from_ember] & !our_ember).swap_bytes();
-            let attacks_size = attacks.count_ones() as u64;
-            let num_castlings = if side {
-                u64::from(st.cr[0]) + u64::from(st.cr[1])
-            } else {
-                u64::from(st.cr[2]) + u64::from(st.cr[3])
-            };
-            let num_moves = attacks_size + num_castlings;
-
-            let is_castle = (mv.from as i32 - mv.to as i32).abs() == 2;
-
-            let move_id = if is_castle {
-                let long_available = if side { st.cr[1] } else { st.cr[3] };
-                let mut mid = attacks_size.wrapping_sub(1);
-                if long_available {
-                    mid = mid.wrapping_add(1);
-                }
-                if mv.to > mv.from {
-                    mid = mid.wrapping_add(1);
-                }
-                mid
-            } else {
-                u64::from((attacks & ((1u64 << mv.to) - 1)).count_ones())
-            };
-
-            (piece_id, move_id as u32, num_moves)
-        }
-        _ => {
-            let attacks: u64 = match pt {
-                1 => KNIGHT_ATTACKS[from_ember] & !our_ember,
-                2 => bishop_attacks(from_ember, occ_ember) & !our_ember,
-                3 => rook_attacks(from_ember, occ_ember) & !our_ember,
-                4 => {
-                    (bishop_attacks(from_ember, occ_ember) | rook_attacks(from_ember, occ_ember))
-                        & !our_ember
-                }
-                _ => 0,
-            }
-            .swap_bytes();
-            let move_id = (attacks & ((1u64 << mv.to) - 1)).count_ones();
-            let num_moves = attacks.count_ones() as u64;
-            (piece_id, move_id, num_moves)
-        }
-    }
-}
-
 #[derive(Clone)]
 struct ChainLink {
     score: i16,
@@ -360,7 +210,6 @@ struct ChainLink {
 struct ChainEntryBytes {
     stem: [u8; ENTRY_SIZE],
     movetext: Vec<u8>,
-    num_plies: u16,
 }
 
 fn pack_stem(pos: &ChainPosition, mv: &ChainMove, score: i16, ply: u16, result: i16) -> [u8; 32] {
@@ -387,7 +236,6 @@ fn build_chain_entries(start: &BoardState, links: &[ChainLink]) -> Option<Vec<Ch
         entries.push(ChainEntryBytes {
             stem,
             movetext: Vec::new(),
-            num_plies: link.ply,
         });
 
         if !mv.is_null {
@@ -1381,27 +1229,6 @@ mod tests {
         assert_eq!(nibs[7], 6);
         assert_eq!(nibs[24], 7);
         assert_eq!(nibs[31], 7);
-    }
-
-    #[test]
-    fn move_encoding_pawn_push_and_short_castle() {
-        let st = state_from_fen(START_FEN);
-        let e2e4 = ChainMove::from_uci("e2e4").unwrap();
-        assert_eq!(e2e4.from, sq(1, 4));
-        assert_eq!(e2e4.to, sq(3, 4));
-        assert_eq!(calculate_move_encoding(&st, &e2e4), (12, 1, 2));
-
-        let oo = ChainMove::from_uci("e1g1").unwrap();
-        assert_eq!(calculate_move_encoding(&st, &oo), (4, 1, 2));
-    }
-
-    #[test]
-    fn move_encoding_bishop_slider_masks_own_pieces() {
-        let st = state_from_fen("r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3");
-        let bb5 = ChainMove::from_uci("f1b5").unwrap();
-        assert_eq!(bb5.from, sq(0, 5));
-        assert_eq!(bb5.to, sq(4, 1));
-        assert_eq!(calculate_move_encoding(&st, &bb5), (5, 3, 5));
     }
 
     #[test]
