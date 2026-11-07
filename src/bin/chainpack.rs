@@ -25,7 +25,7 @@ const SCORE_VLE_BLOCK_SIZE: usize = 4;
 const DEFAULT_BATCH_SIZE: usize = 1_000_000;
 const DEFAULT_NODES: u64 = 5000;
 const DEFAULT_DEPTH: i32 = 64;
-const STATE_SAVE_EVERY: u64 = 10_000;
+const CHAINPACK_STATE_SAVE_EVERY: u64 = 10_000;
 const START_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const DEFAULT_SEEN_BITS: usize = 1_000_000_000;
 
@@ -1442,7 +1442,7 @@ fn main() {
                 }
             }
 
-            if positions_since_state >= STATE_SAVE_EVERY {
+            if positions_since_state >= CHAINPACK_STATE_SAVE_EVERY {
                 {
                     let mut s = state.lock().unwrap();
                     s.positions_written = total_entries;
