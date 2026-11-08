@@ -1,4 +1,3 @@
-use rand::Rng;
 use std::env;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -845,7 +844,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 3 {
         eprintln!(
-            "Usage: chainpack [--threads N] [--nodes N] [--depth D] [--eval-only] [--nnue-off] [--nnue-on] [--no-shuffle] [--batch-size N] <input.pgn|zst> [<input.pgn|zst> ...] <output.binpack>"
+            "Usage: chainpack [--threads N] [--nodes N] [--depth D] [--eval-only] [--nnue-off] [--nnue-on] [--batch-size N] <input.pgn|zst> [<input.pgn|zst> ...] <output.binpack>"
         );
         exit(1);
     }
@@ -858,7 +857,6 @@ fn main() {
     let mut eval_only = false;
     let mut nnue_off = false;
     let mut nnue_on = false;
-    let mut no_shuffle = false;
     let mut batch_size: usize = DEFAULT_BATCH_SIZE;
     let mut input_paths: Vec<String> = Vec::new();
     let mut output_path: Option<String> = None;
@@ -887,7 +885,6 @@ fn main() {
             "--eval-only" => eval_only = true,
             "--nnue-off" => nnue_off = true,
             "--nnue-on" => nnue_on = true,
-            "--no-shuffle" => no_shuffle = true,
             "--batch-size" => {
                 batch_size = iter
                     .next()
@@ -1066,10 +1063,6 @@ fn main() {
         }
 
         if batch_entries.len() >= batch_size {
-            if !no_shuffle {
-                shuffle_entries(&mut batch_entries);
-            }
-
             for entry in batch_entries.drain(..) {
                 if let Err(e) = writer.write_bytes(&entry.stem) {
                     eprintln!("chainpack: write error: {e}");
@@ -1101,9 +1094,6 @@ fn main() {
     }
 
     if !batch_entries.is_empty() {
-        if !no_shuffle {
-            shuffle_entries(&mut batch_entries);
-        }
         for entry in batch_entries.drain(..) {
             if let Err(e) = writer.write_bytes(&entry.stem) {
                 eprintln!("chainpack: write error: {e}");
@@ -1152,16 +1142,6 @@ fn main() {
         output_path,
         total_bytes
     );
-}
-
-fn shuffle_entries(entries: &mut [ChainEntryBytes]) {
-    let mut rng = rand::thread_rng();
-    let mut n = entries.len();
-    while n > 1 {
-        n -= 1;
-        let j = rng.gen_range(0..=n);
-        entries.swap(n, j);
-    }
 }
 
 #[cfg(test)]
