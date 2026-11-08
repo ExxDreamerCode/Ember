@@ -13,6 +13,7 @@ use ember_chess::board::{
     move_to_uci, piece_on, piece_type, sq, sq_c, sq_r, BoardState, Move, EMPTY_SQ,
 };
 use ember_chess::movegen::{apply_move, generate_moves};
+use ember_chess::search::SEARCH_THREAD_STACK_SIZE;
 use ember_chess::Engine;
 
 const MAGIC: &[u8; 4] = b"BINP";
@@ -217,7 +218,7 @@ fn pack_stem(pos: &ChainPosition, mv: &ChainMove, score: i16, ply: u16, result: 
     out[0..24].copy_from_slice(&pos_bytes);
     out[24..26].copy_from_slice(&mv.compress().to_be_bytes());
     out[26..28].copy_from_slice(&signed_to_unsigned(score).to_be_bytes());
-    let pr = signed_to_unsigned(result) << 14 | (ply & 0x3FFF);
+    let pr = (signed_to_unsigned(result) & 0b11) << 14 | (ply & 0x3FFF);
     out[28..30].copy_from_slice(&pr.to_be_bytes());
     out[30..32].copy_from_slice(&pos.rule50.to_be_bytes());
     out
@@ -957,31 +958,40 @@ fn main() {
         let nnue_off = nnue_off;
         let nnue_on = nnue_on;
 
-        worker_handles.push(thread::spawn(move || {
-            let mut processor = GameProcessor::new(nodes, depth, eval_only, nnue_off, nnue_on);
-            loop {
-                let game_text = {
-                    let rx = game_rx.lock().unwrap();
-                    match rx.recv() {
-                        Ok(g) => g,
-                        Err(_) => break,
+        worker_handles.push(
+            thread::Builder::new()
+                .stack_size(SEARCH_THREAD_STACK_SIZE)
+                .spawn(move || {
+                    let mut processor =
+                        GameProcessor::new(nodes, depth, eval_only, nnue_off, nnue_on);
+                    loop {
+                        let game_text = {
+                            let rx = game_rx.lock().unwrap();
+                            match rx.recv() {
+                                Ok(g) => g,
+                                Err(_) => break,
+                            }
+                        };
+                        let game = match parse_pgn(&game_text) {
+                            Some(g) => g,
+                            None => {
+                                processor.skipped_games += 1;
+                                continue;
+                            }
+                        };
+                        let entries = processor.process_game(&game);
+                        let _ = result_tx.send(ChainBatch { entries });
                     }
-                };
-                let game = match parse_pgn(&game_text) {
-                    Some(g) => g,
-                    None => continue,
-                };
-                let entries = processor.process_game(&game);
-                let _ = result_tx.send(ChainBatch { entries });
-            }
-            eprintln!(
-                "worker: {} games, {} positions, {} skipped games, {} skipped positions",
-                processor.total_games,
-                processor.total_positions,
-                processor.skipped_games,
-                processor.skipped_positions,
-            );
-        }));
+                    eprintln!(
+                        "worker: {} games, {} positions, {} skipped games, {} skipped positions",
+                        processor.total_games,
+                        processor.total_positions,
+                        processor.skipped_games,
+                        processor.skipped_positions,
+                    );
+                })
+                .unwrap(),
+        );
     }
     drop(result_tx);
 
@@ -1229,5 +1239,51 @@ mod tests {
         assert_eq!(pr >> 14, signed_to_unsigned(-1));
         assert_eq!(pr & 0x3FFF, 7);
         assert_eq!(u16::from_be_bytes([stem[30], stem[31]]), 0);
+    }
+
+    fn san(st: &BoardState, san: &str) -> Option<String> {
+        parse_san(st, san).map(|mv| move_to_uci(st, mv))
+    }
+
+    #[test]
+    fn san_pawn_captures() {
+        let st = state_from_fen("rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 3");
+        assert_eq!(san(&st, "exd5"), Some("e4d5".to_string()));
+        assert_eq!(san(&st, "exd5!"), Some("e4d5".to_string()));
+    }
+
+    #[test]
+    fn san_en_passant() {
+        let st = state_from_fen("rnbqkbnr/ppp1pppp/8/8/3pP3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 2");
+        assert_eq!(san(&st, "dxe3e.p."), Some("d4e3".to_string()));
+        assert_eq!(san(&st, "dxe3"), Some("d4e3".to_string()));
+    }
+
+    #[test]
+    fn san_promotions() {
+        let st = state_from_fen("4k3/P7/8/8/8/8/8/4K3 w - - 0 1");
+        assert_eq!(san(&st, "a8=Q"), Some("a7a8q".to_string()));
+        assert_eq!(san(&st, "a8=N"), Some("a7a8n".to_string()));
+        assert_eq!(san(&st, "a8=Q!"), Some("a7a8q".to_string()));
+    }
+
+    #[test]
+    fn san_castling() {
+        let st = state_from_fen("4k3/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
+        assert_eq!(san(&st, "O-O"), Some("e1g1".to_string()));
+        assert_eq!(san(&st, "0-0"), Some("e1g1".to_string()));
+        assert_eq!(san(&st, "O-O-O"), Some("e1c1".to_string()));
+        assert_eq!(san(&st, "0-0-0"), Some("e1c1".to_string()));
+    }
+
+    #[test]
+    fn san_disambiguation_and_invalid() {
+        let st = state_from_fen("4k3/8/3R4/8/8/8/8/R3K3 w - - 0 1");
+        assert_eq!(san(&st, "Rd1"), None);
+        assert_eq!(san(&st, "R1d1"), Some("a1d1".to_string()));
+        assert_eq!(san(&st, "R6d1"), Some("d6d1".to_string()));
+        assert_eq!(san(&st, "zzz"), None);
+        assert_eq!(san(&st, ""), None);
+        assert_eq!(san(&st, "e4"), None);
     }
 }
