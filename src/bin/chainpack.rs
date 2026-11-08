@@ -552,7 +552,10 @@ impl GameProcessor {
         self.total_games += 1;
 
         let start_fen = game.fen.as_deref().unwrap_or(START_FEN);
-        self.engine.set_fen(start_fen);
+        if self.engine.try_set_fen(start_fen).is_err() {
+            self.skipped_games += 1;
+            return Vec::new();
+        }
         let start_state = self.engine.st;
 
         let mut board = start_state;
@@ -634,6 +637,8 @@ struct ChunkedWriter {
     out_file: File,
     buf: Vec<u8>,
     buf_len: usize,
+    entries_in_buffer: u64,
+    flushed_entries: u64,
     total_chunks: u64,
     total_bytes: u64,
 }
@@ -644,17 +649,30 @@ impl ChunkedWriter {
             out_file,
             buf: vec![0u8; CHUNK_TARGET_BYTES + 64],
             buf_len: 0,
+            entries_in_buffer: 0,
+            flushed_entries: 0,
             total_chunks: 0,
             total_bytes: 0,
         }
     }
 
-    fn write_bytes(&mut self, data: &[u8]) -> std::io::Result<()> {
-        if self.buf_len + data.len() > CHUNK_TARGET_BYTES && self.buf_len > 0 {
+    fn entries_flushed(&self) -> u64 {
+        self.flushed_entries
+    }
+
+    fn write_entry(&mut self, stem: &[u8; ENTRY_SIZE], movetext: &[u8]) -> std::io::Result<()> {
+        let needed = ENTRY_SIZE + 2 + movetext.len();
+        if self.buf_len + needed > CHUNK_TARGET_BYTES && self.buf_len > 0 {
             self.flush_chunk()?;
         }
-        self.buf[self.buf_len..self.buf_len + data.len()].copy_from_slice(data);
-        self.buf_len += data.len();
+        self.buf[self.buf_len..self.buf_len + ENTRY_SIZE].copy_from_slice(stem);
+        self.buf_len += ENTRY_SIZE;
+        let movetext_len = movetext.len() as u16;
+        self.buf[self.buf_len..self.buf_len + 2].copy_from_slice(&movetext_len.to_be_bytes());
+        self.buf_len += 2;
+        self.buf[self.buf_len..self.buf_len + movetext.len()].copy_from_slice(movetext);
+        self.buf_len += movetext.len();
+        self.entries_in_buffer += 1;
         Ok(())
     }
 
@@ -668,11 +686,13 @@ impl ChunkedWriter {
         self.out_file.write_all(&self.buf[..self.buf_len])?;
         self.total_bytes += self.buf_len as u64 + 8;
         self.total_chunks += 1;
+        self.flushed_entries += self.entries_in_buffer;
+        self.entries_in_buffer = 0;
         self.buf_len = 0;
         Ok(())
     }
 
-    fn flush(mut self) -> std::io::Result<(u64, u64)> {
+    fn flush(mut self) -> std::io::Result<(u64, u64, u64)> {
         if self.buf_len > 0 {
             self.out_file.write_all(MAGIC)?;
             self.out_file
@@ -680,9 +700,11 @@ impl ChunkedWriter {
             self.out_file.write_all(&self.buf[..self.buf_len])?;
             self.total_bytes += self.buf_len as u64 + 8;
             self.total_chunks += 1;
+            self.flushed_entries += self.entries_in_buffer;
+            self.entries_in_buffer = 0;
         }
         self.out_file.flush()?;
-        Ok((self.total_bytes, self.total_chunks))
+        Ok((self.total_bytes, self.total_chunks, self.flushed_entries))
     }
 }
 
@@ -721,6 +743,7 @@ fn save_state(path: &Path, state: &ProgressState) {
 }
 
 struct ChainBatch {
+    file_idx: usize,
     entries: Vec<ChainEntryBytes>,
 }
 
@@ -814,9 +837,10 @@ impl<R: BufRead> Iterator for GameStream<R> {
     }
 }
 
-fn truncate_to_last_complete_chunk(file: &mut File) -> std::io::Result<()> {
+fn truncate_to_last_complete_chunk(file: &mut File) -> std::io::Result<(u64, u64)> {
     let mut pos: u64 = 0;
     let len = file.metadata()?.len();
+    let mut total_entries: u64 = 0;
     while pos < len {
         file.seek(SeekFrom::Start(pos))?;
         let mut magic = [0u8; 4];
@@ -835,10 +859,23 @@ fn truncate_to_last_complete_chunk(file: &mut File) -> std::io::Result<()> {
         if chunk_end > len {
             break;
         }
+        let mut entry_pos: u64 = pos + 8;
+        let chunk_payload_end: u64 = pos + 8 + size;
+        let entry_size: u64 = ENTRY_SIZE as u64;
+        while entry_pos + entry_size <= chunk_payload_end {
+            file.seek(SeekFrom::Start(entry_pos + entry_size))?;
+            let mut len_buf = [0u8; 2];
+            if file.read_exact(&mut len_buf).is_err() {
+                break;
+            }
+            let movetext_len = u16::from_be_bytes(len_buf) as u64;
+            total_entries += 1;
+            entry_pos += entry_size + 2 + movetext_len;
+        }
         pos = chunk_end;
     }
     file.set_len(pos)?;
-    Ok(())
+    Ok((pos, total_entries))
 }
 
 fn main() {
@@ -943,7 +980,7 @@ fn main() {
         );
     }
 
-    let (game_tx, game_rx) = mpsc::channel::<String>();
+    let (game_tx, game_rx) = mpsc::channel::<(usize, String)>();
     let (result_tx, result_rx) = mpsc::channel::<ChainBatch>();
 
     let game_rx_arc = Arc::new(Mutex::new(game_rx));
@@ -965,7 +1002,7 @@ fn main() {
                     let mut processor =
                         GameProcessor::new(nodes, depth, eval_only, nnue_off, nnue_on);
                     loop {
-                        let game_text = {
+                        let (file_idx, game_text) = {
                             let rx = game_rx.lock().unwrap();
                             match rx.recv() {
                                 Ok(g) => g,
@@ -980,7 +1017,7 @@ fn main() {
                             }
                         };
                         let entries = processor.process_game(&game);
-                        let _ = result_tx.send(ChainBatch { entries });
+                        let _ = result_tx.send(ChainBatch { file_idx, entries });
                     }
                     eprintln!(
                         "worker: {} games, {} positions, {} skipped games, {} skipped positions",
@@ -1019,7 +1056,7 @@ fn main() {
                         games_in_file += 1;
                         continue;
                     }
-                    if game_tx.send(game).is_err() {
+                    if game_tx.send((file_idx, game)).is_err() {
                         return;
                     }
                     games_in_file += 1;
@@ -1051,21 +1088,41 @@ fn main() {
         File::create(&output_path).expect("failed to create output")
     };
 
+    let mut total_entries: u64 = 0;
+    let mut games_completed_per_file: std::collections::HashMap<usize, u64> =
+        std::collections::HashMap::new();
     if resume {
-        let _ = truncate_to_last_complete_chunk(&mut out_file);
+        let (_bytes_on_disk, entries_on_disk) = match truncate_to_last_complete_chunk(&mut out_file)
+        {
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("chainpack: cannot rescan output file: {e}");
+                exit(1);
+            }
+        };
+        total_entries = entries_on_disk;
+        let s = state.lock().unwrap();
+        if !s.current_file.is_empty() {
+            for (i, p) in input_paths.iter().enumerate() {
+                if p == &s.current_file {
+                    games_completed_per_file.insert(i, s.games_completed);
+                    break;
+                }
+            }
+        }
     }
 
     let mut writer = ChunkedWriter::new(out_file);
     let mut batch_entries: Vec<ChainEntryBytes> = Vec::new();
-    let mut total_entries: u64 = state.lock().unwrap().positions_written;
     let mut positions_since_state: u64 = 0;
     let mut last_report = Instant::now();
 
     for batch in result_rx {
         let n_entries = batch.entries.len() as u64;
         batch_entries.extend(batch.entries);
-        total_entries += n_entries;
         positions_since_state += n_entries;
+
+        *games_completed_per_file.entry(batch.file_idx).or_default() += 1;
 
         if last_report.elapsed().as_secs() >= 5 {
             eprintln!("progress: {} entries written", total_entries);
@@ -1074,28 +1131,23 @@ fn main() {
 
         if batch_entries.len() >= batch_size {
             for entry in batch_entries.drain(..) {
-                if let Err(e) = writer.write_bytes(&entry.stem) {
+                if let Err(e) = writer.write_entry(&entry.stem, &entry.movetext) {
                     eprintln!("chainpack: write error: {e}");
                     exit(1);
-                }
-                let movetext_len = entry.movetext.len() as u16;
-                if let Err(e) = writer.write_bytes(&[(movetext_len >> 8) as u8, movetext_len as u8])
-                {
-                    eprintln!("chainpack: write error: {e}");
-                    exit(1);
-                }
-                if !entry.movetext.is_empty() {
-                    if let Err(e) = writer.write_bytes(&entry.movetext) {
-                        eprintln!("chainpack: write error: {e}");
-                        exit(1);
-                    }
                 }
             }
+            total_entries = writer.entries_flushed();
 
             if positions_since_state >= CHAINPACK_STATE_SAVE_EVERY {
                 {
                     let mut s = state.lock().unwrap();
                     s.positions_written = total_entries;
+                    if let Some(path_idx) = input_paths.iter().position(|p| p == &s.current_file) {
+                        s.games_completed = games_completed_per_file
+                            .get(&path_idx)
+                            .copied()
+                            .unwrap_or(0);
+                    }
                     save_state(&state_path, &s);
                 }
                 positions_since_state = 0;
@@ -1105,35 +1157,31 @@ fn main() {
 
     if !batch_entries.is_empty() {
         for entry in batch_entries.drain(..) {
-            if let Err(e) = writer.write_bytes(&entry.stem) {
+            if let Err(e) = writer.write_entry(&entry.stem, &entry.movetext) {
                 eprintln!("chainpack: write error: {e}");
                 exit(1);
-            }
-            let movetext_len = entry.movetext.len() as u16;
-            if let Err(e) = writer.write_bytes(&[(movetext_len >> 8) as u8, movetext_len as u8]) {
-                eprintln!("chainpack: write error: {e}");
-                exit(1);
-            }
-            if !entry.movetext.is_empty() {
-                if let Err(e) = writer.write_bytes(&entry.movetext) {
-                    eprintln!("chainpack: write error: {e}");
-                    exit(1);
-                }
             }
         }
     }
 
-    let (total_bytes, total_chunks) = match writer.flush() {
+    let (total_bytes, total_chunks, total_entries_flushed) = match writer.flush() {
         Ok(n) => n,
         Err(e) => {
             eprintln!("chainpack: final write error: {e}");
             exit(1);
         }
     };
+    total_entries = total_entries_flushed;
 
     {
         let mut s = state.lock().unwrap();
         s.positions_written = total_entries;
+        if let Some(path_idx) = input_paths.iter().position(|p| p == &s.current_file) {
+            s.games_completed = games_completed_per_file
+                .get(&path_idx)
+                .copied()
+                .unwrap_or(0);
+        }
         save_state(&state_path, &s);
     }
 
