@@ -10,193 +10,22 @@ use std::time::Instant;
 
 use ember_chess::board::{
     board_to_fen, move_ec, move_er, move_from, move_promotion, move_sc, move_sr, move_to,
-    move_to_uci, piece_on, piece_type, sq, sq_c, sq_r, BoardState, Move, EMPTY_SQ,
+    move_to_uci, piece_type, sq, sq_c, sq_r, BoardState, Move, EMPTY_SQ,
+};
+use ember_chess::chainpack::{
+    ember_square, pack_stem, scan_chunk, ChainPos, MoveScoreListWriter, CHUNK_MAGIC, STEM_SIZE,
 };
 use ember_chess::movegen::{apply_move, generate_moves};
 use ember_chess::search::SEARCH_THREAD_STACK_SIZE;
 use ember_chess::Engine;
 
-const MAGIC: &[u8; 4] = b"BINP";
 const CHUNK_TARGET_BYTES: usize = 32 * 1024 * 1024;
-const ENTRY_SIZE: usize = 32;
+const ENTRY_SIZE: usize = STEM_SIZE;
 const DEFAULT_BATCH_SIZE: usize = 1_000_000;
 const DEFAULT_NODES: u64 = 5000;
 const DEFAULT_DEPTH: i32 = 64;
 const CHAINPACK_STATE_SAVE_EVERY: u64 = 10_000;
 const START_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-
-fn signed_to_unsigned(value: i16) -> u16 {
-    let bits = value as u16;
-    if bits & 0x8000 != 0 {
-        (bits ^ 0x7FFF).rotate_left(1)
-    } else {
-        bits.rotate_left(1)
-    }
-}
-
-fn std_bitboards(st: &BoardState) -> [u64; 12] {
-    let mut out = [0u64; 12];
-    for (i, bb) in st.bb.iter().enumerate() {
-        out[i] = bb.swap_bytes();
-    }
-    out
-}
-
-fn std_square(ember_sq: usize) -> usize {
-    (7 - sq_r(ember_sq)) * 8 + sq_c(ember_sq)
-}
-
-fn ember_square(std_sq: usize) -> usize {
-    sq(7 - std_sq / 8, std_sq % 8)
-}
-
-#[derive(Clone, Copy)]
-struct ChainPosition {
-    occupied: u64,
-    packed_state: [u8; 16],
-    _side_to_move: bool,
-    rule50: u16,
-}
-
-impl ChainPosition {
-    fn from_state(st: &BoardState) -> Self {
-        let bbs = std_bitboards(st);
-        let mut occupied: u64 = 0;
-        for bb_val in bbs.iter() {
-            occupied |= *bb_val;
-        }
-
-        let ep_pawn_sq = st.ep.and_then(|ep| {
-            let ep = std_square(ep);
-            if st.w {
-                (ep / 8 == 5).then_some(ep - 8)
-            } else {
-                (ep / 8 == 2).then_some(ep + 8)
-            }
-        });
-
-        let castling_rook_sqs: Vec<Option<usize>> = st
-            .castling_rooks
-            .iter()
-            .map(|rook_sq| rook_sq.map(std_square))
-            .collect();
-
-        let mut packed_state = [0u8; 16];
-        let mut nibble_idx = 0usize;
-
-        for sq_int in 0..64usize {
-            let pi = piece_on(&bbs, sq_int);
-            if pi == EMPTY_SQ {
-                continue;
-            }
-
-            let mut nibble = match pi {
-                0 => 0,
-                6 => 1,
-                1 => 2,
-                7 => 3,
-                2 => 4,
-                8 => 5,
-                3 => 6,
-                9 => 7,
-                4 => 8,
-                10 => 9,
-                5 => 10,
-                11 => 11,
-                _ => 0,
-            };
-
-            if pi == 11 && !st.w {
-                nibble = 15;
-            } else if piece_type(pi) == 0 && ep_pawn_sq == Some(sq_int) {
-                nibble = 12;
-            } else if pi == 3 || pi == 9 {
-                for (i, rook_sq) in castling_rook_sqs.iter().enumerate() {
-                    if st.cr[i] && *rook_sq == Some(sq_int) {
-                        nibble = if i < 2 { 13 } else { 14 };
-                        break;
-                    }
-                }
-            }
-
-            if nibble_idx.is_multiple_of(2) {
-                packed_state[nibble_idx / 2] = nibble;
-            } else {
-                packed_state[nibble_idx / 2] |= nibble << 4;
-            }
-            nibble_idx += 1;
-        }
-
-        ChainPosition {
-            occupied,
-            packed_state,
-            _side_to_move: st.w,
-            rule50: st.halfmove_clock as u16,
-        }
-    }
-
-    fn to_bytes(self) -> [u8; 24] {
-        let mut out = [0u8; 24];
-        out[0..8].copy_from_slice(&self.occupied.to_be_bytes());
-        out[8..24].copy_from_slice(&self.packed_state);
-        out
-    }
-}
-
-#[derive(Clone, Copy)]
-struct ChainMove {
-    from: usize,
-    to: usize,
-    promotion: u8,
-    is_null: bool,
-}
-
-impl ChainMove {
-    fn from_uci(uci: &str) -> Option<Self> {
-        if uci.len() < 4 || uci == "0000" {
-            return Some(Self {
-                from: 0,
-                to: 0,
-                promotion: 0,
-                is_null: true,
-            });
-        }
-        let b = uci.as_bytes();
-        let from = (b[1] - b'1') as usize * 8 + (b[0] - b'a') as usize;
-        let to = (b[3] - b'1') as usize * 8 + (b[2] - b'a') as usize;
-        let promotion = if uci.len() >= 5 {
-            match b[4] {
-                b'q' | b'Q' => 4,
-                b'r' | b'R' => 3,
-                b'b' | b'B' => 2,
-                b'n' | b'N' => 1,
-                _ => 0,
-            }
-        } else {
-            0
-        };
-        Some(Self {
-            from,
-            to,
-            promotion,
-            is_null: false,
-        })
-    }
-
-    fn compress(&self) -> u16 {
-        if self.is_null {
-            return 0;
-        }
-        let move_type: u16 = if self.promotion != 0 { 1 } else { 0 };
-        let mut packed = move_type << 14;
-        packed |= (self.from as u16) << 8;
-        packed |= (self.to as u16) << 2;
-        if self.promotion != 0 {
-            packed |= (self.promotion as u16 - 1) & 0b11;
-        }
-        packed
-    }
-}
 
 #[derive(Clone)]
 struct ChainLink {
@@ -209,54 +38,57 @@ struct ChainLink {
 #[derive(Clone)]
 struct ChainEntryBytes {
     stem: [u8; ENTRY_SIZE],
+    num_plies: u16,
     movetext: Vec<u8>,
 }
 
-fn pack_stem(pos: &ChainPosition, mv: &ChainMove, score: i16, ply: u16, result: i16) -> [u8; 32] {
-    let mut out = [0u8; ENTRY_SIZE];
-    let pos_bytes = pos.to_bytes();
-    out[0..24].copy_from_slice(&pos_bytes);
-    out[24..26].copy_from_slice(&mv.compress().to_be_bytes());
-    out[26..28].copy_from_slice(&signed_to_unsigned(score).to_be_bytes());
-    let pr = (signed_to_unsigned(result) & 0b11) << 14 | (ply & 0x3FFF);
-    out[28..30].copy_from_slice(&pr.to_be_bytes());
-    out[30..32].copy_from_slice(&pos.rule50.to_be_bytes());
-    out
+fn apply_uci_move(st: &mut BoardState, uci: &str) {
+    if uci.len() < 4 || uci == "0000" {
+        return;
+    }
+    let b = uci.as_bytes();
+    let from = (b[1] - b'1') as usize * 8 + (b[0] - b'a') as usize;
+    let to = (b[3] - b'1') as usize * 8 + (b[2] - b'a') as usize;
+    let promotion = if uci.len() >= 5 { b[4] } else { 0 };
+    let from = ember_square(from);
+    let to = ember_square(to);
+    apply_move(st, sq_r(from), sq_c(from), sq_r(to), sq_c(to), promotion);
 }
 
 fn build_chain_entries(start: &BoardState, links: &[ChainLink]) -> Option<Vec<ChainEntryBytes>> {
     let mut st = *start;
     let mut entries = Vec::new();
+    let mut i = 0usize;
 
-    for link in links.iter() {
-        let mv = ChainMove::from_uci(&link.bestmove)?;
-        let pos = ChainPosition::from_state(&st);
-
-        let stem = pack_stem(&pos, &mv, link.score, link.ply, link.result);
-        entries.push(ChainEntryBytes {
-            stem,
-            movetext: Vec::new(),
-        });
+    while i < links.len() {
+        let pos = ChainPos::from_ember(&st);
+        let mv = pos.packed_move_from_uci(&links[i].bestmove)?;
+        let stem = pack_stem(&pos, &mv, links[i].score, links[i].ply, links[i].result);
+        let mut movelist = MoveScoreListWriter::new(links[i].score);
 
         if !mv.is_null {
-            let promotion_char = match mv.promotion {
-                1 => b'N',
-                2 => b'B',
-                3 => b'R',
-                4 => b'Q',
-                _ => 0,
-            };
-            let from = ember_square(mv.from);
-            let to = ember_square(mv.to);
-            apply_move(
-                &mut st,
-                sq_r(from),
-                sq_c(from),
-                sq_r(to),
-                sq_c(to),
-                promotion_char,
-            );
+            apply_uci_move(&mut st, &links[i].bestmove);
+            let mut j = i + 1;
+            while j < links.len() {
+                let cont_pos = ChainPos::from_ember(&st);
+                let cont = cont_pos.packed_move_from_uci(&links[j].bestmove)?;
+                if cont.is_null {
+                    break;
+                }
+                movelist.add_move(&cont_pos, &cont, links[j].score);
+                apply_uci_move(&mut st, &links[j].bestmove);
+                j += 1;
+            }
         }
+
+        let num_plies = movelist.num_plies();
+        let movetext = movelist.into_movetext();
+        entries.push(ChainEntryBytes {
+            stem,
+            num_plies,
+            movetext,
+        });
+        i += 1 + num_plies as usize;
     }
 
     if entries.is_empty() {
@@ -647,7 +479,8 @@ impl ChunkedWriter {
     fn new(out_file: File) -> Self {
         Self {
             out_file,
-            buf: vec![0u8; CHUNK_TARGET_BYTES + 64],
+
+            buf: vec![0u8; CHUNK_TARGET_BYTES + 64 * 1024],
             buf_len: 0,
             entries_in_buffer: 0,
             flushed_entries: 0,
@@ -660,19 +493,24 @@ impl ChunkedWriter {
         self.flushed_entries
     }
 
-    fn write_entry(&mut self, stem: &[u8; ENTRY_SIZE], movetext: &[u8]) -> std::io::Result<()> {
+    fn write_entry(
+        &mut self,
+        stem: &[u8; ENTRY_SIZE],
+        num_plies: u16,
+        movetext: &[u8],
+    ) -> std::io::Result<()> {
         let needed = ENTRY_SIZE + 2 + movetext.len();
         if self.buf_len + needed > CHUNK_TARGET_BYTES && self.buf_len > 0 {
             self.flush_chunk()?;
         }
         self.buf[self.buf_len..self.buf_len + ENTRY_SIZE].copy_from_slice(stem);
         self.buf_len += ENTRY_SIZE;
-        let movetext_len = movetext.len() as u16;
-        self.buf[self.buf_len..self.buf_len + 2].copy_from_slice(&movetext_len.to_be_bytes());
+
+        self.buf[self.buf_len..self.buf_len + 2].copy_from_slice(&num_plies.to_be_bytes());
         self.buf_len += 2;
         self.buf[self.buf_len..self.buf_len + movetext.len()].copy_from_slice(movetext);
         self.buf_len += movetext.len();
-        self.entries_in_buffer += 1;
+        self.entries_in_buffer += 1 + num_plies as u64;
         Ok(())
     }
 
@@ -680,7 +518,7 @@ impl ChunkedWriter {
         if self.buf_len == 0 {
             return Ok(());
         }
-        self.out_file.write_all(MAGIC)?;
+        self.out_file.write_all(CHUNK_MAGIC)?;
         self.out_file
             .write_all(&(self.buf_len as u32).to_le_bytes())?;
         self.out_file.write_all(&self.buf[..self.buf_len])?;
@@ -694,7 +532,7 @@ impl ChunkedWriter {
 
     fn flush(mut self) -> std::io::Result<(u64, u64, u64)> {
         if self.buf_len > 0 {
-            self.out_file.write_all(MAGIC)?;
+            self.out_file.write_all(CHUNK_MAGIC)?;
             self.out_file
                 .write_all(&(self.buf_len as u32).to_le_bytes())?;
             self.out_file.write_all(&self.buf[..self.buf_len])?;
@@ -847,7 +685,7 @@ fn truncate_to_last_complete_chunk(file: &mut File) -> std::io::Result<(u64, u64
         if file.read_exact(&mut magic).is_err() {
             break;
         }
-        if &magic != MAGIC {
+        if &magic != CHUNK_MAGIC {
             break;
         }
         let mut size_buf = [0u8; 4];
@@ -859,20 +697,18 @@ fn truncate_to_last_complete_chunk(file: &mut File) -> std::io::Result<(u64, u64
         if chunk_end > len {
             break;
         }
-        let mut entry_pos: u64 = pos + 8;
-        let chunk_payload_end: u64 = pos + 8 + size;
-        let entry_size: u64 = ENTRY_SIZE as u64;
-        while entry_pos + entry_size <= chunk_payload_end {
-            file.seek(SeekFrom::Start(entry_pos + entry_size))?;
-            let mut len_buf = [0u8; 2];
-            if file.read_exact(&mut len_buf).is_err() {
-                break;
-            }
-            let movetext_len = u16::from_be_bytes(len_buf) as u64;
-            total_entries += 1;
-            entry_pos += entry_size + 2 + movetext_len;
+        let mut payload = vec![0u8; size as usize];
+        file.seek(SeekFrom::Start(pos + 8))?;
+        if file.read_exact(&mut payload).is_err() {
+            break;
         }
-        pos = chunk_end;
+        match scan_chunk(&payload) {
+            Some((entries, consumed)) if consumed == payload.len() => {
+                total_entries += entries;
+                pos = chunk_end;
+            }
+            _ => break,
+        }
     }
     file.set_len(pos)?;
     Ok((pos, total_entries))
@@ -1080,7 +916,13 @@ fn main() {
     });
 
     let mut out_file = if resume {
-        match File::options().create(true).append(true).open(&output_path) {
+        match File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&output_path)
+        {
             Ok(f) => f,
             Err(_) => File::create(&output_path).expect("failed to create output"),
         }
@@ -1100,6 +942,9 @@ fn main() {
                 exit(1);
             }
         };
+        out_file
+            .seek(SeekFrom::End(0))
+            .expect("failed to seek output to end");
         total_entries = entries_on_disk;
         let s = state.lock().unwrap();
         if !s.current_file.is_empty() {
@@ -1131,7 +976,7 @@ fn main() {
 
         if batch_entries.len() >= batch_size {
             for entry in batch_entries.drain(..) {
-                if let Err(e) = writer.write_entry(&entry.stem, &entry.movetext) {
+                if let Err(e) = writer.write_entry(&entry.stem, entry.num_plies, &entry.movetext) {
                     eprintln!("chainpack: write error: {e}");
                     exit(1);
                 }
@@ -1157,7 +1002,7 @@ fn main() {
 
     if !batch_entries.is_empty() {
         for entry in batch_entries.drain(..) {
-            if let Err(e) = writer.write_entry(&entry.stem, &entry.movetext) {
+            if let Err(e) = writer.write_entry(&entry.stem, entry.num_plies, &entry.movetext) {
                 eprintln!("chainpack: write error: {e}");
                 exit(1);
             }
@@ -1210,83 +1055,6 @@ mod tests {
         let mut engine = Engine::try_new().expect("failed to create engine");
         engine.set_fen(fen);
         engine.st
-    }
-
-    fn nibbles(pos: &ChainPosition) -> Vec<u8> {
-        let mut out = Vec::new();
-        let mut occ = pos.occupied;
-        let mut idx = 0usize;
-        while occ != 0 {
-            occ &= occ - 1;
-            let byte = pos.packed_state[idx / 2];
-            out.push(if idx.is_multiple_of(2) {
-                byte & 0x0F
-            } else {
-                byte >> 4
-            });
-            idx += 1;
-        }
-        out
-    }
-
-    fn nibble_at(pos: &ChainPosition, sq_int: usize) -> u8 {
-        let before = (pos.occupied & ((1u64 << sq_int) - 1)).count_ones() as usize;
-        let byte = pos.packed_state[before / 2];
-        if before.is_multiple_of(2) {
-            byte & 0x0F
-        } else {
-            byte >> 4
-        }
-    }
-
-    #[test]
-    fn ep_pawn_nibble_marks_the_capturable_pawn() {
-        let st = state_from_fen("rnbqkbnr/ppp1pppp/8/3p4/8/8/PPPPPPPP/RNBQKBNR w KQkq d6 0 2");
-        assert_eq!(st.ep, Some(sq(2, 3)));
-        let pos = ChainPosition::from_state(&st);
-        assert_eq!(nibble_at(&pos, sq(3, 3)), 12);
-    }
-
-    #[test]
-    fn black_king_nibble_encodes_side_to_move() {
-        let st = state_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1");
-        let pos = ChainPosition::from_state(&st);
-        assert_eq!(nibble_at(&pos, sq(7, 4)), 15);
-
-        let st = state_from_fen(START_FEN);
-        let pos = ChainPosition::from_state(&st);
-        assert_eq!(nibble_at(&pos, sq(7, 4)), 11);
-    }
-
-    #[test]
-    fn rooks_without_castling_rights_stay_plain() {
-        let st = state_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1");
-        let pos = ChainPosition::from_state(&st);
-        let nibs = nibbles(&pos);
-        assert_eq!(nibs[0], 6);
-        assert_eq!(nibs[7], 6);
-        assert_eq!(nibs[24], 7);
-        assert_eq!(nibs[31], 7);
-    }
-
-    #[test]
-    fn stem_layout_roundtrip() {
-        let st = state_from_fen(START_FEN);
-        let pos = ChainPosition::from_state(&st);
-        let mv = ChainMove::from_uci("e2e4").unwrap();
-        let stem = pack_stem(&pos, &mv, -123, 7, -1);
-
-        assert_eq!(&stem[0..8], &pos.occupied.to_be_bytes());
-        assert_eq!(&stem[8..24], &pos.packed_state);
-        assert_eq!(u16::from_be_bytes([stem[24], stem[25]]), mv.compress());
-        assert_eq!(
-            u16::from_be_bytes([stem[26], stem[27]]),
-            signed_to_unsigned(-123)
-        );
-        let pr = u16::from_be_bytes([stem[28], stem[29]]);
-        assert_eq!(pr >> 14, signed_to_unsigned(-1));
-        assert_eq!(pr & 0x3FFF, 7);
-        assert_eq!(u16::from_be_bytes([stem[30], stem[31]]), 0);
     }
 
     fn san(st: &BoardState, san: &str) -> Option<String> {

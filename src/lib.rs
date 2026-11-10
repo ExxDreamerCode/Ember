@@ -3,6 +3,7 @@
 pub mod backend;
 pub mod board;
 pub mod book;
+pub mod chainpack;
 pub mod deadline;
 pub mod engine;
 pub mod evaluate;

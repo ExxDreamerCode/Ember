@@ -4,10 +4,10 @@ use std::io::{BufReader, Read};
 use std::path::PathBuf;
 
 use ember_chess::board::board_to_fen;
+use ember_chess::chainpack::{scan_chunk, scan_single_chain, STEM_SIZE};
 use ember_chess::Engine;
 
 const MAGIC: &[u8; 4] = b"BINP";
-const STEM_SIZE: usize = 32;
 
 fn temp_path(suffix: &str) -> PathBuf {
     env::temp_dir().join(format!("chainpack_e2e_{}.{suffix}", std::process::id()))
@@ -28,7 +28,7 @@ fn stem_nibble(stem: &[u8; STEM_SIZE], occupied: u64, std_sq: usize) -> Option<u
 }
 
 #[test]
-fn chainpack_writes_framed_entries_for_every_played_position() {
+fn chainpack_writes_one_chain_per_game_with_chained_moves() {
     let pgn = r#"[Event "e1"]
 [White "A"]
 [Black "B"]
@@ -62,7 +62,8 @@ fn chainpack_writes_framed_entries_for_every_played_position() {
     let file = fs::File::open(&out_path).unwrap();
     let mut reader = BufReader::new(file);
 
-    let mut stems: Vec<[u8; STEM_SIZE]> = Vec::new();
+    let mut chains: Vec<([u8; STEM_SIZE], u16)> = Vec::new();
+    let mut total_entries = 0u64;
 
     loop {
         let mut magic = [0u8; 4];
@@ -76,23 +77,31 @@ fn chainpack_writes_framed_entries_for_every_played_position() {
         let mut payload = vec![0u8; len];
         reader.read_exact(&mut payload).unwrap();
 
+        let (entries, consumed) =
+            scan_chunk(&payload).expect("payload must consist of decodable chains");
+        assert_eq!(consumed, payload.len());
+        total_entries += entries;
+
         let mut pos = 0usize;
-        while pos + STEM_SIZE <= payload.len() {
-            stems.push(payload[pos..pos + STEM_SIZE].try_into().unwrap());
-            pos += STEM_SIZE;
-            let movetext_len = u16::from_be_bytes([payload[pos], payload[pos + 1]]) as usize;
-            pos += 2 + movetext_len;
+        while pos < payload.len() {
+            let mut stem = [0u8; STEM_SIZE];
+            stem.copy_from_slice(&payload[pos..pos + STEM_SIZE]);
+            let num_plies = u16::from_be_bytes([payload[pos + 32], payload[pos + 33]]);
+            chains.push((stem, num_plies));
+            let (_, consumed_single) =
+                scan_single_chain(&payload[pos..]).expect("single chain decodes");
+            pos += consumed_single;
         }
-        assert_eq!(pos, payload.len(), "payload must consist of whole entries");
+        assert_eq!(pos, payload.len(), "payload must consist of whole chains");
     }
 
-    assert_eq!(
-        stems.len(),
-        8,
-        "one chain entry per position before each move"
-    );
+    assert_eq!(chains.len(), 2, "one chain stem per game");
+    let mut plies: Vec<u16> = chains.iter().map(|(_, n)| *n).collect();
+    plies.sort_unstable();
+    assert_eq!(plies, vec![2, 4], "chained plies follow the game lengths");
+    assert_eq!(total_entries, 8, "stems plus chained entries");
 
-    let first = stems.first().expect("at least one entry was written");
+    let first = &chains[0].0;
     let occupied = u64::from_be_bytes(first[0..8].try_into().unwrap());
     let mut engine = Engine::try_new().expect("engine");
     engine.set_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
@@ -122,10 +131,9 @@ fn chainpack_writes_framed_entries_for_every_played_position() {
         "rule fifty starts at zero"
     );
 
-    let mut black_to_move = 0usize;
-    for stem in &stems {
+    for (stem, _) in &chains {
         let occ = u64::from_be_bytes(stem[0..8].try_into().unwrap());
-        let nibble_15 = (0..64)
+        let black_king_markers = (0..64)
             .filter(|&s| {
                 let idx = (occ & ((1u64 << s) - 1)).count_ones() as usize;
                 (occ >> s) & 1 == 1 && {
@@ -139,16 +147,11 @@ fn chainpack_writes_framed_entries_for_every_played_position() {
                 }
             })
             .count();
-        match nibble_15 {
-            0 => {}
-            1 => black_to_move += 1,
-            n => panic!("stem has {n} black-to-move markers, expected 0 or 1"),
-        }
+        assert_eq!(
+            black_king_markers, 0,
+            "chain stems start from white-to-move positions"
+        );
     }
-    assert_eq!(
-        black_to_move, 3,
-        "three positions in the stream have black to move"
-    );
 
     let _ = fs::remove_file(&pgn_path);
     let _ = fs::remove_file(&out_path);

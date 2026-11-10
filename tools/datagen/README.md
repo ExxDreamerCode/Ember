@@ -4,7 +4,7 @@ The `datagen` directory contains tools for generating chess training data:
 
 | Tool | Purpose |
 |------|---------|
-| **chainpack** | PGN/zst → engine evaluation → chain-based `.binpack` (sfbinpack-compatible) |
+| **chainpack** | PGN/zst → engine evaluation → chain-based `.binpack` (compressed-binpack compatible) |
 | **score_db** | TSV/FEN positions → Ember evaluation → chunked scored TSV (`scored_NNNNN.tsv`) |
 | **fen_db** | PGN/EPD/zst → extract positions → sort + dedupe → unique `.fen` chunks |
 
@@ -48,13 +48,22 @@ in the output `.binpack`.
 
 ### Output format
 
-Chunks are written with `BINP` magic + u32 LE size header, target ~32 MiB per chunk. 
-Each chunk payload is a sequence of entries:
+Chunks are written with `BINP` magic + u32 LE size header, target ~32 MiB per chunk.
+Each chunk payload is a sequence of chains in the standard compressed training-data
+binpack layout:
 
 - **Stem** (32 bytes): compressed position (24 B) + compressed move (2 B) + zigzag score
-  (2 B) + ply+result (2 B) + rule50 (2 B)
-- **Movetext length** (2 bytes, big-endian): length of the movetext that follows
-- **Movetext**: raw bytes
+  (2 B) + ply+result (2 B) + rule50 (2 B). The first entry of each game is a stem.
+- **Count** (2 bytes, big-endian): number of continuation entries that follow
+- **Movetext**: bit-packed continuations, one `piece_id + move_id + VLE score delta`
+  triple per ply. Positions, plies, results, and rule50 counters of continuations are
+  recovered by replaying the moves from the stem.
+
+The layout is read by Ember's own codec in the `ember_chess::chainpack` module and by
+third-party readers of the compressed binpack format. Files produced by older chainpack
+builds (flat stems with an always-zero count) can be re-chained by regrouping consecutive
+entries whose position equals the previous entry's position after its move; no
+re-evaluation is needed.
 
 ## Example
 
