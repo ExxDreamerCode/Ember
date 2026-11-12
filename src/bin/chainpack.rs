@@ -135,6 +135,9 @@ fn parse_pgn(text: &str) -> Option<PgnGame> {
         .find(|(k, _)| k == "Result")
         .map(|(_, v)| v.as_str())
         .unwrap_or("*");
+    if result_tag == "*" {
+        return None;
+    }
     let fen = headers
         .iter()
         .find(|(k, _)| k == "FEN")
@@ -582,7 +585,25 @@ fn save_state(path: &Path, state: &ProgressState) {
 
 struct ChainBatch {
     file_idx: usize,
+    game_idx: u64,
     entries: Vec<ChainEntryBytes>,
+}
+
+enum ProducerMsg {
+    Game {
+        file_idx: usize,
+        game_idx: u64,
+        text: String,
+    },
+    FileDone {
+        file_idx: usize,
+        games: u64,
+    },
+}
+
+enum ResultMsg {
+    Batch(ChainBatch),
+    FileDone { file_idx: usize, games: u64 },
 }
 
 fn open_input_reader(path: &str) -> std::io::Result<Box<dyn BufRead>> {
@@ -771,6 +792,7 @@ fn main() {
             _ => input_paths.push(arg.clone()),
         }
     }
+    let _ = batch_size;
 
     let output_path = match output_path {
         Some(p) => p,
@@ -816,8 +838,8 @@ fn main() {
         );
     }
 
-    let (game_tx, game_rx) = mpsc::channel::<(usize, String)>();
-    let (result_tx, result_rx) = mpsc::channel::<ChainBatch>();
+    let (game_tx, game_rx) = mpsc::channel::<ProducerMsg>();
+    let (result_tx, result_rx) = mpsc::channel::<ResultMsg>();
 
     let game_rx_arc = Arc::new(Mutex::new(game_rx));
 
@@ -838,22 +860,37 @@ fn main() {
                     let mut processor =
                         GameProcessor::new(nodes, depth, eval_only, nnue_off, nnue_on);
                     loop {
-                        let (file_idx, game_text) = {
+                        let msg = {
                             let rx = game_rx.lock().unwrap();
                             match rx.recv() {
-                                Ok(g) => g,
+                                Ok(m) => m,
                                 Err(_) => break,
                             }
                         };
-                        let game = match parse_pgn(&game_text) {
-                            Some(g) => g,
-                            None => {
-                                processor.skipped_games += 1;
-                                continue;
+                        match msg {
+                            ProducerMsg::Game {
+                                file_idx,
+                                game_idx,
+                                text,
+                            } => {
+                                let game = match parse_pgn(&text) {
+                                    Some(g) => g,
+                                    None => {
+                                        processor.skipped_games += 1;
+                                        continue;
+                                    }
+                                };
+                                let entries = processor.process_game(&game);
+                                let _ = result_tx.send(ResultMsg::Batch(ChainBatch {
+                                    file_idx,
+                                    game_idx,
+                                    entries,
+                                }));
                             }
-                        };
-                        let entries = processor.process_game(&game);
-                        let _ = result_tx.send(ChainBatch { file_idx, entries });
+                            ProducerMsg::FileDone { file_idx, games } => {
+                                let _ = result_tx.send(ResultMsg::FileDone { file_idx, games });
+                            }
+                        }
                     }
                     eprintln!(
                         "worker: {} games, {} positions, {} skipped games, {} skipped positions",
@@ -871,7 +908,6 @@ fn main() {
     let producer = thread::spawn({
         let input_paths = input_paths.clone();
         let game_tx = game_tx;
-        let state = state.clone();
         let skip_games = skip_games_in_current;
         move || {
             let mut games_sent: u64 = 0;
@@ -892,7 +928,12 @@ fn main() {
                         games_in_file += 1;
                         continue;
                     }
-                    if game_tx.send((file_idx, game)).is_err() {
+                    let msg = ProducerMsg::Game {
+                        file_idx,
+                        game_idx: games_in_file,
+                        text: game,
+                    };
+                    if game_tx.send(msg).is_err() {
                         return;
                     }
                     games_in_file += 1;
@@ -900,11 +941,15 @@ fn main() {
                     if games_sent.is_multiple_of(10_000) {
                         eprintln!("producer: {} games sent", games_sent);
                     }
-                    {
-                        let mut s = state.lock().unwrap();
-                        s.current_file = path.clone();
-                        s.games_completed = games_in_file;
-                    }
+                }
+                if game_tx
+                    .send(ProducerMsg::FileDone {
+                        file_idx,
+                        games: games_in_file,
+                    })
+                    .is_err()
+                {
+                    return;
                 }
                 eprintln!(
                     "producer: file {} done, {} games",
@@ -930,82 +975,79 @@ fn main() {
         File::create(&output_path).expect("failed to create output")
     };
 
-    let mut total_entries: u64 = 0;
-    let mut games_completed_per_file: std::collections::HashMap<usize, u64> =
-        std::collections::HashMap::new();
     if resume {
-        let (_bytes_on_disk, entries_on_disk) = match truncate_to_last_complete_chunk(&mut out_file)
-        {
-            Ok(n) => n,
-            Err(e) => {
-                eprintln!("chainpack: cannot rescan output file: {e}");
-                exit(1);
-            }
-        };
+        let (_bytes_on_disk, _entries_on_disk) =
+            match truncate_to_last_complete_chunk(&mut out_file) {
+                Ok(n) => n,
+                Err(e) => {
+                    eprintln!("chainpack: cannot rescan output file: {e}");
+                    exit(1);
+                }
+            };
         out_file
             .seek(SeekFrom::End(0))
             .expect("failed to seek output to end");
-        total_entries = entries_on_disk;
-        let s = state.lock().unwrap();
-        if !s.current_file.is_empty() {
-            for (i, p) in input_paths.iter().enumerate() {
-                if p == &s.current_file {
-                    games_completed_per_file.insert(i, s.games_completed);
-                    break;
-                }
-            }
-        }
     }
 
     let mut writer = ChunkedWriter::new(out_file);
-    let mut batch_entries: Vec<ChainEntryBytes> = Vec::new();
-    let mut positions_since_state: u64 = 0;
+    let mut expected = (start_file_index, skip_games_in_current);
+    let mut safe = expected;
+    let mut pending: std::collections::BTreeMap<(usize, u64), ChainBatch> = Default::default();
+    let mut file_done: std::collections::HashMap<usize, u64> = Default::default();
+    let mut last_saved_entries: u64 = 0;
     let mut last_report = Instant::now();
 
-    for batch in result_rx {
-        let n_entries = batch.entries.len() as u64;
-        batch_entries.extend(batch.entries);
-        positions_since_state += n_entries;
+    for msg in result_rx {
+        match msg {
+            ResultMsg::FileDone { file_idx, games } => {
+                file_done.insert(file_idx, games);
+            }
+            ResultMsg::Batch(batch) => {
+                pending.insert((batch.file_idx, batch.game_idx), batch);
+            }
+        }
 
-        *games_completed_per_file.entry(batch.file_idx).or_default() += 1;
+        loop {
+            if let Some(&done) = file_done.get(&expected.0) {
+                if done == expected.1 {
+                    expected = (expected.0 + 1, 0);
+                    continue;
+                }
+            }
+            match pending.remove(&expected) {
+                Some(batch) => {
+                    let flushed_before = writer.entries_flushed();
+                    for entry in batch.entries {
+                        if let Err(e) =
+                            writer.write_entry(&entry.stem, entry.num_plies, &entry.movetext)
+                        {
+                            eprintln!("chainpack: write error: {e}");
+                            exit(1);
+                        }
+                    }
+                    if writer.entries_flushed() != flushed_before {
+                        safe = (batch.file_idx, batch.game_idx);
+                    }
+                    expected = (batch.file_idx, batch.game_idx + 1);
+                }
+                None => break,
+            }
+        }
+
+        let flushed_now = writer.entries_flushed();
 
         if last_report.elapsed().as_secs() >= 5 {
-            eprintln!("progress: {} entries written", total_entries);
+            eprintln!("progress: {} entries written", flushed_now);
             last_report = Instant::now();
         }
 
-        if batch_entries.len() >= batch_size {
-            for entry in batch_entries.drain(..) {
-                if let Err(e) = writer.write_entry(&entry.stem, entry.num_plies, &entry.movetext) {
-                    eprintln!("chainpack: write error: {e}");
-                    exit(1);
-                }
-            }
-            total_entries = writer.entries_flushed();
-
-            if positions_since_state >= CHAINPACK_STATE_SAVE_EVERY {
-                {
-                    let mut s = state.lock().unwrap();
-                    s.positions_written = total_entries;
-                    if let Some(path_idx) = input_paths.iter().position(|p| p == &s.current_file) {
-                        s.games_completed = games_completed_per_file
-                            .get(&path_idx)
-                            .copied()
-                            .unwrap_or(0);
-                    }
-                    save_state(&state_path, &s);
-                }
-                positions_since_state = 0;
-            }
-        }
-    }
-
-    if !batch_entries.is_empty() {
-        for entry in batch_entries.drain(..) {
-            if let Err(e) = writer.write_entry(&entry.stem, entry.num_plies, &entry.movetext) {
-                eprintln!("chainpack: write error: {e}");
-                exit(1);
-            }
+        if flushed_now - last_saved_entries >= CHAINPACK_STATE_SAVE_EVERY {
+            let mut s = state.lock().unwrap();
+            s.positions_written = flushed_now;
+            s.current_file = input_paths.get(safe.0).cloned().unwrap_or_default();
+            s.games_completed = safe.1;
+            save_state(&state_path, &s);
+            last_saved_entries = flushed_now;
         }
     }
 
@@ -1016,17 +1058,13 @@ fn main() {
             exit(1);
         }
     };
-    total_entries = total_entries_flushed;
+    let total_entries = total_entries_flushed;
 
     {
         let mut s = state.lock().unwrap();
         s.positions_written = total_entries;
-        if let Some(path_idx) = input_paths.iter().position(|p| p == &s.current_file) {
-            s.games_completed = games_completed_per_file
-                .get(&path_idx)
-                .copied()
-                .unwrap_or(0);
-        }
+        s.current_file = input_paths.get(expected.0).cloned().unwrap_or_default();
+        s.games_completed = expected.1;
         save_state(&state_path, &s);
     }
 
