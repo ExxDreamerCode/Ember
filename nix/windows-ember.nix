@@ -23,14 +23,24 @@ let
       .${arch};
     variant = "desktop";
     version = "17";
-    sdkVersion = "10.0.26100";
+    # SDK 10.0.26100 splits headers into extra onecoreuap MSI packages that
+    # cargo-xwin/xwin 0.10 does not yet collect
+    # (https://github.com/Jake-Shadle/xwin/issues/128), so the
+    # `cargo-xwin cache xwin` pre-cache step fails with
+    # "unable to find x86_64 headers for Win11SDK_10.0.26100". 10.0.22621 is
+    # the last stable monolithic SDK and is still shipped by Microsoft's CDN.
+    sdkVersion = "10.0.22621";
     # xwin expects the manifest toolset selector, not the 14.44.35220
     # build number reported by the installed CRT headers.
     crtVersion = "14.44.17.14";
+    # Recursive sha256 of the cargo-xwin cache for this exact SDK/CRT pin.
+    # Obtain a new hash with the lib.fakeSha256 placeholder ("got: …" in the
+    # Nix error) whenever sdkVersion, crtVersion, or the nixpkgs cargo-xwin
+    # version changes.
     cacheHash =
       {
-        amd64 = "sha256-wHNCHGHGJcKv+oN/sDceNBitjQdwRcEWOZlJnu/CzSE=";
-        arm64 = "sha256-ejLSpOVpszYXdfovAfhVRyyn/cVgXNwCiKQao+smags=";
+        amd64 = "sha256-fpXJ9vAsge1IoDe2DziFyIY1uarqLLYc5MUkPT1hBe8=";
+        arm64 = "sha256-chtxOD8utE1uNGRtDbtDwzMgptpq3Tgatg4B7JJTdFk=";
       }
       .${arch};
   };
@@ -79,7 +89,6 @@ let
     outputHashAlgo = "sha256";
     outputHashMode = "recursive";
     outputHash = xwinConfig.cacheHash;
-
     buildPhase = ''
       runHook preBuild
       export HOME="$TMPDIR/home"
