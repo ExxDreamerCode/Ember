@@ -451,8 +451,12 @@ fn run_uci_loop() {
             "eval" => {
                 let score = evaluate::evaluate_nnue(&engine.st);
                 let classic = ember_chess::evaluate::evaluate(&engine.st);
-                println!("info string NNUE eval: {} cp (from stm)", score);
                 let stm_sign = if engine.st.w { 1 } else { -1 };
+                println!(
+                    "info string NNUE eval: {} cp (from white), {} cp (from stm)",
+                    score,
+                    score * stm_sign
+                );
                 println!(
                     "info string Classic eval: {} cp (from white), {} cp (from stm)",
                     classic,
