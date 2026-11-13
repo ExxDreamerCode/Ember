@@ -158,6 +158,96 @@ fn chainpack_writes_one_chain_per_game_with_chained_moves() {
 }
 
 #[test]
+fn skipped_game_does_not_drop_following_games() {
+    let pgn = r#"[Event "e1"]
+[Result "1-0"]
+
+1. e4 e5
+
+[Event "e2"]
+[Result "*"]
+
+1. d4
+
+[Event "e3"]
+[Result "0-1"]
+
+1. d4 d5
+"#;
+    let pgn_path = temp_path("pgn");
+    let out_path = temp_path("binpack");
+    fs::write(&pgn_path, pgn).unwrap();
+
+    let bin = env::var("CARGO_BIN_EXE_chainpack")
+        .expect("CARGO_BIN_EXE_chainpack is set for integration tests");
+    let status = std::process::Command::new(&bin)
+        .args([
+            "--eval-only",
+            pgn_path.to_str().unwrap(),
+            out_path.to_str().unwrap(),
+        ])
+        .status()
+        .expect("chainpack binary should run");
+    assert!(status.success(), "chainpack should exit successfully");
+
+    let file = fs::File::open(&out_path).unwrap();
+    let mut reader = BufReader::new(file);
+
+    let mut chains = 0u64;
+    let mut total_entries = 0u64;
+    let mut plies: Vec<u16> = Vec::new();
+
+    loop {
+        let mut magic = [0u8; 4];
+        if reader.read_exact(&mut magic).is_err() {
+            break;
+        }
+        assert_eq!(&magic, MAGIC, "every chunk must start with the BINP magic");
+        let mut len_buf = [0u8; 4];
+        reader.read_exact(&mut len_buf).unwrap();
+        let len = u32::from_le_bytes(len_buf) as usize;
+        let mut payload = vec![0u8; len];
+        reader.read_exact(&mut payload).unwrap();
+
+        let (entries, consumed) =
+            scan_chunk(&payload).expect("payload must consist of decodable chains");
+        assert_eq!(consumed, payload.len());
+        total_entries += entries;
+
+        let mut pos = 0usize;
+        while pos < payload.len() {
+            let mut stem = [0u8; STEM_SIZE];
+            stem.copy_from_slice(&payload[pos..pos + STEM_SIZE]);
+            let num_plies = u16::from_be_bytes([payload[pos + 32], payload[pos + 33]]);
+            chains += 1;
+            plies.push(num_plies);
+            let (_, consumed_single) =
+                scan_single_chain(&payload[pos..]).expect("single chain decodes");
+            pos += consumed_single;
+        }
+        assert_eq!(pos, payload.len(), "payload must consist of whole chains");
+    }
+
+    assert_eq!(
+        chains, 2,
+        "only valid games produce chains; skipped game produces none"
+    );
+    plies.sort_unstable();
+    assert_eq!(
+        plies,
+        vec![1, 1],
+        "both valid games contribute one stem each"
+    );
+    assert_eq!(
+        total_entries, 4,
+        "stems plus chained entries for the two valid games"
+    );
+
+    let _ = fs::remove_file(&pgn_path);
+    let _ = fs::remove_file(&out_path);
+}
+
+#[test]
 fn fen_round_trip_preserves_static_eval() {
     let fens = [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",

@@ -17,6 +17,7 @@ use ember_chess::chainpack::{
 };
 use ember_chess::movegen::{apply_move, generate_moves};
 use ember_chess::search::SEARCH_THREAD_STACK_SIZE;
+use ember_chess::types::{MATE, MATE_THRESHOLD};
 use ember_chess::Engine;
 
 const CHUNK_TARGET_BYTES: usize = 32 * 1024 * 1024;
@@ -105,11 +106,58 @@ struct PgnGame {
     moves: Vec<String>,
 }
 
-fn parse_pgn(text: &str) -> Option<PgnGame> {
+#[derive(Clone, Default)]
+struct PgnHeaders {
+    result: String,
+    fen: Option<String>,
+}
+
+fn parse_pgn_headers(text: &str) -> PgnHeaders {
     let mut headers: Vec<(String, String)> = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            break;
+        }
+        if line.starts_with('[') {
+            let inner = line.trim_start_matches('[').trim_end_matches(']');
+            if let Some(space_pos) = inner.find(' ') {
+                let key = inner[..space_pos].to_string();
+                let val = inner[space_pos + 1..].trim().trim_matches('"').to_string();
+                headers.push((key, val));
+            }
+        }
+    }
+    let result = headers
+        .iter()
+        .find(|(k, _)| k == "Result")
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("*")
+        .to_string();
+    let fen = headers
+        .iter()
+        .find(|(k, _)| k == "FEN")
+        .map(|(_, v)| v.clone());
+    PgnHeaders { result, fen }
+}
+
+fn parse_pgn(text: &str) -> Option<PgnGame> {
+    let headers = parse_pgn_headers(text);
+    let result_tag = headers.result.as_str();
+    if result_tag == "*" {
+        return None;
+    }
+
+    let fen = headers.fen;
+    let result = match result_tag {
+        "1-0" => 1,
+        "0-1" => -1,
+        "1/2-1/2" | "*" => 0,
+        _ => 0,
+    };
+
     let mut movetext_lines: Vec<String> = Vec::new();
     let mut in_headers = true;
-
     for line in text.lines() {
         let line = line.trim();
         if in_headers {
@@ -117,38 +165,10 @@ fn parse_pgn(text: &str) -> Option<PgnGame> {
                 in_headers = false;
                 continue;
             }
-            if line.starts_with('[') {
-                let inner = line.trim_start_matches('[').trim_end_matches(']');
-                if let Some(space_pos) = inner.find(' ') {
-                    let key = inner[..space_pos].to_string();
-                    let val = inner[space_pos + 1..].trim().trim_matches('"').to_string();
-                    headers.push((key, val));
-                }
-            }
-        } else {
-            movetext_lines.push(line.to_string());
+            continue;
         }
+        movetext_lines.push(line.to_string());
     }
-
-    let result_tag = headers
-        .iter()
-        .find(|(k, _)| k == "Result")
-        .map(|(_, v)| v.as_str())
-        .unwrap_or("*");
-    if result_tag == "*" {
-        return None;
-    }
-    let fen = headers
-        .iter()
-        .find(|(k, _)| k == "FEN")
-        .map(|(_, v)| v.clone());
-
-    let result = match result_tag {
-        "1-0" => 1,
-        "0-1" => -1,
-        "1/2-1/2" | "*" => 0,
-        _ => 0,
-    };
 
     let movetext = movetext_lines.join(" ");
     let cleaned = remove_pgn_comments(&movetext);
@@ -433,6 +453,12 @@ impl GameProcessor {
 
             match eval {
                 Some((_, score_cp)) => {
+                    let score_cp = if score_cp.abs() >= MATE_THRESHOLD {
+                        let plies_to_mate = (MATE - score_cp.abs()).max(0);
+                        score_cp.signum() * (32000 - plies_to_mate)
+                    } else {
+                        score_cp
+                    };
                     let score = score_cp.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
                     links.push(ChainLink {
                         score,
@@ -593,7 +619,7 @@ enum ProducerMsg {
     Game {
         file_idx: usize,
         game_idx: u64,
-        text: String,
+        game: PgnGame,
     },
     FileDone {
         file_idx: usize,
@@ -871,15 +897,8 @@ fn main() {
                             ProducerMsg::Game {
                                 file_idx,
                                 game_idx,
-                                text,
+                                game,
                             } => {
-                                let game = match parse_pgn(&text) {
-                                    Some(g) => g,
-                                    None => {
-                                        processor.skipped_games += 1;
-                                        continue;
-                                    }
-                                };
                                 let entries = processor.process_game(&game);
                                 let _ = result_tx.send(ResultMsg::Batch(ChainBatch {
                                     file_idx,
@@ -924,6 +943,12 @@ fn main() {
                 };
                 let mut games_in_file: u64 = 0;
                 for game in GameStream::new(reader) {
+                    if parse_pgn_headers(&game).result == "*" {
+                        continue;
+                    }
+                    let Some(game) = parse_pgn(&game) else {
+                        continue;
+                    };
                     if file_idx == start_file_index && games_in_file < skip_games {
                         games_in_file += 1;
                         continue;
@@ -931,7 +956,7 @@ fn main() {
                     let msg = ProducerMsg::Game {
                         file_idx,
                         game_idx: games_in_file,
-                        text: game,
+                        game,
                     };
                     if game_tx.send(msg).is_err() {
                         return;
