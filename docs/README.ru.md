@@ -275,6 +275,7 @@ bench depth 12 positions 4   # первые 4 позиции набора на �
 | Версия | Рейтинг | Партий |
 | --- | ---: | ---: |
 | Ember 1.4.0 64-bit | 3370 ± 18 | 611 |
+| Ember 1.3.1 64-bit | 3343 ± 53 | 82 |
 | Ember 1.3.0 64-bit | 3154 ± 20 | 541 |
 
 **[CCRL Blitz (2m+1s)](https://computerchess.org.uk/ccrl/404/)** Расчёт 2026-11-13
