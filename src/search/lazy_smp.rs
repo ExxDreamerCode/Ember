@@ -5,6 +5,8 @@ pub struct SearchLearning {
     pub(super) history: [[i32; 64]; 64],
     pub(super) counter_move: [[Option<Move>; 64]; 13],
     pub(super) capture_history: [[[i32; 13]; 64]; 13],
+    pub(super) cont1_history: Box<[i16; CONT_HIST_LEN]>,
+    pub(super) cont2_history: Box<[i16; CONT_HIST_LEN]>,
     pub(super) corr_hist: [i32; CORR_HIST_SIZE * 2],
 }
 
@@ -805,6 +807,9 @@ mod tests {
         searcher.counter_move[7][31] = Some(crate::board::encode_move(6, 0, 5, 0, 0));
         searcher.capture_history[7][31][8] = value;
         searcher.capture_history[1][12][2] = -value;
+        searcher.cont1_history[cont_hist_index(2, 30, 4, 19)] = value as i16;
+        searcher.cont1_history[cont_hist_index(4, 19, 2, 30)] = -value as i16;
+        searcher.cont2_history[cont_hist_index(1, 50, 6, 44)] = value as i16;
     }
 
     fn assert_learning(actual: &SearchLearning, expected: &Searcher) {
@@ -812,6 +817,8 @@ mod tests {
         assert_eq!(actual.corr_hist, expected.corr_hist);
         assert_eq!(actual.counter_move, expected.counter_move);
         assert_eq!(actual.capture_history, expected.capture_history);
+        assert_eq!(actual.cont1_history, expected.cont1_history);
+        assert_eq!(actual.cont2_history, expected.cont2_history);
     }
 
     #[test]

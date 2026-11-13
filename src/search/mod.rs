@@ -1,7 +1,7 @@
 use crate::board::{
-    all_occ, attacked_by, bit, has_non_pawn, is_dead_position, move_ec, move_er, move_from,
-    move_promotion, move_sc, move_sr, move_to, piece_type, BoardState, Move, BP, EMPTY_SQ, INF,
-    KING_ATTACKS, MATE, MAX_HALF_MOVE_CLOCK, MAX_PLY, NO_MOVE, QS_DEPTH, WP,
+    all_occ, attacked_by, bit, has_non_pawn, is_dead_position, is_white_piece, move_ec, move_er,
+    move_from, move_promotion, move_sc, move_sr, move_to, piece_type, BoardState, Move, BP,
+    EMPTY_SQ, INF, KING_ATTACKS, MATE, MAX_HALF_MOVE_CLOCK, MAX_PLY, NO_MOVE, QS_DEPTH, WP,
 };
 use crate::evaluate::{
     current_classic_net, current_ember_v2, current_nnue_net, evaluate,
@@ -91,6 +91,7 @@ mod move_helpers;
 use self::move_helpers::*;
 
 const CORR_HIST_SIZE: usize = 16384;
+const CONT_HIST_LEN: usize = 7 * 64 * 7 * 64;
 pub const SEARCH_THREAD_STACK_SIZE: usize = 16 * 1024 * 1024;
 fn corr_idx(h: u64, side: bool) -> usize {
     let k = h
@@ -116,6 +117,8 @@ pub struct Searcher {
     pub history: [[i32; 64]; 64],
     pub counter_move: [[Option<Move>; 64]; 13],
     pub capture_history: [[[i32; 13]; 64]; 13],
+    pub cont1_history: Box<[i16; CONT_HIST_LEN]>,
+    pub cont2_history: Box<[i16; CONT_HIST_LEN]>,
     pub corr_hist: [i32; CORR_HIST_SIZE * 2],
     // Descendant training stages its samples per pawn slot instead of
     // writing immediately: the deepest residual per slot is applied only at
@@ -172,9 +175,10 @@ mod negamax;
 pub(crate) mod perf;
 #[cfg(test)]
 use self::negamax::{
-    history_bonus, lmp_king_pressure_safe, lmp_move_count, lmr_needs_full_depth_research,
-    lmr_policy_eligible, lmr_reduction, lmr_reduction_is_saturated, lmr_reduction_non_quiet,
-    lmr_reduction_with_history, tactical_check_extension_candidate,
+    cont2_mover_is_white, cont_hist_index, continuation_key, history_bonus, lmp_king_pressure_safe,
+    lmp_move_count, lmr_needs_full_depth_research, lmr_policy_eligible, lmr_reduction,
+    lmr_reduction_is_saturated, lmr_reduction_non_quiet, lmr_reduction_with_history,
+    tactical_check_extension_candidate, update_cont_entry, CONT_HIST_MAX,
 };
 pub(crate) use self::perf::{perf_region_end, perf_region_start, perf_time};
 mod qsearch;

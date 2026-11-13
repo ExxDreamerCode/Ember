@@ -109,6 +109,13 @@ pub(crate) fn endgame_mopup_opt_in() -> bool {
     false
 }
 
+fn heap_zeroed_cont_history() -> Box<[i16; CONT_HIST_LEN]> {
+    vec![0i16; CONT_HIST_LEN]
+        .into_boxed_slice()
+        .try_into()
+        .expect("continuation history length must match its table shape")
+}
+
 impl Searcher {
     pub fn new(shared_tt: Arc<SharedTT>, stopped: Arc<AtomicBool>) -> Self {
         Searcher {
@@ -117,6 +124,8 @@ impl Searcher {
             history: [[0i32; 64]; 64],
             counter_move: [[None; 64]; 13],
             capture_history: [[[0i32; 13]; 64]; 13],
+            cont1_history: heap_zeroed_cont_history(),
+            cont2_history: heap_zeroed_cont_history(),
             corr_hist: [0i32; CORR_HIST_SIZE * 2],
             #[cfg(feature = "node-correction-training")]
             corr_staged_depth: [0u8; CORR_HIST_SIZE * 2],
@@ -397,6 +406,8 @@ impl Searcher {
             history: self.history,
             counter_move: self.counter_move,
             capture_history: self.capture_history,
+            cont1_history: self.cont1_history.clone(),
+            cont2_history: self.cont2_history.clone(),
             corr_hist: self.corr_hist,
         }
     }
@@ -407,6 +418,8 @@ impl Searcher {
         self.history = learning.history;
         self.counter_move = learning.counter_move;
         self.capture_history = learning.capture_history;
+        self.cont1_history = learning.cont1_history.clone();
+        self.cont2_history = learning.cont2_history.clone();
         self.corr_hist = learning.corr_hist;
     }
 

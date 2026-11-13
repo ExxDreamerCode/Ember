@@ -158,6 +158,55 @@ pub(super) fn history_bonus(depth: i32) -> i32 {
     (mult * depth).min(HISTORY_BONUS_MAX)
 }
 
+pub(super) const CONT_HIST_MAX: i32 = 16384;
+
+#[inline(always)]
+pub(super) fn continuation_key(
+    st: &BoardState,
+    prev: Move,
+    mover_is_white: bool,
+) -> (usize, usize) {
+    let to = move_to(prev);
+    let pi = st.mailbox[to];
+    if pi != EMPTY_SQ && is_white_piece(pi) == mover_is_white {
+        (piece_to_idx(piece_type(pi)), to)
+    } else {
+        (0, to)
+    }
+}
+
+#[inline(always)]
+#[cfg_attr(target_arch = "x86_64", allow(clippy::manual_div_ceil))]
+pub(super) fn cont_hist_index(
+    prev_pt: usize,
+    prev_to: usize,
+    cur_pt: usize,
+    cur_to: usize,
+) -> usize {
+    ((prev_pt * 64 + prev_to) * 7 + cur_pt) * 64 + cur_to
+}
+
+#[inline(always)]
+pub(super) fn update_cont_entry(entry: &mut i16, bonus: i32) {
+    let e = i32::from(*entry);
+    let next = e + bonus - e * bonus.abs() / CONT_HIST_MAX;
+    *entry = next.clamp(-CONT_HIST_MAX, CONT_HIST_MAX) as i16;
+}
+
+#[inline(always)]
+pub(super) fn cont2_mover_is_white(
+    prev1: Option<Move>,
+    prev2: Option<Move>,
+    side_is_white: bool,
+) -> bool {
+    let real_moves_between = usize::from(prev1.is_some()) + usize::from(prev2.is_some());
+    if real_moves_between & 1 == 0 {
+        side_is_white
+    } else {
+        !side_is_white
+    }
+}
+
 #[inline(always)]
 fn capture_history_index(st: &BoardState, mv: Move) -> (usize, usize, usize) {
     let fpi = st.mailbox[move_from(mv)];
@@ -1154,6 +1203,19 @@ macro_rules! negamax_mode_body {
         };
 
         let mut scored = Self::take_buf(&mut $this.scored_bufs, $ply);
+        let cont1_key = if $ply >= 1 {
+            $this.path_moves[$ply - 1].map(|mv| continuation_key($st, mv, !$st.w))
+        } else {
+            None
+        };
+        let cont2_key = if $ply >= 2 {
+            let prev2 = $this.path_moves[$ply - 2];
+            let mover_is_white =
+                cont2_mover_is_white($this.path_moves[$ply - 1], prev2, $st.w);
+            prev2.map(|mv| continuation_key($st, mv, mover_is_white))
+        } else {
+            None
+        };
         perf_region_start!(__perf_t0_score);
         scored.clear();
         scored.reserve(moves_buf.len());
@@ -1210,6 +1272,12 @@ macro_rules! negamax_mode_body {
                     }
                     let (fk, tk) = from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
                     s += $this.history[fk][tk].clamp(-32768, 32768);
+                    if let Some((ppt, pto)) = cont1_key {
+                        s += i32::from($this.cont1_history[cont_hist_index(ppt, pto, p_idx, to)]);
+                    }
+                    if let Some((ppt, pto)) = cont2_key {
+                        s += i32::from($this.cont2_history[cont_hist_index(ppt, pto, p_idx, to)]);
+                    }
                     s += king_shield_penalty($st, mv);
                     s += outpost_bonus($st, mv, 0);
                     s += passed_push_bonus($st, mv);
@@ -1296,12 +1364,24 @@ macro_rules! negamax_mode_body {
                     }
                 } else if is_quiet && $this.history_pruning_enabled() {
                     let (fk, tk) = from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
+                    let prune_idx = if fpi != EMPTY_SQ {
+                        piece_to_idx(piece_type(fpi))
+                    } else {
+                        0
+                    };
+                    let mut prune_history = $this.history[fk][tk];
+                    if let Some((ppt, pto)) = cont1_key {
+                        prune_history += i32::from($this.cont1_history[cont_hist_index(ppt, pto, prune_idx, to)]);
+                    }
+                    if let Some((ppt, pto)) = cont2_key {
+                        prune_history += i32::from($this.cont2_history[cont_hist_index(ppt, pto, prune_idx, to)]);
+                    }
                     let history_max_depth =
                         tune::get_int(TuneParam::HistoryPruneMaxDepth, 5) as i32;
                     let history_margin =
                         tune::get_int(TuneParam::HistoryPruneMarginPerDepth, 1024) as i32;
                     if actual_depth <= history_max_depth
-                        && $this.history[fk][tk] < -history_margin * actual_depth
+                        && prune_history < -history_margin * actual_depth
                     {
                         #[cfg(feature = "search-debug")]
                         {
@@ -1410,14 +1490,28 @@ macro_rules! negamax_mode_body {
                     $eval,
                 )
             } else if lmr_eligible {
-                let (lmr_hfk, lmr_htk) =
-                    from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
+                #[allow(unused_assignments)]
+                let mut lmr_quiet_history = 0;
                 let r = if is_quiet {
+                    let (lmr_hfk, lmr_htk) =
+                        from_to_key(move_sr(mv), move_sc(mv), move_er(mv), move_ec(mv));
+                    let lmr_idx = if fpi != EMPTY_SQ {
+                        piece_to_idx(piece_type(fpi))
+                    } else {
+                        0
+                    };
+                    lmr_quiet_history = $this.history[lmr_hfk][lmr_htk];
+                    if let Some((ppt, pto)) = cont1_key {
+                        lmr_quiet_history += i32::from($this.cont1_history[cont_hist_index(ppt, pto, lmr_idx, to)]);
+                    }
+                    if let Some((ppt, pto)) = cont2_key {
+                        lmr_quiet_history += i32::from($this.cont2_history[cont_hist_index(ppt, pto, lmr_idx, to)]);
+                    }
                     lmr_reduction_with_history(
                         move_index,
                         actual_depth,
                         is_pv,
-                        $this.history[lmr_hfk][lmr_htk],
+                        lmr_quiet_history,
                     )
                 } else if capture {
                     let (ch_att, ch_to, ch_vic) = capture_history_index(&st_before, mv);
@@ -1448,7 +1542,7 @@ macro_rules! negamax_mode_body {
                         $this.debug.stats.lmr_zero_reductions += 1;
                     }
                     let history = if is_quiet {
-                        $this.history[lmr_hfk][lmr_htk].clamp(-LMR_HISTORY_CLAMP, LMR_HISTORY_CLAMP)
+                        lmr_quiet_history.clamp(-LMR_HISTORY_CLAMP, LMR_HISTORY_CLAMP)
                     } else if capture {
                         let (ch_att, ch_to, ch_vic) = capture_history_index(&st_before, mv);
                         $this.capture_history[ch_att][ch_to][ch_vic]
@@ -1588,6 +1682,23 @@ macro_rules! negamax_mode_body {
                                         }
                                     }
                                 }
+                                let best_idx = if fpi != EMPTY_SQ {
+                                    piece_to_idx(piece_type(fpi))
+                                } else {
+                                    0
+                                };
+                                if let Some((ppt, pto)) = cont1_key {
+                                    update_cont_entry(
+                                        &mut $this.cont1_history[cont_hist_index(ppt, pto, best_idx, to)],
+                                        bonus,
+                                    );
+                                }
+                                if let Some((ppt, pto)) = cont2_key {
+                                    update_cont_entry(
+                                        &mut $this.cont2_history[cont_hist_index(ppt, pto, best_idx, to)],
+                                        bonus,
+                                    );
+                                }
                                 for &qmv in &quiets_tried {
                                     if qmv == mv {
                                         continue;
@@ -1605,6 +1716,25 @@ macro_rules! negamax_mode_body {
                                                 $this.history[a][b] /= 2;
                                             }
                                         }
+                                    }
+                                    let q_to = move_to(qmv);
+                                    let q_fpi = $st.mailbox[move_from(qmv)];
+                                    let q_idx = if q_fpi != EMPTY_SQ {
+                                        piece_to_idx(piece_type(q_fpi))
+                                    } else {
+                                        0
+                                    };
+                                    if let Some((ppt, pto)) = cont1_key {
+                                        update_cont_entry(
+                                            &mut $this.cont1_history[cont_hist_index(ppt, pto, q_idx, q_to)],
+                                            -bonus,
+                                        );
+                                    }
+                                    if let Some((ppt, pto)) = cont2_key {
+                                        update_cont_entry(
+                                            &mut $this.cont2_history[cont_hist_index(ppt, pto, q_idx, q_to)],
+                                            -bonus,
+                                        );
                                     }
                                 }
                                 let p_idx = if fpi != EMPTY_SQ {

@@ -3775,3 +3775,76 @@ fn spent_negative_budget_preserves_multicut_but_blocks_reductions() {
     assert_eq!(rejected.singular_verifications, 1);
     tune::reset();
 }
+
+#[test]
+fn continuation_key_reads_the_mover_at_its_destination() {
+    let st = state_from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1");
+    let prev = encode_move(6, 4, 4, 4, 0);
+    assert!(!st.w);
+    assert_eq!(continuation_key(&st, prev, true), (1, 36));
+    assert_eq!(continuation_key(&st, prev, false), (0, 36));
+}
+
+#[test]
+fn continuation_key_falls_back_when_the_mover_was_replaced() {
+    let st = state_from_fen("rnbqkbnr/pppppppp/8/8/4p3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1");
+    let prev = encode_move(6, 4, 4, 4, 0);
+    assert!(st.w);
+    assert_eq!(continuation_key(&st, prev, false), (1, 36));
+    assert_eq!(continuation_key(&st, prev, true), (0, 36));
+}
+
+#[test]
+fn cont2_mover_color_follows_path_parity() {
+    let mv = Some(encode_move(0, 0, 0, 1, 0));
+    assert!(cont2_mover_is_white(mv, mv, true));
+    assert!(!cont2_mover_is_white(mv, mv, false));
+    assert!(!cont2_mover_is_white(None, mv, true));
+    assert!(cont2_mover_is_white(None, mv, false));
+}
+
+#[test]
+fn update_cont_entry_stays_bounded_under_gravity() {
+    let mut entry = 0i16;
+    for _ in 0..1000 {
+        update_cont_entry(&mut entry, CONT_HIST_MAX);
+    }
+    assert_eq!(i32::from(entry), CONT_HIST_MAX);
+    for _ in 0..1000 {
+        update_cont_entry(&mut entry, -CONT_HIST_MAX);
+    }
+    assert_eq!(i32::from(entry), -CONT_HIST_MAX);
+    update_cont_entry(&mut entry, CONT_HIST_MAX);
+    assert_eq!(i32::from(entry), CONT_HIST_MAX);
+    update_cont_entry(&mut entry, -CONT_HIST_MAX);
+    assert_eq!(i32::from(entry), -CONT_HIST_MAX);
+    let mut small = 0i16;
+    update_cont_entry(&mut small, 100);
+    assert_eq!(small, 100);
+}
+
+#[test]
+fn negamax_updates_continuation_history_on_beta_cutoff() {
+    let st = state_from_fen("r3k2r/pppq1ppp/2npbn2/2b1p3/2B1P3/2NPBN2/PPPQ1PPP/R3K2R w KQkq - 0 1");
+    let mut searcher = Searcher::new(Arc::new(SharedTT::new(1)), Arc::new(AtomicBool::new(false)));
+    searcher.nnue_net = None;
+    searcher.ember_v2_net = None;
+    searcher.classic_net = None;
+    searcher.prepare_for_search();
+    let mut nodes = 0;
+    searcher.negamax(&mut st.clone(), 4, 0, -INF, INF, true, &mut nodes);
+    assert!(nodes > 0);
+    let mut cont1_all = searcher.cont1_history.iter();
+    assert!(
+        cont1_all.clone().any(|&v| v != 0),
+        "cont1 history stayed empty after a full search"
+    );
+    assert!(
+        cont1_all.all(|&v| i32::from(v.abs()) <= CONT_HIST_MAX),
+        "cont1 history entries escaped the gravity bound"
+    );
+    assert!(
+        searcher.cont2_history.iter().any(|&v| v != 0),
+        "cont2 history stayed empty after a full search"
+    );
+}
