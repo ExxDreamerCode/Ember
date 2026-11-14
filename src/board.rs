@@ -462,7 +462,7 @@ pub fn see(bb: &[u64; 12], from: usize, to: usize) -> i32 {
             break;
         }
 
-        gain[depth] = see_val(current_pt) - gain[depth - 1].max(0);
+        gain[depth] = see_val(current_pt) - gain[depth - 1];
         depth += 1;
         current_pt = piece_type(lva_pi);
 
@@ -477,7 +477,7 @@ pub fn see(bb: &[u64; 12], from: usize, to: usize) -> i32 {
 
     let mut i = depth as i32 - 1;
     while i > 0 {
-        gain[i as usize - 1] = (-gain[i as usize]).max(gain[i as usize - 1]);
+        gain[i as usize - 1] = -(-gain[i as usize - 1]).max(gain[i as usize]);
         i -= 1;
     }
     gain[0]
