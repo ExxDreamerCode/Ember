@@ -75,12 +75,64 @@ macro_rules! qsearch_mode_body {
             }
         }
 
+        let tt_data = if excluded_move.is_none() {
+            perf_time!(
+                ttget_cycles,
+                ttget_calls,
+                $this,
+                $this.shared_tt.get_entry($st.hash)
+            )
+        } else {
+            None
+        };
+        let tt_move = tt_data.and_then(|entry| entry.best_move);
+        if let Some(entry) = tt_data {
+            if entry.depth >= 0 {
+                let s = score_from_tt(entry.score, $ply);
+                match entry.flag {
+                    TT_EXACT => {
+                        #[cfg(feature = "search-debug")]
+                        {
+                            $this.debug.stats.tt_hits += 1;
+                            $this.debug.stats.tt_cutoffs += 1;
+                        }
+                        return s;
+                    }
+                    TT_ALPHA if s <= $alpha => {
+                        #[cfg(feature = "search-debug")]
+                        {
+                            $this.debug.stats.tt_hits += 1;
+                            $this.debug.stats.tt_cutoffs += 1;
+                        }
+                        return $alpha;
+                    }
+                    TT_BETA if s >= $beta => {
+                        #[cfg(feature = "search-debug")]
+                        {
+                            $this.debug.stats.tt_hits += 1;
+                            $this.debug.stats.tt_cutoffs += 1;
+                        }
+                        return s;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         if !in_check {
             let stand = $precomputed_eval
                 .unwrap_or_else(|| $eval.static_eval::<CHESS960>($this, $st, $ply));
             #[cfg(feature = "search-debug")]
             $this.record_debug_dag_eval($st.hash, stand);
             if stand >= $beta {
+                let can_store = excluded_move.is_none()
+                    && !$this.restricted_verification_active()
+                    && !$this.probcut_verification;
+                if can_store && !$this.stopped.load(Ordering::Relaxed) {
+                    $this
+                        .shared_tt
+                        .store($st.hash, 0, score_to_tt(stand, $ply), TT_BETA, None);
+                }
                 return stand;
             }
             if stand > $alpha {
@@ -160,10 +212,12 @@ macro_rules! qsearch_mode_body {
             } else {
                 0
             };
-            -(victim * 10 - attacker + promotion_value(*mv))
+            let tt_bonus = if Some(*mv) == tt_move { 1_000_000 } else { 0 };
+            -(victim * 10 - attacker + promotion_value(*mv) + tt_bonus)
         });
 
         let mut cap_idx = 0usize;
+        let mut best_move: Option<Move> = None;
         while cap_idx < caps.len() {
             let mv = caps[cap_idx];
             cap_idx += 1;
@@ -254,14 +308,31 @@ macro_rules! qsearch_mode_body {
                 return 0;
             }
             if score >= $beta {
+                let can_store = excluded_move.is_none()
+                    && !$this.restricted_verification_active()
+                    && !$this.probcut_verification;
+                if can_store {
+                    $this
+                        .shared_tt
+                        .store($st.hash, 0, score_to_tt(score, $ply), TT_BETA, Some(mv));
+                }
                 Self::return_buf(&mut $this.move_bufs, $ply, caps);
                 return score;
             }
             if score > $alpha {
                 $alpha = score;
+                best_move = Some(mv);
             }
         }
         Self::return_buf(&mut $this.move_bufs, $ply, caps);
+        let can_store = excluded_move.is_none()
+            && !$this.restricted_verification_active()
+            && !$this.probcut_verification;
+        if can_store && !$this.stopped.load(Ordering::Relaxed) {
+            $this
+                .shared_tt
+                .store($st.hash, 0, score_to_tt($alpha, $ply), TT_ALPHA, best_move);
+        }
         $alpha
     }};
 }

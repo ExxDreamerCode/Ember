@@ -2439,6 +2439,7 @@ fn profiling_separates_scoring_see_from_quiescence_see() {
     assert_eq!(searcher.perf.score_calls.load(Ordering::Relaxed), 0);
 
     searcher.perf = perf::PerfCounters::default();
+    searcher.shared_tt = Arc::new(SharedTT::new(1));
     searcher.negamax(&mut st, 1, 0, -INF, INF, false, &mut nodes);
     assert_eq!(searcher.perf.scoring_see_calls.load(Ordering::Relaxed), 1);
     assert_eq!(searcher.perf.score_calls.load(Ordering::Relaxed), 1);
