@@ -891,7 +891,7 @@ def detect_workers(cfg, explicit_workers):
     return workers, cores, "auto"
 
 
-def engine_args(engine):
+def engine_args(engine, default_time_control=None, default_timemargin_ms=None):
     args = [
         "-engine",
         f"name={engine['name']}",
@@ -902,6 +902,14 @@ def engine_args(engine):
         args.append(f"dir={engine['dir']}")
     for arg in engine.get("args", []):
         args.append(f"arg={arg}")
+    time_control = engine.get("time_control", default_time_control)
+    if time_control:
+        args.append(f"tc={time_control}")
+        timemargin = engine.get("timemargin_ms")
+        if timemargin is None:
+            timemargin = default_timemargin_ms
+        if timemargin is not None:
+            args.append(f"timemargin={int(timemargin)}")
     for key, value in engine.get("options", {}).items():
         if key.lower() == "syzygypath" and value and value.lower() != "<empty>":
             path = Path(value).expanduser()
@@ -912,7 +920,9 @@ def engine_args(engine):
     return args
 
 
-def engine_limit_args(run_cfg):
+def engine_limit_args(run_cfg, skip_time=False):
+    if skip_time:
+        return []
     limits = []
     if "time_control" in run_cfg:
         limits.append(("tc", run_cfg["time_control"]))
@@ -931,7 +941,7 @@ def engine_limit_args(run_cfg):
     args = [f"{name}={value}"]
     if name in {"nodes", "depth"}:
         args.insert(0, "tc=inf")
-    if name in {"tc", "st"}:
+    if name in {"tc", "st"} and not skip_time:
         args.append(f"timemargin={int(run_cfg.get('timemargin_ms', 2000))}")
     return args
 
@@ -1707,12 +1717,30 @@ def pair_command(cfg, opening, pgn):
         args = [cutechess]
     else:
         args = list(cutechess)
-    args.extend(engine_args(cfg["engine_a"]))
-    args.extend(engine_args(cfg["engine_b"]))
+    per_engine_time = any(
+        "time_control" in engine for engine in (cfg["engine_a"], cfg["engine_b"])
+    )
+    run_cfg = cfg["run"]
+    default_timemargin = run_cfg.get("timemargin_ms", 2000)
+    args.extend(
+        engine_args(
+            cfg["engine_a"],
+            default_time_control=run_cfg.get("time_control") if per_engine_time else None,
+            default_timemargin_ms=default_timemargin if per_engine_time else None,
+        )
+    )
+    args.extend(
+        engine_args(
+            cfg["engine_b"],
+            default_time_control=run_cfg.get("time_control") if per_engine_time else None,
+            default_timemargin_ms=default_timemargin if per_engine_time else None,
+        )
+    )
+    each_args = engine_limit_args(run_cfg, skip_time=per_engine_time)
+    if each_args:
+        args.extend(["-each", *each_args])
     args.extend(
         [
-            "-each",
-            *engine_limit_args(cfg["run"]),
             "-openings",
             f"file={opening}",
             f"format={cfg['run'].get('opening_format', 'epd')}",
