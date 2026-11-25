@@ -310,7 +310,7 @@ impl ChainPos {
         Self {
             bb: std_bitboards(st),
             white_stm: st.w,
-            ep: st.ep,
+            ep: st.ep.map(std_square),
             castling: st.cr,
             rule50: st.halfmove_clock as u16,
         }
@@ -484,78 +484,12 @@ impl ChainPos {
         }
 
         self.ep = if pt == 0 && to.abs_diff(from) == 16 {
-            let ep = (from + to) / 2;
-            if self.ep_capture_legal(ep, to) {
-                Some(ep)
-            } else {
-                None
-            }
+            Some((from + to) / 2)
         } else {
             None
         };
 
         self.white_stm = !self.white_stm;
-    }
-
-    fn is_attacked_std(bb: &[u64; 12], s: usize, by_white: bool) -> bool {
-        let bit_s = bit(s);
-        let pawn_bb = bb[if by_white { 0 } else { 6 }];
-        let pawn_attackers = if by_white {
-            ((bit_s & !FILE_A) >> 7) | ((bit_s & !FILE_H) >> 9)
-        } else {
-            ((bit_s & !FILE_H) << 7) | ((bit_s & !FILE_A) << 9)
-        };
-        if pawn_bb & pawn_attackers != 0 {
-            return true;
-        }
-        if bb[if by_white { 1 } else { 7 }] & knight_attacks(s) != 0 {
-            return true;
-        }
-        if bb[if by_white { 5 } else { 11 }] & king_attacks(s) != 0 {
-            return true;
-        }
-        let occupied = bb.iter().copied().fold(0u64, |a, b| a | b);
-        let sliders = if by_white {
-            (bb[2] | bb[4], bb[3] | bb[4])
-        } else {
-            (bb[8] | bb[10], bb[9] | bb[10])
-        };
-        if sliders.0 & bishop_attacks(s, occupied) != 0 {
-            return true;
-        }
-        if sliders.1 & rook_attacks(s, occupied) != 0 {
-            return true;
-        }
-        false
-    }
-
-    fn ep_capture_legal(&self, ep: usize, to: usize) -> bool {
-        let white = self.white_stm;
-        let (our_pawn_idx, their_pawn_idx, enemy_king_idx) =
-            if white { (0, 6, 11) } else { (6, 0, 5) };
-
-        let mut attackers = pawn_attacks(white, ep) & self.bb[their_pawn_idx];
-        if attackers == 0 {
-            return false;
-        }
-        let enemy_king_sq = self.bb[enemy_king_idx].trailing_zeros() as usize;
-
-        let mut bb = self.bb;
-        bb[our_pawn_idx] &= !bit(to);
-
-        while attackers != 0 {
-            let s = attackers.trailing_zeros() as usize;
-            attackers &= attackers - 1;
-            bb[their_pawn_idx] &= !bit(s);
-            bb[their_pawn_idx] |= bit(ep);
-            let exposed = Self::is_attacked_std(&bb, enemy_king_sq, white);
-            bb[their_pawn_idx] &= !bit(ep);
-            bb[their_pawn_idx] |= bit(s);
-            if !exposed {
-                return true;
-            }
-        }
-        false
     }
 
     pub fn from_stem(stem: &[u8; STEM_SIZE]) -> Option<Self> {
