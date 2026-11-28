@@ -125,7 +125,7 @@ use self::root::*;
 #[cfg(not(test))]
 use self::root::{
     root_child_after, root_move_preserves_fifty_move_conversion, root_total_piece_count,
-    sort_root_moves, tt_root_move,
+    sort_root_moves, sort_root_moves_with_history, tt_root_move,
 };
 
 impl Default for Engine {
@@ -892,6 +892,7 @@ impl Engine {
         let mut stable_iterations = 0u32;
         let mut previous_iteration_seconds = 0.0;
         let mut previous_completed_elapsed = 0.0;
+        let mut previous_root_scores: Vec<(Move, i32)> = Vec::new();
         #[cfg(feature = "decision-trace")]
         let mut depth_infos = Vec::new();
 
@@ -914,7 +915,8 @@ impl Engine {
             let mut asp_best_nodes = 0u64;
 
             'asp: loop {
-                let sorted = sort_root_moves(&ordered_moves, asp_best);
+                let sorted =
+                    sort_root_moves_with_history(&ordered_moves, asp_best, &previous_root_scores);
                 let repetition_tie_scope = root_repetition_tie_scope(&self.st);
 
                 let mut cur_best = sorted[0];
@@ -922,6 +924,7 @@ impl Engine {
                 let mut cur_best_nodes = 0u64;
                 let mut cur_best_repeats = false;
                 let mut loop_alpha = alpha;
+                let mut iteration_scores: Vec<(Move, i32)> = Vec::with_capacity(sorted.len());
 
                 #[allow(unused)]
                 for (root_index, &mv) in sorted.iter().enumerate() {
@@ -1015,6 +1018,7 @@ impl Engine {
                     if self.searcher.stopped.load(Ordering::Relaxed) {
                         break;
                     }
+                    iteration_scores.push((mv, score));
                     if score > cur_score
                         || (score == cur_score
                             && prefer_non_repeating_root_on_tie(
@@ -1066,6 +1070,7 @@ impl Engine {
                 asp_best = cur_best;
                 asp_score = cur_score;
                 asp_best_nodes = cur_best_nodes;
+                previous_root_scores = iteration_scores;
                 #[cfg(feature = "search-debug")]
                 self.searcher
                     .emit_debug_aspiration_trace(depth, alpha, beta, cur_score, "exact");

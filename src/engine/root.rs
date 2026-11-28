@@ -184,6 +184,29 @@ pub(super) fn sort_root_moves(moves: &[Move], preferred: Move) -> Vec<Move> {
     ordered
 }
 
+pub(super) fn sort_root_moves_with_history(
+    moves: &[Move],
+    preferred: Move,
+    previous_scores: &[(Move, i32)],
+) -> Vec<Move> {
+    let previous_score = |mv: Move| -> i32 {
+        previous_scores
+            .iter()
+            .find(|(scored_mv, _)| *scored_mv == mv)
+            .map_or(i32::MIN, |&(_, score)| score)
+    };
+    let mut ordered: Vec<(i32, usize, Move)> = moves
+        .iter()
+        .enumerate()
+        .map(|(index, &mv)| (previous_score(mv), index, mv))
+        .collect();
+    ordered.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    if let Some(position) = ordered.iter().position(|&(_, _, mv)| mv == preferred) {
+        ordered.swap(0, position);
+    }
+    ordered.into_iter().map(|(_, _, mv)| mv).collect()
+}
+
 pub(super) fn tt_root_move(searcher: &Searcher, st: &BoardState, moves: &[Move]) -> Move {
     searcher
         .shared_tt
